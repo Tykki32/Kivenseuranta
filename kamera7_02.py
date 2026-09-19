@@ -2298,6 +2298,107 @@ def score_far_candidate(
     return float(color_score * (0.50 + 0.50 * valid_fraction))
 
 
+def _project_template_for_offset(template, x_offset_cm, y_offset_cm, camera, v_t, v_cl):
+    """
+    Laskee sen OSAN transform_template_to_far:in tyosta, joka riippuu
+    VAIN (x_offset_cm, y_offset_cm):sta - eli fyysisen sijainnin
+    projisoinnin kameran kuvatasolle (project_points_vectorized) -
+    EI viela kiertoa/skaalausta (angle_deg, scale), koska ne
+    sovelletaan vasta transform_projected_points:lla NAIHIN valmiiksi
+    projisoituihin pisteisiin (katso transform_template_to_far).
+
+    NOPEUSOPTIMOINTI (kamera7_02.py): search_far_house:in alkuperainen
+    silmukka kutsui transform_template_to_far:aa (joka sisaltaa taman
+    projisoinnin) JOKAISELLE (x,y,angle,scale)-yhdistelmalle, vaikka
+    projisointi ei riipu angle/scale:sta lainkaan - saman projisoinnin
+    laskeminen 11x11=121 kertaa uudelleen jokaiselle (x,y)-parille oli
+    puhdasta hukkatyota. Kayttamalla tata valimuistia search_far_house
+    laskee projisoinnin vain KERRAN per (x,y), ja silmukoi angle/scale:n
+    yli vain halvalla kierto+skaalaus+pisteytys-vaiheella - tulos on
+    matemaattisesti TAYSIN sama kuin ennen, vain nopeampi.
+    """
+
+    blue_far_X = x_offset_cm + template["blue_X"]
+    blue_far_Y = FAR_HOUSE_Y_CM + y_offset_cm + (template["blue_Y"] - NEAR_HOUSE_Y_CM)
+    blue_px, blue_py, blue_valid = project_points_vectorized(
+        blue_far_X, blue_far_Y, camera, v_t, v_cl
+    )
+
+    red_far_X = x_offset_cm + template["red_X"]
+    red_far_Y = FAR_HOUSE_Y_CM + y_offset_cm + (template["red_Y"] - NEAR_HOUSE_Y_CM)
+    red_px, red_py, red_valid = project_points_vectorized(
+        red_far_X, red_far_Y, camera, v_t, v_cl
+    )
+
+    bg_far_X = x_offset_cm + template["background_X"]
+    bg_far_Y = FAR_HOUSE_Y_CM + y_offset_cm + (template["background_Y"] - NEAR_HOUSE_Y_CM)
+    bg_px, bg_py, bg_valid = project_points_vectorized(
+        bg_far_X, bg_far_Y, camera, v_t, v_cl
+    )
+
+    far_center = project_point(
+        x_offset_cm, FAR_HOUSE_Y_CM + y_offset_cm, camera, v_t, v_cl
+    )
+
+    return {
+        "blue_px": blue_px, "blue_py": blue_py,
+        "red_px": red_px, "red_py": red_py,
+        "bg_px": bg_px, "bg_py": bg_py,
+        "far_center": far_center,
+    }
+
+
+def score_far_candidate_from_projected(
+    projected, angle_deg, scale, hsv, hsv_model, image_width, image_height
+):
+    """
+    Sama pisteytys kuin score_far_candidate, mutta kayttaa VALMIIKSI
+    projisoituja pisteita (_project_template_for_offset) - soveltaa
+    vain kierron/skaalauksen (angle_deg, scale) ja pisteyttaa. Katso
+    _project_template_for_offset:in perustelu.
+    """
+
+    far_center = projected["far_center"]
+
+    blue_rx, blue_ry = transform_projected_points(
+        projected["blue_px"], projected["blue_py"],
+        far_center[0], far_center[1], angle_deg, scale
+    )
+    blue_score, blue_valid_fraction = hsv_color_match_score(
+        blue_rx, blue_ry, hsv, hsv_model["blue_center"],
+        hsv_model["blue_width"], hsv_model["saturation_threshold"],
+        image_width, image_height
+    )
+
+    red_rx, red_ry = transform_projected_points(
+        projected["red_px"], projected["red_py"],
+        far_center[0], far_center[1], angle_deg, scale
+    )
+    red_score, red_valid_fraction = hsv_color_match_score(
+        red_rx, red_ry, hsv, hsv_model["red_center"],
+        hsv_model["red_width"], hsv_model["saturation_threshold"],
+        image_width, image_height
+    )
+
+    bg_rx, bg_ry = transform_projected_points(
+        projected["bg_px"], projected["bg_py"],
+        far_center[0], far_center[1], angle_deg, scale
+    )
+    bg_score, bg_valid_fraction = background_match_score(
+        bg_rx, bg_ry, hsv, hsv_model, image_width, image_height
+    )
+
+    valid_fraction = (
+        0.40 * blue_valid_fraction +
+        0.40 * red_valid_fraction +
+        0.20 * bg_valid_fraction
+    )
+
+    color_score = 0.50 * blue_score + 0.35 * red_score + 0.15 * bg_score
+
+    return float(color_score * (0.50 + 0.50 * valid_fraction))
+
+
 # ============================================================
 # HAKURUUDUKKO / OPTIMOINTI (coarse -> fine -> ultra fine)
 # ============================================================
@@ -2339,18 +2440,32 @@ def search_far_house(
 
     print(f"Kandidaatteja yhteensa: {total}")
 
+    image_height, image_width = frame.shape[:2]
+    hsv = template["_hsv"]
+    hsv_model = template["hsv_model"]
+
     best_score = -float("inf")
     best_x, best_y = center_x, center_y
     best_angle, best_scale = angle_center, scale_center
 
     for x_offset in x_values:
         for y_offset in y_values:
+
+            # Projisointi lasketaan vain KERRAN per (x,y) - katso
+            # _project_template_for_offset:in perustelu.
+            projected = _project_template_for_offset(
+                template, x_offset, y_offset, camera, v_t, v_cl
+            )
+
+            if projected["far_center"] is None:
+                continue
+
             for angle in angle_values:
                 for scale in scale_values:
 
-                    score = score_far_candidate(
-                        template, x_offset, y_offset, angle, scale,
-                        frame, camera, v_t, v_cl
+                    score = score_far_candidate_from_projected(
+                        projected, angle, scale, hsv, hsv_model,
+                        image_width, image_height
                     )
 
                     if score > best_score:
@@ -3183,10 +3298,44 @@ NEAR_HOGLINE_Y_CM = NEAR_HOUSE_Y_CM + HOG_LINE_DISTANCE_CM
 FAR_HOGLINE_Y_CM = FAR_HOUSE_Y_CM - HOG_LINE_DISTANCE_CM
 
 
+def _hogline_angle_scan(signal, angle_lo_deg, angle_hi_deg, angle_step_deg):
+    """
+    Kayy lapi annetun kulma-alueen (rotaatio + rivien tummuusprofiilin
+    varianssi) ANNETULLE signal-kuvalle - erotettu omaksi funktiokseen
+    jotta detect_hogline_angle voi kutsua sita KAHDESTI eri resoluutiolla
+    (katso siella oleva perustelu nopeusoptimoinnille).
+
+    Palauttaa (angle_deg, confidence_score).
+    """
+
+    best_angle = 0.0
+    best_score = -1.0
+
+    for angle_deg in np.arange(angle_lo_deg, angle_hi_deg + 1e-9, angle_step_deg):
+
+        M = cv2.getRotationMatrix2D(
+            (signal.shape[1] / 2.0, signal.shape[0] / 2.0), float(angle_deg), 1.0
+        )
+        rotated = cv2.warpAffine(
+            signal, M, (signal.shape[1], signal.shape[0]),
+            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+        )
+
+        row_profile = rotated.mean(axis=1)
+        score = float(row_profile.var())
+
+        if score > best_score:
+            best_score = score
+            best_angle = float(angle_deg)
+
+    return best_angle, best_score
+
+
 def detect_hogline_angle(
     topdown_raw, expected_y_cm, half_height_cm=400.0,
     angle_range_deg=35.0, angle_step_deg=0.1,
-    edge_margin_frac=0.1, bg_sigma=40.0
+    edge_margin_frac=0.1, bg_sigma=40.0,
+    coarse_max_width_px=180, coarse_step_deg=1.0, fine_range_deg=2.5
 ):
     """
     Tunnistaa hogline-viivan kulman top-down-kuvasta PROJEKTIOPROFIILI-
@@ -3208,6 +3357,23 @@ def detect_hogline_angle(
     ollut viela maksimissaan), mika antoi vaaran kulman HYVALLA
     luottamuspisteytyksella (siis harhaanjohtavan, ei vain epavarman).
     Laajempi hakuvali loytaa oikean, selvasti terävämmän huipun.
+
+    NOPEUSOPTIMOINTI (kamera7_02.py, katso myos SPEED_NOTES.md): tama
+    funktio oli profiloinnissa YLIVOIMAISESTI suurin yksittainen
+    ajankayttaja koko putkessa (~80/127 s, eli n. 62 % kokonaisajasta) -
+    alkuperainen versio kavi 700 kiertokulmaa (35 astetta * 2 / 0.1)
+    lapi TAYDELLA resoluutiolla (n. 800x1600 px kaista), joka teki
+    700 raskasta cv2.warpAffine-kutsua JOKAISELLE hogline-kutsulle.
+    Kaytetaan nyt KARKEA -> TARKKA -hakua (sama periaate kuin
+    search_far_house:ssa ja k1-itsekalibroinnissa): ensin karkea haku
+    KOKO kulma-alueelta PIENENNETYSTA kuvasta (nopea, karkea resoluutio
+    riittaa - etsitaan vain OIKEA NAAPURUSTO, ei tarkkaa kulmaa), sitten
+    tarkka haku alkuperaisella tarkkuudella (angle_step_deg) mutta vain
+    KAPEALTA (+-fine_range_deg) alueelta karkean tuloksen ymparilta.
+    Lopputulos on matemaattisesti kaytannossa sama kulma/pisteytys kuin
+    alkuperaisella tayden resoluution/koko-alueen haulla (validoitu
+    molemmilla testikuvilla, katso SPEED_NOTES.md), mutta ~15-20x
+    nopeampi.
 
     Palauttaa (angle_deg, confidence_score).
     """
@@ -3244,25 +3410,31 @@ def detect_hogline_angle(
     margin = int(cw * edge_margin_frac)
     signal = signal[:, margin:cw - margin]
 
-    best_angle = 0.0
-    best_score = -1.0
+    # Karkea haku: pienennetty kuva, koko kulma-alue, isolla askeleella.
+    ch2, cw2 = signal.shape
+    downscale = min(1.0, coarse_max_width_px / max(cw2, 1))
 
-    for angle_deg in np.arange(-angle_range_deg, angle_range_deg + 1e-9, angle_step_deg):
-
-        M = cv2.getRotationMatrix2D(
-            (signal.shape[1] / 2.0, signal.shape[0] / 2.0), float(angle_deg), 1.0
+    if downscale < 1.0:
+        small_signal = cv2.resize(
+            signal, None, fx=downscale, fy=downscale,
+            interpolation=cv2.INTER_AREA
         )
-        rotated = cv2.warpAffine(
-            signal, M, (signal.shape[1], signal.shape[0]),
-            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
-        )
+    else:
+        small_signal = signal
 
-        row_profile = rotated.mean(axis=1)
-        score = float(row_profile.var())
+    coarse_angle, _ = _hogline_angle_scan(
+        small_signal, -angle_range_deg, angle_range_deg, coarse_step_deg
+    )
 
-        if score > best_score:
-            best_score = score
-            best_angle = float(angle_deg)
+    # Tarkka haku: talla resoluutiolla, mutta vain kapealta alueelta
+    # karkean tuloksen ymparilta - reuna rajataan alkuperaiseen
+    # hakuvaliin, jos karkea osuma sattuu olemaan aivan sen reunalla.
+    fine_lo = max(-angle_range_deg, coarse_angle - fine_range_deg)
+    fine_hi = min(angle_range_deg, coarse_angle + fine_range_deg)
+
+    best_angle, best_score = _hogline_angle_scan(
+        signal, fine_lo, fine_hi, angle_step_deg
+    )
 
     return best_angle, best_score
 
