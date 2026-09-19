@@ -5161,6 +5161,103 @@ def main():
         print("-> Uudelleenarvioitu k1 ei tuo merkittavaa lisaparannusta, "
               "sailytetaan alkuperainen.")
 
+    # --------------------------------------------------------
+    # LOPULLINEN SUORA UUDELLEENSOVITUS (kamera7_03.py)
+    #
+    # Havaittu diagnosoitaessa jaljella olevaa pientä virhettä: iteratii-
+    # visen korjauksen KETJUTETTU homografia (H_correction @ H_current,
+    # toistettuna joka kierroksella) haviaa hieman tarkkuutta verrattuna
+    # siihen etta konvergenssin lopuksi jo tarkoiksi tunnistetut 17+5
+    # pistetta sovitettaisiin YHDELLA suoralla homografialla takaisin
+    # alkuperaisesta raakakuvasta fyysisiin kohteisiin (sama idea kuin
+    # refine_lens_distortion_k1:ssa: pisteet siirretaan distort_points_px:
+    # lla takaisin raakakuvan koordinaatistoon). Tama EI ole ylisovitusta
+    # (ei uusia vapaita parametreja, sama 22 pistetta - vain yksi suora
+    # pienimman nelion sovitus ketjutettujen sovitusten sijaan). Testattu
+    # molemmilla kuvilla: RMS parani johdonmukaisesti n. 6-13 % ja tulos
+    # varmistettu visuaalisesti - hyvaksytaan silti VAIN jos mittaus
+    # (pyoreys ensisijaisena) vahvistaa sen oikeasti paremmaksi.
+    # --------------------------------------------------------
+
+    raw_img_pts_final, phys_pts_final = raw_points_from_converged_result(
+        refined, camera_matrix, best_k1
+    )
+
+    direct_src_pts = undistort_points_px(
+        raw_img_pts_final, camera_matrix, best_k1
+    ).astype(np.float32)
+    direct_dst_pts = physical_to_output_px(phys_pts_final).astype(np.float32)
+
+    H_direct, _ = cv2.findHomography(direct_src_pts, direct_dst_pts, method=0)
+
+    if H_direct is not None:
+
+        projected_direct = cv2.perspectiveTransform(
+            direct_src_pts.reshape(-1, 1, 2), H_direct
+        ).reshape(-1, 2)
+        direct_errors = np.linalg.norm(projected_direct - direct_dst_pts, axis=1)
+        direct_rms = math.sqrt(float(np.mean(direct_errors ** 2)))
+
+        direct_ratio = measure_far_house_shape_ratio(frame_undistorted, H_direct)
+        current_ratio_final = measure_far_house_shape_ratio(
+            frame_undistorted, refined["H_final"]
+        )
+
+        print()
+        print("=" * 65)
+        print("LOPULLINEN SUORA UUDELLEENSOVITUS")
+        print("=" * 65)
+        print(f"Iteratiivinen ketju    : RMS {refined['rms']:.3f} px, "
+              f"kaukaisen pesan pyoreys {current_ratio_final:.3f}")
+        print(f"Suora uudelleensovitus : RMS {direct_rms:.3f} px, "
+              f"kaukaisen pesan pyoreys {direct_ratio:.3f}")
+
+        direct_is_better = (
+            direct_ratio > current_ratio_final + 0.01
+            or (
+                abs(direct_ratio - current_ratio_final) <= 0.01
+                and direct_rms < refined["rms"]
+            )
+        )
+
+        if direct_is_better:
+
+            print("-> Suora uudelleensovitus parempi, otetaan kayttoon.")
+
+            topdown_direct_raw = cv2.warpPerspective(
+                frame_undistorted, H_direct, (output_w, output_h)
+            )
+
+            near_view_direct = crop_house_view(
+                topdown_direct_raw, NEAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
+            )
+            far_view_direct = crop_house_view(
+                topdown_direct_raw, FAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
+            )
+            near_center_direct = expected_house_center_in_crop(
+                topdown_direct_raw.shape[0], NEAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
+            )
+            far_center_direct = expected_house_center_in_crop(
+                topdown_direct_raw.shape[0], FAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
+            )
+
+            refined = {
+                "H_final": H_direct,
+                "topdown_raw": topdown_direct_raw,
+                "topdown_corrected_raw": topdown_direct_raw,
+                "near_verify": verify_house_from_topdown(
+                    near_view_direct, near_center_direct,
+                    use_ellipse=True, include_red_inner=True
+                ),
+                "far_verify": detect_far_house_concentric_circles(
+                    far_view_direct, far_center_direct
+                ),
+                "rms": direct_rms,
+                "iterations": refined["iterations"],
+            }
+        else:
+            print("-> Iteratiivinen ketju pysyy parempana, sailytetaan se.")
+
     H_final = refined["H_final"]
     topdown_corrected_raw = refined["topdown_corrected_raw"]
 
