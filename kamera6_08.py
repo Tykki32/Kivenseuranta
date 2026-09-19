@@ -1122,9 +1122,7 @@ def detect_line_segments(frame, ellipse):
     if lines is None:
         return segments
 
-    for item in lines:
-
-        x1, y1, x2, y2 = item[0]
+    for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):
 
         p1 = np.array([x1, y1], dtype=np.float64)
         p2 = np.array([x2, y2], dtype=np.float64)
