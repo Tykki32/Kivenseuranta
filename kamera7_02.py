@@ -530,6 +530,30 @@ def _smooth_reflect(values, kernel_size=5):
     return np.convolve(padded, kernel, mode="valid")
 
 
+def _uniform_gradient(y, h):
+    """
+    Sama kuin np.gradient(y, x) kun x:n valit ovat TASAVALISIA (askel
+    h) - keskeisdifferenssi sisapisteille, yksipuolinen differenssi
+    paissa. np.gradient tukee myos epatasavalisia valeja, mika tekee
+    siita hitaamman (yleisempi tarkistus-/haarautumislogiikka) - tassa
+    kaytetty tapaus (find_ring_edge_points:in radii_v) on AINA
+    tasavalinen (np.arange(r_lo, r_hi, r_step)), joten tama antaa
+    BITTITARKASTI saman tuloksen mutta nopeammin.
+    """
+
+    grad = np.empty_like(y)
+
+    if len(y) < 2:
+        grad[:] = 0.0
+        return grad
+
+    grad[1:-1] = (y[2:] - y[:-2]) / (2.0 * h)
+    grad[0] = (y[1] - y[0]) / h
+    grad[-1] = (y[-1] - y[-2]) / h
+
+    return grad
+
+
 def find_ring_edge_points(
     score, expected_center, expected_radius_px,
     radius_tol=0.25, num_angles=720, r_step=0.5, edge_margin_frac=0.08
@@ -600,7 +624,12 @@ def find_ring_edge_points(
         vals = vals_grid[i, :n]
         vals_smooth = _smooth_reflect(vals, kernel_size=5)
 
-        grad = np.gradient(vals_smooth, radii_v)
+        # NOPEUSOPTIMOINTI: radii_v:n valit ovat AINA tasavalisia
+        # (r_step, koska radii = np.arange(r_lo, r_hi, r_step)), joten
+        # _uniform_gradient antaa BITTITARKASTI saman tuloksen kuin
+        # np.gradient(vals_smooth, radii_v) mutta ilman sen yleisemman
+        # (epatasavalisen) tapauksen tarkistus-/haarautumisoverheadia.
+        grad = _uniform_gradient(vals_smooth, r_step)
 
         margin = max(3, int(n * edge_margin_frac))
 
