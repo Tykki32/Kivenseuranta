@@ -3064,8 +3064,8 @@ def refine_homography_corrections(
         min_relative_improvement = HOMOGRAPHY_REFINE_MIN_RELATIVE_IMPROVEMENT
 
     H_current = H_initial
-    prev_rms = None
-    result = None
+    best_result = None
+    best_rms = float("inf")
 
     for iteration in range(1, max_iterations + 1):
 
@@ -3096,14 +3096,36 @@ def refine_homography_corrections(
             use_ellipse=True, include_red_inner=False
         )
 
-        H_final, topdown_corrected_raw, _, _, _, rms = compute_corrected_homography(
-            frame_undistorted, H_current, topdown_raw, near_verify, far_verify
-        )
+        try:
+            H_final, topdown_corrected_raw, _, _, _, rms = compute_corrected_homography(
+                frame_undistorted, H_current, topdown_raw, near_verify, far_verify
+            )
+        except RuntimeError as exc:
+            print(f"[Iteratiivinen korjaus {iteration}/{max_iterations}] "
+                  f"epaonnistui ({exc}) - pysaytetaan ja kaytetaan viimeisin "
+                  f"onnistunut kierros.")
+            break
 
         print(f"[Iteratiivinen korjaus {iteration}/{max_iterations}] "
               f"RMS: {rms:.3f} px")
 
-        result = {
+        # TARKEA VARMISTUS: pesien/hoglinejen tunnistus top-down-kuvasta
+        # on jaljella (etenkin kaukainen pesa on pieni ja matalakontras-
+        # tinen) - jos yksi kierros osuu huonoon paikalliseen minimiin ja
+        # RMS kasvaa rajusti edellisesta, EI oteta sita kayttoon, vaan
+        # pysahdytaan ja palautetaan paras tahan mennessa loydetty tulos.
+        # Ilman tata tarkistusta yksi huono kierros voisi pilata muuten
+        # jo hyvan homografian.
+        if rms >= best_rms:
+            print("  RMS ei parantunut edellisesta kierroksesta - "
+                  "pysaytetaan ja kaytetaan paras loydetty tulos.")
+            break
+
+        relative_improvement = (
+            (best_rms - rms) / best_rms if math.isfinite(best_rms) else None
+        )
+
+        best_result = {
             "H_final": H_final,
             "topdown_raw": topdown_raw,
             "topdown_corrected_raw": topdown_corrected_raw,
@@ -3112,24 +3134,19 @@ def refine_homography_corrections(
             "rms": rms,
             "iterations": iteration,
         }
-
-        stop = False
-
-        if prev_rms is not None:
-
-            if prev_rms <= 1e-9:
-                stop = True
-            else:
-                relative_improvement = (prev_rms - rms) / prev_rms
-                stop = relative_improvement < min_relative_improvement
-
-        prev_rms = rms
+        best_rms = rms
         H_current = H_final
 
-        if stop:
+        if relative_improvement is not None and relative_improvement < min_relative_improvement:
             break
 
-    return result
+    if best_result is None:
+        raise RuntimeError(
+            "Korjaavaa homografiaa ei saatu laskettua yhdellakaan "
+            "iteraatiokierroksella."
+        )
+
+    return best_result
 
 
 # ============================================================
