@@ -171,8 +171,12 @@ K1_SEARCH_REFINE_SHRINK = 6.0
 K1_MIN_RELATIVE_IMPROVEMENT = 0.08
 K1_MIN_MAGNITUDE = 0.01
 
-HOMOGRAPHY_REFINE_MAX_ITERATIONS = 8
+HOMOGRAPHY_REFINE_MAX_ITERATIONS = 15
 HOMOGRAPHY_REFINE_MIN_RELATIVE_IMPROVEMENT = 0.03
+
+# Montako PERAKKAISTA ei-parantunutta kierrosta refine_homography_
+# corrections sietaa ennen pysahtymista (katso sen sisainen kommentti).
+STALL_PATIENCE = 3
 
 
 # ============================================================
@@ -656,6 +660,172 @@ def robust_circle_fit(points, keep_frac=0.7, iterations=4, min_points=20):
         cx, cy, r = _fit_circle_kasa(selected)
 
     return cx, cy, r
+
+
+def robust_circle_fit_with_inliers(points, keep_frac=0.7, iterations=4, min_points=20):
+    """
+    Sama kuin robust_circle_fit, mutta palauttaa MYOS lopulliset
+    (poikkeavien hylkayksen jalkeiset) sisapisteet - kayttokelpoinen
+    kun niita halutaan kayttaa edelleen esim. YHTEISEN keskipisteen
+    sovitukseen useamman renkaan kesken (katso
+    fit_concentric_circles_shared_center).
+
+    Palauttaa (cx, cy, r, inlier_points) tai None.
+    """
+
+    if len(points) < min_points:
+        return None
+
+    pts = [(p[0], p[1]) for p in points]
+    strengths = np.array([p[2] for p in points])
+
+    order = np.argsort(strengths)[::-1]
+    n_keep = max(min_points, int(len(pts) * keep_frac))
+
+    selected = [pts[i] for i in order[:n_keep]]
+
+    cx, cy, r = _fit_circle_kasa(selected)
+
+    for _ in range(iterations):
+
+        dists = np.array([
+            abs(math.hypot(px - cx, py - cy) - r) for px, py in selected
+        ])
+
+        median = np.median(dists)
+        mad = np.median(np.abs(dists - median)) + 1e-6
+
+        keep = dists < median + 3.0 * mad
+
+        if keep.sum() < min_points:
+            break
+
+        selected = [selected[i] for i in range(len(selected)) if keep[i]]
+        cx, cy, r = _fit_circle_kasa(selected)
+
+    return cx, cy, r, np.array(selected, dtype=np.float64)
+
+
+def fit_concentric_circles_shared_center(
+    point_groups, init_center, iterations=25, step=0.5
+):
+    """
+    point_groups: lista Nx2-pistetaulukoita (esim. sinisen ja punaisen
+    ULKOKEHAN reunapisteet erikseen) - KAIKKI oletetaan samankeskisiksi
+    (sama TODELLINEN keskipiste), mutta kullakin on oma (tuntematon)
+    sateensa.
+
+    PERUSTELU: pesan eri renkaat (sininen/punainen ulkokeha) ovat
+    FYYSISESTI aina samankeskiset. Jos ne sovitetaan itsenaisesti
+    (oma keskipiste kummallekin), pienikin kohina (osapikselitasolla,
+    etenkin kaukaisella/pienella/sumealla pesalla) voi siirtaa niiden
+    sovitettuja keskipisteita toisistaan poikkeaviin suuntiin -
+    havaittu testatessa: jopa >10 px ero blue_outer:in ja red_outer:in
+    itsenaisesti sovitettujen keskipisteiden valilla. YHTEISEN
+    keskipisteen pakottaminen kayttaa KAIKKIEN renkaiden pisteita
+    saman 2 vapausasteen (cx,cy) rajoittamiseen - huomattavasti
+    kohinankestavampi kuin kaksi itsenaista 3 vapausasteen sovitusta.
+
+    Ratkaistaan vuorottelevalla minimoinnilla (kiinnitetaan sateet ->
+    gradienttiaskel keskipisteeseen -> toista), koska ongelma ei ole
+    lineaarinen (Kasa-tyylinen suljetun muodon ratkaisu ei suoraan
+    toimi kun sateet eivat ole samat).
+
+    Palauttaa (cx, cy, [r_per_group]).
+    """
+
+    cx, cy = float(init_center[0]), float(init_center[1])
+
+    for _ in range(iterations):
+
+        radii = []
+
+        for pts in point_groups:
+            d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)
+            radii.append(float(np.mean(d)))
+
+        gx = 0.0
+        gy = 0.0
+        n_total = 0
+
+        for pts, r in zip(point_groups, radii):
+
+            dx = cx - pts[:, 0]
+            dy = cy - pts[:, 1]
+            d = np.maximum(np.hypot(dx, dy), 1e-6)
+            coeff = (d - r) / d
+
+            gx += float(np.sum(coeff * dx))
+            gy += float(np.sum(coeff * dy))
+            n_total += len(pts)
+
+        if n_total == 0:
+            break
+
+        cx -= step * gx / n_total
+        cy -= step * gy / n_total
+
+    radii = []
+
+    for pts in point_groups:
+        d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)
+        radii.append(float(np.mean(d)))
+
+    return cx, cy, radii
+
+
+def detect_far_house_concentric_circles(view, expected_center):
+    """
+    Tunnistaa kaukaisen pesan sinisen ja punaisen ULKOKEHAN YHTEISELLA
+    (pakotetulla samankeskisyydella) - katso
+    fit_concentric_circles_shared_center:in perustelu.
+
+    Palauttaa dictin jossa "blue_outer"/"red_outer" (ellipsi-muodossa,
+    ymparysta kayttavat pyoreat sateet) tai None jos ei loytynyt.
+    """
+
+    blue_score, red_score = create_topdown_score_maps(view)
+
+    result = {"blue_outer": None, "blue_inner": None, "red_outer": None, "red_inner": None}
+
+    blue_points = find_ring_edge_points(
+        blue_score, expected_center, BLUE_OUTER_RADIUS_CM * PIXELS_PER_CM
+    )
+    red_points = find_ring_edge_points(
+        red_score, expected_center, RED_OUTER_RADIUS_CM * PIXELS_PER_CM
+    )
+
+    blue_fit = robust_circle_fit_with_inliers(blue_points)
+    red_fit = robust_circle_fit_with_inliers(red_points)
+
+    groups = []
+    center_estimates = []
+    ring_names = []
+
+    if blue_fit is not None:
+        groups.append(blue_fit[3])
+        center_estimates.append(np.array([blue_fit[0], blue_fit[1]]))
+        ring_names.append("blue_outer")
+
+    if red_fit is not None:
+        groups.append(red_fit[3])
+        center_estimates.append(np.array([red_fit[0], red_fit[1]]))
+        ring_names.append("red_outer")
+
+    if not groups:
+        return result
+
+    # Painotetaan alkuarvaus pistemaaran mukaan (isompi/luotettavampi
+    # rengas - yleensa sininen ulkokeha - saa enemman painoarvoa).
+    weights = np.array([len(g) for g in groups], dtype=np.float64)
+    init_center = np.average(np.array(center_estimates), axis=0, weights=weights)
+
+    cx, cy, radii = fit_concentric_circles_shared_center(groups, init_center)
+
+    for name, r in zip(ring_names, radii):
+        result[name] = ((cx, cy), (2.0 * r, 2.0 * r), 0.0)
+
+    return result
 
 
 def detect_precise_circle(
@@ -3167,6 +3337,7 @@ def refine_homography_corrections(
     H_current = H_initial
     best_result = None
     best_rms = float("inf")
+    stall_count = 0
 
     for iteration in range(1, max_iterations + 1):
 
@@ -3192,23 +3363,23 @@ def refine_homography_corrections(
             near_view_clean, near_expected_center,
             use_ellipse=True, include_red_inner=True
         )
-        # HUOM: kaukaiselle pesalle use_ellipse=False (rajoitettu YMPYRA,
-        # ei vapaa ellipsi) - katso tarkempi perustelu compute_corrected_
-        # homography:in far_verify-kommentista muutaman rivin paassa.
-        # Lyhyesti: vapaa (5 vapausasteen) ellipsisovitus pienelle/
-        # sumealle kohteelle on altis "eksentrisyysharhalle" (algebrall-
-        # iset ellipsisovitukset, mm. OpenCV:n fitEllipse, tuottavat
-        # kohinaisesta datasta systemaattisesti TODELLISTA soikeamman
-        # tuloksen, Fitzgibbon et al. 1999). Koska kaukainen pesa on
-        # FYYSISESTI tunnetusti ympyra, rajoitettu ympyrasovitus on
-        # perusteltu ja huomattavasti kohinankestavampi (vain 3 vapaus-
-        # astetta: keskipiste + sade) - antaa tarkemmat korrespondenssi-
-        # pisteet homografian korjaukseen. Pesan TODELLINEN pyoreys
-        # tarkistetaan erikseen ja rehellisesti (vapaalla ellipsisovi-
-        # tuksella) vasta lopuksi, katso measure_far_house_shape_ratio.
-        far_verify = verify_house_from_topdown(
-            far_view_clean, far_expected_center,
-            use_ellipse=False, include_red_inner=False
+        # HUOM: kaukaiselle pesalle kaytetaan RAJOITETTUA YMPYRAA (ei
+        # vapaata ellipsia) JA sinisen+punaisen ulkokehan YHTEISTA
+        # (pakotettua) keskipistetta - katso
+        # detect_far_house_concentric_circles:in ja fit_concentric_
+        # circles_shared_center:in perustelut. Lyhyesti: (1) vapaa
+        # ellipsisovitus on altis "eksentrisyysharhalle" kohinaisella,
+        # pienella/sumealla kohteella (Fitzgibbon et al. 1999); (2)
+        # sinisen ja punaisen ulkokehan PITAA fyysisesti olla samankes-
+        # kisia, ja niiden pakottaminen jakamaan sama keskipiste kayttaa
+        # kaikkien pisteiden kohinaa rajoittamaan vain 2 vapausastetta
+        # (cx,cy) yhden ympyran 3:n sijaan - havaittu testatessa etta
+        # itsenaisesti sovitetut keskipisteet erosivat toisistaan >10 px.
+        # Pesan TODELLINEN pyoreys tarkistetaan erikseen ja rehellisesti
+        # (vapaalla ellipsisovituksella) vasta lopuksi, katso
+        # measure_far_house_shape_ratio.
+        far_verify = detect_far_house_concentric_circles(
+            far_view_clean, far_expected_center
         )
 
         try:
@@ -3226,15 +3397,32 @@ def refine_homography_corrections(
 
         # TARKEA VARMISTUS: pesien/hoglinejen tunnistus top-down-kuvasta
         # on jaljella (etenkin kaukainen pesa on pieni ja matalakontras-
-        # tinen) - jos yksi kierros osuu huonoon paikalliseen minimiin ja
-        # RMS kasvaa rajusti edellisesta, EI oteta sita kayttoon, vaan
-        # pysahdytaan ja palautetaan paras tahan mennessa loydetty tulos.
-        # Ilman tata tarkistusta yksi huono kierros voisi pilata muuten
-        # jo hyvan homografian.
+        # tinen), joten yksittainen kierros voi satunnaisesti osua hieman
+        # huonompaan paikalliseen minimiin vaikka prosessi kokonaisuutena
+        # on viela parantumassa. HYVAKSYTAAN talloin enintaan
+        # STALL_PATIENCE perakkaista ei-parantunutta kierrosta ja
+        # JATKETAAN niista (jotta prosessi voi "paasta yli" tilapaisesta
+        # kohinasta), mutta H_final PALAUTETAAN aina siita kierroksesta
+        # jolla RMS oli PARAS NAHTY - ei koskaan huonommasta.
         if rms >= best_rms:
-            print("  RMS ei parantunut edellisesta kierroksesta - "
-                  "pysaytetaan ja kaytetaan paras loydetty tulos.")
-            break
+
+            stall_count += 1
+
+            print(f"  RMS ei parantunut edellisesta kierroksesta "
+                  f"({stall_count}/{STALL_PATIENCE}).")
+
+            if stall_count >= STALL_PATIENCE:
+                print("  Pysaytetaan ja kaytetaan paras loydetty tulos.")
+                break
+
+            # Jatketaan silti TASTA (mahdollisesti huonommasta) H:sta,
+            # jotta seuraava kierros voi loytaa paremman lahtokohdan -
+            # best_result/best_rms EIVAT paivity, joten paras tulos
+            # sailyy tallessa vaikka tama polku ei parantaisikaan.
+            H_current = H_final
+            continue
+
+        stall_count = 0
 
         relative_improvement = (
             (best_rms - rms) / best_rms if math.isfinite(best_rms) else None
