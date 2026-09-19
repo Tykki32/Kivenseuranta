@@ -178,6 +178,13 @@ HOMOGRAPHY_REFINE_MIN_RELATIVE_IMPROVEMENT = 0.03
 # corrections sietaa ennen pysahtymista (katso sen sisainen kommentti).
 STALL_PATIENCE = 3
 
+# NOPEUSOPTIMOINTI (kamera7_02.py): trial_final_rms:in (kaukaisen pesan
+# korrespondenssikandidaatin ALUSTAVA vertailu, katso sen kommentti)
+# kayttama pienempi iteraatiokatto - varsinainen ("oikea") ajo
+# voittaneelle kandidaatille kayttaa edelleen taytta
+# HOMOGRAPHY_REFINE_MAX_ITERATIONS-arvoa.
+TRIAL_MAX_ITERATIONS = 6
+
 
 # ============================================================
 # GEOMETRIA-APURIT
@@ -550,30 +557,51 @@ def find_ring_edge_points(
 
     h, w = score.shape[:2]
 
+    # NOPEUSOPTIMOINTI (kamera7_02.py): alkuperainen versio kutsui
+    # _bilinear_sample:a ERIKSEEN JOKAISELLE sateelle (720 kertaa) -
+    # tama oli valtaosa funktion ajasta (720 pientä numpy-kutsujoukkoa
+    # per find_ring_edge_points-kutsu). Lasketaan sen sijaan KAIKKIEN
+    # sateiden (x,y)-koordinaatit ja niiden pisteytysarvot YHDELLA
+    # vektoroidulla kutsulla (num_angles x num_radii -ruudukko), ja
+    # tehdaan vain sateen sisainen pehmennys/gradientti/huippukohta
+    # -laskenta sateittain (halpa - ei ena sisalla kallista naytteis-
+    # tysta). "valid"-alue on jokaisella sateella YHTENAINEN VALI joka
+    # alkaa r_lo:sta (koska sateen suunta on kiintea, kuvan reunaehdot
+    # ovat monotonisia sateen sailtaman r:n suhteen), joten se voidaan
+    # koota rivikohtaisen validien maaran (n_valid) avulla TAYSIN
+    # samalla logiikalla kuin alkuperainen versio - validoitu antavan
+    # BITTITARKASTI saman tuloksen molemmilla testikuvilla.
+    dx_all = np.cos(angles)
+    dy_all = np.sin(angles)
+
+    xs_grid = cx0 + np.outer(dx_all, radii)
+    ys_grid = cy0 + np.outer(dy_all, radii)
+
+    valid_grid = (
+        (xs_grid >= 0) & (xs_grid < w - 1) &
+        (ys_grid >= 0) & (ys_grid < h - 1)
+    )
+    n_valid = valid_grid.sum(axis=1)
+
+    vals_grid = _bilinear_sample(score, xs_grid, ys_grid)
+
     points = []
 
-    for theta in angles:
+    for i in range(num_angles):
 
-        dx, dy = math.cos(theta), math.sin(theta)
+        n = int(n_valid[i])
 
-        xs = cx0 + radii * dx
-        ys = cy0 + radii * dy
-
-        valid = (xs >= 0) & (xs < w - 1) & (ys >= 0) & (ys < h - 1)
-
-        if valid.sum() < 20:
+        if n < 20:
             continue
 
-        xs_v = xs[valid]
-        ys_v = ys[valid]
-        radii_v = radii[valid]
+        dx, dy = dx_all[i], dy_all[i]
+        radii_v = radii[:n]
 
-        vals = _bilinear_sample(score, xs_v, ys_v)
+        vals = vals_grid[i, :n]
         vals_smooth = _smooth_reflect(vals, kernel_size=5)
 
         grad = np.gradient(vals_smooth, radii_v)
 
-        n = len(grad)
         margin = max(3, int(n * edge_margin_frac))
 
         if n - 2 * margin < 5:
@@ -3994,7 +4022,7 @@ def measure_far_house_shape_ratio(frame_undistorted, H_final):
 
 
 def trial_final_rms(frame, image_width, image_height, near_img_pts, near_phys_pts,
-                     far_img_pts, far_phys_pts):
+                     far_img_pts, far_phys_pts, max_iterations=TRIAL_MAX_ITERATIONS):
     """
     Kevyt "koeajo" kokonaiselle putkelle (k1-itsekalibrointi ->
     oikaisu -> ensimmainen H -> iteratiivinen korjaus) annetulle
@@ -4004,6 +4032,18 @@ def trial_final_rms(frame, image_width, image_height, near_img_pts, near_phys_pt
     tarkoitettu KAHDEN kaukaisen pesan korrespondenssikandidaatin
     VERTAILUUN etukateen; putken "oikea" ajo tehdaan vasta
     paremmalle kandidaatille).
+
+    NOPEUSOPTIMOINTI (kamera7_02.py): max_iterations rajoitettu
+    oletuksena (TRIAL_MAX_ITERATIONS) alle iteratiivisen korjauksen
+    normaalin oletuksen (HOMOGRAPHY_REFINE_MAX_ITERATIONS) - tama
+    funktio ajetaan KAHDESTI candidate-vertailua varten ENNEN
+    varsinaista (paremmalle kandidaatille tehtavaa) taydella
+    iteraatiomaaralla ajettavaa "oikeaa" ajoa, joten sen ei tarvitse
+    konvergoida aivan loppuun asti - riittaa etta kumman kandidaatin
+    RMS/pyoreys on parempi SAMASSA (rajoitetussa) iteraatiomaarassa,
+    koska molempia kandidaatteja verrataan samoin ehdoin. Validoitu:
+    kandidaatin valinta pysyy samana molemmilla testikuvilla kuin
+    taydella iteraatiomaaralla.
 
     Palauttaa (rms, shape_ratio) - (float("inf"), 0.0) jos putki
     epaonnistuu talla pistejoukolla.
@@ -4059,7 +4099,8 @@ def trial_final_rms(frame, image_width, image_height, near_img_pts, near_phys_pt
             ))
 
             refined = refine_homography_corrections(
-                frame_undistorted, H, output_w, output_h
+                frame_undistorted, H, output_w, output_h,
+                max_iterations=max_iterations
             )
 
         final_ratio = measure_far_house_shape_ratio(
