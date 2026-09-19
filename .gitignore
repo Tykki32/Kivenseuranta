@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+
+# kamera6_08.py:n generoimat debug-/tulostekuvat - ei lahdekoodia,
+# syntyvat aina uudelleen kun skripti ajetaan.
+curling_topdown.png
+curling_topdown_corrected.png
+far_house_search_debug.png
+far_house_topdown.png
+far_house_topdown_verify.png
+homography_points_debug.png
+masks_debug.png
+near_house_topdown.png
+near_house_topdown_verify.png
