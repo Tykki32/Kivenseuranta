@@ -2427,6 +2427,189 @@ def score_far_candidate_from_projected(
     return float(color_score * (0.50 + 0.50 * valid_fraction))
 
 
+def _transform_projected_points_batch(px, py, center_x, center_y, angle_rad, scale):
+    """
+    Sama kuin transform_projected_points, mutta angle_rad ja scale ovat
+    M-pituisia taulukoita (yksi per (kulma,skaala)-ehdokas) ja px,py
+    N-pituisia (yksi per templaten piste) - palauttaa (M,N)-taulukot
+    (broadcastattu). Kayttaa VALMIIKSI radiaaneiksi muunnettua kulmaa,
+    jotta math.radians ei ole tarpeen kutsua M kertaa.
+    """
+
+    cos_a = np.cos(angle_rad)[:, None]
+    sin_a = np.sin(angle_rad)[:, None]
+    scale = scale[:, None]
+
+    dx = (px[None, :] - center_x) * scale
+    dy = (py[None, :] - center_y) * scale
+
+    rotated_x = cos_a * dx - sin_a * dy
+    rotated_y = sin_a * dx + cos_a * dy
+
+    return center_x + rotated_x, center_y + rotated_y
+
+
+def _hsv_color_match_score_batch(
+    px, py, hsv, color_center, color_width,
+    saturation_threshold, image_width, image_height
+):
+    """
+    Vektoroitu (M,N) -versio hsv_color_match_score:sta - laskee
+    pisteytyksen KAIKILLE M ehdokkaalle yhdella kutsulla (px,py ovat
+    (M,N)-taulukoita). Palauttaa (M,) pisteytys- ja validi-osuus-
+    taulukot. Matemaattisesti identtinen rivi riviltä kutsuttuun
+    hsv_color_match_score:iin - katso search_far_house:in kommentti.
+    """
+
+    px_int = np.round(px).astype(np.int32)
+    py_int = np.round(py).astype(np.int32)
+
+    valid = (
+        (px_int >= 0) & (px_int < image_width) &
+        (py_int >= 0) & (py_int < image_height)
+    )
+
+    px_c = np.clip(px_int, 0, image_width - 1)
+    py_c = np.clip(py_int, 0, image_height - 1)
+
+    hsv_values = hsv[py_c, px_c]
+
+    h = hsv_values[..., 0].astype(np.float32)
+    s = hsv_values[..., 1].astype(np.float32)
+    v = hsv_values[..., 2].astype(np.float32)
+
+    hue_distance = circular_hue_distance(h, color_center)
+    hue_score = np.exp(-0.5 * (hue_distance / max(1.0, color_width)) ** 2)
+
+    saturation_score = np.clip(
+        (s - saturation_threshold) / (255.0 - saturation_threshold + 1e-6),
+        0.0, 1.0
+    )
+
+    visibility_score = np.clip(v / 50.0, 0.0, 1.0)
+
+    score = 0.70 * hue_score + 0.25 * saturation_score + 0.05 * visibility_score
+
+    n_valid = valid.sum(axis=1)
+    score_sum = np.where(valid, score, 0.0).sum(axis=1)
+
+    mean_score = np.where(n_valid > 0, score_sum / np.maximum(n_valid, 1), 0.0)
+    valid_fraction = n_valid / px.shape[1]
+
+    return mean_score, valid_fraction
+
+
+def _background_match_score_batch(px, py, hsv, hsv_model, image_width, image_height):
+    """
+    Vektoroitu (M,N) -versio background_match_score:sta - katso
+    _hsv_color_match_score_batch:in kommentti.
+    """
+
+    px_int = np.round(px).astype(np.int32)
+    py_int = np.round(py).astype(np.int32)
+
+    valid = (
+        (px_int >= 0) & (px_int < image_width) &
+        (py_int >= 0) & (py_int < image_height)
+    )
+
+    px_c = np.clip(px_int, 0, image_width - 1)
+    py_c = np.clip(py_int, 0, image_height - 1)
+
+    hsv_values = hsv[py_c, px_c]
+
+    h = hsv_values[..., 0].astype(np.float32)
+    s = hsv_values[..., 1].astype(np.float32)
+
+    blue_distance = circular_hue_distance(h, hsv_model["blue_center"])
+    red_distance = circular_hue_distance(h, hsv_model["red_center"])
+
+    blue_color = np.exp(-0.5 * (blue_distance / max(1.0, hsv_model["blue_width"])) ** 2)
+    red_color = np.exp(-0.5 * (red_distance / max(1.0, hsv_model["red_width"])) ** 2)
+
+    saturation_score = np.clip(
+        (s - hsv_model["saturation_threshold"]) /
+        (255.0 - hsv_model["saturation_threshold"] + 1e-6),
+        0.0, 1.0
+    )
+
+    coloredness = np.maximum(blue_color, red_color) * saturation_score
+    score = 1.0 - coloredness
+
+    n_valid = valid.sum(axis=1)
+    score_sum = np.where(valid, score, 0.0).sum(axis=1)
+
+    mean_score = np.where(n_valid > 0, score_sum / np.maximum(n_valid, 1), 0.0)
+    valid_fraction = n_valid / px.shape[1]
+
+    return mean_score, valid_fraction
+
+
+def score_far_candidates_batch(
+    projected, angle_values, scale_values, hsv, hsv_model,
+    image_width, image_height
+):
+    """
+    NOPEUSOPTIMOINTI (kamera7_02.py): laskee pisteytyksen KAIKILLE
+    (angle,scale)-yhdistelmille YHDELLA vektoroidulla kutsulla, sen
+    sijaan etta score_far_candidate_from_projected kutsuttaisiin
+    erikseen jokaiselle (alkuperainen: 11x11=121 erillista Python-
+    tason kutsua per (x,y) - kukin niista useita pieniä numpy-
+    kutsuja). Profiloinnissa havaittiin etta itse pisteytys (ei
+    projisointi) on search_far_house:in painavin osa - tama poistaa
+    sen toistuvan Python-/numpy-kutsuoverheadin kokonaan.
+
+    Palauttaa (len(angle_values)*len(scale_values),) -pisteytys-
+    taulukon, jarjestyksessa [angle0,scale0], [angle0,scale1], ...
+    (rivi = angle, sarake = scale, litistettyna) - sama jarjestys
+    kuin search_far_house:in silmukka kavisi lapi.
+    """
+
+    far_center = projected["far_center"]
+
+    angle_grid, scale_grid = np.meshgrid(angle_values, scale_values, indexing="ij")
+    angle_rad = np.radians(angle_grid.ravel())
+    scale_flat = scale_grid.ravel()
+
+    blue_rx, blue_ry = _transform_projected_points_batch(
+        projected["blue_px"], projected["blue_py"],
+        far_center[0], far_center[1], angle_rad, scale_flat
+    )
+    blue_score, blue_valid_fraction = _hsv_color_match_score_batch(
+        blue_rx, blue_ry, hsv, hsv_model["blue_center"],
+        hsv_model["blue_width"], hsv_model["saturation_threshold"],
+        image_width, image_height
+    )
+
+    red_rx, red_ry = _transform_projected_points_batch(
+        projected["red_px"], projected["red_py"],
+        far_center[0], far_center[1], angle_rad, scale_flat
+    )
+    red_score, red_valid_fraction = _hsv_color_match_score_batch(
+        red_rx, red_ry, hsv, hsv_model["red_center"],
+        hsv_model["red_width"], hsv_model["saturation_threshold"],
+        image_width, image_height
+    )
+
+    bg_rx, bg_ry = _transform_projected_points_batch(
+        projected["bg_px"], projected["bg_py"],
+        far_center[0], far_center[1], angle_rad, scale_flat
+    )
+    bg_score, bg_valid_fraction = _background_match_score_batch(
+        bg_rx, bg_ry, hsv, hsv_model, image_width, image_height
+    )
+
+    valid_fraction = (
+        0.40 * blue_valid_fraction +
+        0.40 * red_valid_fraction +
+        0.20 * bg_valid_fraction
+    )
+
+    color_score = 0.50 * blue_score + 0.35 * red_score + 0.15 * bg_score
+
+    return color_score * (0.50 + 0.50 * valid_fraction)
+
+
 # ============================================================
 # HAKURUUDUKKO / OPTIMOINTI (coarse -> fine -> ultra fine)
 # ============================================================
@@ -2488,18 +2671,21 @@ def search_far_house(
             if projected["far_center"] is None:
                 continue
 
-            for angle in angle_values:
-                for scale in scale_values:
+            # Kaikki (angle,scale)-yhdistelmat pisteytetaan yhdella
+            # vektoroidulla kutsulla - katso score_far_candidates_batch:in
+            # perustelu.
+            scores = score_far_candidates_batch(
+                projected, angle_values, scale_values, hsv, hsv_model,
+                image_width, image_height
+            )
 
-                    score = score_far_candidate_from_projected(
-                        projected, angle, scale, hsv, hsv_model,
-                        image_width, image_height
-                    )
+            local_best_idx = int(np.argmax(scores))
 
-                    if score > best_score:
-                        best_score = score
-                        best_x, best_y = x_offset, y_offset
-                        best_angle, best_scale = angle, scale
+            if scores[local_best_idx] > best_score:
+                best_score = float(scores[local_best_idx])
+                best_x, best_y = x_offset, y_offset
+                best_angle = float(angle_values[local_best_idx // len(scale_values)])
+                best_scale = float(scale_values[local_best_idx % len(scale_values)])
 
     print(f"Paras X-siirto  : {best_x:.3f} cm")
     print(f"Paras Y-siirto  : {best_y:.3f} cm")
