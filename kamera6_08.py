@@ -148,7 +148,15 @@ MAX_BACKGROUND_TEMPLATE_POINTS = 1000
 # toteutuu mahdollisimman hyvin.
 # ============================================================
 
-HOMOGRAPHY_RANSAC_THRESHOLD_PX = 3.0
+# HUOM: Homografiat (talla sivulla ja compute_corrected_homography/
+# main:ssa) sovitetaan method=0:lla (tavallinen pienimman nelion
+# sovitus), EI RANSAC:lla. Testattu oikealla datalla: nailla ~22
+# korrespondenssipisteella (17 tiiviisti ryhmittynytta lahempaa +
+# 5 harvaa kaukaista) RANSAC:n satunnaisotanta osuu usein kokonaan
+# lahemman pesan tiiviiseen ryhmaan, mika tuottaa lahes degeneroi-
+# tuneen homografian joka ekstrapoloituu hallitsemattomasti (tuhansien
+# pikselien virhe) kaukaiselle pesalle. Plain LSQ oli aina vakaa ja
+# jopa tarkempi.
 
 K1_SEARCH_RANGE = 0.6
 K1_SEARCH_STEPS = 25
@@ -161,7 +169,7 @@ K1_SEARCH_REFINE_SHRINK = 6.0
 K1_MIN_RELATIVE_IMPROVEMENT = 0.08
 K1_MIN_MAGNITUDE = 0.01
 
-HOMOGRAPHY_REFINE_MAX_ITERATIONS = 3
+HOMOGRAPHY_REFINE_MAX_ITERATIONS = 8
 HOMOGRAPHY_REFINE_MIN_RELATIVE_IMPROVEMENT = 0.03
 
 
@@ -2270,9 +2278,18 @@ def undistort_points_px(points, camera_matrix, k1, k2=0.0):
 
 def _homography_rms(src_pts, dst_pts):
 
+    # HUOM: method=0 (tavallinen pienimman nelion sovitus), EI RANSAC.
+    # Naiden 22 pisteen jakauma on hyvin epatasainen (17 tiiviisti
+    # ryhmittynytta lahempaa pistetta + 5 harvaa kaukaista pistetta) -
+    # RANSAC:n satunnaisotannalla valittu 4 pisteen minimijoukko osuu
+    # ~1/3 kerroista kokonaan lahemman pesan tiiviiseen ryhmaan, mika
+    # tuottaa lahes degeneroituneen (numeerisesti epavakaan) homografia-
+    # arvion joka sopii noihin 4 pisteeseen mutta ekstrapoloituu
+    # hallitsemattomasti kaukaiselle pesalle. Testattu oikealla datalla:
+    # RANSAC (millä tahansa kynnysarvolla 3-30 px) antoi toistuvasti
+    # tuhansien pikselien virheen, plain LSQ oli aina vakaa ja tarkempi.
     H, _ = cv2.findHomography(
-        src_pts.astype(np.float32), dst_pts.astype(np.float32),
-        method=cv2.RANSAC, ransacReprojThreshold=HOMOGRAPHY_RANSAC_THRESHOLD_PX
+        src_pts.astype(np.float32), dst_pts.astype(np.float32), method=0
     )
 
     if H is None:
@@ -3004,10 +3021,10 @@ def compute_corrected_homography(frame, H, topdown_raw, near_verify, far_verify)
     print(f"Kaukaisen pesan pisteita: {len(far_img_pts)} (odotettu 5)")
     print(f"Pisteita yhteensa: {len(all_img_pts)}")
 
-    H_correction, _ = cv2.findHomography(
-        src_pts, dst_pts,
-        method=cv2.RANSAC, ransacReprojThreshold=HOMOGRAPHY_RANSAC_THRESHOLD_PX
-    )
+    # method=0 (LSQ), ei RANSAC - katso perustelu _homography_rms:n
+    # docstringista/kommentista: RANSAC on epavakaa tallä epatasaisesti
+    # jakautuneella (17 tiivista + 5 harvaa) pistejoukolla.
+    H_correction, _ = cv2.findHomography(src_pts, dst_pts, method=0)
 
     if H_correction is None:
         raise RuntimeError("Korjaavan homografian laskenta epaonnistui.")
@@ -3545,10 +3562,10 @@ def main():
     ).astype(np.float32)
     dst_pts = physical_to_output_px(all_phys_pts).astype(np.float32)
 
-    H, _ = cv2.findHomography(
-        src_pts, dst_pts,
-        method=cv2.RANSAC, ransacReprojThreshold=HOMOGRAPHY_RANSAC_THRESHOLD_PX
-    )
+    # method=0 (LSQ), ei RANSAC - katso perustelu _homography_rms:n
+    # kommentista: RANSAC on epavakaa tallä epatasaisesti jakautuneella
+    # (17 tiivista lahempaa + 5 harvaa kaukaista) pistejoukolla.
+    H, _ = cv2.findHomography(src_pts, dst_pts, method=0)
 
     if H is None:
         raise RuntimeError("Homografian laskenta epaonnistui.")
