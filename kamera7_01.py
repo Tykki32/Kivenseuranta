@@ -3051,14 +3051,35 @@ def compute_corrected_homography(frame, H, topdown_raw, near_verify, far_verify)
     near_hog_angle, near_hog_score = detect_hogline_angle(
         topdown_raw, NEAR_HOGLINE_Y_CM
     )
-    far_hog_angle, far_hog_score = detect_hogline_angle(
+    far_hog_angle_raw, far_hog_score = detect_hogline_angle(
         topdown_raw, FAR_HOGLINE_Y_CM
     )
+
+    # Kaukaisen hoglinen luottamus (far_hog_score) on tyypillisesti
+    # PALJON heikompi kuin lahemman (~90-460 vs ~580-670 havaittu
+    # testikuvilla) - se on pieni, himmea ja kaukana. Painotetaan
+    # kaukaisen pesan KAYTTAMA suunta luottamuspisteiden mukaan: kun
+    # kaukaisen oma mittaus on suhteessa heikko, nojataan enemman
+    # lahemman (luotettavamman) mittaukseen. Tama on FYYSISESTI
+    # PERUSTELTUA (ei mielivaltaista silottelua): molemmat hoglinet
+    # ovat radalla AINA tarkalleen yhdensuuntaiset (molemmat kohti-
+    # suorassa keskilinjaa vastaan, WCF-saanto), joten lahemman
+    # tarkempi mittaus on validi arvio myos kaukaiselle silloin kun
+    # kaukaisen oma mittaus on epavarma. Ilman tata painotusta
+    # kaukaisen pesan (viela osittain venyneen ellipsin) "vasen/oikea"
+    # -pisteet siirtyivat havaittavasti eri kohtiin joka kierroksella
+    # pelkan hogline-kohinan takia, mika esti konvergenssin (testattu:
+    # RMS heilui 13->16->21 px sen sijaan etta laskisi tasaisesti).
+    total_hog_score = near_hog_score + far_hog_score
+    far_weight = far_hog_score / total_hog_score if total_hog_score > 1e-6 else 0.5
+    far_hog_angle = far_weight * far_hog_angle_raw + (1.0 - far_weight) * near_hog_angle
 
     print(f"Lahempi hogline  (y={NEAR_HOGLINE_Y_CM:.1f} cm): "
           f"kulma {near_hog_angle:+.2f} deg (luottamus {near_hog_score:.1f})")
     print(f"Kaukainen hogline (y={FAR_HOGLINE_Y_CM:.1f} cm): "
-          f"kulma {far_hog_angle:+.2f} deg (luottamus {far_hog_score:.1f})")
+          f"mitattu {far_hog_angle_raw:+.2f} deg, kaytetty (luottamuspainotettu) "
+          f"{far_hog_angle:+.2f} deg (far_weight={far_weight:.2f}, "
+          f"luottamus {far_hog_score:.1f})")
 
     near_dir_lateral, near_dir_forward = direction_from_angle(near_hog_angle)
     far_dir_lateral, _ = direction_from_angle(far_hog_angle)
