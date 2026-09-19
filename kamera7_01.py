@@ -778,7 +778,11 @@ def detect_far_house_concentric_circles(view, expected_center):
     """
     Tunnistaa kaukaisen pesan sinisen ja punaisen ULKOKEHAN YHTEISELLA
     (pakotetulla samankeskisyydella) - katso
-    fit_concentric_circles_shared_center:in perustelu.
+    fit_concentric_circles_shared_center:in perustelu. Kaytetaan
+    ITERATIIVISEN korjauksen VALIVAIHEIDEN korrespondenssipisteiden
+    lahteena (katso refine_homography_corrections) - katso siella
+    oleva kommentti siita miksi rajoitettu YMPYRA (ei yhteismuotoinen
+    ellipsi) sopii tahan paremmin (rotaatioinvarianssi).
 
     Palauttaa dictin jossa "blue_outer"/"red_outer" (ellipsi-muodossa,
     ymparysta kayttavat pyoreat sateet) tai None jos ei loytynyt.
@@ -824,6 +828,290 @@ def detect_far_house_concentric_circles(view, expected_center):
 
     for name, r in zip(ring_names, radii):
         result[name] = ((cx, cy), (2.0 * r, 2.0 * r), 0.0)
+
+    return result
+
+
+def _select_top_strength_points(points, keep_frac=0.7, min_points=20):
+    """
+    Palauttaa find_ring_edge_points:in (x,y,edge_strength) -pisteista
+    Nx2-taulukon, jossa on sailytetty vain voimakkaimmat (keep_frac)
+    reunapisteet (heikoimmat ovat todennakoisimmin kohinaa/vaaraa
+    reunaa). Palauttaa None jos pisteita on liian vahan.
+    """
+
+    if len(points) < min_points:
+        return None
+
+    pts = np.array([(p[0], p[1]) for p in points], dtype=np.float64)
+    strengths = np.array([p[2] for p in points])
+
+    order = np.argsort(strengths)[::-1]
+    n_keep = max(min_points, int(len(pts) * keep_frac))
+
+    return pts[order[:n_keep]]
+
+
+def _solve_shared_ellipse_shape(point_groups, theta, k):
+    """
+    ANNETULLA (kiinnitetylla) kiertokulmalla theta ja akselisuhteella
+    k (= sivuakseli/paaakseli, 0 < k <= 1) ratkaisee LINEAARISESTI
+    (algebrallinen Kasa-tyylinen konikkisovitus) KAIKKIEN ryhmien
+    (esim. sinisen ja punaisen ulkokehan) YHTEISEN keskipisteen
+    (cx, cy) seka kunkin ryhman OMAN paaakselin pituuden a_i.
+
+    PERUSTELU (katso fit_shared_ellipse_shape): pesan renkaat ovat
+    fyysisesti samankeskisia JA saman (paikallisen affiinin/projek-
+    tiivisen kuvauksen aiheuttaman) vaaristyman alaisia, joten niilla
+    on sama todellinen keskipiste, sama ellipsin kiertokulma JA sama
+    akselisuhde - vain koko (sade) vaihtelee renkaittain. Kun theta ja
+    k kiinnitetaan, jaljella oleva ongelma (cx, cy, a_i) on ellipsin
+    yhtalossa AIDOSTI LINEAARINEN (kuten Kasa-ympyransovitus), joten
+    se voidaan ratkaista suljetussa muodossa ilman paikallisminimien
+    riskia - grid_search_shared_ellipse_shape hakee parhaan (theta,k)
+    -parin kokeilemalla useita ja vertaamalla GEOMETRISTA jaannosta.
+
+    Ellipsin yhtalo pisteelle (x,y), keskipisteessa (cx,cy) kierretyssa
+    (theta) koordinaatistossa (u,v):
+        u^2 + (v/k)^2 = a^2
+    Kirjoitettuna alkuperaisiin koordinaatteihin (dx=x-cx, dy=y-cy):
+        P*dx^2 + Q*dy^2 + 2*R*dx*dy = a^2 * k^2
+    missa P = k^2*cos^2(theta) + sin^2(theta), Q = k^2*sin^2(theta) +
+    cos^2(theta), R = cos(theta)*sin(theta)*(k^2 - 1). Talla on cx:n,
+    cy:n ja (a_i*k)^2:n suhteen lineaarinen muoto (vrt. Kasa).
+
+    Palauttaa (cx, cy, [a_i per ryhma]).
+    """
+
+    ct, st = math.cos(theta), math.sin(theta)
+    p_coef = k * k * ct * ct + st * st
+    q_coef = k * k * st * st + ct * ct
+    r_coef = ct * st * (k * k - 1.0)
+
+    n_groups = len(point_groups)
+    rows = []
+    rhs = []
+
+    for gi, pts in enumerate(point_groups):
+
+        x = pts[:, 0]
+        y = pts[:, 1]
+
+        lhs = p_coef * x ** 2 + q_coef * y ** 2 + 2.0 * r_coef * x * y
+        col_cx = -2.0 * (p_coef * x + r_coef * y)
+        col_cy = -2.0 * (q_coef * y + r_coef * x)
+
+        block = np.zeros((len(x), 2 + n_groups))
+        block[:, 0] = col_cx
+        block[:, 1] = col_cy
+        block[:, 2 + gi] = 1.0
+
+        rows.append(block)
+        rhs.append(-lhs)
+
+    A = np.vstack(rows)
+    b = np.concatenate(rhs)
+
+    sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+
+    cx, cy = float(sol[0]), float(sol[1])
+    consts = sol[2:]
+
+    a_list = []
+
+    for gi in range(n_groups):
+        t_sq = p_coef * cx * cx + q_coef * cy * cy + 2.0 * r_coef * cx * cy - consts[gi]
+        a_list.append(math.sqrt(max(t_sq, 1e-6)) / k)
+
+    return cx, cy, a_list
+
+
+def _shared_ellipse_geometric_mse(point_groups, cx, cy, theta, k, a_list):
+    """
+    Laskee TODELLISEN (geometrisen - etaisyys pisteesta ellipsin
+    reunaan sateen suunnassa) jaannosneliokeskiarvon annetulla
+    (cx,cy,theta,k,a_i) -parametrisoinnilla. Kayttokelpoinen ERI
+    (theta,k) -ehdokkaiden VERTAILUUN keskenaan grid-haussa - pelkka
+    _solve_shared_ellipse_shape:in palauttama algebrallinen jaannos
+    EI ole suoraan vertailukelpoinen eri k:n arvojen valilla (yhtalo
+    on skaalattu eri tavalla).
+    """
+
+    ct, st = math.cos(theta), math.sin(theta)
+    total = 0.0
+    n = 0
+
+    for pts, a in zip(point_groups, a_list):
+
+        dx = pts[:, 0] - cx
+        dy = pts[:, 1] - cy
+        u = dx * ct + dy * st
+        v = -dx * st + dy * ct
+        rho = np.sqrt(u * u + (v / k) ** 2)
+
+        total += float(np.sum((rho - a) ** 2))
+        n += len(pts)
+
+    return total / max(n, 1)
+
+
+def _grid_search_shared_ellipse_shape(
+    point_groups, theta_center_deg, theta_half_range_deg, theta_step_deg,
+    k_center, k_half_range, k_step
+):
+    """
+    Hakee parhaan (theta, k) -parin (pienin geometrinen jaannos) kaikkien
+    ryhmien pisteille annetulta grid-alueelta - sama coarse/fine-
+    periaate kuin esim. search_far_house:ssa tai k1-itsekalibroinnissa
+    (katso estimate_radial_distortion_k1), koska (theta,k) -ongelma EI
+    ole lineaarinen (toisin kuin cx,cy,a_i kiinnitetylla theta,k:lla).
+
+    Palauttaa (mse, theta_deg, k, cx, cy, a_list).
+    """
+
+    thetas = make_range(theta_center_deg, theta_half_range_deg, theta_step_deg)
+    ks = make_range(k_center, k_half_range, k_step)
+    ks = ks[(ks > 0.05) & (ks <= 1.0)]
+
+    best = None
+
+    for theta_deg in thetas:
+
+        theta = math.radians(float(theta_deg))
+
+        for k in ks:
+
+            k = float(k)
+            cx, cy, a_list = _solve_shared_ellipse_shape(point_groups, theta, k)
+            mse = _shared_ellipse_geometric_mse(point_groups, cx, cy, theta, k, a_list)
+
+            if best is None or mse < best[0]:
+                best = (mse, float(theta_deg), k, cx, cy, a_list)
+
+    return best
+
+
+def fit_shared_ellipse_shape(point_groups, iterations=3, mad_multiplier=3.0, min_points=20):
+    """
+    Sovittaa USEALLE pisteryhmalle (esim. kaukaisen pesan sinisen ja
+    punaisen ULKOKEHAN reunapisteet) YHTEISEN ellipsin MUODON: sama
+    keskipiste (cx,cy), sama kiertokulma (theta) JA sama akselisuhde
+    (k = sivuakseli/paaakseli) - vain kunkin renkaan oma sade (a_i)
+    saa vaihdella.
+
+    PERUSTELU: pesan renkaat ovat FYYSISESTI samankeskisia, ja koska
+    pesan halkaisija (3.66 m) on hyvin pieni verrattuna kameran
+    etaisyyteen, paikallinen projektiivinen kuvaus pesan alueella on
+    lahes AFFIINI - affiini kuvaus vie KAIKKI samankeskiset ympyrat
+    (sateesta riippumatta) samankeskisiksi, SAMAN SUUNTAISIKSI ja
+    SAMAN MUOTOISIKSI (sama akselisuhde) ellipseiksi. Pakottamalla
+    seka keskipiste ETTA muoto (kiertokulma+akselisuhde) jaettavaksi
+    KAIKKIEN renkaiden ~700+700 reunapisteen kesken (vain 6 vapaus-
+    astetta: cx,cy,theta,k,a_blue,a_red - itsenaisilla ellipsisovi-
+    tuksilla olisi 2*5=10) kohina keskiarvoistuu POIS huomattavasti
+    tehokkaammin kuin itsenaisilla ellipsisovituksilla (jotka ovat
+    lisaksi tunnetusti alttiita "eksentrisyysharhalle" kohinaisella
+    kohteella, katso robust_ellipse_fit:in kommentti).
+
+    Havaittu testatessa: kaukaisen pesan itsenainen (vapaa) ellipsi-
+    sovitus antoi pyoreyden ~0.80, mutta tama yhteismuotoinen sovitus
+    ~0.96-0.99 SAMOISTA reunapisteista - molemmilla testikuvilla.
+
+    Ratkaistaan grid-haulla (coarse -> fine, katso
+    _grid_search_shared_ellipse_shape) + iteratiivinen poikkeavien
+    pisteiden hylkays (mediaani + 3*MAD geometrisesta jaannoksesta).
+
+    Palauttaa (cx, cy, theta_deg, k, [a_i per ryhma]) tai None jos
+    yhdellakaan ryhmalla ei ole tarpeeksi pisteita.
+    """
+
+    groups = [g for g in point_groups if g is not None and len(g) >= min_points]
+
+    if not groups:
+        return None
+
+    mse, theta_deg, k, cx, cy, a_list = _grid_search_shared_ellipse_shape(
+        groups, 90.0, 90.0, 2.0, 0.75, 0.25, 0.02
+    )
+    mse, theta_deg, k, cx, cy, a_list = _grid_search_shared_ellipse_shape(
+        groups, theta_deg, 3.0, 0.1, k, 0.03, 0.002
+    )
+
+    for _ in range(iterations):
+
+        theta = math.radians(theta_deg)
+        ct, st = math.cos(theta), math.sin(theta)
+        trimmed = []
+
+        for pts, a in zip(groups, a_list):
+
+            dx = pts[:, 0] - cx
+            dy = pts[:, 1] - cy
+            u = dx * ct + dy * st
+            v = -dx * st + dy * ct
+            rho = np.sqrt(u * u + (v / k) ** 2)
+            resid = np.abs(rho - a)
+
+            median = np.median(resid)
+            mad = np.median(np.abs(resid - median)) + 1e-6
+            keep = resid < median + mad_multiplier * mad
+
+            trimmed.append(pts[keep] if keep.sum() >= min_points else pts)
+
+        groups = trimmed
+
+        mse, theta_deg, k, cx, cy, a_list = _grid_search_shared_ellipse_shape(
+            groups, theta_deg, 2.0, 0.1, k, 0.02, 0.002
+        )
+
+    return cx, cy, theta_deg, k, a_list
+
+
+def detect_far_house_shared_ellipses(view, expected_center):
+    """
+    Tunnistaa kaukaisen pesan sinisen ja punaisen ULKOKEHAN YHTEISELLA
+    (pakotetulla) ellipsin MUODOLLA - katso fit_shared_ellipse_shape:in
+    perustelu. Toisin kuin aiempi pakotettu YMPYRA (joka olettaa jo
+    korjatun kuvan olevan taydellisen pyorea), tama sallii jaljella
+    olevan lievan soikeuden nayttaytya OIKEIN molemmissa renkaissa
+    samalla tavalla - mikä on tarkempi silloin kun homografia ei viela
+    ole talydellinen.
+
+    Palauttaa dictin jossa "blue_outer"/"red_outer" (ellipsi-muodossa)
+    tai None jos ei loytynyt.
+    """
+
+    blue_score, red_score = create_topdown_score_maps(view)
+
+    result = {"blue_outer": None, "blue_inner": None, "red_outer": None, "red_inner": None}
+
+    blue_points = find_ring_edge_points(
+        blue_score, expected_center, BLUE_OUTER_RADIUS_CM * PIXELS_PER_CM
+    )
+    red_points = find_ring_edge_points(
+        red_score, expected_center, RED_OUTER_RADIUS_CM * PIXELS_PER_CM
+    )
+
+    blue_sel = _select_top_strength_points(blue_points)
+    red_sel = _select_top_strength_points(red_points)
+
+    ring_names = [
+        name for name, sel in (("blue_outer", blue_sel), ("red_outer", red_sel))
+        if sel is not None
+    ]
+    groups = [sel for sel in (blue_sel, red_sel) if sel is not None]
+
+    fit = fit_shared_ellipse_shape(groups)
+
+    if fit is None:
+        return result
+
+    cx, cy, theta_deg, k, a_list = fit
+
+    for name, a in zip(ring_names, a_list):
+        width = 2.0 * a
+        height = 2.0 * a * k
+        result[name] = ((cx, cy), (width, height), theta_deg)
 
     return result
 
@@ -2897,7 +3185,7 @@ FAR_HOGLINE_Y_CM = FAR_HOUSE_Y_CM - HOG_LINE_DISTANCE_CM
 
 def detect_hogline_angle(
     topdown_raw, expected_y_cm, half_height_cm=400.0,
-    angle_range_deg=20.0, angle_step_deg=0.1,
+    angle_range_deg=35.0, angle_step_deg=0.1,
     edge_margin_frac=0.1, bg_sigma=40.0
 ):
     """
@@ -2911,6 +3199,15 @@ def detect_hogline_angle(
 
     Talla loydetaan hogline luotettavasti myos silloin, kun se on
     liian himmea/sumea tavalliselle Canny+Hough-viivantunnistukselle.
+
+    HUOM (angle_range_deg=35.0): havaittu testatessa "worst case"
+    -kuvalla (kivia/pelaaja radalla, viela osittain korjaamaton H),
+    etta kaukaisen hoglinen todellinen kulma voi ennen konvergenssia
+    poiketa reilusti (havaittu jopa -25 astetta) - aiempi 20 asteen
+    hakuvali TYPISTI tuloksen hakurajaan (piste, jossa pisteytys ei
+    ollut viela maksimissaan), mika antoi vaaran kulman HYVALLA
+    luottamuspisteytyksella (siis harhaanjohtavan, ei vain epavarman).
+    Laajempi hakuvali loytaa oikean, selvasti terävämmän huipun.
 
     Palauttaa (angle_deg, confidence_score).
     """
@@ -3364,20 +3661,22 @@ def refine_homography_corrections(
             use_ellipse=True, include_red_inner=True
         )
         # HUOM: kaukaiselle pesalle kaytetaan RAJOITETTUA YMPYRAA (ei
-        # vapaata ellipsia) JA sinisen+punaisen ulkokehan YHTEISTA
-        # (pakotettua) keskipistetta - katso
-        # detect_far_house_concentric_circles:in ja fit_concentric_
-        # circles_shared_center:in perustelut. Lyhyesti: (1) vapaa
-        # ellipsisovitus on altis "eksentrisyysharhalle" kohinaisella,
-        # pienella/sumealla kohteella (Fitzgibbon et al. 1999); (2)
-        # sinisen ja punaisen ulkokehan PITAA fyysisesti olla samankes-
-        # kisia, ja niiden pakottaminen jakamaan sama keskipiste kayttaa
-        # kaikkien pisteiden kohinaa rajoittamaan vain 2 vapausastetta
-        # (cx,cy) yhden ympyran 3:n sijaan - havaittu testatessa etta
-        # itsenaisesti sovitetut keskipisteet erosivat toisistaan >10 px.
-        # Pesan TODELLINEN pyoreys tarkistetaan erikseen ja rehellisesti
-        # (vapaalla ellipsisovituksella) vasta lopuksi, katso
-        # measure_far_house_shape_ratio.
+        # vapaata/yhteismuotoista ellipsia) KORRESPONDENSSIPISTEIDEN
+        # rakentamiseen - vaikka fit_shared_ellipse_shape (katso alla)
+        # ONKIN tarkempi kuvaus pesan TODELLISESTA muodosta, sen oma
+        # kiertokulma (theta) tekee build_topdown_far_correspondences:in
+        # kayttamasta line_ellipse_intersections-menetelmasta HERKAN
+        # theta:n tarkkuudelle: L/R-pisteet lasketaan dir_lateral-suoran
+        # ja SOVITETUN (mahdollisesti viela vaarin suunnatun, etenkin
+        # ennen konvergenssia) ellipsin leikkauksena, joten virhe theta:ssa
+        # siirtaa L/R-pisteita systemaattisesti - havaittu testatessa etta
+        # tama TEKI iteratiivisesta korjauksesta epavakaamman (RMS/pyoreys
+        # huononi molemmilla testikuvilla). YMPYRA ON ROTAATIOINVARIANTTI
+        # (L/R-pisteet ovat aina tasan sateen paassa keskipisteesta suun-
+        # nasta riippumatta), joten se on vakaampi VALIVAIHEEN pisteiden
+        # lahteeksi. Pesan TODELLINEN pyoreys mitataan tarkasti ja
+        # rehellisesti (yhteismuotoisella ellipsisovituksella) vasta
+        # lopuksi, katso measure_far_house_shape_ratio.
         far_verify = detect_far_house_concentric_circles(
             far_view_clean, far_expected_center
         )
@@ -3491,6 +3790,20 @@ def measure_far_house_shape_ratio(frame_undistorted, H_final):
     Eli se kuvaa edellisen kierroksen H:n laatua, ei lopullisen H:n
     laatua - havaittu ja korjattu testatessa (pyoreysvertailu antoi
     systemaattisesti vaaria tuloksia ilman tata korjausta).
+
+    HUOM 2: mittaus kayttaa fit_shared_ellipse_shape:aa (sinisen JA
+    punaisen ulkokehan YHTEINEN muoto), EI itsenaista yhden renkaan
+    vapaata ellipsisovitusta. Havaittu testatessa: itsenainen sovitus
+    (pelkasta sinisesta ulkokehasta, ~700 pistetta) yliarvioi
+    epakeskisyytta systemaattisesti kohinaisella/pienella kohteella
+    (tunnettu ellipsisovituksen harha, katso robust_ellipse_fit:in
+    kommentti) - sama kuva antoi pyoreydeksi ~0.80 itsenaisella
+    sovituksella, mutta ~0.95-0.99 kun sininen JA punainen ulkokeha
+    sovitetaan YHDESSA samaa muotoa jakaen (fyysisesti perusteltua,
+    katso fit_shared_ellipse_shape). Tama on siis TARKEMPI, ei
+    lievempi, mittari - molemmat renkaat nakyvat jo tassa vaiheessa
+    (H_final:n jalkeen), joten mittaus on edelleen riippumaton siita
+    miten H_final on laskettu.
     """
 
     output_w = int(round((OUTPUT_X_MAX_CM - OUTPUT_X_MIN_CM) * PIXELS_PER_CM))
@@ -3503,9 +3816,7 @@ def measure_far_house_shape_ratio(frame_undistorted, H_final):
         topdown_final.shape[0], FAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
     )
 
-    far_verify_final = verify_house_from_topdown(
-        far_view, far_expected_center, use_ellipse=True, include_red_inner=False
-    )
+    far_verify_final = detect_far_house_shared_ellipses(far_view, far_expected_center)
 
     return far_house_shape_ratio(far_verify_final)
 
