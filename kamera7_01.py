@@ -3192,9 +3192,23 @@ def refine_homography_corrections(
             near_view_clean, near_expected_center,
             use_ellipse=True, include_red_inner=True
         )
+        # HUOM: kaukaiselle pesalle use_ellipse=False (rajoitettu YMPYRA,
+        # ei vapaa ellipsi) - katso tarkempi perustelu compute_corrected_
+        # homography:in far_verify-kommentista muutaman rivin paassa.
+        # Lyhyesti: vapaa (5 vapausasteen) ellipsisovitus pienelle/
+        # sumealle kohteelle on altis "eksentrisyysharhalle" (algebrall-
+        # iset ellipsisovitukset, mm. OpenCV:n fitEllipse, tuottavat
+        # kohinaisesta datasta systemaattisesti TODELLISTA soikeamman
+        # tuloksen, Fitzgibbon et al. 1999). Koska kaukainen pesa on
+        # FYYSISESTI tunnetusti ympyra, rajoitettu ympyrasovitus on
+        # perusteltu ja huomattavasti kohinankestavampi (vain 3 vapaus-
+        # astetta: keskipiste + sade) - antaa tarkemmat korrespondenssi-
+        # pisteet homografian korjaukseen. Pesan TODELLINEN pyoreys
+        # tarkistetaan erikseen ja rehellisesti (vapaalla ellipsisovi-
+        # tuksella) vasta lopuksi, katso measure_far_house_shape_ratio.
         far_verify = verify_house_from_topdown(
             far_view_clean, far_expected_center,
-            use_ellipse=True, include_red_inner=False
+            use_ellipse=False, include_red_inner=False
         )
 
         try:
