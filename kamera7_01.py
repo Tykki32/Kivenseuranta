@@ -3250,18 +3250,78 @@ def refine_homography_corrections(
     return best_result
 
 
+def far_house_shape_ratio(far_verify):
+    """
+    Palauttaa kaukaisen pesan sovitetun ellipsin PYOREYDEN
+    (min(w,h)/max(w,h), 1.0 = taydellinen ympyra) blue_outer:sta,
+    tai red_outer:sta jos blue_outer puuttuu. Palauttaa 0.0 jos
+    kumpaakaan ei loytynyt.
+
+    Kayttokelpoinen kandidaattien VERTAILUUN: testattaessa havaittiin
+    etta pelkka pistekorrespondenssien RMS-uudelleenprojisointivirhe
+    EI luotettavasti ennusta nayttaako kaukainen pesa lopulta
+    pyorealta - 22 pisteen (17+5) RMS voi olla numeerisesti hyva
+    vaikka pesa on visuaalisesti selvasti soikea. Pesan OMA mitattu
+    muoto on suora, valitetty mittari sille mita oikeasti halutaan.
+    """
+
+    ellipse = far_verify.get("blue_outer") or far_verify.get("red_outer")
+
+    if ellipse is None:
+        return 0.0
+
+    (_, _), (w, h), _ = ellipse
+
+    if max(w, h) <= 0:
+        return 0.0
+
+    return min(w, h) / max(w, h)
+
+
+def measure_far_house_shape_ratio(frame_undistorted, H_final):
+    """
+    Mittaa kaukaisen pesan LOPULLISEN (H_final:lla warpatun) top-down-
+    kuvan pyoreyden TUOREELLA tunnistuksella.
+
+    HUOM: refine_homography_corrections:in palauttama "far_verify" EI
+    kelpaa tahan - se mittaa muodon SIITA topdown-kuvasta joka oli
+    olemassa ENNEN sen kierroksen korjausta (H_current, ei H_final).
+    Eli se kuvaa edellisen kierroksen H:n laatua, ei lopullisen H:n
+    laatua - havaittu ja korjattu testatessa (pyoreysvertailu antoi
+    systemaattisesti vaaria tuloksia ilman tata korjausta).
+    """
+
+    output_w = int(round((OUTPUT_X_MAX_CM - OUTPUT_X_MIN_CM) * PIXELS_PER_CM))
+    output_h = int(round((OUTPUT_Y_MAX_CM - OUTPUT_Y_MIN_CM) * PIXELS_PER_CM))
+
+    topdown_final = cv2.warpPerspective(frame_undistorted, H_final, (output_w, output_h))
+
+    far_view = crop_house_view(topdown_final, FAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM)
+    far_expected_center = expected_house_center_in_crop(
+        topdown_final.shape[0], FAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
+    )
+
+    far_verify_final = verify_house_from_topdown(
+        far_view, far_expected_center, use_ellipse=True, include_red_inner=False
+    )
+
+    return far_house_shape_ratio(far_verify_final)
+
+
 def trial_final_rms(frame, image_width, image_height, near_img_pts, near_phys_pts,
                      far_img_pts, far_phys_pts):
     """
     Kevyt "koeajo" kokonaiselle putkelle (k1-itsekalibrointi ->
     oikaisu -> ensimmainen H -> iteratiivinen korjaus) annetulle
-    korrespondenssipistejoukolle - palauttaa VAIN lopullisen
-    konvergoituneen RMS-virheen. Tulostukset vaimennetaan (tama on
+    korrespondenssipistejoukolle - palauttaa lopullisen konvergoi-
+    tuneen RMS-virheen SEKA kaukaisen pesan lopullisen pyoreyden
+    (far_house_shape_ratio). Tulostukset vaimennetaan (tama on
     tarkoitettu KAHDEN kaukaisen pesan korrespondenssikandidaatin
     VERTAILUUN etukateen; putken "oikea" ajo tehdaan vasta
     paremmalle kandidaatille).
 
-    Palauttaa float("inf") jos putki epaonnistuu talla pistejoukolla.
+    Palauttaa (rms, shape_ratio) - (float("inf"), 0.0) jos putki
+    epaonnistuu talla pistejoukolla.
     """
 
     all_img_pts = near_img_pts + far_img_pts
@@ -3304,7 +3364,7 @@ def trial_final_rms(frame, image_width, image_height, near_img_pts, near_phys_pt
             H, _ = cv2.findHomography(src_pts, dst_pts, method=0)
 
             if H is None:
-                return float("inf")
+                return float("inf"), 0.0
 
             output_w = int(round(
                 (OUTPUT_X_MAX_CM - OUTPUT_X_MIN_CM) * PIXELS_PER_CM
@@ -3317,10 +3377,14 @@ def trial_final_rms(frame, image_width, image_height, near_img_pts, near_phys_pt
                 frame_undistorted, H, output_w, output_h
             )
 
-        return refined["rms"]
+        final_ratio = measure_far_house_shape_ratio(
+            frame_undistorted, refined["H_final"]
+        )
+
+        return refined["rms"], final_ratio
 
     except RuntimeError:
-        return float("inf")
+        return float("inf"), 0.0
 
 
 # ============================================================
@@ -3667,27 +3731,42 @@ def main():
             raw_center_img
         ))
 
+    # HUOM (havaittu testatessa): pelkka pistekorrespondenssien RMS-
+    # uudelleenprojisointivirhe EI luotettavasti ennusta nayttaako
+    # kaukainen pesa lopulta pyorealta top-down-kuvassa - se voi olla
+    # numeerisesti hyva vaikka pesa on visuaalisesti selvasti soikea.
+    # Valitaan siis ENSISIJAISESTI se kandidaatti, jonka kaukainen
+    # pesa on LOPUKSI PYOREIN (far_house_shape_ratio, 1.0 = taydellinen
+    # ympyra) - RMS kaytetaan vain tasapelin ratkaisijana kun pyoreys
+    # on lahes sama (< 0.03 ero).
     best_choice = None
     best_choice_rms = float("inf")
+    best_choice_ratio = -1.0
 
     for name, f_img, f_phys, f_labels, f_center in candidates:
 
-        rms = trial_final_rms(
+        rms, ratio = trial_final_rms(
             frame, image_width, image_height,
             near_img_pts, near_phys_pts, f_img, f_phys
         )
 
         print(f"  {name:<28}: {len(f_img)} pistetta, "
-              f"LOPULLINEN RMS (koeajo) {rms:.2f} px")
+              f"lopullinen RMS {rms:.2f} px, kaukaisen pesan pyoreys {ratio:.3f}")
 
-        if rms < best_choice_rms:
+        is_better = (
+            ratio > best_choice_ratio + 0.03
+            or (abs(ratio - best_choice_ratio) <= 0.03 and rms < best_choice_rms)
+        )
+
+        if is_better:
             best_choice_rms = rms
+            best_choice_ratio = ratio
             best_choice = (f_img, f_phys, f_labels, f_center)
 
     far_img_pts, far_phys_pts, far_labels, far_center_img = best_choice
 
-    print(f"-> Valittiin parempi menetelma (RMS {best_choice_rms:.2f} px, "
-          f"{len(far_img_pts)} pistetta).")
+    print(f"-> Valittiin parempi menetelma (pyoreys {best_choice_ratio:.3f}, "
+          f"RMS {best_choice_rms:.2f} px, {len(far_img_pts)} pistetta).")
 
     all_img_pts = near_img_pts + far_img_pts
     all_phys_pts = near_phys_pts + far_phys_pts
