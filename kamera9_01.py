@@ -838,13 +838,13 @@ def _profile_residuals_for_stone(pose, X0, Y0, R_max, H_total, shape_deltas, con
 
 def fit_stone_profile(pose, stones, n_sample_per_stone=40,
                        initial_radius_cm=STONE_NOMINAL_RADIUS_CM,
-                       initial_height_cm=STONE_HEIGHT_CM,
+                       height_cm=STONE_HEIGHT_CM,
                        shape_reg_weight=STONE_SHAPE_REG_WEIGHT):
     """
     HIENOSAATAA kovakoodatun karkean mallin (STONE_PROFILE_TEMPLATE_NORM)
     KAIKKIEN havaittujen kivien KOKO AARIVIIVAA vasten YHTEISESTI - katso
-    taman osion alkupaan kommentti periaatteesta. Tuntemattomat: globaali
-    skaala (R_max, H_total) + pieni korjaus (delta) jokaisen "paivan
+    taman osion alkupaan kommentti periaatteesta. Tuntemattomat: R_max
+    (paivan/juoksurenkaan sade) + pieni korjaus (delta) jokaisen "paivan
     ylapuolisen" kontrollipisteen r_frac:iin (jaettu KAIKKIEN kivien
     kesken) + jokaisen kiven oma maa-asema (X0,Y0). Muotokorjaukset ovat
     REGULOITUJA (shape_reg_weight) nollaa (=kovakoodattu malli) kohti,
@@ -852,13 +852,29 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
     KARKEA muototrendi (esim. onko malli hieman liian/liian vahan kupera)
     voi todella muuttua.
 
+    HUOM height_cm EI OLE VAPAA PARAMETRI (kokeiltiin - katso git-
+    historia): RMS-jaannosvirhe on kaytannossa LITTEA H_total:in
+    suhteen valilla n. 6-12cm (kaikki n. 3.5px, ero vain kohinaa),
+    koska 3 kivea + n. 10-25 asteen korkeuskulma-alue ei riita
+    erottamaan "hieman pienempi R + suurempi H" ja "hieman suurempi R +
+    pienempi H" -ratkaisuja toisistaan (nailla on lahes SAMA siluetti).
+    Vapaana parametrina optimoija valitsi taman litean alueen SISALTA
+    mielivaltaisesti (esim. H~8cm), mika EI ole mittaus vaan kohinaa -
+    testattu antavan fysikaalisesti mahdottoman lyhyen kiven (WCF:n
+    minimikorkeus on 11.43cm). R_max SEN SIJAAN ON hyvin rajoitettu
+    (sama optimointi antaa R_max~14.0-14.6cm riippumatta kiinnitetysta
+    H:sta, tasmaa mitattua ~28cm halkaisijaa vasten) - siksi height_cm
+    KIINNITETAAN tunnettuun fysikaaliseen arvoon (WCF-vahimmaismitta
+    oletuksena) sen sijaan etta yritettaisiin "ratkaista" jotain mita
+    tama data ei yksinkertaisesti sisalla.
+
     stones: find_stone_candidates:in palauttamat dictit (tarvitaan seka
     "ellipse" etta "contour").
 
-    Palauttaa dictin: R_max_cm, H_total_cm, shape_deltas (hienosaadetut
-    poikkeamat kovakoodattuun malliin), positions_cm, residuals_px
-    (VAIN aariviiva-jaannokset, ilman regularisointitermeja),
-    residual_rms_px.
+    Palauttaa dictin: R_max_cm (sovitettu), H_total_cm (KIINTEA, =
+    height_cm), shape_deltas (hienosaadetut poikkeamat kovakoodattuun
+    malliin), positions_cm, residuals_px (VAIN aariviiva-jaannokset,
+    ilman regularisointitermeja), residual_rms_px.
     """
 
     if len(stones) < 2:
@@ -877,20 +893,20 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
         positions0.append((X0, Y0))
 
     def unpack(params):
-        R_max, H_total = params[0], params[1]
+        R_max = params[0]
         shape_deltas = np.zeros(len(STONE_PROFILE_TEMPLATE_NORM))
-        shape_deltas[_TEMPLATE_EQUATOR_IDX:] = params[2:2 + n_shape]
-        positions = params[2 + n_shape:].reshape(-1, 2)
-        return R_max, H_total, shape_deltas, positions
+        shape_deltas[_TEMPLATE_EQUATOR_IDX:] = params[1:1 + n_shape]
+        positions = params[1 + n_shape:].reshape(-1, 2)
+        return R_max, shape_deltas, positions
 
     def residuals(params, include_reg=True):
 
-        R_max, H_total, shape_deltas, positions = unpack(params)
+        R_max, shape_deltas, positions = unpack(params)
         parts = []
 
         for (X0, Y0), stone in zip(positions, stones):
             parts.append(_profile_residuals_for_stone(
-                pose, X0, Y0, R_max, H_total, shape_deltas,
+                pose, X0, Y0, R_max, height_cm, shape_deltas,
                 stone["contour"], n_sample_per_stone
             ))
 
@@ -900,18 +916,18 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
         return np.concatenate(parts)
 
     params0 = np.concatenate([
-        [initial_radius_cm, initial_height_cm],
+        [initial_radius_cm],
         np.zeros(n_shape),
         np.array(positions0, dtype=np.float64).ravel(),
     ])
 
     params_final = k8._levenberg_marquardt(residuals, params0, max_iterations=100)
-    R_max, H_total, shape_deltas, positions = unpack(params_final)
+    R_max, shape_deltas, positions = unpack(params_final)
     resid_contour_only = residuals(params_final, include_reg=False)
 
     return {
         "R_max_cm": float(abs(R_max)),
-        "H_total_cm": float(max(abs(H_total), 1e-6)),
+        "H_total_cm": float(height_cm),
         "shape_deltas": shape_deltas,
         "positions_cm": [(float(x), float(y)) for x, y in positions],
         "residuals_px": resid_contour_only,
@@ -1004,22 +1020,18 @@ def main():
         return
 
     print(f"Hienosaadetaan kovakoodattu karkea 3D-malli {len(stones)} kiven "
-          f"koko aariviivaan (lahtoarvot: R={STONE_NOMINAL_RADIUS_CM:.2f} cm, "
-          f"H={STONE_HEIGHT_CM:.2f} cm)...")
+          f"koko aariviivaan (R_max lahtoarvo: {STONE_NOMINAL_RADIUS_CM:.2f} cm, "
+          f"H_total KIINTEA: {STONE_HEIGHT_CM:.2f} cm - katso fit_stone_profile:in "
+          f"dokumentaatiokommentti MIKSI korkeutta ei soviteta)...")
     profile = fit_stone_profile(pose, stones)
-    print(f"  R_max (juoksurenkaan sade)     : {profile['R_max_cm']:.2f} cm "
+    print(f"  R_max (juoksurenkaan sade, SOVITETTU): {profile['R_max_cm']:.2f} cm "
           f"(WCF-nimellisarvo: {STONE_NOMINAL_RADIUS_CM:.2f} cm)")
-    print(f"  H_total (kiven kokonaiskorkeus): {profile['H_total_cm']:.2f} cm "
-          f"(WCF-vahimmaismitta: {STONE_HEIGHT_CM:.2f} cm)")
+    print(f"  H_total (kokonaiskorkeus, KIINTEA OLETUS - EI sovitettu): "
+          f"{profile['H_total_cm']:.2f} cm")
     print(f"  muotokorjaukset (r_frac-deltat): {np.round(profile['shape_deltas'], 3)}")
     print(f"  sovituksen RMS-jaannosvirhe: {profile['residual_rms_px']:.2f} px "
           f"(kolmen kiven yhteinen malli - pieni arvo tarkoittaa etta kaikki "
           f"kolme kivea SOPIVAT SAMAAN muotoon, mika validoi kalibroinnin).")
-    print("  HUOM: R_max on yleensa H_total:ia luotettavampi - korkeus ja "
-          "sade ovat osittain KORRELOITUNEITA tassa datassa (vain 3 kivea, "
-          "korkeuskulmat n. 10-25 astetta): hieman pienempi R + suurempi H "
-          "selittaisi lahes saman siluetin. Lisaa kivia (varsinkin "
-          "suuremmalla korkeuskulmien vaihtelulla) parantaisi erottelukykya.")
 
     print("Lasketaan Z-korjatut maa-asemat (kolme menetelmaa vertailuksi: "
           "naiivi Z=0, puolikorkeus-approksimaatio, profiilisovitus)...")
