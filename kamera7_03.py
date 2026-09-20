@@ -5092,11 +5092,18 @@ def main():
     print(f"RMS uudella k1:lla                    : {refined_k1_rms:.2f} px")
     print(f"Parannus                              : {refined_k1_improvement * 100:.1f} %")
 
+    # HUOM: alkuperaisessa versiossa taalla vaadittiin K1_MIN_RELATIVE_
+    # IMPROVEMENT (8 %) ylittava parannus ennen kuin uutta k1:aa edes
+    # kokeiltiin koko putkella. Kayttajan pyynnosta tama merkittavyys-
+    # kynnys on poistettu - MIKA TAHANSA parannus riittaa kokeiluun.
+    # Tama on turvallista: lopullinen hyvaksynta (alempana) vaatii
+    # AINA etta koko putken uudelleenajo OIKEASTI paransi tulosta
+    # (kaukaisen pesan pyoreys ensisijaisena mittarina) ennen kuin
+    # uutta k1:aa kaytetaan - pelkka pistekorrespondenssien RMS-
+    # parannus taalla ei viela takaa mitaan, se vain paattaa KANNATTAAKO
+    # kokeilla.
     k1_changed_enough = abs(refined_k1 - best_k1) > K1_MIN_MAGNITUDE
-    k1_significant = (
-        refined_k1_improvement > K1_MIN_RELATIVE_IMPROVEMENT
-        and abs(refined_k1) > K1_MIN_MAGNITUDE
-    )
+    k1_significant = refined_k1_improvement > 0.0
 
     if k1_significant and k1_changed_enough:
 
@@ -5158,7 +5165,7 @@ def main():
                       f"sailytetaan alkuperainen.")
 
     else:
-        print("-> Uudelleenarvioitu k1 ei tuo merkittavaa lisaparannusta, "
+        print("-> Uudelleenarvioitu k1 ei tuo lainkaan parannusta, "
               "sailytetaan alkuperainen.")
 
     # --------------------------------------------------------
