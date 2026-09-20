@@ -611,6 +611,11 @@ def find_stone_candidates(
     lahella jaatasoa (esim. taustan mainostaulut), joten tama on
     tehokas karkeasuodatin VAIKKA kivella itsellaan onkin korkeutta
     (parallaksin aiheuttama virhe on senttien, ei metrien, luokkaa).
+
+    Palauttaa listan DICTEJA {"ellipse":..., "contour":...} - contour
+    (raaka cv2.findContours-ulostulo, muoto (N,1,2)) sailytetaan MYOS,
+    koska pelkka 5-parametrinen ellipsi ei riita fit_stone_profile:in
+    pyorahdyskappale-muotosovitukseen (katso sen kommentti).
     """
 
     mask = create_granite_mask(frame)
@@ -656,11 +661,11 @@ def find_stone_candidates(
         if not (x_min <= phys[0] <= x_max and y_min <= phys[1] <= y_max):
             continue
 
-        candidates.append((ellipse, area))
+        candidates.append((ellipse, area, contour))
 
     candidates.sort(key=lambda c: c[1], reverse=True)
 
-    return [c[0] for c in candidates]
+    return [{"ellipse": c[0], "contour": c[2]} for c in candidates]
 
 
 # ============================================================
@@ -828,6 +833,222 @@ def compute_stone_ground_position(pose, ellipse, height_cm=STONE_HEIGHT_CM):
 
 
 # ============================================================
+# PYORAHDYSKAPPALE-PROFIILI: KIVEN 3D-MUOTO USEASTA HAVAINNOSTA
+#
+# compute_stone_ground_position (ylla) olettaa KIINTEAN korkeuden
+# (height_cm/2) - karkea approksimaatio. Tarkempi tapa: koska kivi on
+# PYORAHDYSKAPPALE (kayttajan oletus - graniittiosa ilman varikasta
+# kahvaa on pyorahdyssymmetrinen pystyakselinsa suhteen) ja meilla on
+# 3 KIVEA ERI ETAISYYKSILLA - siis myos ERI KORKEUSKULMISSA kamerasta
+# (Kivilla.png: n. 25 astetta, 22 astetta ja 10 astetta, koska kamera
+# on n. 440 cm korkeudella ja etaisyydet vaihtelevat n. 9-24 m) - nailla
+# on RIITTAVASTI geometrista vaihtelua profiilin r(z) rajoittamiseen.
+#
+# Kivi kuvataan LOIVASTA YLHAALTAPAIN-KULMASTA, joten NAKYVA siluetti on
+# vain kiven YLAOSA (pohja/juoksurengas on itsensa varjossa/piilossa
+# leveimman kohdan - "paiva" - takana, katsottuna ylhaalta - eika vaikuta
+# kuvaan lainkaan). Siksi profiili mallinnetaan VAIN paivan yllapuolelta:
+#
+#   r(z) = R_max * sqrt(max(0, 1 - ((z - Z_EQUATOR) / H_TOP)^2))
+#          z in [Z_EQUATOR, Z_EQUATOR + H_TOP]
+#
+# eli puoliellipsi-kupu (3 parametria: R_max = paivan sade, Z_EQUATOR =
+# paivan korkeus jaasta, H_TOP = kuvun korkeus paivan ylapuolella).
+# 3 parametria + 3 kiven oma (X,Y) = 9 tuntematonta, mutta jokainen kivi
+# antaa KYMMENIA jaannosvirhepisteita (koko aariviiva, ei vain 1 skalaari)
+# - siis reilusti ylimaaratty, EI altis samalle f/etaisyys-tyyppiselle
+# rappeutumiselle kuin fit_full_camera_pose:n yhteissovitus olisi ollut
+# (katso taman tiedoston aiempi kommentti siita).
+#
+# SOVITUSMENETELMA: ennustetaan pistepilvi profiilin renkailta (z,theta),
+# projisoidaan kuvaan, otetaan KUPERA PEITE (silhuetin approksimaatio -
+# ei tasmallinen tangenttikartiolaskenta, mutta riittava kun kivi on
+# lahes kupera pienesta kulmasta katsottuna), ja jaannosvirhe on HAVAITUN
+# aariviivan pisteiden ETAISYYS talta kuperalta peitteelta (cv2.
+# pointPolygonTest, merkitty: negatiivinen = havainto peitteen ULKOPUOLELLA).
+# ============================================================
+
+def _predicted_stone_hull(pose, X0, Y0, R_max, z_equator, H_top, n_theta=28, n_z=10):
+    """
+    Ennustaa kiven kuvassa nakyvan siluetin KUPERAN PEITTEEN annetulla
+    profiililla - katso taman osion alkupaan kommentti mallista ja
+    approksimaatiosta. Palauttaa cv2.convexHull-muotoisen polygonin
+    (float32, muoto (N,1,2)) tai None jos hylky on rappeutunut.
+    """
+
+    R_max = abs(R_max)
+    H_top = max(abs(H_top), 1e-6)
+    z_equator = max(z_equator, 0.0)
+
+    z_vals = np.linspace(z_equator, z_equator + H_top, n_z)
+    theta = np.linspace(0.0, 2.0 * np.pi, n_theta, endpoint=False)
+
+    rings = []
+
+    for z in z_vals:
+        frac = (z - z_equator) / H_top
+        r = R_max * math.sqrt(max(0.0, 1.0 - frac * frac))
+        xs = X0 + r * np.cos(theta)
+        ys = Y0 + r * np.sin(theta)
+        zs = np.full(n_theta, z)
+        rings.append(np.column_stack([xs, ys, zs]))
+
+    points_3d = np.vstack(rings)
+    u, v = _project_3d(pose["K"], pose["R"], pose["t"], points_3d)
+    points_2d = np.column_stack([u, v]).astype(np.float32)
+
+    if not np.all(np.isfinite(points_2d)):
+        return None
+
+    hull = cv2.convexHull(points_2d)
+
+    if len(hull) < 3:
+        return None
+
+    return hull
+
+
+def _sample_contour_points(contour, n_sample):
+    """Tasavalisesti alinaytetty kontuuri - koko kontuuria (satoja
+    pisteita) ei tarvita, muutama kymmenen riittaa sovitukseen ja
+    pitaa jokaisen residuals()-kutsun nopeana."""
+
+    points = contour.reshape(-1, 2).astype(np.float64)
+
+    if len(points) <= n_sample:
+        return points
+
+    idx = np.linspace(0, len(points) - 1, n_sample).astype(int)
+
+    return points[idx]
+
+
+def _profile_residuals_for_stone(pose, X0, Y0, R_max, z_equator, H_top, contour, n_sample):
+
+    hull = _predicted_stone_hull(pose, X0, Y0, R_max, z_equator, H_top)
+    sampled = _sample_contour_points(contour, n_sample)
+
+    if hull is None:
+        return np.full(len(sampled), 1000.0)
+
+    return np.array([
+        cv2.pointPolygonTest(hull, (float(p[0]), float(p[1])), True)
+        for p in sampled
+    ])
+
+
+def fit_stone_profile(pose, stones, n_sample_per_stone=40,
+                       initial_radius_cm=None,
+                       initial_z_equator_cm=None,
+                       initial_h_top_cm=None):
+    """
+    Ratkaisee YHTEISEN pyorahdyskappale-profiilin (R_max, Z_EQUATOR,
+    H_TOP) + jokaisen kiven oman maa-aseman (X0,Y0) sovittamalla
+    ennustetun siluetin USEAN kiven HAVAITTUUN aariviivaan yhdessa
+    (painotettu pienimman nelion sovitus, katso taman osion alkupaan
+    kommentti). stones: find_stone_candidates:in palauttamat dictit
+    (tarvitaan seka "ellipse" etta "contour").
+
+    Palauttaa dictin: R_max_cm, z_equator_cm, H_top_cm, H_total_cm,
+    positions_cm (lista (X0,Y0), sovituksesta - VERTAILUKELPOINEN
+    _stone_ground_position_z0:n kanssa), residuals_px, residual_rms_px.
+    """
+
+    if len(stones) < 2:
+        raise RuntimeError(
+            "Profiilin sovitukseen tarvitaan vahintaan 2 kiven havaintoa "
+            f"(saatiin {len(stones)})."
+        )
+
+    if initial_radius_cm is None:
+        initial_radius_cm = STONE_NOMINAL_RADIUS_CM * 0.7
+    if initial_z_equator_cm is None:
+        initial_z_equator_cm = STONE_HEIGHT_CM * 0.3
+    if initial_h_top_cm is None:
+        initial_h_top_cm = STONE_HEIGHT_CM * 0.7
+
+    positions0 = []
+
+    for stone in stones:
+        (cx, cy), _, _ = stone["ellipse"]
+        X0, Y0 = _stone_ground_position_z0(pose, cx, cy)
+        positions0.append((X0, Y0))
+
+    def unpack(params):
+        R_max, z_equator, H_top = params[0], params[1], params[2]
+        positions = params[3:].reshape(-1, 2)
+        return R_max, z_equator, H_top, positions
+
+    def residuals(params):
+
+        R_max, z_equator, H_top, positions = unpack(params)
+        parts = []
+
+        for (X0, Y0), stone in zip(positions, stones):
+            parts.append(_profile_residuals_for_stone(
+                pose, X0, Y0, R_max, z_equator, H_top,
+                stone["contour"], n_sample_per_stone
+            ))
+
+        return np.concatenate(parts)
+
+    params0 = np.concatenate([
+        [initial_radius_cm, initial_z_equator_cm, initial_h_top_cm],
+        np.array(positions0, dtype=np.float64).ravel(),
+    ])
+
+    params_final = k8._levenberg_marquardt(residuals, params0, max_iterations=80)
+    R_max, z_equator, H_top, positions = unpack(params_final)
+    resid = residuals(params_final)
+
+    return {
+        "R_max_cm": float(abs(R_max)),
+        "z_equator_cm": float(max(z_equator, 0.0)),
+        "H_top_cm": float(max(abs(H_top), 1e-6)),
+        "H_total_cm": float(max(z_equator, 0.0) + max(abs(H_top), 1e-6)),
+        "positions_cm": [(float(x), float(y)) for x, y in positions],
+        "residuals_px": resid,
+        "residual_rms_px": float(np.sqrt(np.mean(resid ** 2))),
+    }
+
+
+def locate_stone_from_profile(pose, profile, stone, n_sample=40):
+    """
+    Kayttaa jo SOVITETTUA profiilia (fit_stone_profile) tunnistamaan
+    kiven OIKEAN maa-aseman (X,Y) MISTA TAHANSA yksittaisesta havain-
+    nosta (esim. video-framesta) - ratkaisee VAIN (X,Y), muoto pysyy
+    kiinteana. Tama on TARKEMPI kuin compute_stone_ground_position:in
+    puolikorkeus-approksimaatio, koska se sovittaa OIKEAA (mitattua)
+    muotoa vasten sen sijaan etta arvaisi korkeuden.
+
+    Palauttaa dictin: corrected_cm (profiilisovitettu asema),
+    naive_z0_cm (vertailuksi), residual_rms_px (sovituksen laatu -
+    suuri arvo = kivi ei nayta samalta kuin sovitettu profiili, esim.
+    osittain toisen kiven tai pyyhkijan peitossa).
+    """
+
+    (cx, cy), _, _ = stone["ellipse"]
+    X0, Y0 = _stone_ground_position_z0(pose, cx, cy)
+
+    def residuals(params):
+        X, Y = params[0], params[1]
+        return _profile_residuals_for_stone(
+            pose, X, Y, profile["R_max_cm"], profile["z_equator_cm"], profile["H_top_cm"],
+            stone["contour"], n_sample
+        )
+
+    params0 = np.array([X0, Y0], dtype=np.float64)
+    params_final = k8._levenberg_marquardt(residuals, params0, max_iterations=50)
+    resid = residuals(params_final)
+
+    return {
+        "corrected_cm": (float(params_final[0]), float(params_final[1])),
+        "naive_z0_cm": (float(X0), float(Y0)),
+        "residual_rms_px": float(np.sqrt(np.mean(resid ** 2))),
+    }
+
+
+# ============================================================
 # PAAOHJELMA
 # ============================================================
 
@@ -866,16 +1087,16 @@ def main():
           f"max={pose['near_reproj_err_px']['max']:.2f}")
 
     print("Etsitaan kivien (graniittiosan) ellipsit...")
-    stone_ellipses = find_stone_candidates(calib["frame_undistorted"], calib["H_final"])
-    print(f"  loydettiin {len(stone_ellipses)} kivea")
+    stones = find_stone_candidates(calib["frame_undistorted"], calib["H_final"])
+    print(f"  loydettiin {len(stones)} kivea")
 
-    if len(stone_ellipses) < 2:
-        print("Liian vahan kivia sateen ratkaisuun (tarvitaan >= 2). Lopetetaan.")
+    if len(stones) < 2:
+        print("Liian vahan kivia sateen/profiilin ratkaisuun (tarvitaan >= 2). Lopetetaan.")
         return
 
-    print(f"Ratkaistaan kiven sade {len(stone_ellipses)} havainnosta "
+    print(f"Ratkaistaan kiven sade {len(stones)} havainnosta "
           f"(WCF-nimellisarvo: {STONE_NOMINAL_RADIUS_CM:.2f} cm)...")
-    radius_result = solve_stone_radius(pose, stone_ellipses)
+    radius_result = solve_stone_radius(pose, [s["ellipse"] for s in stones])
     print(f"  ratkaistu sade: {radius_result['radius_cm']:.2f} cm "
           f"(poikkeama nimellisesta: "
           f"{radius_result['radius_cm'] - STONE_NOMINAL_RADIUS_CM:+.2f} cm)")
@@ -887,36 +1108,68 @@ def main():
           "dokumentaatiokommentti. Pieni jaannosvirhe kertoo silti "
           "kivien olevan KESKENAAN yhdenmukaisia (ristiinvalidointi).")
 
-    print("Lasketaan Z-korjatut maa-asemat (WCF-korkeusoletus "
-          f"{STONE_HEIGHT_CM:.2f} cm)...")
+    print(f"Sovitetaan pyorahdyskappale-profiili (R_max, Z_EQUATOR, H_TOP) "
+          f"{len(stones)} kiven koko aariviivaan...")
+    profile = fit_stone_profile(pose, stones)
+    print(f"  R_max (paivan sade)     : {profile['R_max_cm']:.2f} cm")
+    print(f"  Z_EQUATOR (paivan korkeus): {profile['z_equator_cm']:.2f} cm")
+    print(f"  H_TOP (kuvun korkeus)   : {profile['H_top_cm']:.2f} cm")
+    print(f"  H_total (arvioitu kok. korkeus): {profile['H_total_cm']:.2f} cm "
+          f"(WCF-vahimmaismitta: {STONE_HEIGHT_CM:.2f} cm)")
+    print(f"  sovituksen RMS-jaannosvirhe: {profile['residual_rms_px']:.2f} px")
+
+    print("Lasketaan Z-korjatut maa-asemat (kolme menetelmaa vertailuksi: "
+          "naiivi Z=0, puolikorkeus-approksimaatio, profiilisovitus)...")
 
     topdown_raw = cv2.warpPerspective(
         calib["frame_undistorted"], calib["H_final"], (calib["output_w"], calib["output_h"])
     )
     vis = topdown_raw.copy()
+    hull_debug = calib["frame_undistorted"].copy()
 
-    for i, ellipse in enumerate(stone_ellipses):
+    for i, stone in enumerate(stones):
 
-        positions = compute_stone_ground_position(pose, ellipse)
-        X_c, Y_c = positions["corrected_cm"]
-        X_n, Y_n = positions["naive_z0_cm"]
-        shift_cm = math.hypot(X_c - X_n, Y_c - Y_n)
+        ellipse = stone["ellipse"]
+        approx = compute_stone_ground_position(pose, ellipse)
+        X_n, Y_n = approx["naive_z0_cm"]
+        X_h, Y_h = approx["corrected_cm"]
 
-        print(f"  kivi {i + 1}: naiivi Z=0 (X={X_n:.1f}, Y={Y_n:.1f}) cm -> "
-              f"Z-korjattu (X={X_c:.1f}, Y={Y_c:.1f}) cm "
-              f"(siirtyma {shift_cm:.1f} cm)")
+        profile_pos = locate_stone_from_profile(pose, profile, stone)
+        X_p, Y_p = profile_pos["corrected_cm"]
 
-        px_corrected = k8.physical_to_output_px(np.array([[X_c, Y_c]]))[0]
+        shift_half = math.hypot(X_h - X_n, Y_h - Y_n)
+        shift_profile = math.hypot(X_p - X_n, Y_p - Y_n)
+
+        print(f"  kivi {i + 1}: naiivi Z=0 (X={X_n:.1f}, Y={Y_n:.1f}) cm | "
+              f"puolikorkeus (X={X_h:.1f}, Y={Y_h:.1f}, siirtyma {shift_half:.1f} cm) | "
+              f"profiili (X={X_p:.1f}, Y={Y_p:.1f}, siirtyma {shift_profile:.1f} cm, "
+              f"RMS {profile_pos['residual_rms_px']:.2f} px)")
+
         px_naive = k8.physical_to_output_px(np.array([[X_n, Y_n]]))[0]
+        px_half = k8.physical_to_output_px(np.array([[X_h, Y_h]]))[0]
+        px_profile = k8.physical_to_output_px(np.array([[X_p, Y_p]]))[0]
 
         cv2.circle(vis, tuple(px_naive.astype(int)), 6, (0, 165, 255), 2)
-        cv2.circle(vis, tuple(px_corrected.astype(int)), 6, (0, 255, 0), -1)
-        cv2.line(vis, tuple(px_naive.astype(int)), tuple(px_corrected.astype(int)), (0, 255, 255), 1)
+        cv2.circle(vis, tuple(px_half.astype(int)), 6, (0, 255, 0), 2)
+        cv2.circle(vis, tuple(px_profile.astype(int)), 6, (255, 0, 255), -1)
+        cv2.line(vis, tuple(px_naive.astype(int)), tuple(px_profile.astype(int)), (0, 255, 255), 1)
+
+        hull = _predicted_stone_hull(
+            pose, X_p, Y_p, profile["R_max_cm"], profile["z_equator_cm"], profile["H_top_cm"]
+        )
+        if hull is not None:
+            cv2.polylines(hull_debug, [hull.astype(int)], True, (255, 0, 255), 2)
+        cv2.drawContours(hull_debug, [stone["contour"]], -1, (0, 255, 0), 1)
 
     output_path = "kivet_z_korjattu.png"
     cv2.imwrite(output_path, vis)
     print(f"Visualisointi tallennettu: {output_path} "
-          f"(oranssi=naiivi Z=0, vihrea=Z-korjattu)")
+          f"(oranssi=naiivi Z=0, vihrea=puolikorkeus, magenta=profiilisovitus)")
+
+    hull_debug_path = "kivet_profiili_debug.png"
+    cv2.imwrite(hull_debug_path, hull_debug)
+    print(f"Profiilin tarkistuskuva tallennettu: {hull_debug_path} "
+          f"(vihrea=havaittu aariviiva, magenta=sovitetun profiilin ennustama siluetti)")
 
 
 if __name__ == "__main__":
