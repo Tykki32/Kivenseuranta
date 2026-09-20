@@ -1,6 +1,6 @@
 # ============================================================
-# kamera9_03.py - ALLE PIKSELIN TARKKUUS: GRANIITTI/MUOVI-RAJAN
-# SUORA/ELLIPSI-SOVITUS
+# kamera9_03.py - ALLE PIKSELIN TARKKUUS: KOKO 3D-KAPPALEEN JA
+# GRANIITTI/MUOVI-RAJAN YHTEISSOVITUS
 #
 # kamera9_02.py paikantaa kiven vertaamalla ennustettua KOKO siluettia
 # (kupera peite) HAVAITTUUN BINAARISEEN graniittimaskiin karkea->hieno
@@ -9,46 +9,45 @@
 # (yksi pikseli on joko "graniittia" tai ei - ei valipikselitarkkuutta).
 #
 # Tama tiedosto (kayttajan pyynnosta, MERKITTAVA lisays - kamera9_02.py
-# jatetaan koskemattomaksi) parantaa Y-tarkkuutta OLENNAISESTI eri
-# periaatteella: sen sijaan etta sovitettaisiin KOKO siluetti karkeaa
-# binaarimaskia vasten, etsitaan JA SOVITETAAN kiven graniitin ja
-# kirkkaan kahvamuovin TARKKA RAJA - tama on:
+# jatetaan koskemattomaksi) parantaa Y-tarkkuutta OLENNAISESTI YHDIS-
+# TAMALLA KAKSI RIIPPUMATONTA HAVAINTOLAHDETTA SAMAAN SOVITUKSEEN (EI
+# kahta erillista lukua - kayttajan pyynnosta VAIN yksi paras yhteinen
+# sijainti per frame):
 #
-#   1) TARKASTI TUNNETTU 3D-sijainniltaan: se ON kamera9_01.py:n
-#      profiilin YLIN kontrollipiste (z_frac=1.00), jonka sade
-#      MITATTIIN suoraan Kivi.jpg-referenssikuvasta (katso kamera9_01
-#      .py:n git-historia) - eli tiedamme TASMALLEEN mika ympyra
-#      (sade, korkeus) taman rajan pitaisi olla.
+#   1) KOKO GRANIITTISILUETTI (kamera9_01.py:n taysi 3D-profiili)
+#      sovitettuna kiven ULKOreunaan jaata vasten - sama periaate kuin
+#      kamera9_01.py:n locate_stone_from_profile, mutta TARKEA LISAYS:
+#      kirkas kahva PEITTAA osan graniitista talta (ylhaaltapain-)
+#      kuvakulmalta, joten graniittimaskin kontuurin osa seuraa
+#      TODELLISUUDESSA KAHVAN reunaa, ei kiven reunaa - nama pisteet
+#      SUODATETAAN POIS (_filter_ice_boundary_points, katso sen
+#      kommentti) ETTEIVAT ne vinouta sovitusta.
 #
-#   2) TERAVA reuna (varisaturaation hyppy - graniitti on vahasaturaa-
-#      tioista, kahvan kirkas muovi hyvin korkeasaturaatioista), toisin
-#      kuin kiven ULKOreuna jaata vasten, joka on usein PEHMEA/epaselva
-#      (valaistus, varjot, jaan oma tekstuuri).
+#   2) GRANIITTI/MUOVI-RAJAN alipikselihavainnot (katso alla) - TERAVA
+#      reuna (varisaturaation hyppy), toisin kuin kiven ULKOreuna
+#      jaata vasten joka on usein PEHMEA/epaselva (valaistus, varjot,
+#      jaan oma tekstuuri) - antaa ALIPIKSELITARKAN lisatiedon.
 #
-# Nailla kahdella ominaisuudella raja voidaan paikantaa SADETASOLLA
-# (ei koko rengasta pikseli kerrallaan) ALIPIKSELITARKASTI: jokaiselta
-# kulmalta skannataan saturaatioarvo BILINEAARISESTI interpoloituna
-# (ei vain lahin pikseli) ja kynnysarvon ylitys ratkaistaan LINEAARISELLA
-# INTERPOLOINNILLA kahden naytteen valilla - standarditekniikka joka
-# antaa tyypillisesti < 0.1 pikselin tarkkuuden reunan sijainnille
-# (paljon parempi kuin yhden pikselin resoluutio).
+# Rajan alipikseli-ilmaisu: jokaiselta kulmalta (n. 70 kpl) skannataan
+# saturaatioarvo BILINEAARISESTI interpoloituna (ei vain lahin pikseli)
+# ja kynnysarvon ylitys ratkaistaan LINEAARISELLA INTERPOLOINNILLA
+# kahden naytteen valilla - standarditekniikka joka antaa tyypillisesti
+# < 0.1 pikselin tarkkuuden reunan sijainnille.
 #
-# Naista tarkoista (alipikseli-)havainnoista sovitetaan LM:lla kiven
-# (X,Y) - PIENI (2 parametria), HYVIN RAJOITETTU (kymmenia tarkkoja
-# havaintoja) tehtava, koska ympyran sade+korkeus tunnetaan jo - EI
-# vaadita mitaan karkeaa ristikkohakua TASSA vaiheessa, vain kahden
-# muuttujan hienosaato.
+# YHTEISSOVITUS: molempien lahteiden jaannosvirheet (etaisyys ennus-
+# tettuun malliin - koko rungon KUPERA PEITE JA renkaan ympyra, samalla
+# (X,Y)-akselilla) yhdistetaan SAMAAN LM-sovitukseen [X,Y,rengas_sade] -
+# yksi paras yhteinen vastaus, ei kahta erillista. Molemmat lahteet
+# ovat AINA mukana kun saatavilla - runko-osuus toimii jo pelkastaan
+# (myos hyvin kaukana, katso kamera9_01.py:n "kauimpana havaittu kivi"),
+# reunaosuus antaa lisatarkkuutta silloin kun rengas on riittavan
+# suuri (lahella kameraa) resolvoitavaksi.
 #
-# RAJOITUS (dokumentoitu rehellisesti): rengas on VAIN n. 37% koko
-# kiven halkaisijasta, joten se on ITSE PIENEMPI kuin koko siluetti -
-# kaukana (esim. yli 40m paassa, katso kamera9_01.py:n "kauimpana
-# havaittu kivi") koko kivi on jo vain ~15px, jolloin rengas olisi
-# vain ~5-6px - LIIAN PIENI luotettavaan alipikselisovitukseen. Siksi
-# tama tiedosto KAYTTAA kamera9_02.py:n karkeaa haku+seuranta-tilakonetta
-# ALKUARVAUKSEN/JATKUVUUDEN lahteena JOKA FRAMESSA, ja YRITTAA sen
-# paalle tata tarkempaa reunasovitusta - jos reunaa ei loydy luotettavasti
-# (liian pieni/osittain piilossa), CSV:hen kirjataan karkea (kamera9_02
-# .py:n) sijainti ja merkitaan tarkkuus matalaksi (katso "tarkka"-sarake).
+# HUOM (kayttajan pyynnosta): TATA TIEDOSTOA EI OLE tarkoitus suodattaa/
+# tasoittaa frame-framelta - jokainen frame ratkaistaan itsenaisesti
+# (ei liukuvaa keskiarvoa tms.), jotta jaljelle jaava frame-framelta-
+# kohina kertoo kayttajalle rehellisesti kuinka tarkasti mittaus
+# todellisuudessa onnistuu (kayttaja tekee oman suodatuksensa erikseen).
 # ============================================================
 
 import os
@@ -88,7 +87,7 @@ BOUNDARY_SATURATION_THRESHOLD = (k9.STONE_MAX_SATURATION + k9.HANDLE_MIN_SATURAT
 
 BOUNDARY_N_ANGLES = 72
 # Skannausalue TAHALLAAN LEVEA ([0.2, 2.6] * ennustettu sade, ei esim.
-# [0.8,1.2]) - katso refine_position_via_handle_boundary:in kommentti:
+# [0.8,1.2]) - katso refine_position_joint:in kommentti:
 # jos karkea alkuarvaus on hieman sivussa (mahdollista, kamera9_02.py:n
 # ristikkohaun askel on 1.5cm), KAPEA hakuvyo saattaisi jaada kokonaan
 # todellisen rajan ULKOPUOLELLE toisella puolella - LEVEA vyo pitaa
@@ -193,6 +192,98 @@ def _detect_boundary_points(frame_u, cx_px, cy_px, r_px_approx,
 
 
 # ============================================================
+# KOKO KIVEN GRANIITTISILUETIN KONTUURI - KAHVAN PEITTAMAT KOHDAT
+# SUODATETTUINA POIS
+# ============================================================
+
+BODY_CONTOUR_MIN_AREA_PX = 15.0
+BODY_CONTOUR_MAX_SEARCH_DIST_PX = 60.0
+BODY_HANDLE_CHECK_DIST_PX = 2.5   # kuinka kauas ULOSPAIN pisteesta tarkistetaan saturaatio
+BODY_MIN_VALID_POINTS = 8
+
+
+def _find_contour_near(mask, approx_px, max_dist_px=BODY_CONTOUR_MAX_SEARCH_DIST_PX,
+                        min_area=BODY_CONTOUR_MIN_AREA_PX):
+    """
+    Etsii graniittimaskin KONTUURIN joka on lahinna ennustettua
+    pikselisijaintia (approx_px) - sama periaate kuin kamera9_01.py:n
+    find_stone_candidates, mutta EI vaadi muotosuodattimia (fill_ratio
+    jne.) koska meilla on jo luotettava paikkaeste jatkuvuudesta,
+    emmeka etsi koko kuvasta vaan VAIN lahinta kontuuria.
+    """
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+    best = None
+    best_dist = None
+
+    for c in contours:
+
+        if cv2.contourArea(c) < min_area:
+            continue
+
+        M = cv2.moments(c)
+
+        if M["m00"] == 0:
+            continue
+
+        ccx, ccy = M["m10"] / M["m00"], M["m01"] / M["m00"]
+        d = math.hypot(ccx - approx_px[0], ccy - approx_px[1])
+
+        if d <= max_dist_px and (best_dist is None or d < best_dist):
+            best = c
+            best_dist = d
+
+    return best
+
+
+def _filter_ice_boundary_points(frame_u, contour, check_dist_px=BODY_HANDLE_CHECK_DIST_PX,
+                                 threshold=BOUNDARY_SATURATION_THRESHOLD):
+    """
+    Kayttajan pyynnosta: kirkas kahva PEITTAA osan graniitista talta
+    (ylhaaltapain-) kuvakulmalta, joten graniittimaskin kontuurin OSA
+    seuraa TODELLISUUDESSA kahvan reunaa, ei kiven todellista ulko-
+    reunaa jaata vasten - naita pisteita EI SAA kayttaa runko-3D-mallin
+    sovituksessa (ne vinouttaisivat sen, koska ennustettu malli kuvaa
+    kiven OIKEAA - ei kahvan peittamaa - muotoa).
+
+    Suodatusperiaate: jokaiselle kontuuripisteelle katsotaan hieman
+    ULOSPAIN (pois pistepilven painopisteesta) - jos siella saturaatio
+    on KORKEA (kahvaa), piste hylataan; jos MATALA (jaata), pidetaan.
+    """
+
+    hsv = cv2.cvtColor(frame_u, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1].astype(np.float32)
+
+    pts = contour.reshape(-1, 2).astype(np.float64)
+
+    if len(pts) == 0:
+        return np.zeros((0, 2))
+
+    cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
+
+    keep = []
+
+    for p in pts:
+
+        dx, dy = p[0] - cx, p[1] - cy
+        norm = math.hypot(dx, dy)
+
+        if norm < 1e-6:
+            continue
+
+        dx, dy = dx / norm, dy / norm
+        ox, oy = p[0] + dx * check_dist_px, p[1] + dy * check_dist_px
+
+        sat_val = _bilinear_sample(sat, ox, oy)
+
+        if sat_val is not None and sat_val < threshold:
+            keep.append(p)
+
+    return np.array(keep, dtype=np.float64) if keep else np.zeros((0, 2))
+
+
+# ============================================================
 # RENKAAN (TUNNETTU SADE+KORKEUS) SOVITUS ALIPIKSELIHAVAINTOIHIN
 # ============================================================
 
@@ -256,49 +347,69 @@ BOUNDARY_CONVERGENCE_CM = 0.05  # pysaytetaan kun peräkkaiset iteraatiot eroava
 BOUNDARY_MAX_SHIFT_FROM_APPROX_CM = 25.0
 
 
-def refine_position_via_handle_boundary(frame_u, pose, profile, X0_approx, Y0_approx):
+def refine_position_joint(frame_u, pose, profile, X0_approx, Y0_approx):
     """
-    Yrittaa hienosaataa kiven (X,Y)-sijaintia varirajan alipikseli-
-    havainnoista - katso taman tiedoston alkupaan kommentti.
+    Ratkaisee YHDEN parhaan (X,Y)-sijainnin yhdistamalla KAKSI riippu-
+    matonta havaintolahdetta samaan LM-sovitukseen - katso taman
+    tiedoston alkupaan kommentti periaatteesta. EI KAHTA ERILLISTA
+    LUKUA - kayttajan pyynnosta vain yksi yhteinen paras vastaus.
 
     HUOM RENKAAN SATEESTA (loydetty testatessa - katso git-historia):
     Kivi.jpg-sivukuvasta mitattu "paivan" sade (graniitin ja kahvan
     KIINNITYSLEVYN raja) EI vastaa sita mita ylhaaltapain-kuvassa
     NAHDAAN varirajana - kahva itse (kahva-AISA, ei vain littea levy)
     nousee korkeammalle ja on leveampi kuin pelkka levy, joten sen
-    projisoitu varjo/siluetti ylhaalta on ISOMPI ja MUUTTUU kuvakulman
-    mukaan (todistettu: yhdella framella havaittu raja oli n. 20px,
-    ennustettu vain n. 9.6px). SADETTA EI SIIS VOI OLETTAA KIINTEAKSI
-    - se on KOLMAS vapaa parametri (X,Y,R) taman sovituksen tehtavassa,
-    korkeus (Z) pidetaan silti kiinteana (H_total) yksinkertaisuuden
-    vuoksi (Z vaikuttaa vain ellipsin lavistykseen, ei juuri lainkaan
-    itse (X,Y)-keskipisteen ratkaisuun jolla ~70 pisteen ymparimitta on
-    jo erittain hyvin rajoitettu).
+    projisoitu siluetti ylhaalta on ISOMPI ja MUUTTUU kuvakulman
+    mukaan. SADETTA EI SIIS VOI OLETTAA KIINTEAKSI - se on YKSI vapaa
+    parametri [X,Y,R] taman sovituksen tehtavassa (korkeus Z pidetaan
+    kiinteana H_total:ina yksinkertaisuuden vuoksi).
 
-    ITEROI (katso alla): koska rajapisteiden HAKUALUE (rengas
-    ennustetun keskipisteen ymparilla) riippuu itse ANNETUSTA
-    (X0_approx,Y0_approx):sta JA sateesta, yhden kierroksen sovitus on
-    HERKKA alkuarvaukselle. Korjattu ITEROIMALLA: joka kierroksella
-    haetaan rajapisteet EDELLISEN kierroksen tuloksen (seka sijainti
-    etta sade) ymparilta ja sovitetaan uudelleen - konvergoituu samaan
-    tulokseen alkuarvauksesta riippumatta (kunhan karkea haku,
-    kamera9_02.py:n tilakone, tuo alkuarvauksen riittavan lahelle).
+    ITEROI: koska renkaan rajapisteiden HAKUALUE riippuu itse nykyi-
+    sesta parhaasta arviosta, yhden kierroksen sovitus on herkka
+    alkuarvaukselle. Joka kierroksella haetaan renkaan rajapisteet
+    UUDELLEEN nykyisen (X,Y,R):n ymparilta (runko-kontuuri haetaan
+    vain kerran - sen haku ei ole yhta herkka pienille siirtymille).
 
-    Palauttaa dictin: X_cm, Y_cm (hienosaadettu TAI - jos rajaa ei
-    loytynyt luotettavasti - alkuperainen approksimaatio), tarkka
-    (bool, onnistuiko alipikselisovitus), n_points (loydettyjen
-    alipikselipisteiden maara viimeiselta kierrokselta), rms_px
-    (sovituksen jaannosvirhe - None jos ei sovitettu), ring_radius_cm
-    (sovitettu varirajan sade - diagnostinen, ei fyysinen mitta).
+    Palauttaa dictin: X_cm, Y_cm (yhteissovitettu TAI - jos kumpikaan
+    lahde ei antanut riittavasti tietoa - alkuperainen approksimaatio),
+    tarkka (bool), n_body/n_ring (kaytettyjen pisteiden maarat),
+    rms_px (yhdistetty jaannosvirhe), ring_radius_cm (diagnostinen).
     """
 
-    ring_height_cm = profile["H_total_cm"]
+    R_max, H_total, shape_deltas = profile["R_max_cm"], profile["H_total_cm"], profile["shape_deltas"]
+    ring_height_cm = H_total
 
-    ring_r_frac_guess = float((k9._TEMPLATE_R_FRAC + profile["shape_deltas"])[-1])
-    R_cur = ring_r_frac_guess * profile["R_max_cm"]
-    X_cur, Y_cur = X0_approx, Y0_approx
-    observed_pts = np.zeros((0, 2))
+    # --- Runko-kontuuri (kertaalleen, suodatettuna kahvan peittamista
+    # kohdista - katso _filter_ice_boundary_points:in kommentti) ---
+    mask = k9.create_granite_mask(frame_u)
+    approx_pt3d = np.array([[X0_approx, Y0_approx, H_total / 2.0]])
+    u0, v0 = k9._project_3d(pose["K"], pose["R"], pose["t"], approx_pt3d)
+    approx_px = (float(u0[0]), float(v0[0]))
+
+    raw_contour = _find_contour_near(mask, approx_px)
+    body_pts = (
+        _filter_ice_boundary_points(frame_u, raw_contour)
+        if raw_contour is not None else np.zeros((0, 2))
+    )
+    n_body = len(body_pts)
+
+    ring_r_frac_guess = float((k9._TEMPLATE_R_FRAC + shape_deltas)[-1])
+    X_cur, Y_cur, R_cur = X0_approx, Y0_approx, ring_r_frac_guess * R_max
+    ring_pts = np.zeros((0, 2))
     rms_px = None
+
+    def residuals(pts_body, pts_ring):
+        def f(params):
+            X, Y, R = params
+            parts = []
+            if len(pts_body) > 0:
+                parts.append(k9._profile_residuals_for_stone(
+                    pose, X, Y, R_max, H_total, shape_deltas, pts_body, len(pts_body)
+                ))
+            if len(pts_ring) > 0:
+                parts.append(_ring_point_residuals(pose, X, Y, R, ring_height_cm, pts_ring))
+            return np.concatenate(parts) if parts else np.zeros(0)
+        return f
 
     for _ in range(BOUNDARY_MAX_ITERATIONS):
 
@@ -311,64 +422,61 @@ def refine_position_via_handle_boundary(frame_u, pose, profile, X0_approx, Y0_ap
         cx_px, cy_px = float(u[0]), float(v[0])
         r_px_approx = math.hypot(float(u[1]) - cx_px, float(v[1]) - cy_px)
 
-        if r_px_approx < BOUNDARY_MIN_PREDICTED_RADIUS_PX:
+        ring_pts = np.zeros((0, 2))
+
+        if r_px_approx >= BOUNDARY_MIN_PREDICTED_RADIUS_PX:
+            candidate_ring_pts = _detect_boundary_points(frame_u, cx_px, cy_px, r_px_approx)
+            # Katso _angular_spread_deg:in kommentti - kapea kaari ei
+            # riita, vaikka pisteita olisi maarallisesti tarpeeksi.
+            if (len(candidate_ring_pts) >= BOUNDARY_MIN_VALID_POINTS and
+                    _angular_spread_deg(candidate_ring_pts, cx_px, cy_px) >= BOUNDARY_MIN_ANGULAR_SPREAD_DEG):
+                ring_pts = candidate_ring_pts
+
+        n_ring = len(ring_pts)
+
+        if n_body < BODY_MIN_VALID_POINTS and n_ring < BOUNDARY_MIN_VALID_POINTS:
             return {
-                "X_cm": X0_approx, "Y_cm": Y0_approx,
-                "tarkka": False, "n_points": 0, "rms_px": None, "ring_radius_cm": None,
+                "X_cm": X0_approx, "Y_cm": Y0_approx, "tarkka": False,
+                "n_body": n_body, "n_ring": n_ring, "rms_px": None, "ring_radius_cm": None,
             }
-
-        observed_pts = _detect_boundary_points(frame_u, cx_px, cy_px, r_px_approx)
-
-        if len(observed_pts) < BOUNDARY_MIN_VALID_POINTS:
-            return {
-                "X_cm": X0_approx, "Y_cm": Y0_approx,
-                "tarkka": False, "n_points": len(observed_pts), "rms_px": None, "ring_radius_cm": None,
-            }
-
-        # Katso _angular_spread_deg:in kommentti - kapea kaari (esim.
-        # vain toisella puolella) ei riita, VAIKKA pisteita olisi
-        # maarallisesti tarpeeksi. Tarkistetaan JOKA kierroksella (ei
-        # vain viimeisella) - narrow-kaari johtaisi muuten myos
-        # seuraavan kierroksen keskipisteen VAARAAN suuntaan.
-        spread_deg = _angular_spread_deg(observed_pts, cx_px, cy_px)
-
-        if spread_deg < BOUNDARY_MIN_ANGULAR_SPREAD_DEG:
-            return {
-                "X_cm": X0_approx, "Y_cm": Y0_approx,
-                "tarkka": False, "n_points": len(observed_pts), "rms_px": None, "ring_radius_cm": None,
-            }
-
-        def residuals(pts):
-            def f(params):
-                return _ring_point_residuals(
-                    pose, params[0], params[1], params[2], ring_height_cm, pts
-                )
-            return f
 
         params0 = np.array([X_cur, Y_cur, R_cur], dtype=np.float64)
-        params_final = k8._levenberg_marquardt(residuals(observed_pts), params0, max_iterations=30)
+        res_fn = residuals(body_pts, ring_pts)
+        params_final = k8._levenberg_marquardt(res_fn, params0, max_iterations=30)
 
-        # KARKEA SOVITUS + POIKKEAMIEN HYLKAYS: LEVEA hakuvyo (katso
-        # BOUNDARY_RADIUS_SEARCH_FACTOR_*:in kommentti) poimii joskus
-        # pisteita jotka eivat oikeasti ole varirajalla (esim. kiven
-        # ULKOreuna jaata vasten, tai kiiltokohta) - nama nakyvat
-        # SUURINA jaannosvirheina ensimmaisessa sovituksessa. Hylataan
-        # pisteet joiden jaannos on yli 3x mediaani-itseisarvopoikkeama
-        # (MAD, robusti keskihajonnan arvio), ja sovitetaan KERRAN
-        # uudelleen puhtaalla pistejoukolla - yksi IRLS-tyylinen
-        # puhdistuskierros.
-        resid0 = residuals(observed_pts)(params_final)
-        mad = float(np.median(np.abs(resid0 - np.median(resid0)))) + 1e-6
-        inlier_mask = np.abs(resid0 - np.median(resid0)) < 3.0 * 1.4826 * mad
+        # POIKKEAMIEN HYLKAYS kummallekin lahteelle ERIKSEEN (eri
+        # tarkkuustasot - runko pikselitason kontuuri, rengas alipik-
+        # seli - MAD-kynnys sovitetaan kummankin OMAAN hajontaan) ja
+        # yksi uudelleensovitus puhdistetulla yhdistetylla joukolla.
+        clean_body = body_pts
+        clean_ring = ring_pts
 
-        if np.count_nonzero(inlier_mask) >= BOUNDARY_MIN_VALID_POINTS:
-            observed_pts = observed_pts[inlier_mask]
+        if n_body > 0:
+            body_resid = k9._profile_residuals_for_stone(
+                pose, params_final[0], params_final[1], R_max, H_total, shape_deltas,
+                body_pts, len(body_pts)
+            )
+            mad_b = float(np.median(np.abs(body_resid - np.median(body_resid)))) + 1e-6
+            body_inliers = np.abs(body_resid - np.median(body_resid)) < 3.0 * 1.4826 * mad_b
+            if np.count_nonzero(body_inliers) >= BODY_MIN_VALID_POINTS:
+                clean_body = body_pts[body_inliers]
+
+        if n_ring > 0:
+            ring_resid = _ring_point_residuals(
+                pose, params_final[0], params_final[1], params_final[2], ring_height_cm, ring_pts
+            )
+            mad_r = float(np.median(np.abs(ring_resid - np.median(ring_resid)))) + 1e-6
+            ring_inliers = np.abs(ring_resid - np.median(ring_resid)) < 3.0 * 1.4826 * mad_r
+            if np.count_nonzero(ring_inliers) >= BOUNDARY_MIN_VALID_POINTS:
+                clean_ring = ring_pts[ring_inliers]
+
+        if len(clean_body) != n_body or len(clean_ring) != n_ring:
             params_final = k8._levenberg_marquardt(
-                residuals(observed_pts), params_final, max_iterations=30
+                residuals(clean_body, clean_ring), params_final, max_iterations=30
             )
 
-        resid = residuals(observed_pts)(params_final)
-        rms_px = float(np.sqrt(np.mean(resid ** 2)))
+        resid_final = residuals(clean_body, clean_ring)(params_final)
+        rms_px = float(np.sqrt(np.mean(resid_final ** 2))) if len(resid_final) else None
 
         X_new, Y_new, R_new = float(params_final[0]), float(params_final[1]), float(abs(params_final[2]))
         moved = math.hypot(X_new - X_cur, Y_new - Y_cur)
@@ -381,15 +489,13 @@ def refine_position_via_handle_boundary(frame_u, pose, profile, X0_approx, Y0_ap
 
     if total_shift > BOUNDARY_MAX_SHIFT_FROM_APPROX_CM:
         return {
-            "X_cm": X0_approx, "Y_cm": Y0_approx,
-            "tarkka": False, "n_points": len(observed_pts), "rms_px": rms_px,
-            "ring_radius_cm": None,
+            "X_cm": X0_approx, "Y_cm": Y0_approx, "tarkka": False,
+            "n_body": n_body, "n_ring": len(ring_pts), "rms_px": rms_px, "ring_radius_cm": None,
         }
 
     return {
-        "X_cm": X_cur, "Y_cm": Y_cur,
-        "tarkka": True, "n_points": len(observed_pts), "rms_px": rms_px,
-        "ring_radius_cm": R_cur,
+        "X_cm": X_cur, "Y_cm": Y_cur, "tarkka": True,
+        "n_body": n_body, "n_ring": len(ring_pts), "rms_px": rms_px, "ring_radius_cm": R_cur,
     }
 
 
@@ -399,10 +505,11 @@ def refine_position_via_handle_boundary(frame_u, pose, profile, X0_approx, Y0_ap
 # Tilakone on SAMA kuin kamera9_02.py:ssa (karkea ristikkohaku HAKU-
 # ja SEURANTA-vaiheissa - katso sen kommentti). Ainoa ero: JOKAISEN
 # onnistuneen karkean paikannuksen JALKEEN yritetaan taman tiedoston
-# refine_position_via_handle_boundary - CSV:hen kirjoitetaan AINA
-# hienosaadettu (tai, jos epaonnistui, karkea) sijainti + "tarkka"-
-# lippu jotta kayttaja nakee milloin alle-pikselin-tarkkuus todella
-# saavutettiin.
+# refine_position_joint - CSV:hen kirjoitetaan AINA yksi yhteinen
+# (runko+rengas) hienosaadettu (tai, jos epaonnistui, karkea) sijainti
+# + "tarkka"-lippu jotta kayttaja nakee milloin alle-pikselin-tarkkuus
+# todella saavutettiin. EI FRAME-VALISTA SUODATUSTA - raaka data
+# kirjoitetaan sellaisenaan, kayttaja tekee tarkkuusanalyysin itse.
 # ============================================================
 
 def search_and_track_stones_precise(video_path, calib, pose, profile, csv_path,
@@ -434,7 +541,8 @@ def search_and_track_stones_precise(video_path, calib, pose, profile, csv_path,
     with open(csv_path, "w", newline="") as f:
 
         writer = csv.writer(f)
-        writer.writerow(["frame", "timestamp_s", "stone_id", "x_m", "y_m", "tarkka", "n_reunapistetta", "rms_px"])
+        writer.writerow(["frame", "timestamp_s", "stone_id", "x_m", "y_m", "tarkka",
+                          "n_runkopistetta", "n_reunapistetta", "rms_px", "rengas_r_cm"])
 
         frame_idx = 0
 
@@ -470,14 +578,15 @@ def search_and_track_stones_precise(video_path, calib, pose, profile, csv_path,
                     misses = 0
                     state = "SEURANTA"
 
-                    refined = refine_position_via_handle_boundary(frame_u, pose, profile, bx, by)
+                    refined = refine_position_joint(frame_u, pose, profile, bx, by)
                     last_xy = (refined["X_cm"], refined["Y_cm"])
 
                     if progress:
                         tarkka_str = f"KYLLA (rms={refined['rms_px']:.2f}px)" if refined["tarkka"] else "EI (karkea)"
                         print(f"[frame {frame_idx}] LOYTYI kivi {stone_id}: "
                               f"({last_xy[0]:.1f}, {last_xy[1]:.1f}) cm, peitto={score:.2f}, "
-                              f"alipikselitarkkuus={tarkka_str}")
+                              f"alipikselitarkkuus={tarkka_str} (runko={refined['n_body']}, "
+                              f"rengas={refined['n_ring']})")
 
                     if refined["tarkka"]:
                         n_precise += 1
@@ -486,8 +595,9 @@ def search_and_track_stones_precise(video_path, calib, pose, profile, csv_path,
                     writer.writerow([
                         frame_idx, f"{timestamp:.3f}", stone_id,
                         f"{last_xy[0] / 100.0:.5f}", f"{last_xy[1] / 100.0:.5f}",
-                        int(refined["tarkka"]), refined["n_points"],
+                        int(refined["tarkka"]), refined["n_body"], refined["n_ring"],
                         f"{refined['rms_px']:.3f}" if refined["rms_px"] is not None else "",
+                        f"{refined['ring_radius_cm']:.3f}" if refined["ring_radius_cm"] is not None else "",
                     ])
                     n_written += 1
 
@@ -502,7 +612,7 @@ def search_and_track_stones_precise(video_path, calib, pose, profile, csv_path,
                 if score >= k92.TRACK_SCORE_THRESHOLD:
                     misses = 0
 
-                    refined = refine_position_via_handle_boundary(frame_u, pose, profile, bx, by)
+                    refined = refine_position_joint(frame_u, pose, profile, bx, by)
                     last_xy = (refined["X_cm"], refined["Y_cm"])
 
                     if refined["tarkka"]:
@@ -512,8 +622,9 @@ def search_and_track_stones_precise(video_path, calib, pose, profile, csv_path,
                     writer.writerow([
                         frame_idx, f"{timestamp:.3f}", stone_id,
                         f"{last_xy[0] / 100.0:.5f}", f"{last_xy[1] / 100.0:.5f}",
-                        int(refined["tarkka"]), refined["n_points"],
+                        int(refined["tarkka"]), refined["n_body"], refined["n_ring"],
                         f"{refined['rms_px']:.3f}" if refined["rms_px"] is not None else "",
+                        f"{refined['ring_radius_cm']:.3f}" if refined["ring_radius_cm"] is not None else "",
                     ])
                     n_written += 1
                 else:
