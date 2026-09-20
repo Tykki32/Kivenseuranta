@@ -927,19 +927,30 @@ def render_profile_front_view(profile, output_path, px_per_cm=25.0, margin_px=50
 # yksityiskohtiin.
 #
 # Profiili (normalisoitu, z_frac ja r_frac molemmat valilla [0,1]):
-# karkea kasinarvio curling-kiven poikkileikkauksesta SIVULTA - kapea
-# tasainen ylaosa (kahvan pulttaus), levenee alaspain, leveimmillaan
-# lahella pohjaa (juoksurengas), sitten hieman kaventuu ihan pohjassa
-# (kovera alusta). Kontrollipisteet: (z_frac, r_frac).
-# ============================================================
-
+# MITATTU OIKEASTA KIVESTA (kayttaja lisasi Kivi.jpg-referenssikuvan -
+# kivi kuvattuna tasan sivulta poydalla). Mitattu kuvankasittelylla:
+# graniitin aariviiva segmentoitiin (rajattu keltaisesta kahvasta ja
+# taustasta), leveys mitattiin joka rivilla, normalisoitu leveimman
+# kohdan (max leveys) suhteen. Tama KORVAA aiemman kasin-arvatun
+# mallin (joka oletti leveimman kohdan lahella pohjaa - VAARIN, katso
+# git-historia) - todellisuudessa leveimmillaan LAHELLA KESKIKORKEUTTA
+# (n. 45-60% korkeudesta), ja profiili on suht. SYMMETRINEN ylhaalta
+# alas (poikkeuksena aivan ylin reuna, jossa kahvan kiinnityslevy
+# peittaa/rajaa nakyvan graniitin jyrkasti - sama efekti nakyy myos
+# ylhaaltapain-kuvissa, koska sielläkin kahva rajataan pois
+# saturaatiolla, joten tama on OIKEA vertailukohta). Pohjan (z=0)
+# tarkka arvo on arvio (poydan/varjon reunalla vaikea mitata tarkasti
+# kuvasta - katso git-historia), muu on suoraan mitattua.
 STONE_PROFILE_TEMPLATE_NORM = [
-    (0.00, 0.80),   # pohja (kovera alusta, juoksurenkaan reuna)
-    (0.10, 1.00),   # "paiva" - leveimmillaan, hieman pohjan ylapuolella
-    (0.35, 0.97),   # pysyy lahella maksimia
-    (0.60, 0.86),   # alkaa kaventua kohti kupua
-    (0.82, 0.62),   # kupu
-    (1.00, 0.38),   # tasainen ylaosa (kahvan pulttaus)
+    (0.00, 0.75),   # pohja (arvioitu - kovera alusta, ei tarkkaan mitattavissa kuvasta)
+    (0.18, 0.94),   # levenee nopeasti
+    (0.30, 0.98),
+    (0.45, 1.00),   # "paiva" - leveimmillaan
+    (0.60, 1.00),   # pysyy leveimmillaan (loiva huippu, ei terava)
+    (0.75, 0.97),
+    (0.88, 0.90),
+    (0.96, 0.81),
+    (1.00, 0.37),   # kahvan kiinnityslevyn reuna - jyrkka rajaus
 ]
 
 _TEMPLATE_Z_FRAC = np.array([p[0] for p in STONE_PROFILE_TEMPLATE_NORM])
