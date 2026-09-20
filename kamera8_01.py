@@ -4330,18 +4330,28 @@ def refine_geometric_homography(frame_undistorted, H_init, near_pts, near_phys,
         ])
         hog_strength = np.concatenate([near_hog_w, far_hog_w])
 
-        # Painot kaukaisen renkaan/hoglinen ryhmille: NIIDEN OMASTA
-        # residuaalihajonnasta NYKYISELLA H_current:lla arvioitu
-        # (inverse-variance) kohinataso, ylhaalta rajattu lahemman
-        # pesan luottamustasolla (NEAR_TRUST_FLOOR_CM) - katso
-        # _robust_scale_cm:in kommentti. Ei kasin viritetty vakio.
+        # Kaukaisen renkaan paino: NIIDEN OMASTA residuaalihajonnasta
+        # NYKYISELLA H_current:lla arvioitu (inverse-variance) kohina-
+        # taso, ylhaalta rajattu lahemman pesan luottamustasolla
+        # (NEAR_TRUST_FLOOR_CM) - katso _robust_scale_cm:in kommentti.
         far_resid_now = _far_ring_distance(H_current, far_pts, far_radius)
         far_scale = _robust_scale_cm(far_resid_now, NEAR_TRUST_FLOOR_CM)
         far_weight = 1.0 / far_scale
 
-        hog_resid_now = _hogline_distance(H_current, hog_pts, hog_y)
-        hog_scale = _robust_scale_cm(hog_resid_now, NEAR_TRUST_FLOOR_CM)
-        hog_weight = (1.0 / hog_scale) * hog_strength
+        # Hoglinen paino EI ole enaa itsekalibroitu jaljella olevasta
+        # residuaalihajonnasta (kayttajan huomio: kaukainen hogline
+        # PITAA maarata H:ta - l' = H^-T l - eika sen anneta vaientua
+        # vain siksi etta nykyinen H viela vaarasti pyorittaa sen).
+        # Nyt kun detect_hogline_points valitsee klusterin OIKEIN
+        # (keskiviivaekstrapolointi nimellista riviä vasten, ei enaa
+        # pistemaaran enemmisto - katso funktion kommentti), pisteet
+        # OVAT todistetusti oikea fyysinen hogline eivatka kontaminaatio
+        # - jaljella oleva iso residuaali on siis AITO, KORJATTAVA
+        # kiertovirhe H:ssa, ei kohinaa, eika sita pida sekoittaa
+        # kaukaisen renkaan kanssa samaan itsekalibrointiin (jonka
+        # residuaali ON aitoa kohinaa). Paino on siis KIINTEA, samalla
+        # luottamustasolla kuin lahempi pesa (NEAR_TRUST_FLOOR_CM).
+        hog_weight = hog_strength / NEAR_TRUST_FLOOR_CM
 
         H_new = solve_homography_geometric(
             H_current, near_pts, near_phys, far_pts, far_radius, far_weight,
@@ -4359,7 +4369,7 @@ def refine_geometric_homography(frame_undistorted, H_init, near_pts, near_phys,
         print(f"[Geometrinen korjaus {iteration}/{max_iterations}] "
               f"lahempi RMS: {rms:.4f} cm, {house_quality_str(quality)} "
               f"(kaukaisen renkaan pisteita {len(far_pts)}, paino {far_weight:.3f}; "
-              f"hogline-pisteita {len(hog_pts)}, paino {1.0 / hog_scale:.3f})")
+              f"hogline-pisteita {len(hog_pts)}, keskipaino {1.0 / NEAR_TRUST_FLOOR_CM:.3f})")
 
         # Hyvaksytaan kierroksen tulos VAIN jos se ei huononna pesien
         # muotoa/kokoa merkittavasti (candidate_is_better, sama portti
