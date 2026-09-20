@@ -3323,52 +3323,125 @@ def _split_two_line_clusters(points, iterations=10):
     return group_a, group_b
 
 
-def _select_best_hogline_cluster(points, min_points):
+def _hogline_center_row_estimate(signal, y1, cx_full, center_tolerance_px,
+                                  min_peak_strength, num_subsegments=6):
+    """
+    Etsii TIHEASTI, VAIN keskiviivan (fyysinen X=0, +-center_tolerance_px)
+    laheisyydessa, mika rivi siella on tummin - RIIPPUMATON koko
+    leveyden 14 segmentin karkeasta ruudukosta, jonka satunnainen
+    kohdistus ei aina osu tasan keskiviivan kohdalle (havaittu:
+    00008.png:lla seka sponsoriteksti etta oikea hogline sattuivat
+    molemmat osumaan koko leveyden ruudukossa yhteen samaan lahes-
+    keskiviivan-segmenttiin, joten pelkka "onko klusterilla piste
+    lahella keskiviivaa" ei erotellut niita - katso _select_best_
+    hogline_cluster:in kommentti).
+
+    Palauttaa enemmiston (tai ainoan loydetyn) rivin mediaanin, tai
+    None jos taalla ei loytynyt yhtaan riittavan vahvaa huippua.
+    """
+
+    cw = signal.shape[1]
+    x0 = max(0, int(round(cx_full - center_tolerance_px)))
+    x1 = min(cw, int(round(cx_full + center_tolerance_px)))
+
+    if x1 - x0 < num_subsegments * 3:
+        return None
+
+    sub_width = (x1 - x0) / num_subsegments
+    peaks = []
+
+    for j in range(num_subsegments):
+
+        sx0 = int(round(x0 + j * sub_width))
+        sx1 = int(round(x0 + (j + 1) * sub_width))
+
+        if sx1 - sx0 < 2:
+            continue
+
+        segment = signal[:, sx0:sx1]
+        row_profile = segment.mean(axis=1)
+        baseline = float(np.median(row_profile))
+        peak_row = int(np.argmax(row_profile))
+        strength = float(row_profile[peak_row]) - baseline
+
+        if strength >= min_peak_strength:
+            peaks.append(float(y1 + peak_row))
+
+    if not peaks:
+        return None
+
+    peaks_arr = np.array(peaks)
+
+    if len(peaks_arr) >= 4:
+        # Sama bimodaalisuusongelma voi esiintya TAALLAKIN pienemmassa
+        # mittakaavassa (jos seka teksti etta hogline ulottuvat tasan
+        # keskiviivalle asti) - valitaan enemmiston tukema rivi, sama
+        # periaate kuin _select_best_hogline_cluster:issa.
+        sub_a, sub_b = _split_two_line_clusters([(0.0, y, 1.0) for y in peaks_arr])
+        if sub_b:
+            chosen = sub_a if len(sub_a) >= len(sub_b) else sub_b
+            peaks_arr = np.array([p[1] for p in chosen])
+
+    return float(np.median(peaks_arr))
+
+
+def _select_best_hogline_cluster(points, min_points, center_row_estimate):
     """
     Valitsee KAHDEN mahdollisen hogline-klusterin (_split_two_line_
     clusters) valilta sen joka OIKEASTI edustaa todellista, radalle
     maalattua hoglinea - katso detect_hogline_points:in kommentti
     kokonaisperustelulle.
 
-    Valintaperuste: PISTEMAARAN ENEMMISTO (kamera7_06.py). Kokeiltiin
-    ensin painotetun suora-sovituksen jaannosneliokeskiarvoa (tiukempi
-    sovitus voittaa) - HYLATTY empiirisen todisteen perusteella: se
-    valitsi VAARAN klusterin MOLEMMILLA testikuvilla. Sponsoritekstin/
-    tarran tummuushuippu osoittautui usein TIUKEMMIN (johdonmukaisemmin)
-    paikannettavaksi kuin itse hogline (joka on kauempana, himmeampi ja
-    siksi altis suuremmalle rivikohtaiselle kohinalle) - "tiukempi
-    sovitus" ei siis ole todellisen hoglinen tunnusmerkki tassa
-    aineistossa, PAATTAEN sen etumerkin verran vaarin.
+    KESKIVIIVAVARMISTUS (kayttajan pyynnosta): hogline on fyysisesti
+    olemassa MYOS keskiviivan (fyysinen X=0) kohdalla, koska se
+    ulottuu radan koko leveydelta. Ratkaiseva tieto siita MIKA rivi
+    keskiviivalla oikeasti on, tulee OMASTA, ERILLISESTA, TIHEASTA
+    haustaan (center_row_estimate, katso detect_hogline_points - pelkka
+    "onko klusterilla PISTE lahella keskiviivaa" -tarkistus EI riittanyt:
+    seka oikea hogline etta sponsoriteksti saattavat molemmat sattua
+    osumaan koko leveyden 14 segmentin satunnaiseen ruudukkoon juuri
+    keskiviivan tuntumassa, jolloin ne eivat erotu toisistaan - katso
+    diagnoosi, 00008.png). Klusteri valitaan siis SEN PERUSTEELLA KUMPI
+    on lahempana center_row_estimate:aa (ei enaa pistemaaran enemmisto)
+    - tama on suoraan se rivi jonka tiheampi, vain keskiviivan
+    lahiymparistoon (+-30 cm) kohdistettu haku loysi.
 
-    Pistemaaran enemmisto sen sijaan toimi luotettavasti molemmilla
-    testikuvilla: todellinen hogline on radalla FYYSISESTI olemassa
-    koko leveydelta, joten sen tummuushuippu on todennakoisemmin
-    USEIMPIEN segmenttien vahvin (ainakin ENEMMISTOSSA segmentteja) -
-    sponsoriteksti/tarra taas on tyypillisesti paikallisempi/kapeampi,
-    joten se "voittaa" vain VAHEMMISTOSSA segmentteja, vaikka olisikin
-    paikoin tummempi.
-
-    Jos jako ei loydy (group_b tyhja) tai kumpikaan ryhma ei tayta
-    min_points:ia, palautetaan alkuperainen (jakamaton) pistejoukko -
-    talloin tavallinen mediaani+MAD-hylkays hoitaa loput.
+    Jos center_row_estimate on None (tiheampi keskiviivahaku ei
+    loytanyt mitaan luotettavaa), havaintoa ei voida vahvistaa -
+    palautetaan tyhja lista sen sijaan etta arvattaisiin vaarin.
     """
+
+    if center_row_estimate is None:
+        return []
 
     group_a, group_b = _split_two_line_clusters(points)
 
     if not group_b:
-        return points
+        candidates = [points]
+    else:
+        enough_a = len(group_a) >= min_points
+        enough_b = len(group_b) >= min_points
 
-    enough_a = len(group_a) >= min_points
-    enough_b = len(group_b) >= min_points
+        if not enough_a and not enough_b:
+            candidates = [points]
+        elif enough_a and not enough_b:
+            candidates = [group_a]
+        elif enough_b and not enough_a:
+            candidates = [group_b]
+        else:
+            candidates = [group_a, group_b]
 
-    if not enough_a and not enough_b:
-        return points
-    if enough_a and not enough_b:
-        return group_a
-    if enough_b and not enough_a:
-        return group_b
+    best = min(
+        candidates,
+        key=lambda grp: abs(float(np.median([p[1] for p in grp])) - center_row_estimate)
+    )
 
-    return group_a if len(group_a) >= len(group_b) else group_b
+    CENTER_ROW_TOLERANCE_PX = 60.0
+
+    if abs(float(np.median([p[1] for p in best])) - center_row_estimate) > CENTER_ROW_TOLERANCE_PX:
+        return []
+
+    return best
 
 
 def detect_hogline_points(
@@ -3376,7 +3449,8 @@ def detect_hogline_points(
     edge_margin_frac=0.1, bg_sigma=40.0,
     num_segments=14, min_peak_strength=2.0,
     outlier_iterations=3, outlier_mad_multiplier=3.0, min_points=6,
-    max_peaks_per_segment=1, min_peak_separation_px=20
+    max_peaks_per_segment=1, min_peak_separation_px=20,
+    center_window_cm=30.0
 ):
     """
     NOPEUSOPTIMOINTI (kamera7_02.py) -saakka hogline-viivalle sovitettiin
@@ -3421,23 +3495,29 @@ def detect_hogline_points(
     kohinaisempi) hogline, molemmilla testikuvilla. "Tiukempi sovitus"
     EI ole todellisen hoglinen tunnusmerkki tassa aineistossa.
 
-    NYKYINEN (todennettu toimivaksi MOLEMMILLA testikuvilla) ratkaisu:
-    LEVEA hakukaista (±400 cm, ennallaan) + YKSI huippu/segmentti
-    (max_peaks_per_segment=1, kuten alunperin) + KAHDEN KLUSTERIN jako
-    y-koordinaatin mukaan (_split_two_line_clusters, 1D k-means) +
-    PISTEMAARAN ENEMMISTO klusterin valintaperusteena (katso
-    _select_best_hogline_cluster:in kommentti) + tavallinen mediaani+
-    MAD-hylkays SEN JALKEEN valitun klusterin SISALLA (siivoaa viela
+    NYKYINEN ratkaisu: LEVEA hakukaista (±400 cm, ennallaan) + YKSI
+    huippu/segmentti (max_peaks_per_segment=1, kuten alunperin) +
+    KAHDEN KLUSTERIN jako y-koordinaatin mukaan (_split_two_line_
+    clusters, 1D k-means) + PISTEMAARAN ENEMMISTO klusterin valinta-
+    perusteena TOISSIJAISESTI + KESKIVIIVAVARMISTUS ENSISIJAISESTI
+    (kayttajan pyynnosta: hogline hyvaksytaan vain jos silla on piste
+    keskiviivan, fyysinen X=0, +-center_window_cm laheisyydessa - katso
+    _select_best_hogline_cluster:in kommentti taydelle perustelulle,
+    mm. diagnoosille jossa 00008.png:n "kaukainen hogline" osoittautui
+    tekstiksi joka EI ulottunut keskelle) + tavallinen mediaani+MAD-
+    hylkays SEN JALKEEN valitun klusterin SISALLA (siivoaa viela
     jaljelle jaavan pienemman kohinan, esim. yksittaisen kaukaisen
     poikkeavan pisteen).
 
     Palauttaa listan (x_px, y_px, strength) top-down-kuvan TAYSISSA
     pikselikoordinaateissa (ei kaistan sisaisissa) - vain sailyneet
-    (ei-poikkeavat) pisteet poikkeavien hylkayksen jalkeen.
+    (ei-poikkeavat) pisteet poikkeavien hylkayksen jalkeen, tai tyhjan
+    listan jos keskiviivalla ei havaittu luotettavaa viivaa lainkaan.
     """
 
-    _, row_f = to_output_px(0.0, expected_y_cm)
+    cx_full, row_f = to_output_px(0.0, expected_y_cm)
     row = int(round(row_f))
+    center_tolerance_px = center_window_cm * PIXELS_PER_CM
 
     half_px = int(half_height_cm * PIXELS_PER_CM)
 
@@ -3532,16 +3612,22 @@ def detect_hogline_points(
     if len(raw_points) < min_points:
         return raw_points
 
-    # KAHDEN KLUSTERIN EROTUS (kamera7_06.py, katso funktion kommentti):
-    # jos hakukaistassa on kaksi erillista tummaa piirretta (todellinen
-    # hogline + esim. sponsoriteksti/tarra), pistejoukko on usein
-    # BIMODAALINEN y-koordinaatin suhteen. Jaetaan pisteet kahteen
-    # ryhmaan (_split_two_line_clusters) ja valitaan se ryhma jonka
-    # PAINOTETTU SUORA-SOVITUS on tiukempi (todellinen hogline on
-    # geometrisesti tasan suora, toisin kuin teksti/tarra) - RIIPPUMATON
-    # etaisyydesta oletettuun keskustaan (todettu tarkeaksi: se ei aina
-    # ole luotettava tunnusmerkki, katso funktion kommentti).
-    raw_points = _select_best_hogline_cluster(raw_points, min_points)
+    # TIHEA HAKU VAIN KESKIVIIVAN LAHEISYYDESSA (+-center_window_cm) -
+    # katso _hogline_center_row_estimate:in kommentti. Tama on
+    # RIIPPUMATON koko leveyden 14 segmentin karkeasta ruudukosta ja
+    # kertoo suoraan milla rivilla keskiviivalla oikeasti on jotain.
+    center_row_estimate = _hogline_center_row_estimate(
+        signal, y1, cx_full, center_tolerance_px, min_peak_strength
+    )
+
+    # KAHDEN KLUSTERIN EROTUS + KESKIVIIVAVARMISTUS (katso _select_best_
+    # hogline_cluster:in kommentti): jos hakukaistassa on kaksi erillista
+    # tummaa piirretta (todellinen hogline + esim. sponsoriteksti/tarra),
+    # pistejoukko on usein BIMODAALINEN y-koordinaatin suhteen. Valitaan
+    # se ryhma joka on LAHIMPANA keskiviivan omaa, erikseen mitattua
+    # rivia (center_row_estimate) - todellinen hogline ulottuu sinne,
+    # teksti/tarra ei valttamatta samalle riville.
+    raw_points = _select_best_hogline_cluster(raw_points, min_points, center_row_estimate)
 
     # Poikkeavien hylkays: sovitetaan painotettu suora y = a*x + b
     # jaljella oleviin pisteisiin, hylataan ne joiden jaannos poikkeaa
