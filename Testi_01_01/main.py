@@ -123,9 +123,32 @@ CALIB_MODE_SAMPLE_INTERVAL_SECONDS = 5.0
 # ============================================================
 
 STONE_SCAN_INTERVAL_SECONDS = 2.0
-STONE_SCAN_X_HALF_WIDTH_CM = (k8.OUTPUT_X_MAX_CM - k8.OUTPUT_X_MIN_CM) / 2.0
-STONE_SCAN_Y_MIN_CM = k8.OUTPUT_Y_MIN_CM
-STONE_SCAN_Y_MAX_CM = k8.OUTPUT_Y_MAX_CM
+
+# HUOM: k9.find_stone_candidates suodattaa jo OLETUKSENA koko radan
+# fyysisiin rajoihin (k8.OUTPUT_X/Y_MIN/MAX_CM + sheet_margin_cm) -
+# ei tarvita omaa erillista rajausta, "koko rata" tulee ilmaiseksi.
+
+# Kahden peräkkäisen skannauksen (STONE_SCAN_INTERVAL_SECONDS valein)
+# valinen siirtyma, jonka ylittava sama (lahin) kandidaatti tulkitaan
+# AIDOSTI LIIKKUVAKSI kiveksi (ei paikallaan olevaksi) - hidaskin
+# liu'un loppuvaihe siirtyy enemman kuin tama 2 sekunnissa.
+STONE_MOTION_THRESHOLD_CM = 15.0
+
+# ============================================================
+# 3D-PROFIILIN RIITTAVYYDEN VALIDOINTI
+#
+# Kayttajan pyynnosta: yksittainen loydetty/seurattu kivi ei aina
+# riita hyvaan profiiliin (esim. kivi nakyy vain lyhyesti alussa) -
+# sovitusta (k9.fit_stone_profile) YRITETAAN jokaisen uuden loydetyn
+# kiven jalkeen KAIKKIEN TAHAN ASTI kerattyjen havaintojen paalla, ja
+# hyvaksytaan vasta kun se on RIITTAVAN hyva nailla kynnysarvoilla -
+# muuten jatketaan koko radan skannausta ja kerataan lisaa (mahdollisesti
+# eri kivesta/hetkesta), YHDISTAEN havainnot samaan sovitukseen.
+# ============================================================
+
+PROFILE_MAX_RMS_PX = 5.0
+PROFILE_MIN_SAMPLES = 15
+PROFILE_SAMPLES_PER_STONE = 25
 
 # ============================================================
 # APUFUNKTIOT
@@ -781,6 +804,80 @@ def detect_panels_from_reference(gray, reference_panels,
     return panel_data
 
 
+# ============================================================
+# KOKO RADAN KIVIEHDOKKAIDEN HAKU + LIIKKEEN TUNNISTUS
+#
+# _scan_stone_candidates: sama segmentointipohjainen tunnistus kuin
+# k9.track_stone_in_video/track_stone_in_video_fast kayttavat SISAISESTI
+# (k9._candidates_in_frame) - EI mallipohjaista ristikkohakua, koska
+# tassa vaiheessa 3D-profiilia (jota malli tarvitsisi) EI VIELA OLE -
+# se on juuri se mita etsitaan.
+#
+# find_moving_candidate: vertaa KAHDEN PERAKKAISEN skannauksen (n.
+# STONE_SCAN_INTERVAL_SECONDS valein) kandidaattilistoja - sama fyysinen
+# kivi (lahin osuma) jonka sijainti on muuttunut enemman kuin STONE_
+# MOTION_THRESHOLD_CM tulkitaan AIDOSTI LIIKKUVAKSI (ei jo-paikallaan-
+# olevaksi) - tama siirtymä-havainto ANTAA SIEMENEN (frame_idx, X, Y)
+# k94.track_stone_in_video_fast:lle, joka sitten seuraa koko liu'un.
+# ============================================================
+
+def _scan_stone_candidates(frame_bgr, calib, pose):
+    return k9._candidates_in_frame(
+        frame_bgr, calib, pose, calib["H_final"],
+        k9.STONE_TRACK_MIN_AREA, k9.STONE_TRACK_MIN_FILL_RATIO,
+        k9.STONE_TRACK_MIN_ASPECT_RATIO
+    )
+
+
+def find_moving_candidate(candidates_prev, candidates_curr,
+                           motion_threshold_cm=STONE_MOTION_THRESHOLD_CM):
+
+    if not candidates_prev or not candidates_curr:
+        return None
+
+    for curr in candidates_curr:
+
+        nearest = min(
+            candidates_prev,
+            key=lambda p: math.hypot(
+                p["pos_cm"][0] - curr["pos_cm"][0],
+                p["pos_cm"][1] - curr["pos_cm"][1]
+            )
+        )
+
+        d = math.hypot(
+            nearest["pos_cm"][0] - curr["pos_cm"][0],
+            nearest["pos_cm"][1] - curr["pos_cm"][1]
+        )
+
+        if d >= motion_threshold_cm:
+            return curr["pos_cm"]
+
+    return None
+
+
+def try_fit_profile(pose, accumulated_stones):
+    """Yrittaa sovittaa 3D-profiilin TAHAN ASTI kerattyihin havaintoihin
+    - palauttaa (profile, riittava_bool). Riittavyys: PROFILE_MIN_
+    SAMPLES verran havaintoja JA jaannosvirhe PROFILE_MAX_RMS_PX:n
+    sisalla (katso taman tiedoston alkupaan kommentti kynnysarvoista)."""
+
+    if len(accumulated_stones) < PROFILE_MIN_SAMPLES:
+        return None, False
+
+    profile = k9.fit_stone_profile(pose, accumulated_stones)
+
+    riittava = profile["residual_rms_px"] <= PROFILE_MAX_RMS_PX
+
+    print(
+        f"  profiilikoe: {len(accumulated_stones)} havaintoa, "
+        f"RMS={profile['residual_rms_px']:.2f}px "
+        f"(kynnys {PROFILE_MAX_RMS_PX}px) -> "
+        f"{'RIITTAVA' if riittava else 'ei viela riittava'}"
+    )
+
+    return profile, riittava
+
 
 # ============================================================
 # YKSI PAAPUTKI - kaikki vaiheet (kalibrointi -> kiviprofiilin haku ->
@@ -866,6 +963,14 @@ def run_pipeline(
     next_calib_sample_frame = 0
 
     calib_result = None
+
+    stone_scan_interval_frames = max(
+        1, int(round(fps * STONE_SCAN_INTERVAL_SECONDS))
+    )
+    next_stone_scan_frame = 0
+    prev_scan_candidates = None
+    accumulated_stones = []
+    profile_result = None
 
     previous_stabilization_matrix = np.array(
         [
@@ -1209,6 +1314,77 @@ def run_pipeline(
 
                     calib_result = {"calib": calib, "pose": pose}
 
+            # ------------------------------------------------
+            # KOKO RADAN SKANNAUS LIIKKUVAN KIVEN LOYTAMISEKSI
+            # (3D-PROFIILIA VARTEN) - vasta kun kalibrointi on
+            # valmis (tarvitaan calib/pose fyysisten sijaintien
+            # laskentaan) JA profiili ei viela ole riittava.
+            # ------------------------------------------------
+
+            elif profile_result is None:
+
+                if frame_index >= next_stone_scan_frame:
+
+                    curr_candidates = _scan_stone_candidates(
+                        frame, calib_result["calib"], calib_result["pose"]
+                    )
+
+                    seed_pos = find_moving_candidate(
+                        prev_scan_candidates, curr_candidates
+                    )
+
+                    if seed_pos is not None:
+
+                        print()
+                        print(
+                            f"[frame {frame_index}] Liikkuva kivi "
+                            f"loytyi kohdasta ({seed_pos[0]:.1f}, "
+                            f"{seed_pos[1]:.1f}) cm - seurataan koko "
+                            f"liu'un ajan..."
+                        )
+
+                        track = k94.track_stone_in_video_fast(
+                            video_file, calib_result["calib"],
+                            calib_result["pose"],
+                            seed_frame_idx=frame_index,
+                            seed_pos_cm=seed_pos
+                        )
+
+                        print(
+                            f"  seuranta valmis: {len(track)} havaintoa."
+                        )
+
+                        if len(track) >= 2:
+
+                            idxs = sorted(set(
+                                np.linspace(
+                                    0, len(track) - 1,
+                                    PROFILE_SAMPLES_PER_STONE
+                                ).astype(int).tolist()
+                            ))
+
+                            for i in idxs:
+                                accumulated_stones.append({
+                                    "ellipse": track[i]["ellipse"],
+                                    "contour": track[i]["contour"],
+                                })
+
+                            profile, riittava = try_fit_profile(
+                                calib_result["pose"], accumulated_stones
+                            )
+
+                            if riittava:
+
+                                print(
+                                    "3D-kiviprofiili riittava - "
+                                    "lopetetaan koko radan skannaus."
+                                )
+
+                                profile_result = profile
+
+                    prev_scan_candidates = curr_candidates
+                    next_stone_scan_frame = frame_index + stone_scan_interval_frames
+
             frame_index += 1
 
             # ------------------------------------------------
@@ -1306,10 +1482,19 @@ def run_pipeline(
             "moodinaytteiden keruun (video liian lyhyt?)."
         )
 
+    if profile_result is None:
+        print(
+            "VAROITUS: 3D-kiviprofiili ei tullut riittavaksi ennen "
+            f"videon loppua ({len(accumulated_stones)} havaintoa "
+            "kerattyna)."
+        )
+
     return {
         "engine": engine,
         "calib": calib_result["calib"],
         "pose": calib_result["pose"],
+        "profile": profile_result,
+        "n_profile_observations": len(accumulated_stones),
     }
 
 
@@ -1417,8 +1602,8 @@ def main():
         )
 
     # --------------------------------------------------------
-    # PAAPUTKI: kalibrointi -> (Task 3/4 jatkavat tasta samasta
-    # engine-objektista/videon lapikaynnista myohemmin)
+    # PAAPUTKI: kalibrointi -> 3D-kiviprofiilin haku -> (Task 4
+    # jatkaa tasta elavalla moni-kiven seurannalla myohemmin)
     # --------------------------------------------------------
 
     calib_diag_output = (
@@ -1434,7 +1619,7 @@ def main():
 
     print()
     print("=" * 60)
-    print("KALIBROINTI VALMIS")
+    print("KALIBROINTI + 3D-KIVIPROFIILI VALMIS")
     print("=" * 60)
 
     print(
@@ -1446,6 +1631,24 @@ def main():
     print(
         f"Topdown-tarkistuskuva: {calib_diag_output}"
     )
+
+    if result["profile"] is not None:
+
+        profile = result["profile"]
+
+        print(
+            f"3D-kiviprofiili: R_max={profile['R_max_cm']:.2f} cm, "
+            f"H_total={profile['H_total_cm']:.2f} cm, "
+            f"RMS={profile['residual_rms_px']:.2f} px "
+            f"({result['n_profile_observations']} havaintoa)"
+        )
+
+    else:
+
+        print(
+            "3D-kiviprofiili EI valmistunut riittavaksi "
+            f"({result['n_profile_observations']} havaintoa kerattyna)."
+        )
 
 
 if __name__ == "__main__":
