@@ -834,24 +834,25 @@ def render_profile_front_view(profile, output_path, px_per_cm=25.0, margin_px=50
     ~11.4cm) ja kiintea (esim. neliomainen) kuvakoko jattaisi
     suurimman osan kankaasta tyhjaksi.
 
-    Piirtaa KOKO profiilin (z=0 pohjasta z=H_total huippuun): "paivan"
-    (_TEMPLATE_EQUATOR_IDX) YLAPUOLINEN osa on SOVITETTU havaintoihin
-    (tumma harmaa, kiinteä reuna), ALAPUOLINEN osa on EDELLEEN VAIN
-    kovakoodattu OLETUS (katso STONE_PROFILE_TEMPLATE_NORM:in kommentti
-    - se ei nay yhdessakaan ylhaaltapain-kuvassa, joten mikaan havainto
-    ei voi sita vahvistaa) - piirretty vaaleammalla/viivoitetulla
-    tayolla, jotta ero on visuaalisesti selva.
+    Piirtaa KOKO profiilin (z=0 pohjasta z=H_total huippuun) - kaikki
+    kontrollipisteet ovat NYT sovitettuja havaintoihin (katso
+    fit_stone_profile:in kommentti: aiemmin vain "paivan" ylapuolinen
+    osa oli vapaa, mutta matalan kuvakulman videohavainnot nakevat
+    aidosti myos paivan alapuolista kylkea, joten koko profiili
+    voidaan sovittaa).
     """
 
     R_max = profile["R_max_cm"]
     H_total = profile["H_total_cm"]
     shape_deltas = profile["shape_deltas"]
 
-    r_fracs = np.clip(_TEMPLATE_R_FRAC + shape_deltas, 0.05, 1.3)
+    r_fracs = _TEMPLATE_R_FRAC + shape_deltas
+    r_fracs[_TEMPLATE_EQUATOR_IDX] = 1.0
+    r_fracs = np.clip(r_fracs, 0.05, 1.0)
 
     n_dense = 300
     z_frac_dense = np.linspace(0.0, 1.0, n_dense)
-    r_frac_dense = np.interp(z_frac_dense, _TEMPLATE_Z_FRAC, r_fracs)
+    r_frac_dense = _catmull_rom_r_frac(z_frac_dense, r_fracs=r_fracs)
 
     z_cm = z_frac_dense * H_total
     r_cm = r_frac_dense * R_max
@@ -871,13 +872,7 @@ def render_profile_front_view(profile, output_path, px_per_cm=25.0, margin_px=50
     left_pts = [to_px(-r, z) for r, z in zip(r_cm, z_cm)]
     right_pts = [to_px(r, z) for r, z in zip(r_cm, z_cm)]
     outline = left_pts + right_pts[::-1]
-    cv2.fillPoly(img, [np.array(outline, dtype=np.int32)], (150, 150, 150))
-
-    fitted_mask = z_frac_dense >= z_equator_frac
-    left_fit = [to_px(-r, z) for r, z in zip(r_cm[fitted_mask], z_cm[fitted_mask])]
-    right_fit = [to_px(r, z) for r, z in zip(r_cm[fitted_mask], z_cm[fitted_mask])]
-    outline_fit = left_fit + right_fit[::-1]
-    cv2.fillPoly(img, [np.array(outline_fit, dtype=np.int32)], (90, 90, 90))
+    cv2.fillPoly(img, [np.array(outline, dtype=np.int32)], (90, 90, 90))
 
     for r, z in zip(r_cm, z_cm):
         p_l = to_px(-r, z)
@@ -901,10 +896,8 @@ def render_profile_front_view(profile, output_path, px_per_cm=25.0, margin_px=50
     top_p = to_px(0.0, H_total)
     cv2.putText(img, f"H_total={H_total:.1f}cm", (top_p[0] + 10, top_p[1] + 15),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-    cv2.putText(img, "tumma=sovitettu (nakyvissa ylhaaltapain)", (5, 20),
+    cv2.putText(img, "koko profiili sovitettu havaintoihin", (5, 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 60, 60), 1)
-    cv2.putText(img, "vaalea=kovakoodattu oletus (ei havaintoja)", (5, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 120), 1)
 
     cv2.imwrite(output_path, img)
 
@@ -957,8 +950,61 @@ _TEMPLATE_EQUATOR_IDX = int(np.argmax(_TEMPLATE_R_FRAC))
 # poikkeamasta kovakoodattuun mallinnukseen nahden (yksikko: "pikselia
 # per r_frac-yksikko" - katso fit_stone_profile). Pitaa hienosaadon
 # LAHELLA fysikaalisesti jarkevaa lahtokohtaa, estaa ylisovituksen
-# 3 (kohinaisen aariviivan) havainnon yli.
-STONE_SHAPE_REG_WEIGHT = 25.0
+# kohinaisen aariviivan yli.
+#
+# HUOM (paivitetty - katso git-historia): kun profiilin KAIKKI
+# kontrollipisteet vapautettiin (ei enaa vain "paivan ylapuoliset"),
+# vapaita muotoparametreja on 5 - reilusti enemman kuin ennen (2-3).
+# Alkuperainen 25 (viritetty vanhalle, suppeammalle mallille) antoi
+# 3 kiven aineistolla epatasaisia, lievasti epafyysisia tuloksia
+# (pieni "olkapaa"-kohouma profiilissa) - nostettu 60:een, joka pitaa
+# muodon sileampana/uskottavampana samalla kun sallii aidon korjauksen.
+STONE_SHAPE_REG_WEIGHT = 60.0
+
+
+def _catmull_rom_r_frac(z_query, z_fracs=_TEMPLATE_Z_FRAC, r_fracs=None):
+    """
+    SILEA (C1-jatkuva) kayra harvojen kontrollipisteiden (6 kpl) lapi -
+    EI scipy:ta (projektin kaytanto, katso kamera8_01.py:n kommentti),
+    pelkka Catmull-Rom-splini numpylla. Ilman tata paloittain-
+    LINEAARINEN interpolointi (np.interp) tekee siluetista kulmikkaan/
+    "monikulmiomaisen" - oikea kivi on kuitenkin sileapintainen, joten
+    kulmikkuus oli suora syy siihen etta sivukuva ei nayttanyt oikealta
+    curling-kivelta (kayttajan havainto).
+
+    Reunat kasitellaan TOISTAMALLA ensimmainen/viimeinen kontrollipiste
+    (vakiintunut Catmull-Rom-reunakasittely) - antaa jarkevan, ei-
+    ylitse-ampuvan tangentin reunoilla ilman erillista reunaehtoa.
+    """
+
+    if r_fracs is None:
+        r_fracs = _TEMPLATE_R_FRAC
+
+    n = len(z_fracs)
+    z_ext = np.concatenate([[z_fracs[0]], z_fracs, [z_fracs[-1]]])
+    r_ext = np.concatenate([[r_fracs[0]], r_fracs, [r_fracs[-1]]])
+
+    r_query = np.empty_like(z_query, dtype=np.float64)
+
+    for i in range(n - 1):
+        z0, z1 = z_fracs[i], z_fracs[i + 1]
+        mask = (z_query >= z0) & (z_query <= z1)
+        if not np.any(mask):
+            continue
+        span = z1 - z0
+        t = (z_query[mask] - z0) / span if span > 1e-12 else np.zeros(np.sum(mask))
+        p0, p1, p2, p3 = r_ext[i], r_ext[i + 1], r_ext[i + 2], r_ext[i + 3]
+        m1 = (p2 - p0) / 2.0
+        m2 = (p3 - p1) / 2.0
+        t2 = t * t
+        t3 = t2 * t
+        h00 = 2 * t3 - 3 * t2 + 1
+        h10 = t3 - 2 * t2 + t
+        h01 = -2 * t3 + 3 * t2
+        h11 = t3 - t2
+        r_query[mask] = h00 * p1 + h10 * m1 + h01 * p2 + h11 * m2
+
+    return r_query
 
 
 def _stone_ground_position_z0(pose, cx, cy):
@@ -1005,23 +1051,46 @@ def _predicted_stone_hull(pose, X0, Y0, R_max, H_total, shape_deltas, n_theta=28
     """
     Ennustaa kiven kuvassa nakyvan siluetin KUPERAN PEITTEEN annetulla
     profiililla (kovakoodattu STONE_PROFILE_TEMPLATE_NORM + hienosaato-
-    deltat r_frac:iin). Vain "paivan" (levein kohta, _TEMPLATE_EQUATOR_IDX)
-    YLAPUOLINEN osa profiilista vaikuttaa kuvaan - kivi kuvataan ylhaalta-
-    pain, joten pohja/juoksurengas on aina itsensa varjossa/piilossa
-    (katso taman osion alkupaan kommentti). Palauttaa cv2.convexHull-
-    muotoisen polygonin (float32, muoto (N,1,2)) tai None.
+    deltat r_frac:iin). Palauttaa cv2.convexHull-muotoisen polygonin
+    (float32, muoto (N,1,2)) tai None.
+
+    HUOM (korjattu - katso git-historia): TAMA NAYTTEISTAA KOKO
+    PROFIILIN (z=0 pohjasta huippuun), EI VAIN "paivan" (levein kohta)
+    ylapuolista osaa. Aiempi versio rajasi VAIN paivan ylapuolisen osan
+    olettaen etta pohja on AINA itsensa varjossa/piilossa - tama pitaa
+    paikkansa JYRKASTA (lahes ylhaaltapain) kuvakulmasta, mutta EI
+    matalasta/lahes vaakatasoisesta kuvakulmasta (kayttajan havainto:
+    videosta seuratun kiven matalimmat kuvakulmat, n. 6 astetta,
+    nayttavat aidosti ENEMMAN kiven kyljesta kuin paivan ylapuolisen
+    osan malli pystyi selittamaan - tama "vuosi" virheellisesti
+    sovitettuihin muotoparametreihin, jotka nakyivat vinoina/
+    epafyysisina sivukuvassa). KUPERA PEITE koko profiilista hoitaa
+    itse-varjostuksen OIKEIN AUTOMAATTISESTI: pohjan lahella olevien
+    rengaspisteiden projektiot jaavat leveamman paivan/kuvun kattaman
+    alueen SISALLE (eivat vaikuta kuperaan peitteeseen) JYRKASTA
+    kulmasta, mutta tulevat NAKYVIIN (peitteen reunalle) matalasta
+    kulmasta - juuri niin kuin todellisuudessakin.
     """
 
     R_max = abs(R_max)
     H_total = max(abs(H_total), 1e-6)
 
-    r_fracs = np.clip(_TEMPLATE_R_FRAC + shape_deltas, 0.05, 1.3)
-    z_fracs_vis = _TEMPLATE_Z_FRAC[_TEMPLATE_EQUATOR_IDX:]
-    r_fracs_vis = r_fracs[_TEMPLATE_EQUATOR_IDX:]
+    # "Paiva" (_TEMPLATE_EQUATOR_IDX) MAARITTELEE R_max:in (leveimman
+    # kohdan sade ON R_max, per maaritelma) - sen oma delta EI SAA
+    # olla vapaa (muuten sama fyysinen suure - "kuinka levea kivi on
+    # leveimmillaan" - olisi ilmaistu KAHDESTI redundantisti, R_max:in
+    # JA paivan oman deltan kautta, mika teki optimoinnista rappeutuneen:
+    # jokin MUU kontrollipiste saattoi "livahtaa" paivaa leveammaksi,
+    # tuottaen epafyysisen kaksoiskumpu-muodon - katso git-historia).
+    # MIKAAN piste ei myoskaan saa olla paivaa LEVEAMPI (paiva ON
+    # maaritelmallisesti levein kohta) - siksi ylaraja on tasan 1.0.
+    r_fracs = _TEMPLATE_R_FRAC + shape_deltas
+    r_fracs[_TEMPLATE_EQUATOR_IDX] = 1.0
+    r_fracs = np.clip(r_fracs, 0.05, 1.0)
 
-    n_dense = max(len(z_fracs_vis) * n_per_segment, 2)
-    z_frac_dense = np.linspace(z_fracs_vis[0], z_fracs_vis[-1], n_dense)
-    r_frac_dense = np.interp(z_frac_dense, z_fracs_vis, r_fracs_vis)
+    n_dense = max(len(_TEMPLATE_Z_FRAC) * n_per_segment, 2)
+    z_frac_dense = np.linspace(0.0, 1.0, n_dense)
+    r_frac_dense = _catmull_rom_r_frac(z_frac_dense, r_fracs=r_fracs)
 
     theta = np.linspace(0.0, 2.0 * np.pi, n_theta, endpoint=False)
 
@@ -1087,13 +1156,17 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
     HIENOSAATAA kovakoodatun karkean mallin (STONE_PROFILE_TEMPLATE_NORM)
     KAIKKIEN havaittujen kivien KOKO AARIVIIVAA vasten YHTEISESTI - katso
     taman osion alkupaan kommentti periaatteesta. Tuntemattomat: R_max
-    (paivan/juoksurenkaan sade) + pieni korjaus (delta) jokaisen "paivan
-    ylapuolisen" kontrollipisteen r_frac:iin (jaettu KAIKKIEN kivien
-    kesken) + jokaisen kiven oma maa-asema (X0,Y0). Muotokorjaukset ovat
-    REGULOITUJA (shape_reg_weight, SKAALATTUNA havaintojen maaran mukaan
-    - katso alla) nollaa (=kovakoodattu malli) kohti, jotta havainnot
-    eivat ylisovita muotoa - vain skaala ja KARKEA muototrendi (esim.
-    onko malli hieman liian/liian vahan kupera) voi todella muuttua.
+    (paivan/juoksurenkaan sade) + pieni korjaus (delta) JOKAISEN
+    kontrollipisteen r_frac:iin (KOKO profiili, ei vain "paivan"
+    ylapuolinen osa - katso _predicted_stone_hull:in kommentti MIKSI:
+    matalasta kuvakulmasta nakyy aidosti myos paivan ALApuolista
+    kylkea, joten sekin voi tulla oikeasti sovitetuksi, ei vain
+    oletukseksi) + jokaisen kiven oma maa-asema (X0,Y0). Muotokorjaukset
+    ovat REGULOITUJA (shape_reg_weight, SKAALATTUNA havaintojen maaran
+    mukaan - katso alla) nollaa (=kovakoodattu malli) kohti, jotta
+    havainnot eivat ylisovita muotoa - vain skaala ja KARKEA muototrendi
+    (esim. onko malli hieman liian/liian vahan kupera) voi todella
+    muuttua.
 
     HUOM regularisoinnin SKAALAUKSESTA (havaittu testatessa videosta
     seurattua 25+ pisteen aineistoa - katso git-historia): datan
@@ -1139,7 +1212,13 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
             f"(saatiin {len(stones)})."
         )
 
-    n_shape = len(STONE_PROFILE_TEMPLATE_NORM) - _TEMPLATE_EQUATOR_IDX
+    # _TEMPLATE_EQUATOR_IDX:in delta EI OLE vapaa parametri - katso
+    # _predicted_stone_hull:in kommentti: se piste MAARITTELEE R_max:in
+    # (leveimman kohdan sade on R_max per maaritelma), joten oma vapaa
+    # delta sille olisi redundantti (ja aiheutti rappeutuneen, ei-
+    # monotonisen sovituksen - katso git-historia).
+    free_idx = [i for i in range(len(STONE_PROFILE_TEMPLATE_NORM)) if i != _TEMPLATE_EQUATOR_IDX]
+    n_shape = len(free_idx)
     effective_reg_weight = shape_reg_weight * (len(stones) / 3.0)
 
     positions0 = []
@@ -1152,7 +1231,7 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
     def unpack(params):
         R_max = params[0]
         shape_deltas = np.zeros(len(STONE_PROFILE_TEMPLATE_NORM))
-        shape_deltas[_TEMPLATE_EQUATOR_IDX:] = params[1:1 + n_shape]
+        shape_deltas[free_idx] = params[1:1 + n_shape]
         positions = params[1 + n_shape:].reshape(-1, 2)
         return R_max, shape_deltas, positions
 
@@ -1168,7 +1247,7 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
             ))
 
         if include_reg:
-            parts.append(shape_deltas[_TEMPLATE_EQUATOR_IDX:] * effective_reg_weight)
+            parts.append(shape_deltas[free_idx] * effective_reg_weight)
 
         return np.concatenate(parts)
 
