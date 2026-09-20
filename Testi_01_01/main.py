@@ -150,6 +150,29 @@ PROFILE_MAX_RMS_PX = 5.0
 PROFILE_MIN_SAMPLES = 15
 PROFILE_SAMPLES_PER_STONE = 25
 
+# Testatessa oikealla videolla loytyi KAKSI ongelmaa jotka nama
+# kynnysarvot/mekanismit korjaavat:
+#
+#   1) find_stone_candidates hyvaksyy MYOS ei-kivia (kayttajan
+#      dokumentoima aiempi havainto: "pelaajan vaatteet" jne. - katso
+#      k9.find_stone_candidates:in kommentti) - LIIKKUVA ei-kivi
+#      (esim. pelaaja/harja) voi lapaista liikkeentunnistuksen. Siksi
+#      JOKAINEN seurattu kandidaatti tarkistetaan YKSINAAN (SOLO_TRACK_
+#      MAX_RMS_PX) ENNEN kuin sen havainnot lisataan pysyvaan kokoelmaan
+#      - jos yksinaankin jaannosvirhe on aivan liian suuri (ei nayta
+#      kivelta), havainnot HYLATAAN eika saastuteta koko kokoelmaa
+#      pysyvasti.
+#   2) SAMA fyysinen kohde (oli se sitten kivi tai hylatty ei-kivi)
+#      loydettiin uudelleen JOKA skannauksella niin kauan kuin se pysyi
+#      liikkeessa (esim. kavelevaa pelaaja useiden 2s-ikkunoiden ajan) -
+#      RECENT_SEED_COOLDOWN_CM+FRAMES estaa UUDEN kalliin taydellisen
+#      seurannan aloittamisen jos edellisesta yrityksesta on kulunut
+#      alle RECENT_SEED_COOLDOWN_FRAMES framea JA uusi siemen on
+#      lahella edellisen seurannan VIIMEISTA tunnettua sijaintia.
+SOLO_TRACK_MAX_RMS_PX = 6.0
+RECENT_SEED_COOLDOWN_FRAMES = 250   # 10s 25fps:lla
+RECENT_SEED_COOLDOWN_CM = 200.0
+
 # ============================================================
 # APUFUNKTIOT
 # ============================================================
@@ -856,24 +879,27 @@ def find_moving_candidate(candidates_prev, candidates_curr,
     return None
 
 
-def try_fit_profile(pose, accumulated_stones):
-    """Yrittaa sovittaa 3D-profiilin TAHAN ASTI kerattyihin havaintoihin
-    - palauttaa (profile, riittava_bool). Riittavyys: PROFILE_MIN_
-    SAMPLES verran havaintoja JA jaannosvirhe PROFILE_MAX_RMS_PX:n
-    sisalla (katso taman tiedoston alkupaan kommentti kynnysarvoista)."""
+def try_fit_profile(pose, stones, max_rms_px=PROFILE_MAX_RMS_PX,
+                     min_samples=PROFILE_MIN_SAMPLES, label="profiilikoe"):
+    """Yrittaa sovittaa 3D-profiilin annettuihin havaintoihin - palauttaa
+    (profile, riittava_bool). Riittavyys: min_samples verran havaintoja
+    JA jaannosvirhe max_rms_px:n sisalla. Kaytetaan SEKA yksittaisen
+    seuratun kiven OMAN kelvollisuuden tarkistukseen (katso taman
+    tiedoston alkupaan kommentti SOLO_TRACK_MAX_RMS_PX:sta) etta koko
+    kerätyn kokoelman lopulliseen riittavyystarkistukseen."""
 
-    if len(accumulated_stones) < PROFILE_MIN_SAMPLES:
+    if len(stones) < min_samples:
         return None, False
 
-    profile = k9.fit_stone_profile(pose, accumulated_stones)
+    profile = k9.fit_stone_profile(pose, stones)
 
-    riittava = profile["residual_rms_px"] <= PROFILE_MAX_RMS_PX
+    riittava = profile["residual_rms_px"] <= max_rms_px
 
     print(
-        f"  profiilikoe: {len(accumulated_stones)} havaintoa, "
+        f"  {label}: {len(stones)} havaintoa, "
         f"RMS={profile['residual_rms_px']:.2f}px "
-        f"(kynnys {PROFILE_MAX_RMS_PX}px) -> "
-        f"{'RIITTAVA' if riittava else 'ei viela riittava'}"
+        f"(kynnys {max_rms_px}px) -> "
+        f"{'RIITTAVA' if riittava else 'ei riittava'}"
     )
 
     return profile, riittava
@@ -971,6 +997,8 @@ def run_pipeline(
     prev_scan_candidates = None
     accumulated_stones = []
     profile_result = None
+    recent_seed_frame = None
+    recent_seed_pos = None
 
     previous_stabilization_matrix = np.array(
         [
@@ -1333,11 +1361,33 @@ def run_pipeline(
                         prev_scan_candidates, curr_candidates
                     )
 
+                    # ------------------------------------------
+                    # JAAHDYTYS: sama fyysinen kohde (kivi TAI
+                    # hylatty ei-kivi, esim. kavelevä pelaaja) nakyy
+                    # helposti liikkuvana MYOS seuraavalla skannauksella
+                    # - katso taman tiedoston alkupaan kommentti. Jos
+                    # uusi siemen on lahella JUURI kasitellyn siemenen
+                    # sijaintia eika jaahdytysaika ole viela kulunut,
+                    # ohitetaan (EI aloiteta uutta kallista taydellista
+                    # seurantaa samalle kohteelle).
+                    # ------------------------------------------
+
+                    if (
+                        seed_pos is not None
+                        and recent_seed_pos is not None
+                        and (frame_index - recent_seed_frame) < RECENT_SEED_COOLDOWN_FRAMES
+                        and math.hypot(
+                            seed_pos[0] - recent_seed_pos[0],
+                            seed_pos[1] - recent_seed_pos[1]
+                        ) < RECENT_SEED_COOLDOWN_CM
+                    ):
+                        seed_pos = None
+
                     if seed_pos is not None:
 
                         print()
                         print(
-                            f"[frame {frame_index}] Liikkuva kivi "
+                            f"[frame {frame_index}] Liikkuva kandidaatti "
                             f"loytyi kohdasta ({seed_pos[0]:.1f}, "
                             f"{seed_pos[1]:.1f}) cm - seurataan koko "
                             f"liu'un ajan..."
@@ -1354,6 +1404,11 @@ def run_pipeline(
                             f"  seuranta valmis: {len(track)} havaintoa."
                         )
 
+                        recent_seed_frame = frame_index
+                        recent_seed_pos = (
+                            track[-1]["pos_cm"] if track else seed_pos
+                        )
+
                         if len(track) >= 2:
 
                             idxs = sorted(set(
@@ -1363,24 +1418,58 @@ def run_pipeline(
                                 ).astype(int).tolist()
                             ))
 
-                            for i in idxs:
-                                accumulated_stones.append({
+                            candidate_observations = [
+                                {
                                     "ellipse": track[i]["ellipse"],
                                     "contour": track[i]["contour"],
-                                })
+                                }
+                                for i in idxs
+                            ]
 
-                            profile, riittava = try_fit_profile(
-                                calib_result["pose"], accumulated_stones
+                            # --------------------------------
+                            # YKSINAINEN KELVOLLISUUSTARKISTUS
+                            # ENNEN pysyvaan kokoelmaan lisaamista
+                            # (katso taman tiedoston alkupaan
+                            # kommentti - estaa ei-kivien, esim.
+                            # pelaajien, saastuttamasta koko
+                            # kokoelmaa pysyvasti).
+                            # --------------------------------
+
+                            _, solo_ok = try_fit_profile(
+                                calib_result["pose"],
+                                candidate_observations,
+                                max_rms_px=SOLO_TRACK_MAX_RMS_PX,
+                                label="  yksittaisen kandidaatin tarkistus"
                             )
 
-                            if riittava:
+                            if not solo_ok:
 
                                 print(
-                                    "3D-kiviprofiili riittava - "
-                                    "lopetetaan koko radan skannaus."
+                                    "  hylatty - ei nayta kivelta "
+                                    "(esim. pelaaja/muu liikkuva "
+                                    "kohde), ei lisata kokoelmaan."
                                 )
 
-                                profile_result = profile
+                            else:
+
+                                accumulated_stones.extend(
+                                    candidate_observations
+                                )
+
+                                profile, riittava = try_fit_profile(
+                                    calib_result["pose"],
+                                    accumulated_stones
+                                )
+
+                                if riittava:
+
+                                    print(
+                                        "3D-kiviprofiili riittava - "
+                                        "lopetetaan koko radan "
+                                        "skannaus."
+                                    )
+
+                                    profile_result = profile
 
                     prev_scan_candidates = curr_candidates
                     next_stone_scan_frame = frame_index + stone_scan_interval_frames
