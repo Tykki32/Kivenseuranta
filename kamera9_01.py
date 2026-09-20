@@ -669,6 +669,249 @@ def find_stone_candidates(
 
 
 # ============================================================
+# KIVEN SEURANTA VIDEOSTA - USEITA KYMMENIA/SATOJA HAVAINTOJA YHDESTA
+# KIVESTA LAAJALTA KULMA-ALUEELTA
+#
+# Kayttajan havainto: yksittainen liikkuva kivi lipuu heittopaasta
+# (lahes vaakatasosta, pieni korkeuskulma - kamera kaukana, matala
+# projektio) pesaa kohti (jyrkempi korkeuskulma, n. 15-20 astetta),
+# eli SAMA fyysinen kivi antaa VALTAVASTI enemman kulmavaihtelua kuin
+# 3 paikallaan olevaa kivea samassa kuvassa (jotka olivat kaikki
+# suunnilleen samalla etaisyydella, n. 10-25 astetta). Tama on
+# TARKEA, koska fit_stone_profile:in H_total-skannaus (katso sen
+# kommentti) osoitti RMS:n olevan LITTEA H:n suhteen juuri PUUTTUVAN
+# kulmavaihtelun takia - videosta saatu laajempi kulma-alue voi siis
+# aidosti parantaa korkeuden erottelukykya.
+#
+# TUNNISTUSSTRATEGIA: sama create_granite_mask/find_stone_candidates
+# -pohjainen tunnistus kuin still-kuville, mutta VAPAAMMILLA muoto-
+# rajoilla (kivi on video kompressoinnin+liike-epaterävyyden takia
+# usein huonommin rajautunut kuin still-kuvassa, ja PIENI kaukainen
+# kivi jaa muuten helposti tiukkojen rajojen alle) - erottelu vaarista
+# kandidaateista (pyyhkija, kiinteat jo-paikallaan-olevat kivet,
+# kiinteat virhelahteet kuten logotekstit) EI perustu muotoon vaan
+# JATKUVUUTEEN: valitaan aina se kandidaatti joka on LAHIMPANA
+# edellisen (kasitellyn) framen sijaintia, hylataan jos hyppy on liian
+# suuri (max_jump_cm) - staattiset objektit (mukaan lukien kiinteat
+# virhekandidaatit) EIVAT liiku framesta toiseen, joten ne eivat
+# yleensa hairitse jatkuvuuspohjaista seurantaa kunhan max_jump_cm on
+# jarkevasti mitoitettu kiven todelliseen nopeuteen nahden.
+#
+# Kaytannossa toimivaksi havaittu (00011 - Trim.mp4): seurataan
+# MOLEMPIIN suuntiin (framet kasvaen JA vahentyen) yhdesta hyvasta
+# "siemen"-havainnosta - katso track_stone_in_video:in kutsuesimerkki
+# taman tiedoston main()in tai kommenttien yhteydessa.
+# ============================================================
+
+STONE_TRACK_MIN_AREA = 80
+STONE_TRACK_MIN_FILL_RATIO = 0.4
+STONE_TRACK_MIN_ASPECT_RATIO = 0.15
+STONE_TRACK_MAX_JUMP_CM = 45.0
+STONE_TRACK_MAX_MISSES = 10
+
+
+def _candidates_in_frame(frame_bgr, calib, pose, H_final,
+                          min_area, min_fill_ratio, min_aspect_ratio):
+
+    frame_u = cv2.undistort(frame_bgr, calib["camera_matrix"],
+                             np.array([calib["best_k1"], 0.0, 0.0, 0.0, 0.0]))
+    stones = find_stone_candidates(
+        frame_u, H_final, min_area=min_area,
+        min_fill_ratio=min_fill_ratio, min_aspect_ratio=min_aspect_ratio
+    )
+
+    out = []
+
+    for stone in stones:
+        (cx, cy), _, _ = stone["ellipse"]
+        X0, Y0 = _stone_ground_position_z0(pose, cx, cy)
+        out.append({"ellipse": stone["ellipse"], "contour": stone["contour"], "pos_cm": (X0, Y0)})
+
+    return out
+
+
+def track_stone_in_video(video_path, calib, pose, seed_frame_idx, seed_pos_cm,
+                          max_jump_cm=STONE_TRACK_MAX_JUMP_CM,
+                          max_misses=STONE_TRACK_MAX_MISSES,
+                          min_area=STONE_TRACK_MIN_AREA,
+                          min_fill_ratio=STONE_TRACK_MIN_FILL_RATIO,
+                          min_aspect_ratio=STONE_TRACK_MIN_ASPECT_RATIO):
+    """
+    Seuraa YHTA liikkuvaa kivea videossa MOLEMPIIN suuntiin (framet
+    kasvaen ja vahentyen) alkaen "siemen"-havainnosta (seed_frame_idx,
+    seed_pos_cm) - katso taman osion alkupaan kommentti menetelmasta.
+    seed_pos_cm PITAA antaa KASIN (esim. tarkastelemalla muutamaa
+    framea silmamaaraisesti) - automaattista "mika kandidaateista on
+    OIKEA liikkuva kivi" -paattelya ei ole (videokohtaista: kiinteat
+    virhelahteet/jo-paikallaan-olevat kivet vaihtelevat).
+
+    calib/pose: samat kuin calibrate_camera_from_image/build_pose_
+    from_calibration (KAMERAN OLETETAAN OLEVAN SAMA JA PAIKALLAAN
+    kalibrointikuvan ja videon valilla - ei uutta kalibrointia).
+
+    Palauttaa aikajarjestykseen (frame_idx) lajitellun listan dicteja
+    {"frame_idx", "ellipse", "contour", "pos_cm"}.
+    """
+
+    H_final = calib["H_final"]
+    cap = cv2.VideoCapture(video_path)
+    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    def frame_at(idx):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        return frame if ok else None
+
+    def candidates_at(idx):
+        frame = frame_at(idx)
+        if frame is None:
+            return []
+        return _candidates_in_frame(
+            frame, calib, pose, H_final, min_area, min_fill_ratio, min_aspect_ratio
+        )
+
+    seed_cands = candidates_at(seed_frame_idx)
+    if not seed_cands:
+        raise RuntimeError(f"Ei kandidaatteja siemen-framessa {seed_frame_idx}.")
+
+    seed = min(seed_cands, key=lambda c: math.hypot(
+        c["pos_cm"][0] - seed_pos_cm[0], c["pos_cm"][1] - seed_pos_cm[1]
+    ))
+    seed["frame_idx"] = seed_frame_idx
+
+    def track_direction(step):
+        track = []
+        last_pos = seed["pos_cm"]
+        misses = 0
+        idx = seed_frame_idx + step
+
+        while 0 <= idx < n_frames and misses < max_misses:
+
+            cands = candidates_at(idx)
+
+            if cands:
+                best = min(cands, key=lambda c: math.hypot(
+                    c["pos_cm"][0] - last_pos[0], c["pos_cm"][1] - last_pos[1]
+                ))
+                d = math.hypot(best["pos_cm"][0] - last_pos[0], best["pos_cm"][1] - last_pos[1])
+
+                if d <= max_jump_cm:
+                    best["frame_idx"] = idx
+                    track.append(best)
+                    last_pos = best["pos_cm"]
+                    misses = 0
+                else:
+                    misses += 1
+            else:
+                misses += 1
+
+            idx += step
+
+        return track
+
+    backward = track_direction(-1)
+    forward = track_direction(+1)
+
+    cap.release()
+
+    full_track = list(reversed(backward)) + [seed] + forward
+    full_track.sort(key=lambda t: t["frame_idx"])
+
+    return full_track
+
+
+def render_profile_front_view(profile, output_path, px_per_cm=25.0, margin_px=50,
+                               top_margin_px=70):
+    """
+    Piirtaa sovitetun profiilin (fit_stone_profile) kiven SIVUKUVANA
+    (kuin kivi olisi kuvattu tasan sivulta, ortografisesti - EI
+    perspektiivista) - kayttajan pyynnosta visuaaliseksi tarkistukseksi:
+    nayttaako se curling-kivelta sivusta katsottuna.
+
+    Kanvaasin koko lasketaan AUTOMAATTISESTI kiven omista mitoista
+    (R_max, H_total) + px_per_cm - EI kiintealla kuvakoolla, koska kivi
+    on selvasti LEVEAMPI kuin korkea (halkaisija ~28cm, korkeus
+    ~11.4cm) ja kiintea (esim. neliomainen) kuvakoko jattaisi
+    suurimman osan kankaasta tyhjaksi.
+
+    Piirtaa KOKO profiilin (z=0 pohjasta z=H_total huippuun): "paivan"
+    (_TEMPLATE_EQUATOR_IDX) YLAPUOLINEN osa on SOVITETTU havaintoihin
+    (tumma harmaa, kiinteä reuna), ALAPUOLINEN osa on EDELLEEN VAIN
+    kovakoodattu OLETUS (katso STONE_PROFILE_TEMPLATE_NORM:in kommentti
+    - se ei nay yhdessakaan ylhaaltapain-kuvassa, joten mikaan havainto
+    ei voi sita vahvistaa) - piirretty vaaleammalla/viivoitetulla
+    tayolla, jotta ero on visuaalisesti selva.
+    """
+
+    R_max = profile["R_max_cm"]
+    H_total = profile["H_total_cm"]
+    shape_deltas = profile["shape_deltas"]
+
+    r_fracs = np.clip(_TEMPLATE_R_FRAC + shape_deltas, 0.05, 1.3)
+
+    n_dense = 300
+    z_frac_dense = np.linspace(0.0, 1.0, n_dense)
+    r_frac_dense = np.interp(z_frac_dense, _TEMPLATE_Z_FRAC, r_fracs)
+
+    z_cm = z_frac_dense * H_total
+    r_cm = r_frac_dense * R_max
+
+    w = int(round(2.0 * R_max * 1.2 * px_per_cm)) + 2 * margin_px
+    h = int(round(H_total * px_per_cm)) + margin_px + top_margin_px
+
+    img = np.full((h, w, 3), 255, dtype=np.uint8)
+
+    def to_px(r, z):
+        px = w / 2.0 + r * px_per_cm
+        py = h - margin_px - z * px_per_cm
+        return int(round(px)), int(round(py))
+
+    z_equator_frac = _TEMPLATE_Z_FRAC[_TEMPLATE_EQUATOR_IDX]
+
+    left_pts = [to_px(-r, z) for r, z in zip(r_cm, z_cm)]
+    right_pts = [to_px(r, z) for r, z in zip(r_cm, z_cm)]
+    outline = left_pts + right_pts[::-1]
+    cv2.fillPoly(img, [np.array(outline, dtype=np.int32)], (150, 150, 150))
+
+    fitted_mask = z_frac_dense >= z_equator_frac
+    left_fit = [to_px(-r, z) for r, z in zip(r_cm[fitted_mask], z_cm[fitted_mask])]
+    right_fit = [to_px(r, z) for r, z in zip(r_cm[fitted_mask], z_cm[fitted_mask])]
+    outline_fit = left_fit + right_fit[::-1]
+    cv2.fillPoly(img, [np.array(outline_fit, dtype=np.int32)], (90, 90, 90))
+
+    for r, z in zip(r_cm, z_cm):
+        p_l = to_px(-r, z)
+        p_r = to_px(r, z)
+        cv2.circle(img, p_l, 1, (40, 40, 40), -1)
+        cv2.circle(img, p_r, 1, (40, 40, 40), -1)
+
+    ground_l = to_px(-R_max * 1.15, 0.0)
+    ground_r = to_px(R_max * 1.15, 0.0)
+    cv2.line(img, ground_l, ground_r, (0, 0, 0), 2)
+    cv2.putText(img, "jaa (Z=0)", (margin_px, ground_l[1] + 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+    p_eq_l = to_px(-R_max, z_equator_frac * H_total)
+    p_eq_r = to_px(R_max, z_equator_frac * H_total)
+    cv2.line(img, p_eq_l, (p_eq_l[0] - 15, p_eq_l[1]), (0, 0, 200), 1)
+    cv2.line(img, p_eq_r, (p_eq_r[0] + 15, p_eq_r[1]), (0, 0, 200), 1)
+    cv2.putText(img, f"paiva R_max={R_max:.1f}cm", (5, p_eq_l[1] - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 200), 1)
+
+    top_p = to_px(0.0, H_total)
+    cv2.putText(img, f"H_total={H_total:.1f}cm", (top_p[0] + 10, top_p[1] + 15),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    cv2.putText(img, "tumma=sovitettu (nakyvissa ylhaaltapain)", (5, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 60, 60), 1)
+    cv2.putText(img, "vaalea=kovakoodattu oletus (ei havaintoja)", (5, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 120), 1)
+
+    cv2.imwrite(output_path, img)
+
+    return output_path
+
+
+# ============================================================
 # KOVAKOODATTU KARKEA 3D-MALLI KIVEN GRANIITTIOSASTA
 #
 # Kayttajan pyynnosta: sen sijaan etta sovitettaisiin vapaamuotoinen tai
@@ -847,10 +1090,23 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
     (paivan/juoksurenkaan sade) + pieni korjaus (delta) jokaisen "paivan
     ylapuolisen" kontrollipisteen r_frac:iin (jaettu KAIKKIEN kivien
     kesken) + jokaisen kiven oma maa-asema (X0,Y0). Muotokorjaukset ovat
-    REGULOITUJA (shape_reg_weight) nollaa (=kovakoodattu malli) kohti,
-    jotta 3 (kohinaista) havaintoa ei ylisovita muotoa - vain skaala ja
-    KARKEA muototrendi (esim. onko malli hieman liian/liian vahan kupera)
-    voi todella muuttua.
+    REGULOITUJA (shape_reg_weight, SKAALATTUNA havaintojen maaran mukaan
+    - katso alla) nollaa (=kovakoodattu malli) kohti, jotta havainnot
+    eivat ylisovita muotoa - vain skaala ja KARKEA muototrendi (esim.
+    onko malli hieman liian/liian vahan kupera) voi todella muuttua.
+
+    HUOM regularisoinnin SKAALAUKSESTA (havaittu testatessa videosta
+    seurattua 25+ pisteen aineistoa - katso git-historia): datan
+    jaannostermien maara kasvaa LINEAARISESTI havaintojen lukumaaran
+    (N) mukaan, mutta regularisointitermien maara EI (aina n_shape
+    kappaletta) - siis SAMALLA shape_reg_weight:lla regularisointi
+    "laimenee" pois suhteessa N:aan, ja isolla N:lla (esim. 28 kiven
+    video+still-yhdistelmadata) malli alkoi taipua EPAFYYSISEEN,
+    ei-monotoniseen muotoon (kohina/liike-epaterävyys imeytyi muotoon
+    "aitona" rakenteena). Korjattu kertomalla shape_reg_weight
+    suhteella len(stones)/3 (3 = alkuperainen virityspiste, jolla
+    shape_reg_weight=25 antoi jo hyvan tuloksen) - pitaa regularisoinnin
+    SUHTEELLISEN vaikutuksen samana havaintomaarasta riippumatta.
 
     HUOM height_cm EI OLE VAPAA PARAMETRI (kokeiltiin - katso git-
     historia): RMS-jaannosvirhe on kaytannossa LITTEA H_total:in
@@ -884,6 +1140,7 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
         )
 
     n_shape = len(STONE_PROFILE_TEMPLATE_NORM) - _TEMPLATE_EQUATOR_IDX
+    effective_reg_weight = shape_reg_weight * (len(stones) / 3.0)
 
     positions0 = []
 
@@ -911,7 +1168,7 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
             ))
 
         if include_reg:
-            parts.append(shape_deltas[_TEMPLATE_EQUATOR_IDX:] * shape_reg_weight)
+            parts.append(shape_deltas[_TEMPLATE_EQUATOR_IDX:] * effective_reg_weight)
 
         return np.concatenate(parts)
 
@@ -971,6 +1228,55 @@ def locate_stone_from_profile(pose, profile, stone, n_sample=40):
         "naive_z0_cm": (float(X0), float(Y0)),
         "residual_rms_px": float(np.sqrt(np.mean(resid ** 2))),
     }
+
+
+# ============================================================
+# PROFIILIN RAKENNUS VIDEOSTA + STILL-KUVISTA YHDESSA
+#
+# Yksi VIDEOSSA liikkuva kivi lipuu heittopaasta (lahes vaakatasosta,
+# pieni korkeuskulma - katso track_stone_in_video:in kommentti) pesaa
+# kohti - SAMA fyysinen kivi antaa siis VALTAVASTI enemman kulma-
+# vaihtelua kuin muutama paikallaan oleva kivi yhdessa still-kuvassa.
+# Tama funktio yhdistaa molemmat: still-kuvien kivet (find_stone_
+# candidates) + videosta seuratun kiven aliotanta (jotta havaintojen
+# maara pysyy hallittavana LM-sovitukselle) yhdeksi yhteiseksi
+# fit_stone_profile-kutsuksi.
+# ============================================================
+
+def build_stone_profile_from_video(calib, pose, video_path, seed_frame_idx, seed_pos_cm,
+                                    extra_stones=None, n_video_samples=25,
+                                    front_view_path=None):
+    """
+    Seuraa yhta kivea videosta (track_stone_in_video), alinaytaa
+    n_video_samples havaintoon (tasavalein aikajarjestyksessa - pitaa
+    LM-sovituksen nopeana ja valttaa lahes identtisten peräkkaisten
+    framejen turhaa painoarvoa), yhdistaa nama extra_stones-listaan
+    (esim. saman kameran still-kuvasta find_stone_candidates:illa
+    saadut kivet) ja sovittaa YHTEISEN profiilin (fit_stone_profile).
+
+    Jos front_view_path annettu, tallentaa myos sivukuvan (render_
+    profile_front_view) tulokseksi.
+
+    Palauttaa dictin: profile (fit_stone_profile:in tulos), track
+    (koko seurattu, alinaytamaton trajektori - hyodyllinen esim.
+    locate_stone_from_profile-validointiin useassa framessa).
+    """
+
+    track = track_stone_in_video(video_path, calib, pose, seed_frame_idx, seed_pos_cm)
+
+    if len(track) < 2:
+        raise RuntimeError(f"Video-seuranta loysi vain {len(track)} havaintoa.")
+
+    idxs = sorted(set(np.linspace(0, len(track) - 1, n_video_samples).astype(int).tolist()))
+    video_stones = [{"ellipse": track[i]["ellipse"], "contour": track[i]["contour"]} for i in idxs]
+
+    all_stones = (extra_stones or []) + video_stones
+    profile = fit_stone_profile(pose, all_stones)
+
+    if front_view_path is not None:
+        render_profile_front_view(profile, front_view_path)
+
+    return {"profile": profile, "track": track}
 
 
 # ============================================================
