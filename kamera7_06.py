@@ -4270,46 +4270,55 @@ def robust_line_angle_from_points(points):
     return math.degrees(math.atan(a)), float(np.sum(ws))
 
 
-def apply_hogline_rotation_correction(frame_undistorted, H_base, output_w, output_h):
+def apply_hogline_warp_correction(frame_undistorted, H_base, output_w, output_h):
     """
-    Korvaa (kamera7_06.py) aiemman hogline-tasoituksen
-    (refine_with_hogline_constraints), joka pakotti hogline-pisteet
-    SAMAAN painotettuun homografia-LSQ-sovitukseen pesien pisteiden
-    kanssa. Havaittu diagnosoitaessa: tama AINA maksoi 5-12 % pesan
-    koko-virheen, TAYSIN RIIPPUMATTA siita olivatko hogline-pisteet
-    itsessaan puhtaita (todennettu myos taman tiedoston oman
-    dekontaminointikorjauksen JALKEEN, katso detect_hogline_points:in
-    kommentti) - taydella 8-vapausasteen projektiivisella sovituksella
-    on yksinkertaisesti riittavasti vapautta selittaa "hogline suorempi"
-    vaihtamalla sen skaalaan/leikkaukseen paikallisesti, koska hogline-
-    pisteet kattavat koko kuvan leveyden (suuri vipuvarsi kiertymalle/
-    leikkaukselle) samalla kun pesan 22 pistetta ovat paikallisia.
+    Korvaa (kamera7_06.py) aiemman PELKAN 2D-KIERTO -korjauksen
+    (apply_hogline_rotation_correction, poistettu) - kayttajan
+    LISARAJOITUKSEN vuoksi: "pesan keskikohdan pitaa olla keskiviivalla"
+    (MOLEMPIEN pesien, ei vain toisen).
 
-    Tama funktio tekee sen sijaan PELKAN 2D-KIERRON: mitataan lahemman
-    ja kaukaisen hoglinen kulmat (dekontaminoiduista detect_hogline_
-    points-pisteista, robust_line_angle_from_points), ja lasketaan
-    niiden KESKIARVO korjauskulmaksi - koska molemmat hoglinet OVAT
-    radalla AINA tarkalleen yhdensuuntaisia (WCF-saanto), keskiarvo
-    on se yhden vapausasteen arvio joka minimoi SUURIMMAN jaljella
-    olevan poikkeaman kummastakin linjasta. H_base:aan sovelletaan
-    PUHDAS kierto (lahemman pesan oman fyysisen keskipisteen ymparilla,
-    joka siis pysyy ankkuroituna paikoilleen) tama kulma poistaakseen.
+    MIKSI PELKKA KIERTO EI RIITA: yksi 2D-kierto pitaa paikallaan VAIN
+    OMAN PIVOTTINSA - mika tahansa MUU piste (kuten kaukaisen pesan
+    keskipiste, jos pivot on lahemman pesan kohdalla) siirtyy vaistamatta.
+    Kahta ERI pistetta samalla keskiviivalla (lahempi JA kaukainen pesa,
+    eri y-kohdissa) EI VOI pitaa molempia paikallaan YHDELLA kierrolla,
+    paitsi jos kiertokulma on nolla - matemaattisesti todistettavissa
+    (kierto kiinnittaa tasan yhden pisteen, paitsi identiteettikuvauksena).
+    Talla rajoituksella pelkka kierto EI siis enaa ole kelvollinen
+    ratkaisu, vaikka se onkin muodon/koon suhteen "turvallisin" mahdollinen
+    homografia-tason korjaus.
 
-    KRIITTINEN ETU: 2D-kierto SAILYTTAA MATEMAATTISESTI TARKALLEEN
-    seka pesien MUODON (pyoreyden) etta KOON kaikkialla kuvassa - se
-    EI VOI millaan tavalla huonontaa niita, toisin kuin vanha
-    yhdistetty LSQ-sovitus. Hoglinen suoristus ja pesan laatu eivat
-    talla menetelmalla enaa koskaan kilpaile keskenaan.
+    RATKAISU: RIVIKOHTAINEN (row-dependent) paikallinen kierto, joka EI
+    ole enaa yksi homografia (3x3-matriisi) vaan kuvan uudelleennaytteis-
+    tys (cv2.remap). Jokaisen RIVIN oma kiertokulma theta(Y) interpoloidaan
+    LINEAARISESTI mitattujen lahemman/kaukaisen hoglinen kulmien valilla
+    (ja ekstrapoloidaan niiden ulkopuolelle samalla suoralla) - JOKAINEN
+    rivi kierretaan OMAN PIVOTTINSA ymparilla, joka on AINA keskiviivan
+    (fyysinen x=0) sarake SILLA SAMALLA rivilla. Koska keskiviivan oma
+    sarake (cx) on VAKIO riippumatta y:sta (to_output_px:in kaava on
+    y-riippumaton x:n suhteen), TAMA PIVOTTIVALINTA TAKAA (ei vain
+    arvioi) etta JOKAINEN keskiviivalla alunperin ollut piste PYSYY
+    keskiviivalla JOKAISELLA rivilla - siis MOLEMPIEN pesien (ja minka
+    tahansa muun keskiviivan pisteen) keskipiste pysyy tasan keskiviivalla,
+    RAKENTEELLISESTI, ei approksimaationa.
 
-    Palauttaa dictin {"H_final", "near_angle", "far_angle",
-    "correction_deg"} tai None jos kumpaakaan hoglinea ei loytynyt
-    riittavan luotettavasti.
+    Hinta: koska pesan oma pystymitta (~730 px) on pieni verrattuna
+    koko etaisyyteen jolta kulma interpoloidaan (~2200 px lahemman ja
+    kaukaisen hoglinen valilla), theta(Y) vaihtelee hieman (~0.5-1 aste)
+    pesan OMAN pystymitan yli - talla on PIENI, EI-NOLLA vaikutus pesan
+    tarkkaan pyoreyteen (toisin kuin pelkka globaali kierto, joka oli
+    tismalleen muotoa sailyttava) - tama on validoitava empiirisesti
+    (mittaa measure_house_quality lopuksi) mutta odotettavasti paljon
+    pienempi kuin vanhan yhdistetyn LSQ-sovituksen 5-12 %.
+
+    Palauttaa dictin {"topdown_corrected", "near_angle", "far_angle",
+    "map_x", "map_y", "cx"} tai None jos kumpaakaan hoglinea ei loytynyt.
     """
 
-    topdown = cv2.warpPerspective(frame_undistorted, H_base, (output_w, output_h))
+    topdown_base = cv2.warpPerspective(frame_undistorted, H_base, (output_w, output_h))
 
-    near_pts = detect_hogline_points(topdown, NEAR_HOGLINE_Y_CM)
-    far_pts = detect_hogline_points(topdown, FAR_HOGLINE_Y_CM)
+    near_pts = detect_hogline_points(topdown_base, NEAR_HOGLINE_Y_CM)
+    far_pts = detect_hogline_points(topdown_base, FAR_HOGLINE_Y_CM)
 
     near_angle, near_conf = robust_line_angle_from_points(near_pts)
     far_angle, far_conf = robust_line_angle_from_points(far_pts)
@@ -4317,61 +4326,55 @@ def apply_hogline_rotation_correction(frame_undistorted, H_base, output_w, outpu
     if near_conf <= 0.0 and far_conf <= 0.0:
         return None
 
+    cx, y_near_hog = to_output_px(0.0, NEAR_HOGLINE_Y_CM)
+    _, y_far_hog = to_output_px(0.0, FAR_HOGLINE_Y_CM)
+
     if near_conf <= 0.0:
-        correction_deg = far_angle
+        slope_deg_per_px = 0.0
+        base_angle, base_y = far_angle, y_far_hog
     elif far_conf <= 0.0:
-        correction_deg = near_angle
+        slope_deg_per_px = 0.0
+        base_angle, base_y = near_angle, y_near_hog
     else:
-        correction_deg = (near_angle + far_angle) / 2.0
+        slope_deg_per_px = (far_angle - near_angle) / (y_far_hog - y_near_hog)
+        base_angle, base_y = near_angle, y_near_hog
 
-    pivot_px = physical_to_output_px([(0.0, NEAR_HOUSE_Y_CM)])[0]
+    ys = np.arange(output_h, dtype=np.float64)
+    local_angle_deg = base_angle + slope_deg_per_px * (ys - base_y)
+    theta = np.radians(-local_angle_deg)
+    cos_row = np.cos(theta)[:, None]
+    sin_row = np.sin(theta)[:, None]
 
-    theta = math.radians(-correction_deg)
-    cos_t = math.cos(theta)
-    sin_t = math.sin(theta)
+    xs = np.arange(output_w, dtype=np.float64)
+    X, Y = np.meshgrid(xs, ys)
 
-    R = np.array([
-        [cos_t, -sin_t, pivot_px[0] - cos_t * pivot_px[0] + sin_t * pivot_px[1]],
-        [sin_t,  cos_t, pivot_px[1] - sin_t * pivot_px[0] - cos_t * pivot_px[1]],
-        [0.0,    0.0,   1.0],
-    ], dtype=np.float64)
+    # KAANTEISKUVAUS (destination -> source), pieni-kulma-tarkka: jokainen
+    # rivi Y kierretaan OMAN paikallisen kulmansa verran pivotin (cx, Y)
+    # ymparilla - koska pivot on TAYSMALLEEN sama rivi jolta pistetta
+    # haetaan, kierto ei siirra riviä pystysuunnassa juuri lainkaan
+    # (vain toisen kertaluvun dy = dx*sin(theta) verran, aivan kuten
+    # globaalissakin kierrossa).
+    dX = X - cx
+    dx = dX / cos_row
+    src_x = cx + dx
+    src_y = Y - dx * sin_row
 
-    H_rotated = R @ H_base
+    map_x = src_x.astype(np.float32)
+    map_y = src_y.astype(np.float32)
+
+    topdown_corrected = cv2.remap(
+        topdown_base, map_x, map_y,
+        interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+    )
 
     return {
-        "H_final": H_rotated,
+        "topdown_corrected": topdown_corrected,
         "near_angle": near_angle,
         "far_angle": far_angle,
-        "correction_deg": correction_deg,
-        "R": R,
+        "map_x": map_x,
+        "map_y": map_y,
+        "cx": cx,
     }
-
-
-def rotate_output_px_point(R, point_px):
-    """
-    Soveltaa apply_hogline_rotation_correction:in palauttaman 2D-
-    kiertomatriisin (R, 3x3 homogeeninen) yhteen output-px-pisteeseen.
-
-    Tarpeellinen (kamera7_06.py): expected_house_center_in_crop palauttaa
-    pesan OLETETUN keskipisteen KIINTEALLA to_output_px-kaavalla, joka
-    olettaa etta fyysinen (0, y_cm) on TASMALLEEN output-px-sarakkeessa
-    x=cx - patee VAIN jos H EI sisalla ylimaaraista kiertoa jonka pivot
-    ei ole tarkalleen samalla sarakkeella. Koska hogline-kiertokorjaus
-    lisaa juuri tallaisen kierron (lahemman pesan ymparilla), KAUKAISEN
-    pesan todellinen sijainti siirtyy sivusuunnassa ~sin(kulma)*etaisyys
-    verran (esim. jo ~1 asteen korjaus siirtaa kaukaista pesaa ~120 px) -
-    jos tata ei huomioida, pesan tunnistuksen hakukeskipiste on vaarassa
-    kohdassa ja ANTAA VIRHEELLISESTI HUONOMMAN pyoreys-/kokomittauksen,
-    vaikka itse kierto ei todellisuudessa muuta pesan muotoa/kokoa
-    lainkaan (todennettu: ilman tata korjausta koko-virhe nayttaytyi
-    jopa ~4-5 %:na kierron jalkeen, vaikka kierto on matemaattisesti
-    muoto-/kokosailyttava - puhdas mittausartefakti).
-    """
-
-    p = np.array([point_px[0], point_px[1], 1.0], dtype=np.float64)
-    q = R @ p
-
-    return (float(q[0] / q[2]), float(q[1] / q[2]))
 
 
 def refine_with_hogline_constraints(
@@ -5107,6 +5110,19 @@ def measure_house_quality(frame_undistorted, H_final):
 
     topdown_final = cv2.warpPerspective(frame_undistorted, H_final, (output_w, output_h))
 
+    return measure_house_quality_from_topdown(topdown_final)
+
+
+def measure_house_quality_from_topdown(topdown_final):
+    """
+    Sama kuin measure_house_quality, mutta ottaa VALMIIN top-down-kuvan
+    suoraan (ei frame_undistorted+H_final -paria). Tarpeellinen (kamera7_
+    06.py) apply_hogline_warp_correction:in tuottamalle lopputulokselle,
+    joka EI enaa ole yhden homografian warpPerspective-tulos (vaan
+    cv2.remap-pohjainen rivikohtainen korjaus) - H_final:ia ei siis ole
+    enaa mielekkaasti olemassa taman kuvan tuottamiseen.
+    """
+
     expected_diam = {
         "blue_outer": 2.0 * BLUE_OUTER_RADIUS_CM * PIXELS_PER_CM,
         "red_outer": 2.0 * RED_OUTER_RADIUS_CM * PIXELS_PER_CM,
@@ -5390,128 +5406,110 @@ def refine_round(frame, camera_matrix, best_k1, frame_undistorted, refined,
 
 def apply_final_hogline_rotation(frame_undistorted, refined, output_w, output_h):
     """
-    Soveltaa hogline-kiertokorjauksen (apply_hogline_rotation_correction)
-    KERTAALLEEN, VASTA kun H+k1-yhteisoptimointi (refine_round-silmukka)
-    on jo konvergoitunut - EI joka kierroksella sen sisalla.
+    Soveltaa hogline-korjauksen (apply_hogline_warp_correction) KERTAALLEEN,
+    VASTA kun H+k1-yhteisoptimointi (refine_round-silmukka) on jo
+    konvergoitunut - EI joka kierroksella sen sisalla.
 
-    KRIITTINEN SYY (loytyi diagnosoitaessa: kierron jalkeinen koko-virhe
-    nayttaytyi valilla 5-9 %:na, vaikka PUHDAS 2D-kierto EI matemaatti-
-    sesti VOI muuttaa pesan muotoa/kokoa lainkaan): 2D-kierto pivotoituna
-    lahemman pesan ymparille siirtaa VAISTAMATTA kaukaisen pesan
-    SIVUSUUNNASSA pois kiinteasta x=0-sarakkeesta (jo ~1 asteen korjaus
-    -> ~120 px siirtyma noin 35 m paassa olevalle kaukaiselle pesalle) -
-    tama on GEOMETRISESTI VALTTAMATONTA (yksi 2D-kierto ei voi pitaa
-    KAHTA eri pistetta samalla suoralla x=0 paikallaan, paitsi jos
-    kiertokulma on nolla), EIKA ITSESSAAN ONGELMA - kuva ei ole
-    huonompi, se on vain hieman toisin aseteltu.
+    KAYTTAJAN LISARAJOITUS: "pesan keskikohdan pitaa olla keskiviivalla" -
+    MOLEMPIEN pesien, ei vain toisen. Aiempi PELKKA 2D-KIERTO (pivotoituna
+    lahemman pesan ymparille) rikkoi taman kaukaisen pesan osalta
+    (~120 px sivuttaissiirtyma jo ~1 asteen korjauksella) - GEOMETRISESTI
+    VALTTAMATONTA yhdelle globaalille kierrolle (se pitaa paikallaan VAIN
+    oman pivottinsa). apply_hogline_warp_correction korvaa taman rivi-
+    kohtaisella (row-dependent) korjauksella, jonka pivot on JOKAISELLA
+    rivilla erikseen SAMA keskiviivan sarake - talloin KOKO keskiviiva
+    (siis MOLEMPIEN pesien keskipisteet) pysyy RAKENTEELLISESTI paikallaan
+    (todennettu numeerisesti: <1 px poikkeama, katso sen oma kommentti).
 
-    Ongelma syntyy VASTA jos joku MYOHEMPI koodi olettaa pesan olevan
-    edelleen kiinteassa x=0-sarakkeessa (kuten measure_house_quality/
-    expected_house_center_in_crop tekevat KAIKKIALLA muualla koodissa) -
-    silloin pesan haku etsii vaarasta kohdasta ja EPAONNISTUU/antaa
-    huonontuneen lukeman, VAIKKA kuva itse on kunnossa. Koska tama
-    virhe olisi VUOTANUT jokaiseen MYOHEMPAAN refine_round-kierrokseen
-    (niiden omat measure_house_quality/candidate_is_better-kutsut
-    olisivat kaikki mitanneet vaarasta kohdasta), kierto TÄYTYY tehda
-    VASTA sen jalkeen kun mitaan muuta ei enaa mitata/verrata taman
-    perusteella - eli aivan lopuksi.
+    Talla EI ole enaa samaa "expected_house_center_in_crop menee vaarin"
+    -ongelmaa kuin edellisessa (kierto-pohjaisessa) versiossa - keskipiste-
+    oletus PATEE edelleen sellaisenaan, koska keskiviiva ei liiku. Silti
+    korjaus tehdaan VASTA silmukan konvergoiduttua (eika sen sisalla),
+    koska pieni ei-nolla muotovaikutus pesan OMAN pystymitan yli
+    (katso apply_hogline_warp_correction:in kommentti) voisi silti
+    periaatteessa vuotaa myohempiin mittauksiin jos korjausta sovellettaisiin
+    toistuvasti - kertaluontoisena viimeisena askeleena tata riskia ei ole.
 
     Palauttaa paivitetyn refined-dictin (tai alkuperaisen muuttumattomana
-    jos hogline-pisteita ei loytynyt tai kierto ei parantanut kulmaa).
+    jos hogline-pisteita ei loytynyt tai korjaus ei parantanut kulmaa).
     """
 
     current_quality = measure_house_quality(frame_undistorted, refined["H_final"])
 
-    rotation_result = apply_hogline_rotation_correction(
+    warp_result = apply_hogline_warp_correction(
         frame_undistorted, refined["H_final"], output_w, output_h
     )
 
     print()
     print("=" * 65)
-    print("HOGLINE-TASOITUS (PELKKA KIERTO, kamera7_06.py)")
+    print("HOGLINE-TASOITUS (RIVIKOHTAINEN KORJAUS, kamera7_06.py)")
     print("=" * 65)
 
-    if rotation_result is None:
+    if warp_result is None:
         print("-> Hogline-pisteita ei loytynyt riittavasti, sailytetaan alkuperainen.")
         return refined
 
-    print(f"Nykytila: lahempi={rotation_result['near_angle']:+.3f} deg, "
-          f"kaukainen={rotation_result['far_angle']:+.3f} deg, "
-          f"{house_quality_str(current_quality)}, "
-          f"korjauskulma={rotation_result['correction_deg']:+.3f} deg")
+    print(f"Nykytila: lahempi={warp_result['near_angle']:+.3f} deg, "
+          f"kaukainen={warp_result['far_angle']:+.3f} deg, "
+          f"{house_quality_str(current_quality)}")
 
-    topdown_rot = cv2.warpPerspective(
-        frame_undistorted, rotation_result["H_final"], (output_w, output_h)
-    )
+    topdown_corrected = warp_result["topdown_corrected"]
+
     # detect_hogline_points-pohjainen (dekontaminoitu) mittaus, EI
     # detect_hogline_angle:ia - katso detect_hogline_points:in kommentti.
     new_near_angle, _ = robust_line_angle_from_points(
-        detect_hogline_points(topdown_rot, NEAR_HOGLINE_Y_CM)
+        detect_hogline_points(topdown_corrected, NEAR_HOGLINE_Y_CM)
     )
     new_far_angle, _ = robust_line_angle_from_points(
-        detect_hogline_points(topdown_rot, FAR_HOGLINE_Y_CM)
+        detect_hogline_points(topdown_corrected, FAR_HOGLINE_Y_CM)
     )
 
-    old_max_angle = max(
-        abs(rotation_result["near_angle"]), abs(rotation_result["far_angle"])
-    )
+    old_max_angle = max(abs(warp_result["near_angle"]), abs(warp_result["far_angle"]))
     new_max_angle = max(abs(new_near_angle), abs(new_far_angle))
 
-    print(f"Kierron jalkeen: lahempi={new_near_angle:+.3f} deg, "
+    print(f"Korjauksen jalkeen: lahempi={new_near_angle:+.3f} deg, "
           f"kaukainen={new_far_angle:+.3f} deg")
 
+    new_quality = measure_house_quality_from_topdown(topdown_corrected)
+    print(f"Pesien laatu korjauksen jalkeen: {house_quality_str(new_quality)}")
+
     if not (new_max_angle < old_max_angle - 0.02):
-        print("-> Hogline-tasoitus (kierto) ei parantanut tulosta riittavasti, "
+        print("-> Hogline-tasoitus ei parantanut tulosta riittavasti, "
               "sailytetaan alkuperainen.")
         return refined
 
-    print("-> Hogline-tasoitus (kierto) parantaa tulosta, otetaan kayttoon.")
+    print("-> Hogline-tasoitus parantaa tulosta, otetaan kayttoon.")
 
-    near_view_rot = crop_house_view(
-        topdown_rot, NEAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
+    # Keskiviiva (siis MOLEMPIEN pesien keskipisteet) pysyy paikallaan
+    # taman korjauksen RAKENTEELLISEN pivotinvalinnan ansiosta (katso
+    # apply_hogline_warp_correction:in kommentti) - expected_house_
+    # center_in_crop:in KIINTEA (korjaamaton) oletus on siis edelleen
+    # oikein, eika sita tarvitse muuntaa (toisin kuin edellisessa,
+    # kierto-pohjaisessa versiossa).
+    near_view = crop_house_view(
+        topdown_corrected, NEAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
     )
-    far_view_rot = crop_house_view(
-        topdown_rot, FAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
+    far_view = crop_house_view(
+        topdown_corrected, FAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
     )
-
-    # KRIITTISTA (katso rotate_output_px_point:in kommentti):
-    # expected_house_center_in_crop olettaa KIINTEAN (kiertoa
-    # huomioimattoman) keskipisteen - oletettu keskipiste PITAA kiertaa
-    # samalla R:lla tai pesan tunnistus hakee vaarasta kohdasta ja antaa
-    # virheellisen (huonontuneen) pyoreys-/kokolukeman vaikka itse kuva
-    # ei ole todellisuudessa huonontunut. Tama on VIIMEINEN kerta kun
-    # nailla pesan sijainneilla mitataan mitaan - talle YHDELLE
-    # kertaluontoiselle mittaukselle riittaa korjata paikallisesti.
-    near_row_top_rot, _ = compute_crop_row_range(
-        topdown_rot.shape[0], NEAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
+    near_center = expected_house_center_in_crop(
+        topdown_corrected.shape[0], NEAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
     )
-    far_row_top_rot, _ = compute_crop_row_range(
-        topdown_rot.shape[0], FAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
-    )
-    near_center_full_rot = rotate_output_px_point(
-        rotation_result["R"], to_output_px(0.0, NEAR_HOUSE_Y_CM)
-    )
-    far_center_full_rot = rotate_output_px_point(
-        rotation_result["R"], to_output_px(0.0, FAR_HOUSE_Y_CM)
-    )
-    near_center_rot = (
-        near_center_full_rot[0], near_center_full_rot[1] - near_row_top_rot
-    )
-    far_center_rot = (
-        far_center_full_rot[0], far_center_full_rot[1] - far_row_top_rot
+    far_center = expected_house_center_in_crop(
+        topdown_corrected.shape[0], FAR_HOUSE_Y_CM, HOUSE_CROP_HALF_HEIGHT_CM
     )
 
     return {
-        "H_final": rotation_result["H_final"],
-        "H_before_correction": rotation_result["H_final"],
-        "topdown_raw": topdown_rot,
-        "topdown_corrected_raw": topdown_rot,
+        "H_final": refined["H_final"],
+        "H_before_correction": refined["H_final"],
+        "topdown_raw": topdown_corrected,
+        "topdown_corrected_raw": topdown_corrected,
         "near_verify": verify_house_from_topdown(
-            near_view_rot, near_center_rot,
+            near_view, near_center,
             use_ellipse=True, include_red_inner=True
         ),
         "far_verify": detect_far_house_concentric_circles(
-            far_view_rot, far_center_rot
+            far_view, far_center
         ),
         "rms": refined["rms"],
         "iterations": refined["iterations"],
