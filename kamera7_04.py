@@ -4091,8 +4091,14 @@ def refine_with_hogline_constraints(
         # suoraan, joten paino toteutetaan MONISTAMALLA pesan pisteet
         # HOUSE_POINT_WEIGHT kertaa - tama vastaa TAYSIN painotettua
         # pienimman nelion sovitusta (kokonaislukupainolla) tavallisessa
-        # sovituksessa.
-        HOUSE_POINT_WEIGHT = 3
+        # sovituksessa. Arvo 6 loydetty kokeellisesti (skannattu 3-15):
+        # pienemmilla (3-5) tulos on epavakaa kierrosten valilla (kaukainen
+        # hogline saattaa hypata jopa +-10 astetta), suuremmilla (8-15)
+        # pesan pisteet alkavat hallita liikaa eika hogline-korjaus enaa
+        # riita (kaukainen hogline jaa 3-4 asteen paahan vaakasuorasta) -
+        # 6 antoi molemmilla testikuvilla parhaan YHDISTELMAN vakautta
+        # JA korjauksen voimaa.
+        HOUSE_POINT_WEIGHT = 6
 
         all_img = house_img_pts * HOUSE_POINT_WEIGHT + near_img + far_img
         all_phys = house_phys_pts * HOUSE_POINT_WEIGHT + near_phys + far_phys
