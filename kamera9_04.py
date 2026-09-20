@@ -712,6 +712,168 @@ def search_and_track_stones_precise_fast(video_path, calib, pose, profile, csv_p
 
 
 # ============================================================
+# 7) VIDEON KIVIPROFIILIN SOVITUS (build_stone_profile_from_video) -
+#    ALKUUN KERRAN AJETTAVA KALIBROINTIVAIHE, EI PER-FRAME
+#
+# KAYTTAJAN HAVAINTO: tama vaihe (kamera9_01.py:n track_stone_in_video,
+# jota build_stone_profile_from_video kutsuu) kesti n. 3 minuuttia.
+# SYY LOYTYI PROFILOIMALLA: track_stone_in_video hakee jokaisen framen
+# ERIKSEEN video_capture.set(CAP_PROP_POS_FRAMES, idx):lla ENNEN
+# lukua - VAIKKA idx KASVAA/VAHENEE AINA TASAN YHDELLA per kutsu (siis
+# JARJESTYKSESSA seuraava frame - taysin turha hakea/"seek"). Mitattu
+# TASSA VIDEOSSA: 200 framen sekvenssiluku 0.5s, mutta 200 framen
+# seek+luku 16.2s - SEEK ON SIIS N. 32x HITAAMPI kuin sekvenssiluku
+# (video on H.264/H.265-tyyppisesti pakattu - "seek" joutuu aina
+# dekoodaamaan lahimmasta avainkuvasta eteenpain kohdeframeen asti).
+#
+# KORJAUS: LUETAAN VIDEO LAPI TASAN KERRAN JARJESTYKSESSA (ei koskaan
+# cap.set:ia), lasketaan+valimuistetaan jokaisen framen kandidaatit
+# (_candidates_in_frame_fast, sama funktio kuin kamera9_01.py:n
+# _candidates_in_frame mutta ottaa jo-vaantokorjatun framen valmiina
+# eika vaanna sita itse uudelleen joka kutsulla - katso undistort-
+# kommentti ylempaa samasta periaatteesta). SITTEN ajetaan TASMALLEEN
+# SAMA jatkuvuushaku (track_direction, sama koodi kuin kamera9_01.py:ssa
+# rivi riviltä) valimuistetun listan paalla eteen- ja taaksepain -
+# EI mitaan I/O:ta enaa talla kierroksella. Lopputulos on TASMALLEEN
+# sama full_track kuin alkuperaisella (sama kandidaattilogiikka, sama
+# jatkuvuusehto, sama jarjestys) - vain paljon nopeammin saatu.
+# ============================================================
+
+def _candidates_in_frame_fast(frame_u, pose, H_final, min_area, min_fill_ratio, min_aspect_ratio):
+    """Sama kuin kamera9_01.py:n _candidates_in_frame, mutta ottaa
+    valmiiksi vaantokorjatun framen (ei vaanna sita itse uudelleen)."""
+
+    stones = k9.find_stone_candidates(
+        frame_u, H_final, min_area=min_area,
+        min_fill_ratio=min_fill_ratio, min_aspect_ratio=min_aspect_ratio
+    )
+
+    out = []
+
+    for stone in stones:
+        (cx, cy), _, _ = stone["ellipse"]
+        X0, Y0 = k9._stone_ground_position_z0(pose, cx, cy)
+        out.append({"ellipse": stone["ellipse"], "contour": stone["contour"], "pos_cm": (X0, Y0)})
+
+    return out
+
+
+def track_stone_in_video_fast(video_path, calib, pose, seed_frame_idx, seed_pos_cm,
+                               max_jump_cm=None, max_misses=None, min_area=None,
+                               min_fill_ratio=None, min_aspect_ratio=None):
+    """Sama tulos kuin kamera9_01.py:n track_stone_in_video - katso
+    taman osion alkupaan kommentti mika on eri (vain I/O-jarjestys,
+    ei algoritmi/kynnysarvot)."""
+
+    max_jump_cm = k9.STONE_TRACK_MAX_JUMP_CM if max_jump_cm is None else max_jump_cm
+    max_misses = k9.STONE_TRACK_MAX_MISSES if max_misses is None else max_misses
+    min_area = k9.STONE_TRACK_MIN_AREA if min_area is None else min_area
+    min_fill_ratio = k9.STONE_TRACK_MIN_FILL_RATIO if min_fill_ratio is None else min_fill_ratio
+    min_aspect_ratio = k9.STONE_TRACK_MIN_ASPECT_RATIO if min_aspect_ratio is None else min_aspect_ratio
+
+    H_final = calib["H_final"]
+    camera_matrix = calib["camera_matrix"]
+    dist_coeffs = np.array([calib["best_k1"], 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+    cap = cv2.VideoCapture(video_path)
+    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    map1, map2 = _build_undistort_maps(camera_matrix, dist_coeffs, (frame_w, frame_h))
+
+    candidates_cache = [None] * n_frames
+    idx = 0
+
+    while idx < n_frames:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frame_u = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
+        candidates_cache[idx] = _candidates_in_frame_fast(
+            frame_u, pose, H_final, min_area, min_fill_ratio, min_aspect_ratio
+        )
+        idx += 1
+
+    cap.release()
+
+    def candidates_at(i):
+        if 0 <= i < n_frames and candidates_cache[i] is not None:
+            return candidates_cache[i]
+        return []
+
+    seed_cands = candidates_at(seed_frame_idx)
+    if not seed_cands:
+        raise RuntimeError(f"Ei kandidaatteja siemen-framessa {seed_frame_idx}.")
+
+    seed = min(seed_cands, key=lambda c: math.hypot(
+        c["pos_cm"][0] - seed_pos_cm[0], c["pos_cm"][1] - seed_pos_cm[1]
+    ))
+    seed["frame_idx"] = seed_frame_idx
+
+    def track_direction(step):
+        track = []
+        last_pos = seed["pos_cm"]
+        misses = 0
+        idx = seed_frame_idx + step
+
+        while 0 <= idx < n_frames and misses < max_misses:
+
+            cands = candidates_at(idx)
+
+            if cands:
+                best = min(cands, key=lambda c: math.hypot(
+                    c["pos_cm"][0] - last_pos[0], c["pos_cm"][1] - last_pos[1]
+                ))
+                d = math.hypot(best["pos_cm"][0] - last_pos[0], best["pos_cm"][1] - last_pos[1])
+
+                if d <= max_jump_cm:
+                    best["frame_idx"] = idx
+                    track.append(best)
+                    last_pos = best["pos_cm"]
+                    misses = 0
+                else:
+                    misses += 1
+            else:
+                misses += 1
+
+            idx += step
+
+        return track
+
+    backward = track_direction(-1)
+    forward = track_direction(+1)
+
+    full_track = list(reversed(backward)) + [seed] + forward
+    full_track.sort(key=lambda t: t["frame_idx"])
+
+    return full_track
+
+
+def build_stone_profile_from_video_fast(calib, pose, video_path, seed_frame_idx, seed_pos_cm,
+                                         extra_stones=None, n_video_samples=25,
+                                         front_view_path=None):
+    """Sama tulos kuin kamera9_01.py:n build_stone_profile_from_video,
+    kayttaen track_stone_in_video_fast:ia (katso talla osion alkupaan
+    kommentti nopeutuksesta)."""
+
+    track = track_stone_in_video_fast(video_path, calib, pose, seed_frame_idx, seed_pos_cm)
+
+    if len(track) < 2:
+        raise RuntimeError(f"Video-seuranta loysi vain {len(track)} havaintoa.")
+
+    idxs = sorted(set(np.linspace(0, len(track) - 1, n_video_samples).astype(int).tolist()))
+    video_stones = [{"ellipse": track[i]["ellipse"], "contour": track[i]["contour"]} for i in idxs]
+
+    all_stones = (extra_stones or []) + video_stones
+    profile = k9.fit_stone_profile(pose, all_stones)
+
+    if front_view_path is not None:
+        k9.render_profile_front_view(profile, front_view_path)
+
+    return {"profile": profile, "track": track}
+
+
+# ============================================================
 # PAAOHJELMA (katso kamera9_02.py:n kommentti siemen-arvoista)
 # ============================================================
 
@@ -761,7 +923,7 @@ def main():
 
     print(f"Sovitetaan 3D-profiili (kalibrointikuvan kivet + video, "
           f"siemen frame={k92.DEFAULT_SEED_FRAME_IDX})...")
-    result = k9.build_stone_profile_from_video(
+    result = build_stone_profile_from_video_fast(
         calib, pose, video_filename,
         seed_frame_idx=k92.DEFAULT_SEED_FRAME_IDX, seed_pos_cm=k92.DEFAULT_SEED_POS_CM,
         extra_stones=kivilla_stones, n_video_samples=25,
