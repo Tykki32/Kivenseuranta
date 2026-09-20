@@ -3910,22 +3910,6 @@ def build_masks_debug(frame, near_blue_mask, near_red_mask, far_result,
 # NAITA luotettavampi, joten sen paino ei voi ylittaa 1/NEAR_TRUST_FLOOR_CM.
 NEAR_TRUST_FLOOR_CM = 1.0
 
-# --------------------------------------------------------
-# ETAISYYKSIEN VIRHETOLERANSSI (kayttajan pyynnosta, SATEITA EI
-# vapauteta - kokeiltu erikseen, huononsi tulosta molemmilla
-# testikuvilla, katso git-historia): pesien valinen etaisyys
-# (HOUSE_DISTANCE_CM) ja hoglinen etaisyys T-linjasta (HOG_LINE_
-# DISTANCE_FROM_TEE_CM) EIVAT ole enaa tasan nimellisia WCF-mittoja -
-# ne saavat poiketa niista +-1 %, ja tarkka poikkeama on OSA samaa
-# epalineaarista H-sovitusta. Toisin kuin sadeskaalaus, tama EI ole
-# yhta suoraan H:n oman skaalavapauden kanssa paallekkaista (siirtaa
-# kaukaisen pesan/hoglinejen KOHDETTA, ei koko koordinaatiston
-# mittakaavaa), joten sen odotetaan olevan vahemman altis ylisovi-
-# tukselle - validoitava empiirisesti samaan tapaan.
-# --------------------------------------------------------
-
-LENGTH_TOLERANCE = 0.01
-
 
 def _h_from_params(params):
     return np.array([
@@ -4015,34 +3999,18 @@ def _levenberg_marquardt(residual_fn, params0, max_iterations=50,
     return params
 
 
-def _far_ring_distance(H, far_pts, far_radius, far_house_y):
+def _far_ring_distance(H, far_pts, far_radius):
     if not len(far_pts):
         return np.zeros(0)
     proj_cm = output_px_to_physical(_apply_h(H, far_pts))
-    return np.hypot(proj_cm[:, 0], proj_cm[:, 1] - far_house_y) - far_radius
+    return np.hypot(proj_cm[:, 0], proj_cm[:, 1] - FAR_HOUSE_Y_CM) - far_radius
 
 
-def _hogline_distance(H, hog_pts, hog_line_idx, near_hog_y, far_hog_y):
+def _hogline_distance(H, hog_pts, hog_y):
     if not len(hog_pts):
         return np.zeros(0)
     proj_cm = output_px_to_physical(_apply_h(H, hog_pts))
-    target_y = np.where(hog_line_idx == 0, near_hog_y, far_hog_y)
-    return proj_cm[:, 1] - target_y
-
-
-def _distance_scales_from_params(params):
-    """
-    params[8:10] -> (pesien valisen etaisyyden skaala, hoglinen
-    etaisyyden skaala T-linjasta) - kumpikin rajattu valille
-    [1-LENGTH_TOLERANCE, 1+LENGTH_TOLERANCE] tanh-uudelleenparametroin-
-    nilla (sileasti differentioituva, ei tarvita erillista rajoitettua
-    optimointia). Pesien sateet PYSYVAT nimellisina - katso
-    LENGTH_TOLERANCE:in kommentti siita miksi vain etaisyydet ovat
-    vapaina.
-    """
-
-    scales = 1.0 + LENGTH_TOLERANCE * np.tanh(params[8:10])
-    return scales[0], scales[1]
+    return proj_cm[:, 1] - hog_y
 
 
 def _robust_scale_cm(residuals, floor_cm):
@@ -4069,15 +4037,9 @@ def _robust_scale_cm(residuals, floor_cm):
 
 def _geometric_residuals(params, near_pts, near_phys,
                           far_pts, far_radius, far_weight,
-                          hog_pts, hog_line_idx, hog_weight):
+                          hog_pts, hog_y, hog_weight):
 
-    H = _h_from_params(params[:8])
-    house_dist_scale, hogline_dist_scale = _distance_scales_from_params(params)
-
-    far_house_y = NEAR_HOUSE_Y_CM + HOUSE_DISTANCE_CM * house_dist_scale
-    near_hog_y = NEAR_HOUSE_Y_CM + HOG_LINE_DISTANCE_FROM_TEE_CM * hogline_dist_scale
-    far_hog_y = far_house_y - HOG_LINE_DISTANCE_FROM_TEE_CM * hogline_dist_scale
-
+    H = _h_from_params(params)
     parts = []
 
     if len(near_pts):
@@ -4085,45 +4047,40 @@ def _geometric_residuals(params, near_pts, near_phys,
         parts.append((proj_cm - near_phys).ravel())
 
     if len(far_pts):
-        parts.append(_far_ring_distance(H, far_pts, far_radius, far_house_y) * far_weight)
+        parts.append(_far_ring_distance(H, far_pts, far_radius) * far_weight)
 
     if len(hog_pts):
-        parts.append(_hogline_distance(H, hog_pts, hog_line_idx, near_hog_y, far_hog_y) * hog_weight)
+        parts.append(_hogline_distance(H, hog_pts, hog_y) * hog_weight)
 
     return np.concatenate(parts) if parts else np.zeros(0)
 
 
-def solve_homography_geometric(params_init, near_pts, near_phys,
+def solve_homography_geometric(H_init, near_pts, near_phys,
                                 far_pts, far_radius, far_weight,
-                                hog_pts, hog_line_idx, hog_weight):
+                                hog_pts, hog_y, hog_weight):
     """
-    Ratkaisee koko homografian (8 vapausastetta) SEKA pesien valisen
-    ja hoglinen T-linja-etaisyyden +-1 % skaalat (2 lisavapausastetta,
-    katso LENGTH_TOLERANCE) YHDELLA epalineaarisella sovituksella:
-    lahemman pesan 17 pistetta ovat tavallisia pistekorrespondensseja,
-    kaukaisen pesan rengaspisteet YMPYRARAJOITTEITA (ei vaadi T-linjan
-    suuntaa) ja hogline-pisteet VIIVARAJOITTEITA (ei vaadi X-kohdetta).
-    Katso taman tiedoston alkupaan kommentti periaatteesta.
-
-    Pesien sateet EIVAT ole vapaita (far_radius on nimellinen, kiintea)
-    - katso LENGTH_TOLERANCE:in kommentti.
+    Ratkaisee koko homografian (8 vapausastetta) YHDELLA epalineaari-
+    sella sovituksella: lahemman pesan 17 pistetta ovat tavallisia
+    pistekorrespondensseja, kaukaisen pesan rengaspisteet YMPYRA-
+    RAJOITTEITA (ei vaadi T-linjan suuntaa) ja hogline-pisteet VIIVA-
+    RAJOITTEITA (ei vaadi X-kohdetta). Katso taman tiedoston alkupaan
+    kommentti periaatteesta.
 
     far_weight/hog_weight painottavat kunkin ryhman residuaalit NIIDEN
     OMAN, JUURI ENNEN TATA KUTSUA arvioidun kohinatason mukaan (katso
     _robust_scale_cm ja refine_geometric_homography) - ei kasin
     viritettya vakiota, vaan tavanomainen painotetun pienimman nelion
     (inverse-variance) periaate.
-
-    params_init/palautusarvo ovat 10-alkioisia (8 H:lle + 2 etaisyys-
-    skaaloille, katso _distance_scales_from_params).
     """
 
     residual_fn = lambda p: _geometric_residuals(
         p, near_pts, near_phys, far_pts, far_radius, far_weight,
-        hog_pts, hog_line_idx, hog_weight
+        hog_pts, hog_y, hog_weight
     )
 
-    return _levenberg_marquardt(residual_fn, params_init)
+    params = _levenberg_marquardt(residual_fn, _params_from_h(H_init))
+
+    return _h_from_params(params)
 
 
 def frame_points_from_topdown(topdown_pts, H_current):
@@ -4260,17 +4217,14 @@ def refine_geometric_homography(frame_undistorted, H_init, near_pts, near_phys,
 
     HUOM (rehellisesti raportoitu rajoitus): koska kaukaisen pesan
     ympyrarajoite on TAHALLAAN rotaatioinvariantti (ei kerro T-linjan
-    suuntaa), kaukaisen kentan KIERTO jaa kokonaan hoglinien varaan -
-    +-1 %:n etaisyystoleranssi (LENGTH_TOLERANCE) ei muuta tata,
-    koska sekin on rotaatioinvariantti (siirtaa vain kohdetta
-    keskilinjaa pitkin). Jos hoglinen mittaus on jollain kuvalla
-    epaluotettava (esim. hyvin kaukana, himmea), kaukaisen paan kierto
-    voi jaada osittain vaaraksi vaikka pesien muoto/koko olisivatkin
-    jo hyvia - tama on todettu (Kivilla.png) eika sita peitella: katso
-    main()in lopullinen, suodattamaton raportointi.
+    suuntaa), kaukaisen kentan KIERTO jaa kokonaan hoglinien varaan.
+    Jos hoglinen mittaus on jollain kuvalla epaluotettava (esim. hyvin
+    kaukana, himmea), kaukaisen paan kierto voi jaada osittain vaaraksi
+    vaikka pesien muoto/koko olisivatkin jo hyvia - tama on todettu
+    (Kivilla.png) eika sita peitella: katso main()in lopullinen,
+    suodattamaton raportointi.
 
-    Palauttaa dictin: H_final, length_scales, topdown_raw, rms,
-    quality, iterations.
+    Palauttaa dictin: H_final, topdown_raw, rms, quality, iterations.
     """
 
     if max_iterations is None:
@@ -4278,14 +4232,12 @@ def refine_geometric_homography(frame_undistorted, H_init, near_pts, near_phys,
     if min_relative_improvement is None:
         min_relative_improvement = HOMOGRAPHY_REFINE_MIN_RELATIVE_IMPROVEMENT
 
-    params_current = np.concatenate([_params_from_h(H_init), np.zeros(2)])
+    H_current = H_init
     best = None
     best_rms = float("inf")
     stall_count = 0
 
     for iteration in range(1, max_iterations + 1):
-
-        H_current = _h_from_params(params_current[:8])
 
         topdown_raw = cv2.warpPerspective(frame_undistorted, H_current, (output_w, output_h))
 
@@ -4314,34 +4266,29 @@ def refine_geometric_homography(frame_undistorted, H_init, near_pts, near_phys,
         hog_pts = np.concatenate([near_hog_pts, far_hog_pts]) if (
             len(near_hog_pts) or len(far_hog_pts)
         ) else np.zeros((0, 2))
-        hog_line_idx = np.concatenate([
-            np.zeros(len(near_hog_pts), dtype=np.int64),
-            np.ones(len(far_hog_pts), dtype=np.int64),
+        hog_y = np.concatenate([
+            np.full(len(near_hog_pts), NEAR_HOGLINE_Y_CM),
+            np.full(len(far_hog_pts), FAR_HOGLINE_Y_CM),
         ])
         hog_strength = np.concatenate([near_hog_w, far_hog_w])
 
         # Painot kaukaisen renkaan/hoglinen ryhmille: NIIDEN OMASTA
-        # residuaalihajonnasta NYKYISELLA H_current:lla (nimellisin
-        # etaisyyksin, skaala=1 - painotus on vain karkea kohinatason
-        # arvio, ei tarvitse tarkkaa skaalaa) arvioitu (inverse-
-        # variance) kohinataso, ylhaalta rajattu lahemman pesan
-        # luottamustasolla (NEAR_TRUST_FLOOR_CM) - katso
+        # residuaalihajonnasta NYKYISELLA H_current:lla arvioitu
+        # (inverse-variance) kohinataso, ylhaalta rajattu lahemman
+        # pesan luottamustasolla (NEAR_TRUST_FLOOR_CM) - katso
         # _robust_scale_cm:in kommentti. Ei kasin viritetty vakio.
-        far_resid_now = _far_ring_distance(H_current, far_pts, far_radius, FAR_HOUSE_Y_CM)
+        far_resid_now = _far_ring_distance(H_current, far_pts, far_radius)
         far_scale = _robust_scale_cm(far_resid_now, NEAR_TRUST_FLOOR_CM)
         far_weight = 1.0 / far_scale
 
-        hog_resid_now = _hogline_distance(H_current, hog_pts, hog_line_idx, NEAR_HOGLINE_Y_CM, FAR_HOGLINE_Y_CM)
+        hog_resid_now = _hogline_distance(H_current, hog_pts, hog_y)
         hog_scale = _robust_scale_cm(hog_resid_now, NEAR_TRUST_FLOOR_CM)
         hog_weight = (1.0 / hog_scale) * hog_strength
 
-        params_new = solve_homography_geometric(
-            params_current, near_pts, near_phys, far_pts, far_radius, far_weight,
-            hog_pts, hog_line_idx, hog_weight
+        H_new = solve_homography_geometric(
+            H_current, near_pts, near_phys, far_pts, far_radius, far_weight,
+            hog_pts, hog_y, hog_weight
         )
-
-        H_new = _h_from_params(params_new[:8])
-        house_dist_scale, hogline_dist_scale = _distance_scales_from_params(params_new)
 
         # Lahemman pesan 17 (tarkasti tunnetun, muuttumattoman) pisteen
         # RMS-uudelleenprojisointivirhe - vertailukelpoinen mittari
@@ -4354,8 +4301,7 @@ def refine_geometric_homography(frame_undistorted, H_init, near_pts, near_phys,
         print(f"[Geometrinen korjaus {iteration}/{max_iterations}] "
               f"lahempi RMS: {rms:.4f} cm, {house_quality_str(quality)} "
               f"(kaukaisen renkaan pisteita {len(far_pts)}, paino {far_weight:.3f}; "
-              f"hogline-pisteita {len(hog_pts)}, paino {1.0 / hog_scale:.3f}; "
-              f"etaisyysskaalat pesa={house_dist_scale:.4f} hogline={hogline_dist_scale:.4f})")
+              f"hogline-pisteita {len(hog_pts)}, paino {1.0 / hog_scale:.3f})")
 
         # Hyvaksytaan kierroksen tulos VAIN jos se ei huononna pesien
         # muotoa/kokoa merkittavasti (candidate_is_better, sama portti
@@ -4377,7 +4323,7 @@ def refine_geometric_homography(frame_undistorted, H_init, near_pts, near_phys,
                 print("  Ei enaa hyvaksyttavaa parannusta, pysaytetaan.")
                 break
 
-            params_current = params_new
+            H_current = H_new
             continue
 
         stall_count = 0
@@ -4388,17 +4334,13 @@ def refine_geometric_homography(frame_undistorted, H_init, near_pts, near_phys,
 
         best = {
             "H_final": H_new,
-            "length_scales": {
-                "house_distance": float(house_dist_scale),
-                "hogline_distance": float(hogline_dist_scale),
-            },
             "topdown_raw": topdown_raw,
             "rms": rms,
             "quality": quality,
             "iterations": iteration,
         }
         best_rms = rms
-        params_current = params_new
+        H_current = H_new
 
         if relative_improvement is not None and relative_improvement < min_relative_improvement:
             break
@@ -4797,13 +4739,6 @@ def main():
         print(f"Lahemman pesan keskipisteen poikkeama keskiviivalta: {near_dev:+.3f} cm")
     if far_dev is not None:
         print(f"Kaukaisen pesan keskipisteen poikkeama keskiviivalta: {far_dev:+.3f} cm")
-
-    ls = refined["length_scales"]
-    print()
-    print(f"Sovitetut etaisyysskaalat (sallittu +-{LENGTH_TOLERANCE * 100:.0f} %, "
-          f"1.0000 = nimellinen WCF-mitta):")
-    print(f"  Pesien valinen etaisyys      : {ls['house_distance']:.4f}")
-    print(f"  Hoglinen etaisyys T-linjasta : {ls['hogline_distance']:.4f}")
     print()
     print(f"Kuvat tallennettu: {TOPDOWN_OUTPUT}, {NEAR_HOUSE_VERIFY_OUTPUT}, "
           f"{FAR_HOUSE_VERIFY_OUTPUT}")
