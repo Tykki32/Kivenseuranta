@@ -157,20 +157,33 @@ static std::vector<cv::Point2f> predictedHull(
     const std::vector<cv::Point3d>& local_pts, double X0, double Y0,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t)
 {
-    std::vector<cv::Point3d> pts(local_pts.size());
-
-    for (size_t i = 0; i < local_pts.size(); ++i)
-        pts[i] = cv::Point3d(local_pts[i].x + X0, local_pts[i].y + Y0, local_pts[i].z);
-
-    auto proj = project3d(K, R, t, pts);
-
-    std::vector<cv::Point2f> proj_f(proj.size());
+    // OPTIMOINTI (EI numeerista eroa): alkuperainen versio rakensi
+    // ensin VALIAIKAISEN pts-taulukon (Point3d, X0/Y0-siirrolla) ja
+    // kutsui sitten project3d:ta joka rakensi OMAN valiaikaisen
+    // out-taulukkonsa (Point2d) - eli kaksi ylimaarasta heap-varausta
+    // JOKAISELLA kutsulla, vaikka lopputulos on aina vain proj_f
+    // (Point2f). Tama funktio on JOKAISEN LM-residuaalilaskennan
+    // (profileResiduals) sisalla, siis satoja kertoja per kiven
+    // paivitys (katso jointResiduals) - siirretty tassa suoraan
+    // paikallisesta pisteesta lopulliseen projisoituun Point2f:aan
+    // ILMAN valivaiheiden materialisointia. Laskentajarjestys/
+    // liukulukuoperaatiot tarkalleen samat kuin ennen (X0/Y0-lisays
+    // ENNEN R*p+t:ta, K*pc JÄLKEEN, jako pi[2]:lla, sitten float-
+    // kasti VASTA aivan lopuksi, kuten alkuperaisessakin) - siis
+    // BITTITARKASTI sama tulos, vain vahemman valiaikaista muistin-
+    // varausta.
+    std::vector<cv::Point2f> proj_f(local_pts.size());
     bool all_finite = true;
 
-    for (size_t i = 0; i < proj.size(); ++i) {
-        if (!std::isfinite(proj[i].x) || !std::isfinite(proj[i].y))
+    for (size_t i = 0; i < local_pts.size(); ++i) {
+        cv::Vec3d p(local_pts[i].x + X0, local_pts[i].y + Y0, local_pts[i].z);
+        cv::Vec3d pc = R * p + t;
+        cv::Vec3d pi = K * pc;
+        double px = pi[0] / pi[2], py = pi[1] / pi[2];
+
+        if (!std::isfinite(px) || !std::isfinite(py))
             all_finite = false;
-        proj_f[i] = cv::Point2f((float)proj[i].x, (float)proj[i].y);
+        proj_f[i] = cv::Point2f((float)px, (float)py);
     }
 
     if (!all_finite)
@@ -927,22 +940,34 @@ static std::vector<cv::Point2d> filterIceBoundaryPoints(
 // kamera9_03.py:n _ring_point_residuals)
 // ============================================================
 
+// OPTIMOINTI (EI numeerista eroa): pts otetaan nyt VALMIIKSI Point2f:
+// ksi kasteltuna (katso toPoint2fVec) - profileResiduals on jointResi
+// duals:in kautta LM:n Jacobian/damping-silmukan sisalla, kutsuttuna
+// satoja kertoja per refinePositionJoint-kutsu (katso jointResiduals:in
+// oma kommentti), mutta pts (body_pts/clean_body) EI MUUTU LAINKAAN
+// naiden kutsujen valilla - vain X0/Y0 muuttuu. Alkuperainen versio
+// teki double->float-kastin JOKAISELLE pisteelle JOKAISELLA kutsulla
+// UUDELLEEN, vaikka tulos on aina sama - kutsuja (refinePositionJoint)
+// kastaa nyt kerran ja uudelleenkayttaa. cv::Point2f((float)x,(float)y)
+// on deterministinen - sama kutsu tuottaa AINA saman bittitarkan
+// tuloksen laskettiinpa se kerran tai monta kertaa, joten tama EI
+// muuta yhtaan lukua.
 static std::vector<double> profileResiduals(
     const std::vector<cv::Point3d>& local_pts_body, double X0, double Y0,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
-    const std::vector<cv::Point2d>& pts)
+    const std::vector<cv::Point2f>& pts_f)
 {
     auto hull = predictedHull(local_pts_body, X0, Y0, K, R, t);
 
-    std::vector<double> out(pts.size());
+    std::vector<double> out(pts_f.size());
 
     if (hull.empty()) {
         std::fill(out.begin(), out.end(), 1000.0);
         return out;
     }
 
-    for (size_t i = 0; i < pts.size(); ++i)
-        out[i] = cv::pointPolygonTest(hull, cv::Point2f((float)pts[i].x, (float)pts[i].y), true);
+    for (size_t i = 0; i < pts_f.size(); ++i)
+        out[i] = cv::pointPolygonTest(hull, pts_f[i], true);
 
     return out;
 }
@@ -953,36 +978,40 @@ static std::vector<cv::Point2f> predictedRingPoints(
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     int n_theta = 120)
 {
-    std::vector<cv::Point3d> pts3d((size_t)n_theta);
+    // OPTIMOINTI (EI numeerista eroa): sama periaate kuin predicted
+    // Hull:issa - vaivaiset pts3d/proj-valitaulukot poistettu, suora
+    // pisteesta Point2f:aan -projisointi tasmalleen samassa jarjes-
+    // tyksessa kuin ennen.
+    std::vector<cv::Point2f> out((size_t)n_theta);
+
     for (int i = 0; i < n_theta; ++i) {
         double theta = 2.0 * M_PI * (double)i / (double)n_theta;
-        pts3d[(size_t)i] = cv::Point3d(
+        cv::Vec3d p(
             X0 + ring_radius_cm * std::cos(theta),
             Y0 + ring_radius_cm * std::sin(theta),
             ring_height_cm
         );
+        cv::Vec3d pc = R * p + t;
+        cv::Vec3d pi = K * pc;
+        out[(size_t)i] = cv::Point2f((float)(pi[0] / pi[2]), (float)(pi[1] / pi[2]));
     }
-
-    auto proj = project3d(K, R, t, pts3d);
-
-    std::vector<cv::Point2f> out((size_t)n_theta);
-    for (int i = 0; i < n_theta; ++i)
-        out[(size_t)i] = cv::Point2f((float)proj[(size_t)i].x, (float)proj[(size_t)i].y);
 
     return out;
 }
 
 
+// OPTIMOINTI (EI numeerista eroa): sama periaate kuin profileResi
+// duals:issa - observed otetaan valmiiksi Point2f:ksi kasteltuna.
 static std::vector<double> ringPointResiduals(
     double X0, double Y0, double ring_radius_cm, double ring_height_cm,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
-    const std::vector<cv::Point2d>& observed)
+    const std::vector<cv::Point2f>& observed_f)
 {
     auto poly = predictedRingPoints(X0, Y0, ring_radius_cm, ring_height_cm, K, R, t);
 
-    std::vector<double> out(observed.size());
-    for (size_t i = 0; i < observed.size(); ++i)
-        out[i] = cv::pointPolygonTest(poly, cv::Point2f((float)observed[i].x, (float)observed[i].y), true);
+    std::vector<double> out(observed_f.size());
+    for (size_t i = 0; i < observed_f.size(); ++i)
+        out[i] = cv::pointPolygonTest(poly, observed_f[i], true);
 
     return out;
 }
@@ -1009,10 +1038,24 @@ static double median(std::vector<double> v)
 // vaimennettu pienimman nelion periaate, ei matemaattista eroa).
 // ============================================================
 
+// Yksi double->float-kasti pistejoukolle - katso profileResiduals/
+// ringPointResiduals:in oma kommentti: kutsuja kastaa TASAN kerran
+// per body_pts/ring_pts/clean_body/clean_ring -joukko (nama pysyvat
+// muuttumattomina koko LM-ajon ajan), ei jokaisella residuaali-
+// kutsulla uudelleen.
+static std::vector<cv::Point2f> toPoint2fVec(const std::vector<cv::Point2d>& pts)
+{
+    std::vector<cv::Point2f> out(pts.size());
+    for (size_t i = 0; i < pts.size(); ++i)
+        out[i] = cv::Point2f((float)pts[i].x, (float)pts[i].y);
+    return out;
+}
+
+
 struct ResidualContext {
     const std::vector<cv::Point3d>* local_pts_body;
-    const std::vector<cv::Point2d>* body_pts;
-    const std::vector<cv::Point2d>* ring_pts;
+    const std::vector<cv::Point2f>* body_pts_f;
+    const std::vector<cv::Point2f>* ring_pts_f;
     double ring_height_cm;
     const cv::Matx33d* K;
     const cv::Matx33d* R;
@@ -1025,13 +1068,13 @@ static std::vector<double> jointResiduals(const ResidualContext& ctx, const cv::
     double X = params[0], Y = params[1], Rr = params[2];
     std::vector<double> out;
 
-    if (!ctx.body_pts->empty()) {
-        auto r = profileResiduals(*ctx.local_pts_body, X, Y, *ctx.K, *ctx.R, *ctx.t, *ctx.body_pts);
+    if (!ctx.body_pts_f->empty()) {
+        auto r = profileResiduals(*ctx.local_pts_body, X, Y, *ctx.K, *ctx.R, *ctx.t, *ctx.body_pts_f);
         out.insert(out.end(), r.begin(), r.end());
     }
 
-    if (!ctx.ring_pts->empty()) {
-        auto r = ringPointResiduals(X, Y, Rr, ctx.ring_height_cm, *ctx.K, *ctx.R, *ctx.t, *ctx.ring_pts);
+    if (!ctx.ring_pts_f->empty()) {
+        auto r = ringPointResiduals(X, Y, Rr, ctx.ring_height_cm, *ctx.K, *ctx.R, *ctx.t, *ctx.ring_pts_f);
         out.insert(out.end(), r.begin(), r.end());
     }
 
@@ -1112,7 +1155,7 @@ static cv::Vec3d levenbergMarquardt3(
         // kutsu (koko runko-pisteiden pointPolygonTest-silmukka) talle
         // sarakkeelle kun se on jo etukateen tiedossa nollaksi - EI
         // vaikuta lopputulokseen, vain sailyttaa turhan laskennan.
-        bool skip_r_column = ctx.ring_pts->empty();
+        bool skip_r_column = ctx.ring_pts_f->empty();
 
         for (int j = 0; j < 3; ++j) {
 
@@ -1285,6 +1328,12 @@ static RefineResult refinePositionJoint(
     }
     int n_body = (int)body_pts.size();
 
+    // body_pts EI MUUTU koko BOUNDARY_MAX_ITERATIONS-silmukan/LM-ajon
+    // aikana (vain ring_pts vaihtuu per ulompi iteraatio) - kastetaan
+    // Point2f:ksi TASAN kerran tassa, katso profileResiduals:in oma
+    // kommentti.
+    std::vector<cv::Point2f> body_pts_f = toPoint2fVec(body_pts);
+
     double X_cur = X0_approx, Y_cur = Y0_approx, R_cur = ring_r_frac_guess * R_max_cm;
     std::vector<cv::Point2d> ring_pts;
     double rms_px = 0.0;
@@ -1314,6 +1363,11 @@ static RefineResult refinePositionJoint(
 
         int n_ring = (int)ring_pts.size();
 
+        // ring_pts VAIHTUU joka ulommalla iteraatiolla, joten kastetaan
+        // uudelleen tassa (mutta silti vain KERRAN per ulompi iteraatio,
+        // ei per LM-residuaalikutsu - katso body_pts_f:in kommentti).
+        std::vector<cv::Point2f> ring_pts_f = toPoint2fVec(ring_pts);
+
         if (n_body < BODY_MIN_VALID_POINTS && n_ring < BOUNDARY_MIN_VALID_POINTS) {
             RefineResult res;
             res.X_cm = X0_approx; res.Y_cm = Y0_approx; res.tarkka = false;
@@ -1323,14 +1377,14 @@ static RefineResult refinePositionJoint(
             return res;
         }
 
-        ResidualContext ctx{ &local_pts_body, &body_pts, &ring_pts, ring_height_cm, &K, &R, &t };
+        ResidualContext ctx{ &local_pts_body, &body_pts_f, &ring_pts_f, ring_height_cm, &K, &R, &t };
         cv::Vec3d params_final = levenbergMarquardt3(ctx, cv::Vec3d(X_cur, Y_cur, R_cur), 30);
 
         std::vector<cv::Point2d> clean_body = body_pts;
         std::vector<cv::Point2d> clean_ring = ring_pts;
 
         if (n_body > 0) {
-            auto body_resid = profileResiduals(local_pts_body, params_final[0], params_final[1], K, R, t, body_pts);
+            auto body_resid = profileResiduals(local_pts_body, params_final[0], params_final[1], K, R, t, body_pts_f);
             double med = median(body_resid);
             std::vector<double> abs_dev(body_resid.size());
             for (size_t i = 0; i < body_resid.size(); ++i) abs_dev[i] = std::abs(body_resid[i] - med);
@@ -1345,7 +1399,7 @@ static RefineResult refinePositionJoint(
 
         if (n_ring > 0) {
             auto ring_resid = ringPointResiduals(
-                params_final[0], params_final[1], params_final[2], ring_height_cm, K, R, t, ring_pts
+                params_final[0], params_final[1], params_final[2], ring_height_cm, K, R, t, ring_pts_f
             );
             double med = median(ring_resid);
             std::vector<double> abs_dev(ring_resid.size());
@@ -1359,12 +1413,21 @@ static RefineResult refinePositionJoint(
                 clean_ring = inliers;
         }
 
+        // clean_body/clean_ring voivat olla ERI pistejoukko kuin body_pts/
+        // ring_pts (MAD-poikkeavien hylkays yllakin) - kastetaan omiksi
+        // Point2f-joukoikseen TASAN kerran (ei jokaisella ctx2/ctx_final:
+        // in kayttamalla residuaalikutsulla).
+        std::vector<cv::Point2f> clean_body_f =
+            (clean_body.size() == body_pts.size()) ? body_pts_f : toPoint2fVec(clean_body);
+        std::vector<cv::Point2f> clean_ring_f =
+            (clean_ring.size() == ring_pts.size()) ? ring_pts_f : toPoint2fVec(clean_ring);
+
         if (clean_body.size() != body_pts.size() || clean_ring.size() != ring_pts.size()) {
-            ResidualContext ctx2{ &local_pts_body, &clean_body, &clean_ring, ring_height_cm, &K, &R, &t };
+            ResidualContext ctx2{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, &K, &R, &t };
             params_final = levenbergMarquardt3(ctx2, params_final, 30);
         }
 
-        ResidualContext ctx_final{ &local_pts_body, &clean_body, &clean_ring, ring_height_cm, &K, &R, &t };
+        ResidualContext ctx_final{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, &K, &R, &t };
         auto resid_final = jointResiduals(ctx_final, params_final);
 
         if (!resid_final.empty()) {
