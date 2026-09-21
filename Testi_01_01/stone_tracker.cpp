@@ -387,6 +387,53 @@ static cv::Mat computeSat(const cv::Mat& frame_bgr)
 }
 
 
+// OPTIMOINTI (EI numeerista eroa): SEURANTA:ssa (trackStoneUpdateOne)
+// createGraniteMask(crop) JA computeSat(crop) kutsuttiin aiemmin
+// PERAKKAIN SAMALLE crop:lle - molemmat laskivat cv::cvtColor(...,
+// COLOR_BGR2HSV):n itsenaisesti, eli sama HSV-muunnos tehtiin KAHDESTI
+// turhaan. Tama funktio laskee HSV:n KERRAN ja johtaa siita seka
+// maskin etta saturaation - TASMALLEEN sama laskentaketju/tulos kuin
+// erillisilla createGraniteMask+computeSat-kutsuilla, vain ilman
+// toistuvaa muunnosta. EI kaytossa HAKU:ssa (search_new_stone), koska
+// siella maski ja saturaatio lasketaan ERI syotekuvista (taustan-
+// vaimennettu vs. alkuperainen frame) - katso searchNewStoneOne.
+static cv::Mat createGraniteMaskAndSat(const cv::Mat& frame_bgr, cv::Mat& sat_out)
+{
+    cv::Mat hsv, gray, gray_f, bg, darkness;
+
+    cv::cvtColor(frame_bgr, hsv, cv::COLOR_BGR2HSV);
+    cv::cvtColor(frame_bgr, gray, cv::COLOR_BGR2GRAY);
+    gray.convertTo(gray_f, CV_32F);
+    cv::GaussianBlur(gray_f, bg, cv::Size(0, 0), STONE_DARKNESS_SIGMA);
+    darkness = bg - gray_f;
+
+    std::vector<cv::Mat> hsv_ch;
+    cv::split(hsv, hsv_ch);
+    const cv::Mat& sat_ch = hsv_ch[1];
+    sat_ch.convertTo(sat_out, CV_32F);
+
+    cv::Mat mask = cv::Mat::zeros(frame_bgr.size(), CV_8UC1);
+
+    for (int r = 0; r < mask.rows; ++r) {
+        const uchar* satp = sat_ch.ptr<uchar>(r);
+        const float* darkp = darkness.ptr<float>(r);
+        uchar* mp = mask.ptr<uchar>(r);
+        for (int c = 0; c < mask.cols; ++c) {
+            bool low_saturation = satp[c] < STONE_MAX_SATURATION;
+            bool dark_enough = darkp[c] > (float)STONE_MIN_DARKNESS;
+            mp[c] = (low_saturation && dark_enough) ? 255 : 0;
+        }
+    }
+
+    cv::Mat kernel_open = cv::Mat::ones(5, 5, CV_8U);
+    cv::Mat kernel_close = cv::Mat::ones(3, 3, CV_8U);
+    cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel_open);
+    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel_close);
+
+    return mask;
+}
+
+
 // ============================================================
 // TAUSTAN VAIMENNUS (main.py:n suppress_static_background, Task 6
 // - HAKU:n C++-porttaus). Peittaa (valkoisella) alueet jotka
@@ -854,7 +901,28 @@ static cv::Vec3d levenbergMarquardt3(
         size_t m = residuals.size();
         std::vector<std::array<double, 3>> J(m);
 
+        // OPTIMOINTI (EI numeerista eroa): profile_residuals_fast/
+        // profileResiduals (runko-pisteiden jaannos) ei KOSKAAN kayta
+        // R-parametria (vain X0,Y0 - katso funktion oma allekirjoitus) -
+        // kun rengaspisteita ei ole (ring_pts tyhja), jaannosvektori EI
+        // MUUTU LAINKAAN kun R:aa hairitaan, joten Jacobian R-sarake on
+        // AINA TASMALLEEN nolla (residuals - residuals = 0, ei vain
+        // likimaarin nolla) - taysin sama seka Pythonin etta taman
+        // tiedoston OMASSA aiemmassa, aina jokaisen sarakkeen erikseen
+        // laskevassa versiossa. Ohitetaan siis turha jointResiduals-
+        // kutsu (koko runko-pisteiden pointPolygonTest-silmukka) talle
+        // sarakkeelle kun se on jo etukateen tiedossa nollaksi - EI
+        // vaikuta lopputulokseen, vain sailyttaa turhan laskennan.
+        bool skip_r_column = ctx.ring_pts->empty();
+
         for (int j = 0; j < 3; ++j) {
+
+            if (j == 2 && skip_r_column) {
+                for (size_t i = 0; i < m; ++i)
+                    J[i][2] = 0.0;
+                continue;
+            }
+
             double step = eps * std::max(1.0, std::abs(params[j]));
             cv::Vec3d p_plus = params;
             p_plus[j] += step;
@@ -1171,9 +1239,15 @@ static StoneUpdateResult trackStoneUpdateOne(
     if (roi.width <= 0 || roi.height <= 0)
         return out;
 
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto ts0 = std::chrono::steady_clock::now();
+#endif
     cv::Mat crop = frame_mat(roi);
-    cv::Mat mask_crop = createGraniteMask(crop);
-    cv::Mat sat_crop = computeSat(crop);
+    cv::Mat sat_crop;
+    cv::Mat mask_crop = createGraniteMaskAndSat(crop, sat_crop);
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto ts1 = std::chrono::steady_clock::now();
+#endif
 
     auto best = locateByGridSearchFast(
         local_pts_search, mask_crop, roi.x, roi.y,
@@ -1181,16 +1255,32 @@ static StoneUpdateResult trackStoneUpdateOne(
         coarse_step_cm, fine_step_cm, K, R, t
     );
 
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto ts2 = std::chrono::steady_clock::now();
+    auto ms2 = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    fprintf(stderr, "[SEURANTA timing] roi=%dx%d mask+sat=%.2fms grid=%.2fms",
+            roi.width, roi.height, ms2(ts0, ts1), ms2(ts1, ts2));
+#endif
+
     out.score = best.second;
 
-    if (out.score < score_threshold)
+    if (out.score < score_threshold) {
+#ifdef STONE_TRACKER_DEBUG_TIMING
+        fprintf(stderr, " (no refine, score=%.3f)\n", out.score);
+#endif
         return out;
+    }
 
     out.has_position = true;
     out.refined = refinePositionJoint(
         mask_crop, sat_crop, roi.x, roi.y, frame_w, frame_h, local_pts_body, K, R, t,
         R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
     );
+
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto ts3 = std::chrono::steady_clock::now();
+    fprintf(stderr, " refine=%.2fms n_body=%d n_ring=%d\n", ms2(ts2, ts3), out.refined.n_body, out.refined.n_ring);
+#endif
 
     return out;
 }
