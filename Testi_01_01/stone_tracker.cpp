@@ -665,7 +665,8 @@ static bool findContourNear(
     const cv::Mat& mask, cv::Point2d approx_px, std::vector<cv::Point>& best,
     double max_dist_px = BODY_CONTOUR_MAX_SEARCH_DIST_PX,
     double min_area = BODY_CONTOUR_MIN_AREA_PX,
-    double max_area = -1.0)
+    double max_area = -1.0,
+    bool* rejected_for_size = nullptr)
 {
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
@@ -673,12 +674,23 @@ static bool findContourNear(
     bool found = false;
     double best_dist = 0.0;
 
+    // Erikseen seurataan lahin kontuuri joka olisi muuten kelvannut
+    // (min_area+etaisyys tayttyy) mutta hylattiin YKSINOMAAN liian
+    // suuren pinta-alan takia - talla erotetaan "ei loytynyt mitaan
+    // lahella" (rejected_for_size=false, ennallaan) tapauksesta
+    // "loytyi jotain lahella mutta se on liian iso" (rejected_for_
+    // size=true) - kutsuja voi kayttaa jalkimmaista pakottamaan koko
+    // havainnon hylkays (eika vain "epatarkka") sen sijaan etta
+    // palataan takaisin arvattuun/hilahaun sijaintiin (joka tassa
+    // tapauksessa todennakoisesti ON se liian iso kohde, esim.
+    // pelaaja).
+    bool oversized_found = false;
+    double oversized_best_dist = 0.0;
+
     for (auto& c : contours) {
 
         double area = cv::contourArea(c);
         if (area < min_area)
-            continue;
-        if (max_area > 0.0 && area > max_area)
             continue;
 
         cv::Moments M = cv::moments(c);
@@ -688,12 +700,26 @@ static bool findContourNear(
         double ccx = M.m10 / M.m00, ccy = M.m01 / M.m00;
         double d = std::hypot(ccx - approx_px.x, ccy - approx_px.y);
 
-        if (d <= max_dist_px && (!found || d < best_dist)) {
+        if (d > max_dist_px)
+            continue;
+
+        if (max_area > 0.0 && area > max_area) {
+            if (!oversized_found || d < oversized_best_dist) {
+                oversized_found = true;
+                oversized_best_dist = d;
+            }
+            continue;
+        }
+
+        if (!found || d < best_dist) {
             best = c;
             best_dist = d;
             found = true;
         }
     }
+
+    if (rejected_for_size != nullptr)
+        *rejected_for_size = (!found && oversized_found);
 
     return found;
 }
@@ -1022,6 +1048,13 @@ struct RefineResult {
     bool has_rms = false;
     double ring_radius_cm = 0.0;
     bool has_ring_radius = false;
+    // true jos lahin runkokontuuri kandidaattipaikan lahella hylattiin
+    // YKSINOMAAN liian suuren pinta-alan takia (katso findContourNear)
+    // - kutsuja (trackStoneUpdateOne/searchNewStoneOne) kayttaa tata
+    // pakottamaan KOKO havainnon hylkays (has_position=false), koska
+    // liian iso kohde talla kandidaattipaikalla ei todennakoisesti ole
+    // kivi (esim. pelaaja).
+    bool oversized_reject = false;
 };
 
 
@@ -1078,9 +1111,11 @@ static RefineResult refinePositionJoint(
     }
 
     std::vector<cv::Point> raw_contour;
+    bool oversized_reject = false;
     bool has_contour = findContourNear(
         mask_crop, approx_px_crop, raw_contour,
-        BODY_CONTOUR_MAX_SEARCH_DIST_PX, BODY_CONTOUR_MIN_AREA_PX, max_contour_area
+        BODY_CONTOUR_MAX_SEARCH_DIST_PX, BODY_CONTOUR_MIN_AREA_PX, max_contour_area,
+        &oversized_reject
     );
 
     std::vector<cv::Point2d> body_pts;
@@ -1126,6 +1161,7 @@ static RefineResult refinePositionJoint(
             res.X_cm = X0_approx; res.Y_cm = Y0_approx; res.tarkka = false;
             res.n_body = n_body; res.n_ring = n_ring;
             res.has_rms = false; res.has_ring_radius = false;
+            res.oversized_reject = oversized_reject;
             return res;
         }
 
@@ -1199,6 +1235,7 @@ static RefineResult refinePositionJoint(
         res.n_body = n_body; res.n_ring = (int)ring_pts.size();
         res.rms_px = rms_px; res.has_rms = has_rms;
         res.has_ring_radius = false;
+        res.oversized_reject = oversized_reject;
         return res;
     }
 
@@ -1206,6 +1243,7 @@ static RefineResult refinePositionJoint(
     res.n_body = n_body; res.n_ring = (int)ring_pts.size();
     res.rms_px = rms_px; res.has_rms = has_rms;
     res.ring_radius_cm = R_cur; res.has_ring_radius = true;
+    res.oversized_reject = oversized_reject;
 
     return res;
 }
@@ -1302,15 +1340,22 @@ static StoneUpdateResult trackStoneUpdateOne(
         return out;
     }
 
-    out.has_position = true;
     out.refined = refinePositionJoint(
         mask_crop, sat_crop, roi.x, roi.y, frame_w, frame_h, local_pts_body, K, R, t,
         R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
     );
 
+    // Jos lahin runkokontuuri hylattiin YKSINOMAAN liian suuren pinta-
+    // alan takia (kts. findContourNear/RefineResult::oversized_reject),
+    // kandidaattipaikalla on todennakoisesti jokin muu kuin kivi (esim.
+    // pelaaja) - hylataan koko havainto (has_position=false) sen sijaan
+    // etta palautetaan hilahaun (vaara) sijainti "epatarkkana" tuloksena.
+    out.has_position = !out.refined.oversized_reject;
+
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts3 = std::chrono::steady_clock::now();
-    fprintf(stderr, " refine=%.2fms n_body=%d n_ring=%d\n", ms2(ts2, ts3), out.refined.n_body, out.refined.n_ring);
+    fprintf(stderr, " refine=%.2fms n_body=%d n_ring=%d%s\n", ms2(ts2, ts3), out.refined.n_body, out.refined.n_ring,
+            out.refined.oversized_reject ? " OVERSIZED_REJECT" : "");
 #endif
 
     return out;
@@ -1531,15 +1576,18 @@ static StoneUpdateResult searchNewStoneOne(
         return out;
     }
 
-    out.has_position = true;
     out.refined = refinePositionJoint(
         mask_search, sat_search, 0, 0, frame_w, frame_h, local_pts_body, K, R, t,
         R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
     );
 
+    // Sama liian-ison-kontuurin hylkays kuin trackStoneUpdateOne:ssa -
+    // katso sen kommentti.
+    out.has_position = !out.refined.oversized_reject;
+
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto t5 = std::chrono::steady_clock::now();
-    fprintf(stderr, " refine=%.2fms\n", ms(t4, t5));
+    fprintf(stderr, " refine=%.2fms%s\n", ms(t4, t5), out.refined.oversized_reject ? " OVERSIZED_REJECT" : "");
 #endif
 
     return out;
