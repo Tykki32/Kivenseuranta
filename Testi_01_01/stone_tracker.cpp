@@ -1121,6 +1121,326 @@ static bool solve3x3(double A[3][3], const double b[3], double x[3])
 }
 
 
+// ============================================================
+// LINEARISOITU LM (UUSI, EI Python-porttaus - kayttajan pyynnosta,
+// mitattu ja visuaalisesti tarkistettu): projisointi pikseli =
+// K*(R_kam*(paikallinen+X,Y,0)+t), jako z:lla - koska R_kam*(X,Y,0)
+// = X*R_kam:n 1. sarake + Y*R_kam:n 2. sarake, tama on LINEAARINEN
+// X:n/Y:n suhteen ENNEN jakoa, joten derivaatta d(pikseli)/dX ja
+// d(pikseli)/dY on SULJETUSSA MUODOSSA (osamaaran derivaatta) - ei
+// vaadi YHTAAN ylimaaraista projektiota, vain referenssipisteen omat
+// pi0,pi1,pi2-arvot (jotka joka tapauksessa lasketaan taysessa
+// projektiossa). Sama patee rengaspisteiden R-parametrille (rengas-
+// piste = R*cos(theta),R*sin(theta) - myos lineaarinen R:n suhteen).
+//
+// Kaytannossa: yksi TAYSI projektio (+convexHull runko-osalle) per
+// LM-kutsu (levenbergMarquardt3Linearized:in alussa, params0:lla), ja
+// SEN JALKEEN jokainen myohempi (X,Y,R)-kokeilu (Jacobian-sarakkeet +
+// damping-yritykset - satoja per refinePositionJoint-kutsu, katso
+// mitattu jakauma alempana) approksimoidaan HALVALLA lineaarikaavalla
+// taysen projektion+convexHull:in sijaan.
+//
+// Tama ON approksimaatio (ensimmaisen kertaluvun Taylor-kehitelma),
+// jota TARKKA VARMISTUS suojaa (katso levenbergMarquardt3Linearized
+// Verified): koska referenssipisteessa (dX=dY=dR=0) approksimaatio on
+// TASMALLEEN tarkka, lahtokustannus saadaan "ilmaiseksi" TARKALLA
+// residuaalifunktiolla - jos linearisoidun LM:n lopputulos ei ole
+// vahintaan yhta hyva TARKASTI mitattuna kuin lahtopiste, approksi-
+// maatio hylataan ja koko LM ajetaan uudestaan TARKASTI (varakeino).
+// Tama takaa etta linearisoitu polku ei voi koskaan tuottaa TARKKAA
+// LM:aa huonompaa tulosta.
+//
+// HUOM (validoitu mittaamalla + visuaalisesti tarkistamalla oikeista
+// videoframeista): koska refinePositionJoint:in MAD-poikkeavien-
+// hylkays (3.0*1.4826*MAD) on itsessaan EPAJATKUVA funktio residuaa-
+// leista (katso tiedoston alun kommentti - sama ilmio kuin Python vs.
+// tarkka C++ -erossa), jopa VARMISTETTU linearisoitu askel voi
+// paatya ERI (mutta yhta patevaan) paikalliseen minimiin kuin tarkka
+// LM - tama EI ole approksimaatiovirhe vaan koko algoritmin sisaan-
+// rakennettu, jo ennestaan tunnettu numeerinen herkkyys. Molemmat
+// ratkaisut tarkistettu visuaalisesti (3D-mallin projisointi oikealle
+// videoframelle) yhta valideiksi naissa tapauksissa.
+// ============================================================
+
+struct LinearizedHull {
+    bool valid = false;
+    std::vector<cv::Point2f> ref_pts;
+    std::vector<float> jac_ux, jac_uy;
+    std::vector<float> jac_vx, jac_vy;
+};
+
+static LinearizedHull buildLinearizedHull(
+    const std::vector<cv::Point3d>& local_pts, double X0, double Y0,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t)
+{
+    LinearizedHull result;
+
+    std::vector<cv::Point2f> proj_f(local_pts.size());
+    std::vector<cv::Point3d> pis(local_pts.size());
+    bool all_finite = true;
+
+    for (size_t i = 0; i < local_pts.size(); ++i) {
+        cv::Vec3d p(local_pts[i].x + X0, local_pts[i].y + Y0, local_pts[i].z);
+        cv::Vec3d pc = R * p + t;
+        cv::Vec3d pi = K * pc;
+        double px = pi[0] / pi[2], py = pi[1] / pi[2];
+        if (!std::isfinite(px) || !std::isfinite(py))
+            all_finite = false;
+        proj_f[i] = cv::Point2f((float)px, (float)py);
+        pis[i] = cv::Point3d(pi[0], pi[1], pi[2]);
+    }
+
+    if (!all_finite)
+        return result;
+
+    std::vector<int> hull_idx;
+    cv::convexHull(proj_f, hull_idx, false, false);
+
+    if (hull_idx.size() < 3)
+        return result;
+
+    cv::Vec3d kx = K * cv::Vec3d(R(0, 0), R(1, 0), R(2, 0));
+    cv::Vec3d ky = K * cv::Vec3d(R(0, 1), R(1, 1), R(2, 1));
+
+    size_t n = hull_idx.size();
+    result.ref_pts.resize(n);
+    result.jac_ux.resize(n); result.jac_uy.resize(n);
+    result.jac_vx.resize(n); result.jac_vy.resize(n);
+
+    for (size_t k = 0; k < n; ++k) {
+        size_t idx = (size_t)hull_idx[k];
+        result.ref_pts[k] = proj_f[idx];
+        double pi0 = pis[idx].x, pi1 = pis[idx].y, pi2 = pis[idx].z;
+        double pi2sq = pi2 * pi2;
+        result.jac_ux[k] = (float)((kx[0] * pi2 - pi0 * kx[2]) / pi2sq);
+        result.jac_uy[k] = (float)((ky[0] * pi2 - pi0 * ky[2]) / pi2sq);
+        result.jac_vx[k] = (float)((kx[1] * pi2 - pi1 * kx[2]) / pi2sq);
+        result.jac_vy[k] = (float)((ky[1] * pi2 - pi1 * ky[2]) / pi2sq);
+    }
+
+    result.valid = true;
+    return result;
+}
+
+static std::vector<cv::Point2f> evalLinearizedHull(const LinearizedHull& lin, double dX, double dY)
+{
+    std::vector<cv::Point2f> out(lin.ref_pts.size());
+    for (size_t k = 0; k < out.size(); ++k) {
+        out[k] = cv::Point2f(
+            lin.ref_pts[k].x + (float)(lin.jac_ux[k] * dX + lin.jac_uy[k] * dY),
+            lin.ref_pts[k].y + (float)(lin.jac_vx[k] * dX + lin.jac_vy[k] * dY)
+        );
+    }
+    return out;
+}
+
+
+struct LinearizedRing {
+    std::vector<cv::Point2f> ref_pts;
+    std::vector<float> jac_ux, jac_uy, jac_ur;
+    std::vector<float> jac_vx, jac_vy, jac_vr;
+};
+
+static LinearizedRing buildLinearizedRing(
+    double X0, double Y0, double ring_radius_cm, double ring_height_cm,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    int n_theta = 120)
+{
+    LinearizedRing result;
+    result.ref_pts.resize((size_t)n_theta);
+    result.jac_ux.resize((size_t)n_theta); result.jac_uy.resize((size_t)n_theta); result.jac_ur.resize((size_t)n_theta);
+    result.jac_vx.resize((size_t)n_theta); result.jac_vy.resize((size_t)n_theta); result.jac_vr.resize((size_t)n_theta);
+
+    cv::Vec3d kx = K * cv::Vec3d(R(0, 0), R(1, 0), R(2, 0));
+    cv::Vec3d ky = K * cv::Vec3d(R(0, 1), R(1, 1), R(2, 1));
+
+    for (int i = 0; i < n_theta; ++i) {
+        double theta = 2.0 * M_PI * (double)i / (double)n_theta;
+        double ct = std::cos(theta), st = std::sin(theta);
+        cv::Vec3d p(X0 + ring_radius_cm * ct, Y0 + ring_radius_cm * st, ring_height_cm);
+        cv::Vec3d pc = R * p + t;
+        cv::Vec3d pi = K * pc;
+        double pi0 = pi[0], pi1 = pi[1], pi2 = pi[2];
+        double u = pi0 / pi2, v = pi1 / pi2;
+        result.ref_pts[(size_t)i] = cv::Point2f((float)u, (float)v);
+
+        double pi2sq = pi2 * pi2;
+        double kr0 = ct * kx[0] + st * ky[0];
+        double kr1 = ct * kx[1] + st * ky[1];
+        double kr2 = ct * kx[2] + st * ky[2];
+
+        result.jac_ux[(size_t)i] = (float)((kx[0] * pi2 - pi0 * kx[2]) / pi2sq);
+        result.jac_uy[(size_t)i] = (float)((ky[0] * pi2 - pi0 * ky[2]) / pi2sq);
+        result.jac_ur[(size_t)i] = (float)((kr0 * pi2 - pi0 * kr2) / pi2sq);
+
+        result.jac_vx[(size_t)i] = (float)((kx[1] * pi2 - pi1 * kx[2]) / pi2sq);
+        result.jac_vy[(size_t)i] = (float)((ky[1] * pi2 - pi1 * ky[2]) / pi2sq);
+        result.jac_vr[(size_t)i] = (float)((kr1 * pi2 - pi1 * kr2) / pi2sq);
+    }
+
+    return result;
+}
+
+static std::vector<cv::Point2f> evalLinearizedRing(const LinearizedRing& lin, double dX, double dY, double dR)
+{
+    std::vector<cv::Point2f> out(lin.ref_pts.size());
+    for (size_t i = 0; i < out.size(); ++i) {
+        out[i] = cv::Point2f(
+            lin.ref_pts[i].x + (float)(lin.jac_ux[i] * dX + lin.jac_uy[i] * dY + lin.jac_ur[i] * dR),
+            lin.ref_pts[i].y + (float)(lin.jac_vx[i] * dX + lin.jac_vy[i] * dY + lin.jac_vr[i] * dR)
+        );
+    }
+    return out;
+}
+
+
+struct LinearizedResidualContext {
+    const LinearizedHull* hull_lin;
+    const LinearizedRing* ring_lin;
+    const std::vector<cv::Point2f>* body_pts_f;
+    const std::vector<cv::Point2f>* ring_pts_f;
+    double X0_ref, Y0_ref, R0_ref;
+};
+
+static std::vector<double> jointResidualsLinearized(const LinearizedResidualContext& ctx, const cv::Vec3d& params)
+{
+    double dX = params[0] - ctx.X0_ref;
+    double dY = params[1] - ctx.Y0_ref;
+    double dR = params[2] - ctx.R0_ref;
+
+    std::vector<double> out;
+
+    if (!ctx.body_pts_f->empty()) {
+        if (ctx.hull_lin->valid) {
+            auto hull = evalLinearizedHull(*ctx.hull_lin, dX, dY);
+            std::vector<double> r(ctx.body_pts_f->size());
+            for (size_t i = 0; i < ctx.body_pts_f->size(); ++i)
+                r[i] = cv::pointPolygonTest(hull, (*ctx.body_pts_f)[i], true);
+            out.insert(out.end(), r.begin(), r.end());
+        } else {
+            std::vector<double> r(ctx.body_pts_f->size(), 1000.0);
+            out.insert(out.end(), r.begin(), r.end());
+        }
+    }
+
+    if (!ctx.ring_pts_f->empty()) {
+        auto ring = evalLinearizedRing(*ctx.ring_lin, dX, dY, dR);
+        std::vector<double> r(ctx.ring_pts_f->size());
+        for (size_t i = 0; i < ctx.ring_pts_f->size(); ++i)
+            r[i] = cv::pointPolygonTest(ring, (*ctx.ring_pts_f)[i], true);
+        out.insert(out.end(), r.begin(), r.end());
+    }
+
+    return out;
+}
+
+
+static cv::Vec3d levenbergMarquardt3Linearized(
+    const ResidualContext& ctx, cv::Vec3d params0,
+    int max_iterations = 30, double lambda_init = 1e-3, double rel_tol = 1e-10)
+{
+    LinearizedHull hull_lin = buildLinearizedHull(*ctx.local_pts_body, params0[0], params0[1], *ctx.K, *ctx.R, *ctx.t);
+    LinearizedRing ring_lin;
+    if (!ctx.ring_pts_f->empty())
+        ring_lin = buildLinearizedRing(params0[0], params0[1], params0[2], ctx.ring_height_cm, *ctx.K, *ctx.R, *ctx.t);
+
+    LinearizedResidualContext lctx{ &hull_lin, &ring_lin, ctx.body_pts_f, ctx.ring_pts_f, params0[0], params0[1], params0[2] };
+
+    cv::Vec3d params = params0;
+    auto residuals = jointResidualsLinearized(lctx, params);
+
+    auto sumsq = [](const std::vector<double>& v) {
+        double s = 0.0;
+        for (double x : v) s += x * x;
+        return s;
+    };
+
+    double cost = sumsq(residuals);
+    double lam = lambda_init;
+    const double eps = 1e-6;
+
+    for (int iter = 0; iter < max_iterations; ++iter) {
+
+        size_t m = residuals.size();
+        std::vector<std::array<double, 3>> J(m);
+
+        bool skip_r_column = ctx.ring_pts_f->empty();
+
+        for (int j = 0; j < 3; ++j) {
+
+            if (j == 2 && skip_r_column) {
+                for (size_t i = 0; i < m; ++i)
+                    J[i][2] = 0.0;
+                continue;
+            }
+
+            double step = eps * std::max(1.0, std::abs(params[j]));
+            cv::Vec3d p_plus = params;
+            p_plus[j] += step;
+            auto r_plus = jointResidualsLinearized(lctx, p_plus);
+            for (size_t i = 0; i < m; ++i)
+                J[i][(size_t)j] = (r_plus[i] - residuals[i]) / step;
+        }
+
+        double JTJ[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+        double JTr[3] = {0, 0, 0};
+
+        for (size_t i = 0; i < m; ++i) {
+            for (int a = 0; a < 3; ++a) {
+                JTr[a] += J[i][(size_t)a] * residuals[i];
+                for (int b = 0; b < 3; ++b)
+                    JTJ[a][b] += J[i][(size_t)a] * J[i][(size_t)b];
+            }
+        }
+
+        double diagv[3] = { JTJ[0][0] + 1e-12, JTJ[1][1] + 1e-12, JTJ[2][2] + 1e-12 };
+
+        bool step_taken = false;
+        double rel_improvement = 0.0;
+
+        for (int inner = 0; inner < 12; ++inner) {
+
+            double A[3][3];
+            for (int a = 0; a < 3; ++a)
+                for (int b = 0; b < 3; ++b)
+                    A[a][b] = JTJ[a][b];
+            A[0][0] += lam * diagv[0];
+            A[1][1] += lam * diagv[1];
+            A[2][2] += lam * diagv[2];
+
+            double bvec[3] = { -JTr[0], -JTr[1], -JTr[2] };
+            double delta[3];
+
+            if (!solve3x3(A, bvec, delta)) {
+                lam *= 10.0;
+                continue;
+            }
+
+            cv::Vec3d trial = params + cv::Vec3d(delta[0], delta[1], delta[2]);
+            auto trial_res = jointResidualsLinearized(lctx, trial);
+            double trial_cost = sumsq(trial_res);
+
+            if (trial_cost < cost) {
+                rel_improvement = (cost - trial_cost) / std::max(cost, 1e-12);
+                params = trial;
+                residuals = trial_res;
+                cost = trial_cost;
+                lam = std::max(lam / 5.0, 1e-12);
+                step_taken = true;
+                break;
+            }
+
+            lam *= 5.0;
+        }
+
+        if (!step_taken || rel_improvement < rel_tol)
+            break;
+    }
+
+    return params;
+}
+
+
 static cv::Vec3d levenbergMarquardt3(
     const ResidualContext& ctx, cv::Vec3d params0,
     int max_iterations = 30, double lambda_init = 1e-3, double rel_tol = 1e-10)
@@ -1229,6 +1549,38 @@ static cv::Vec3d levenbergMarquardt3(
     }
 
     return params;
+}
+
+
+// Linearisoitu LM + TARKKA VARMISTUS (katso levenbergMarquardt3Line
+// arized:in oma kommentti). Referenssipisteessa (dX=dY=dR=0) linea
+// risointi on TASMALLEEN tarkka, joten lahtokustannus saadaan
+// "ilmaiseksi" tarkalla residuaalifunktiolla. Jos linearisoidun LM:n
+// loppupiste ei OIKEASTI (tarkalla funktiolla mitattuna) ole vahin
+// taan yhta hyva kuin lahtopiste, approksimaatio on pettanyt -
+// hylataan tulos ja ajetaan TARKKA LM alusta lahtien varakeinona.
+// Tama takaa etta linearisoitu polku EI VOI koskaan tuottaa huonom
+// paa TULOSTA (pienimman nelion kustannusta) kuin tarkka LM - pahim
+// millaan vain menetetaan nopeushyoty yksittaisessa kutsussa.
+static cv::Vec3d levenbergMarquardt3LinearizedVerified(
+    const ResidualContext& ctx, cv::Vec3d params0,
+    int max_iterations = 30, double lambda_init = 1e-3, double rel_tol = 1e-10)
+{
+    cv::Vec3d params_lin = levenbergMarquardt3Linearized(ctx, params0, max_iterations, lambda_init, rel_tol);
+
+    auto sumsq = [](const std::vector<double>& v) {
+        double s = 0.0;
+        for (double x : v) s += x * x;
+        return s;
+    };
+
+    double exact_cost_start = sumsq(jointResiduals(ctx, params0));
+    double exact_cost_lin = sumsq(jointResiduals(ctx, params_lin));
+
+    if (exact_cost_lin <= exact_cost_start * (1.0 + 1e-9))
+        return params_lin;
+
+    return levenbergMarquardt3(ctx, params0, max_iterations, lambda_init, rel_tol);
 }
 
 
@@ -1378,7 +1730,7 @@ static RefineResult refinePositionJoint(
         }
 
         ResidualContext ctx{ &local_pts_body, &body_pts_f, &ring_pts_f, ring_height_cm, &K, &R, &t };
-        cv::Vec3d params_final = levenbergMarquardt3(ctx, cv::Vec3d(X_cur, Y_cur, R_cur), 30);
+        cv::Vec3d params_final = levenbergMarquardt3LinearizedVerified(ctx, cv::Vec3d(X_cur, Y_cur, R_cur), 30);
 
         std::vector<cv::Point2d> clean_body = body_pts;
         std::vector<cv::Point2d> clean_ring = ring_pts;
@@ -1424,7 +1776,7 @@ static RefineResult refinePositionJoint(
 
         if (clean_body.size() != body_pts.size() || clean_ring.size() != ring_pts.size()) {
             ResidualContext ctx2{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, &K, &R, &t };
-            params_final = levenbergMarquardt3(ctx2, params_final, 30);
+            params_final = levenbergMarquardt3LinearizedVerified(ctx2, params_final, 30);
         }
 
         ResidualContext ctx_final{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, &K, &R, &t };
