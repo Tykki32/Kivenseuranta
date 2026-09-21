@@ -264,6 +264,17 @@ MAX_CONCURRENT_STONES = 4
 # sen ylapuolella.
 NEW_STONE_DEDUP_CM = 100.0
 
+# Kayttajan pyynnosta: kun kivi on ollut lahes paikallaan (liikkunut
+# alle STOP_TRACKING_DISPLACEMENT_CM) STOP_TRACKING_SECONDS ajan,
+# lopetetaan sen aktiivinen SEURANTA - viimeinen sijainti jaa CSV:hen.
+# Kaksi hyotya: (1) sailyttaa aktiivisen paikan MAX_CONCURRENT_STONES:sta
+# uusille kiville nopeammin, (2) estaa jo pysahtyneen kiven haun
+# ajautumisen taustan muuhun sisaltoon pitkalla aikavalilla (havaittu
+# testatessa: yksi pitkaan paikallaan seurattu kivi ajautui lopulta
+# fyysisesti mahdottomaan sijaintiin, Y=-102cm).
+STOP_TRACKING_SECONDS = 1.0
+STOP_TRACKING_DISPLACEMENT_CM = 20.0
+
 CSV_HEADER = [
     "frame", "timestamp_s", "stone_id", "x_m", "y_m", "tarkka",
     "n_runkopistetta", "n_reunapistetta", "rms_px", "rengas_r_cm",
@@ -1288,6 +1299,9 @@ def run_pipeline(
     stone_scan_interval_frames = max(
         1, int(round(fps * STONE_SCAN_INTERVAL_SECONDS))
     )
+    stop_tracking_frames = max(
+        1, int(round(fps * STOP_TRACKING_SECONDS))
+    )
     next_stone_scan_frame = 0
     prev_scan_candidates = None
     accumulated_stones = []
@@ -1935,6 +1949,10 @@ def run_pipeline(
                                     refined["X_cm"], refined["Y_cm"]
                                 ),
                                 "misses": 0,
+                                "position_history": [(
+                                    frame_index,
+                                    refined["X_cm"], refined["Y_cm"]
+                                )],
                             })
                             newly_found_ids.add(stone_id)
 
@@ -2007,7 +2025,51 @@ def run_pipeline(
                             s["stone_id"], refined
                         )
 
-                        still_active.append(s)
+                        # --------------------------------
+                        # PYSAHTYMISTARKISTUS: katso taman
+                        # tiedoston alkupaan kommentti STOP_
+                        # TRACKING_SECONDS/DISPLACEMENT_CM:sta.
+                        # Liukuva ikkuna framen INDEKSIN, ei
+                        # listan pituuden, mukaan - kestaa
+                        # satunnaiset valiin jaavat missit.
+                        # --------------------------------
+
+                        history = s["position_history"]
+                        history.append((
+                            frame_index,
+                            refined["X_cm"], refined["Y_cm"]
+                        ))
+
+                        while (
+                            history[-1][0] - history[0][0]
+                            > stop_tracking_frames
+                        ):
+                            history.pop(0)
+
+                        stopped = False
+
+                        if (
+                            history[-1][0] - history[0][0]
+                            >= stop_tracking_frames
+                        ):
+                            _, old_x, old_y = history[0]
+                            displacement = math.hypot(
+                                s["last_xy"][0] - old_x,
+                                s["last_xy"][1] - old_y
+                            )
+
+                            if displacement < STOP_TRACKING_DISPLACEMENT_CM:
+                                stopped = True
+                                print(
+                                    f"[frame {frame_index}] Kivi "
+                                    f"{s['stone_id']} pysahtynyt "
+                                    f"(liikkunut {displacement:.1f}cm "
+                                    f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
+                                    "aikana) - lopetetaan seuranta."
+                                )
+
+                        if not stopped:
+                            still_active.append(s)
 
                     else:
 
