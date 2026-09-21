@@ -882,6 +882,145 @@ def find_moving_candidate(candidates_prev, candidates_curr,
     return None
 
 
+# ============================================================
+# AIKAIKKUNAAN RAJATTU KIVEN SEURANTA (EI koko videota)
+#
+# k94.track_stone_in_video_fast (kamera9_04.py, EI kosketa) skannaa
+# TARKOITUKSELLA koko videon jokaisen framen - jarkevaa SEN omassa
+# kayttotarkoituksessaan (kertaluontoinen kalibrointi lyhyella
+# videolla). Tassa TIEDOSSA jo ON karkea siemen (koko radan skannaus
+# loysi sen), joten koko videon uudelleenskannaus JOKAISELLA
+# yrityksella (havaittu testatessa: n. 700s per yritys 7500 framen
+# videolla) olisi kohtuuttoman hidas, varsinkin jos useampi kandidaatti
+# (esim. pelaaja) hylataan ennen aidon kiven loytymista. Tama funktio
+# rajaa saman algoritmin (sama jatkuvuuslogiikka, samat kynnysarvot)
+# STONE_TRACK_WINDOW_SECONDS-ikkunaan siemenen ymparilta - riittava
+# kattamaan koko liu'un (kivi ei ole jaalla montaa kymmenta sekuntia
+# kerrallaan) mutta paljon halvempi kuin koko video.
+# ============================================================
+
+STONE_TRACK_WINDOW_SECONDS = 30.0
+
+
+def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
+                                   seed_pos_cm, window_seconds=STONE_TRACK_WINDOW_SECONDS):
+
+    max_jump_cm = k9.STONE_TRACK_MAX_JUMP_CM
+    max_misses = k9.STONE_TRACK_MAX_MISSES
+    min_area = k9.STONE_TRACK_MIN_AREA
+    min_fill_ratio = k9.STONE_TRACK_MIN_FILL_RATIO
+    min_aspect_ratio = k9.STONE_TRACK_MIN_ASPECT_RATIO
+
+    H_final = calib["H_final"]
+    camera_matrix = calib["camera_matrix"]
+    dist_coeffs = np.array(
+        [calib["best_k1"], 0.0, 0.0, 0.0, 0.0], dtype=np.float64
+    )
+
+    cap = cv2.VideoCapture(video_path)
+    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    map1, map2 = k94._build_undistort_maps(
+        camera_matrix, dist_coeffs, (frame_w, frame_h)
+    )
+
+    window_frames = int(round(window_seconds * fps))
+    start_frame = max(0, seed_frame_idx - window_frames)
+    end_frame = min(n_frames - 1, seed_frame_idx + window_frames)
+
+    # YKSI haku ikkunan alkuun (ei per-frame haku - katso kamera9_04.py:n
+    # kommentti seek:in hitaudesta/epatarkkuudesta), sitten sekvenssiluku
+    # ikkunan yli - taman kayttotarkoituksen (karkean siemenen tarkka
+    # seuranta) ei tarvitse olla framen tarkka, toisin kuin lopullinen
+    # kalibrointi.
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    candidates_cache = {}
+    idx = start_frame
+
+    while idx <= end_frame:
+
+        ok, frame = cap.read()
+
+        if not ok:
+            break
+
+        frame_u = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
+
+        candidates_cache[idx] = k94._candidates_in_frame_fast(
+            frame_u, pose, H_final, min_area, min_fill_ratio, min_aspect_ratio
+        )
+
+        idx += 1
+
+    cap.release()
+
+    def candidates_at(i):
+        return candidates_cache.get(i, [])
+
+    seed_cands = candidates_at(seed_frame_idx)
+
+    if not seed_cands:
+        return []
+
+    seed = min(
+        seed_cands,
+        key=lambda c: math.hypot(
+            c["pos_cm"][0] - seed_pos_cm[0], c["pos_cm"][1] - seed_pos_cm[1]
+        )
+    )
+    seed["frame_idx"] = seed_frame_idx
+
+    def track_direction(step):
+
+        track = []
+        last_pos = seed["pos_cm"]
+        misses = 0
+        idx = seed_frame_idx + step
+
+        while start_frame <= idx <= end_frame and misses < max_misses:
+
+            cands = candidates_at(idx)
+
+            if cands:
+
+                best = min(
+                    cands,
+                    key=lambda c: math.hypot(
+                        c["pos_cm"][0] - last_pos[0], c["pos_cm"][1] - last_pos[1]
+                    )
+                )
+
+                d = math.hypot(
+                    best["pos_cm"][0] - last_pos[0], best["pos_cm"][1] - last_pos[1]
+                )
+
+                if d <= max_jump_cm:
+                    best["frame_idx"] = idx
+                    track.append(best)
+                    last_pos = best["pos_cm"]
+                    misses = 0
+                else:
+                    misses += 1
+            else:
+                misses += 1
+
+            idx += step
+
+        return track
+
+    backward = track_direction(-1)
+    forward = track_direction(+1)
+
+    full_track = list(reversed(backward)) + [seed] + forward
+    full_track.sort(key=lambda t: t["frame_idx"])
+
+    return full_track
+
+
 def try_fit_profile(pose, stones, max_rms_px=PROFILE_MAX_RMS_PX,
                      min_samples=PROFILE_MIN_SAMPLES, label="profiilikoe"):
     """Yrittaa sovittaa 3D-profiilin annettuihin havaintoihin - palauttaa
@@ -1383,7 +1522,7 @@ def run_pipeline(
                             f"liu'un ajan..."
                         )
 
-                        track = k94.track_stone_in_video_fast(
+                        track = track_stone_in_video_windowed(
                             video_file, calib_result["calib"],
                             calib_result["pose"],
                             seed_frame_idx=frame_index,
