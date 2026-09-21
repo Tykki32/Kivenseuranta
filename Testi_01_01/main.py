@@ -192,8 +192,14 @@ MAX_CONCURRENT_STONES = 4
 
 # Jos uusi HAKU-loytö on tata lahempana jotain jo AKTIIVISTA kiveä,
 # tulkitaan samaksi kiveksi (ei uutta ID:ta) - estaa saman kiven
-# kaksoiskirjautumisen.
-NEW_STONE_DEDUP_CM = 50.0
+# kaksoiskirjautumisen. HUOM: HAKU:n karkea koko-framen ristikkohaku
+# (SEARCH_COARSE/FINE_STEP_CM) ja SEURANTA:n oma hienompi haku
+# (TRACK_COARSE/FINE_STEP_CM) eivat aina osu tarkalleen samaan
+# pisteeseen samalla framella varsinkin nopeasti liikkuvalla kivella -
+# testivideolla havaittu poikkeama n. 66 cm yhden ja saman kiven
+# kahden eri hakumekanismin valilla, joten kynnys pidetaan reilusti
+# sen ylapuolella.
+NEW_STONE_DEDUP_CM = 100.0
 
 CSV_HEADER = [
     "frame", "timestamp_s", "stone_id", "x_m", "y_m", "tarkka",
