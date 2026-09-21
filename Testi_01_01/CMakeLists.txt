@@ -1,10 +1,19 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(mode_engine LANGUAGES CXX)
+# HUOM: CMAKE_TOOLCHAIN_FILE ON ASETETTAVA ENNEN project()-kutsua -
+# CMake lukee/soveltaa toolchain-tiedoston VAIN project()-kutsun
+# yhteydessa, joten taman jalkeen asetettuna (kuten aiemmin tassa
+# tiedostossa) vcpkg:n toolchain EI koskaan oikeasti aktivoidu, minka
+# vuoksi esim. Protobuf (OpenCV:n rippuvuus vcpkg:ssa) ei loydy vaikka
+# se on asennettu - vain suoraan annetut polut (kuten OpenCV_DIR alla)
+# toimivat silloin, koska ne eivat riipu vcpkg:n automaattisesta
+# CMAKE_PREFIX_PATH-taydennyksesta.
 set(CMAKE_TOOLCHAIN_FILE
     "C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
     CACHE STRING ""
 )
+
+project(mode_engine LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
