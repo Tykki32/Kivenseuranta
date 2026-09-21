@@ -183,7 +183,18 @@ PROFILE_MIN_ACCEPTED_STONES = 6
 #      kattavalla IKKUNALLA viimeisimman yrityksen (kivi tai hylatty)
 #      SIEMENFRAMESTA riippumatta kohteen nopeudesta - karkea mutta
 #      luotettava nopeusrajoitin kalliille yrityksille.
-SOLO_TRACK_MAX_RMS_PX = 6.0
+# HUOM (kayttajan huomio: osa heitoista vaikeampia tunnistaa koko
+# matkaa harjan takia): testatessa nakyi selva kahtiajako yksinaisen
+# kandidaatin RMS-jakaumassa - selvasti ei-kivet (esim. pelaajat)
+# antoivat RMS n. 12-40px, kun taas todennakoisesti AIDOT mutta
+# osittain harjan peittamat kivet jaivat n. 6-11px valille (vrt.
+# background-suodatuksen jalkeen hyvaksytyt puhtaat havainnot, jotka
+# olivat 2-6px). SOLO_TRACK_MAX_RMS_PX:n tehtava on vain karsia
+# SELVASTI ei-kivet pois pysyvasta kokoelmasta - lopullinen laatu-
+# portti on POOLED-sovituksen oma, tiukempi PROFILE_MAX_RMS_PX
+# (katso try_fit_profile) - joten kynnysta voi nostaa tanne asti
+# ilman etta koko sovituksen lopullinen tarkkuus karsii.
+SOLO_TRACK_MAX_RMS_PX = 12.0
 
 # HUOM (kayttajan huomio: n. 9 heittoa videolla, mutta vain 2
 # hyvaksyttiin): 750 framea (30s) osoittautui liian pitkaksi -
