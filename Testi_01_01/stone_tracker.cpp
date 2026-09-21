@@ -118,6 +118,13 @@ static const int BODY_MIN_VALID_POINTS = 8;
 
 static const int MASK_ROI_MARGIN_PX = 150;
 
+// SEURANTA:n laajenevan ristikkohaun pysaytyskynnys (UUSI, EI
+// Python-porttaus - katso locateByGridSearchTrackingFast:in oma
+// kommentti). Tunnettu vakio jota voi saataa mitatun datan
+// perusteella - 0.95 tarkoittaa "peitto-osuus lahella tayttaa
+// (95%) testihullon".
+static const double TRACK_EARLY_STOP_SCORE = 0.95;
+
 
 // ============================================================
 // KAMERAPROJEKTIO (kamera9_01.py:n _project_3d)
@@ -304,6 +311,157 @@ static std::pair<cv::Point2d, double> locateByGridSearchFast(
     auto x_vals = arangeVec(x_center - x_half_range, x_center + x_half_range + 1e-6, coarse_step);
     auto y_vals = arangeVec(y_center - y_half_range, y_center + y_half_range + 1e-6, coarse_step);
     auto best1 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals);
+
+    auto x_vals2 = arangeVec(best1.first.x - coarse_step, best1.first.x + coarse_step + 1e-6, fine_step);
+    auto y_vals2 = arangeVec(best1.first.y - coarse_step, best1.first.y + coarse_step + 1e-6, fine_step);
+    auto best2 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2);
+
+    return best2;
+}
+
+
+// ============================================================
+// SEURANTA:N LAAJENEVA KARKEA HAKU (UUSI, EI Python-porttaus -
+// kayttajan pyynnosta): Pythonin/HAKU:n locateByGridSearchFast
+// kay AINA koko TRACK_HALF_RANGE_CM:n laatikon (esim. 11x11=121
+// pistetta) lapi, vaikka kivi useimmiten liikkuu vain vahan
+// framejen valilla ja oikea osuma loytyy jo aivan edellisen
+// sijainnin lahelta - jatkuvuus on jo vahva prior (katso
+// TRACK_SCORE_THRESHOLD:in oma kommentti kamera9_02.py:ssa).
+//
+// Tama funktio laajenee EDELLISESTA sijainnista (x_center,
+// y_center) ULOSPAIN rengas kerrallaan (Tsebysevin etaisyys
+// ruudukkoindekseissa) ja PYSAHTYY heti kun loytyy tarpeeksi hyva
+// osuma (score >= TRACK_EARLY_STOP_SCORE), minka jalkeen viela
+// tarkentaa PAIKALLISELLA kukkulankiipeilylla (tarkistaa muutaman
+// pisteen - 8-naapurusto samalla ruudukkoresoluutiolla - loydetyn
+// pisteen ymparilta, siirtyy sinne jos parempi loytyy, ja toistaa
+// kunnes mikaan naapuri ei ole parempi). Jos tarpeeksi hyvaa osumaa
+// EI loydy, koko sama laatikko (samat ehdokaspisteet kuin
+// locateByGridSearchFast:issa) kaydaan silti kokonaan lapi ennen
+// luovuttamista - eli PAHIMMASSA tapauksessa (esim. kivi tormaa
+// toiseen tai katoaa hetkeksi peittoon) kattavuus on TASMALLEEN
+// sama kuin ennen, ei regressiota.
+//
+// HUOM: koska pisteet kaydaan lapi ERI JARJESTYKSESSA (rengas
+// keskelta ulospain, ei rivi kerrallaan) kuin Pythonin/alkuperaisen
+// exhaustive-haun, se MIKA piste voittaa TASAPELISSA (kaksi pistetta
+// tasan sama pistemaara) voi silloin harvinaisissa tapauksissa
+// erota - tama ei ole regressio vaan tarkoituksellinen, hyvaksytty
+// ero (katso myos tiedoston alun kommentti). Kaytetaan VAIN SEURANTA:
+// ssa (trackStoneUpdateOne) - HAKU:ssa (searchNewStoneOne) EI ole
+// vastaavaa "edellinen sijainti" -prioria, joten se kayttaa edelleen
+// muuttamatonta, tasmalleen Pythonia vastaavaa locateByGridSearchFast:
+// ia.
+// ============================================================
+
+static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
+    const std::vector<cv::Point3d>& local_pts_search,
+    const cv::Mat& mask_crop, int off_x, int off_y,
+    double x_center, double x_half_range, double y_center, double y_half_range,
+    double coarse_step, double fine_step,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t)
+{
+    auto x_vals = arangeVec(x_center - x_half_range, x_center + x_half_range + 1e-6, coarse_step);
+    auto y_vals = arangeVec(y_center - y_half_range, y_center + y_half_range + 1e-6, coarse_step);
+
+    int nx = (int)x_vals.size(), ny = (int)y_vals.size();
+
+    std::pair<cv::Point2d, double> best1;
+
+    if (nx == 0 || ny == 0) {
+        best1 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals);
+    } else {
+
+        std::vector<char> visited((size_t)nx * (size_t)ny, 0);
+        auto idx = [ny](int i, int j) { return (size_t)i * (size_t)ny + (size_t)j; };
+
+        auto evalPoint = [&](int i, int j) -> double {
+            visited[idx(i, j)] = 1;
+            auto hull = predictedHull(local_pts_search, x_vals[(size_t)i], y_vals[(size_t)j], K, R, t);
+            return hullOverlapScore(mask_crop, hull, off_x, off_y);
+        };
+
+        int ix0 = (int)std::lround((x_center - x_vals[0]) / coarse_step);
+        int iy0 = (int)std::lround((y_center - y_vals[0]) / coarse_step);
+        ix0 = std::max(0, std::min(nx - 1, ix0));
+        iy0 = std::max(0, std::min(ny - 1, iy0));
+
+        double best_score = -1.0;
+        int best_i = ix0, best_j = iy0;
+        bool early_stop = false;
+
+        int max_ring = std::max({ ix0, nx - 1 - ix0, iy0, ny - 1 - iy0 });
+
+        for (int ring = 0; ring <= max_ring && !early_stop; ++ring) {
+            for (int i = std::max(0, ix0 - ring); i <= std::min(nx - 1, ix0 + ring) && !early_stop; ++i) {
+                for (int j = std::max(0, iy0 - ring); j <= std::min(ny - 1, iy0 + ring); ++j) {
+
+                    if (std::max(std::abs(i - ix0), std::abs(j - iy0)) != ring)
+                        continue;
+                    if (visited[idx(i, j)])
+                        continue;
+
+                    double score = evalPoint(i, j);
+
+                    if (score > best_score) {
+                        best_score = score;
+                        best_i = i; best_j = j;
+                    }
+
+                    if (score >= TRACK_EARLY_STOP_SCORE) {
+                        early_stop = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (early_stop) {
+
+            int ci = best_i, cj = best_j;
+            double cscore = best_score;
+
+            while (true) {
+
+                int ni_best = ci, nj_best = cj;
+                double n_best_score = cscore;
+
+                for (int di = -1; di <= 1; ++di) {
+                    for (int dj = -1; dj <= 1; ++dj) {
+
+                        if (di == 0 && dj == 0)
+                            continue;
+
+                        int ni = ci + di, nj = cj + dj;
+
+                        if (ni < 0 || ni >= nx || nj < 0 || nj >= ny)
+                            continue;
+                        if (visited[idx(ni, nj)])
+                            continue;
+
+                        double s = evalPoint(ni, nj);
+
+                        if (s > best_score) {
+                            best_score = s;
+                            best_i = ni; best_j = nj;
+                        }
+                        if (s > n_best_score) {
+                            n_best_score = s;
+                            ni_best = ni; nj_best = nj;
+                        }
+                    }
+                }
+
+                if (ni_best == ci && nj_best == cj)
+                    break;
+
+                ci = ni_best; cj = nj_best; cscore = n_best_score;
+            }
+        }
+
+        best1 = { cv::Point2d(x_vals[(size_t)best_i], y_vals[(size_t)best_j]), best_score };
+    }
 
     auto x_vals2 = arangeVec(best1.first.x - coarse_step, best1.first.x + coarse_step + 1e-6, fine_step);
     auto y_vals2 = arangeVec(best1.first.y - coarse_step, best1.first.y + coarse_step + 1e-6, fine_step);
@@ -1318,7 +1476,7 @@ static StoneUpdateResult trackStoneUpdateOne(
     auto ts1 = std::chrono::steady_clock::now();
 #endif
 
-    auto best = locateByGridSearchFast(
+    auto best = locateByGridSearchTrackingFast(
         local_pts_search, mask_crop, roi.x, roi.y,
         X0, track_half_range_cm, Y0, track_half_range_cm,
         coarse_step_cm, fine_step_cm, K, R, t
