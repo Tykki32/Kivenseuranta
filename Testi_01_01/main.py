@@ -1346,6 +1346,23 @@ def run_pipeline(
     total_transform_time = 0.0
     total_sample_time = 0.0
 
+    # --------------------------------------------------------
+    # NOPEUSSEURANTA (kayttajan pyynnosta): HAKU (stone_tracker.
+    # search_new_stone) ja SEURANTA (stone_tracker.track_stones_
+    # batch) ovat nyt molemmat C++:aa - tallennetaan niiden
+    # kutsumaarat+kokonaisajat tanne jotta REPORT_EVERY-valein
+    # tulostettava yhteenveto (ja lopuksi koko ajon yhteenveto)
+    # kertoo TARKALLEEN missa aika kuluu MYOS kayttajan omalla
+    # koneella - katso raportin tulostus alempana.
+    # --------------------------------------------------------
+
+    total_haku_time = 0.0
+    n_haku_calls = 0
+
+    total_seuranta_time = 0.0
+    n_seuranta_calls = 0
+    n_seuranta_stone_updates = 0
+
     executor = ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     )
@@ -1902,7 +1919,20 @@ def run_pipeline(
                 # HAKU: uusia kiviä kiinteältä paata-rajatulta
                 # vyohykkeelta (kamera9_02.py:n SEARCH_*), vain
                 # jos tilaa (< MAX_CONCURRENT_STONES) ja tama on
-                # hakutarkistusframe.
+                # hakutarkistusframe. C++-porttaus (stone_tracker.
+                # cpp:n search_new_stone, Task 6) - ristikkohaku
+                # JA yhteissovitus yhdessa kutsussa, samaan tapaan
+                # kuin SEURANTA (Task 5). HUOM: taman C++-kutsu
+                # tekee yhteissovituksen AINA kun ristikkohaun
+                # pisteytys ylittaa kynnyksen, MYOS silloin kun
+                # loydetty ehdokas myohemmin osoittautuu jo
+                # seurattavaksi kiveksi (already_tracked alla) -
+                # pieni, harvinainen turha laskenta (~10-15ms),
+                # EI vaikuta lopputulokseen (Pythonin alkuperaisessa
+                # jarjestyksessa yhteissovitus tehtiin vasta dedup-
+                # tarkistuksen JALKEEN kalliimman refine-kutsun
+                # sailostamiseksi - C++:ssa molemmat ovat jo niin
+                # nopeita etta jarjestyksella ei ole merkitysta).
                 # --------------------------------------------
 
                 newly_found_ids = set()
@@ -1912,15 +1942,6 @@ def run_pipeline(
                     and frame_index % k92.SEARCH_EVERY_N_FRAMES == 0
                 ):
 
-                    frame_u_filtered = suppress_static_background(
-                        frame_u, calib_result["calib"]["frame_undistorted"]
-                    )
-
-                    mask_search = k9.create_granite_mask(frame_u_filtered)
-                    sat_search = cv2.cvtColor(
-                        frame_u, cv2.COLOR_BGR2HSV
-                    )[:, :, 1].astype(np.float32)
-
                     x_center = 0.0
                     y_center = (
                         k92.SEARCH_Y_MIN_CM + k92.SEARCH_Y_MAX_CM
@@ -1929,14 +1950,24 @@ def run_pipeline(
                         k92.SEARCH_Y_MAX_CM - k92.SEARCH_Y_MIN_CM
                     ) / 2.0
 
-                    (bx, by), score = k94.locate_by_grid_search_fast(
-                        local_pts_search, mask_search, x_center,
-                        k92.SEARCH_X_HALF_WIDTH_CM, y_center, y_half,
+                    t_haku0 = time.time()
+                    haku_result = stone_tracker.search_new_stone(
+                        frame_u, calib_result["calib"]["frame_undistorted"],
+                        local_pts_body, local_pts_search,
+                        pose["K"], pose["R"], pose["t"],
+                        x_center, k92.SEARCH_X_HALF_WIDTH_CM, y_center, y_half,
                         k92.SEARCH_COARSE_STEP_CM, k92.SEARCH_FINE_STEP_CM,
-                        pose
+                        k92.SEARCH_SCORE_THRESHOLD,
+                        live_state["R_max"], live_state["H_total"],
+                        live_state["ring_r_frac_guess"]
                     )
+                    total_haku_time += time.time() - t_haku0
+                    n_haku_calls += 1
 
-                    if score >= k92.SEARCH_SCORE_THRESHOLD:
+                    if haku_result["found"]:
+
+                        refined = haku_result
+                        bx, by = refined["X_cm"], refined["Y_cm"]
 
                         already_tracked = any(
                             math.hypot(
@@ -1946,11 +1977,6 @@ def run_pipeline(
                         )
 
                         if not already_tracked:
-
-                            refined = k94.refine_position_joint_fast(
-                                mask_search, sat_search, local_pts_body,
-                                pose, profile_result, bx, by
-                            )
 
                             stone_id = next_stone_id
                             next_stone_id += 1
@@ -2018,6 +2044,7 @@ def run_pipeline(
                         dtype=np.float64
                     )
 
+                    t_seuranta0 = time.time()
                     batch_results = stone_tracker.track_stones_batch(
                         frame_u, X0_arr, Y0_arr,
                         local_pts_body, local_pts_search,
@@ -2028,6 +2055,9 @@ def run_pipeline(
                         live_state["R_max"], live_state["H_total"],
                         live_state["ring_r_frac_guess"]
                     )
+                    total_seuranta_time += time.time() - t_seuranta0
+                    n_seuranta_calls += 1
+                    n_seuranta_stone_updates += len(seuranta_stones)
 
                     for s, refined in zip(seuranta_stones, batch_results):
 
@@ -2185,6 +2215,16 @@ def run_pipeline(
                     f"transform {(total_transform_time / processed) * 1000:.3f} ms | "
                     f"sample {(total_sample_time / max(1, engine.mode_frame_count())) * 1000:.1f} ms"
                 )
+                print(
+                    f"  kivenseuranta (C++): "
+                    f"HAKU {n_haku_calls} kutsua, "
+                    f"ka {(total_haku_time / max(1, n_haku_calls)) * 1000:.1f} ms/kutsu, "
+                    f"{(total_haku_time / processed) * 1000:.2f} ms/ruutu ka | "
+                    f"SEURANTA {n_seuranta_calls} kutsua, "
+                    f"ka {(total_seuranta_time / max(1, n_seuranta_calls)) * 1000:.1f} ms/kutsu "
+                    f"({n_seuranta_stone_updates / max(1, n_seuranta_calls):.1f} kivea/kutsu ka), "
+                    f"{(total_seuranta_time / processed) * 1000:.2f} ms/ruutu ka"
+                )
 
     finally:
 
@@ -2201,6 +2241,35 @@ def run_pipeline(
         f"Videon lapikaynti valmis "
         f"({frame_index}/{total_frames} ruutua)."
     )
+
+    # --------------------------------------------------------
+    # NOPEUSSEURANNAN LOPPUYHTEENVETO - kopioi/liita tama takaisin
+    # jos haluat kertoa miten kivenseuranta (HAKU+SEURANTA, molemmat
+    # C++:aa) kayttaytyy omalla koneellasi oikealla datalla.
+    # --------------------------------------------------------
+
+    total_elapsed = time.time() - start_time
+    processed_frames = max(1, frame_index)
+
+    print()
+    print("=== NOPEUSSEURANTA (kivenseuranta C++: HAKU+SEURANTA) ===")
+    print(f"Koko ajo: {total_elapsed:.1f}s / {frame_index} ruutua "
+          f"({processed_frames / total_elapsed:.2f} r/s keskimaarin)")
+    print(f"HAKU: {n_haku_calls} kutsua, yhteensa {total_haku_time:.2f}s, "
+          f"ka {(total_haku_time / max(1, n_haku_calls)) * 1000:.2f} ms/kutsu, "
+          f"{(total_haku_time / processed_frames) * 1000:.2f} ms/ruutu "
+          "(koko videon yli keskiarvoistettuna)")
+    print(f"SEURANTA: {n_seuranta_calls} kutsua, yhteensa "
+          f"{total_seuranta_time:.2f}s, "
+          f"ka {(total_seuranta_time / max(1, n_seuranta_calls)) * 1000:.2f} ms/kutsu "
+          f"({n_seuranta_stone_updates / max(1, n_seuranta_calls):.2f} kivea/kutsu "
+          "keskimaarin), "
+          f"{(total_seuranta_time / processed_frames) * 1000:.2f} ms/ruutu "
+          "(koko videon yli keskiarvoistettuna)")
+    print(f"Yhteensa HAKU+SEURANTA: "
+          f"{((total_haku_time + total_seuranta_time) / processed_frames) * 1000:.2f} "
+          "ms/ruutu keskimaarin (25fps-reaaliaikatavoite = 40.0 ms/ruutu)")
+    print("===========================================================")
 
     if calib_result is None:
         raise RuntimeError(

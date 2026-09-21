@@ -72,7 +72,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <thread>
 #include <vector>
 
@@ -310,6 +312,22 @@ static std::pair<cv::Point2d, double> locateByGridSearchFast(
 // MASK_ROI_MARGIN_PX:sta: talla ei ole vaikutusta TULOKSEEN koska
 // kaikki kaytto tapahtuu joka tapauksessa ROI:n sisalla, mutta
 // saastaa turhan koko-framen nollaus/varauksen).
+//
+// HUOM KOKO FRAMEN (HAKU) SUORITUSKYVYSTA: taman funktion sisalta
+// kutsuttavat cv::GaussianBlur/morphologyEx KOKO 1920x1080-framelle
+// (search_new_stone, ei-ROI-rajattu HAKU) osoittautuivat Linux-
+// kehitysymparistossa YLLATTAEN HITAAMMIKSI kuin Pythonin cv2-
+// vastine (n. 180ms vs. Pythonin 89ms) - EI porttausvirhe, vaan
+// tama kehitysympariston oma libopencv4.6 (apt/pkg-config) puuttuu
+// Intel IPP -kiihdytyksen, kun taas Pythonin pip-asennettu cv2-paketti
+// tuo OMAN, IPP-kiihdytetyn OpenCV 5.0 -kirjastonsa mukana (katso
+// cv2.getBuildInformation() molemmin puolin - eri versio, eri IPP-tila).
+// TARKISTA tama sama asia Windows-kaannoksessa (linkitetaanko IPP-
+// kiihdytettya OpenCV:ta, esim. vcpkg:n tai virallisen prebuilt-SDK:n
+// versio - nama yleensa SISALTAVAT IPP:n oletuksena) ennen kuin
+// vertailet HAKU:n C++/Python-nopeuksia omalla koneella - Linux-
+// kehitysymparistossa mitattu ~1.3x nopeutus HAKU:lle EI todennakoisesti
+// vastaa oikeaa kannettavuutta jos linkitetty OpenCV eroaa nain.
 // ============================================================
 
 static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
@@ -357,6 +375,43 @@ static cv::Mat computeSat(const cv::Mat& frame_bgr)
     cv::Mat sat_f;
     ch[1].convertTo(sat_f, CV_32F);
     return sat_f;
+}
+
+
+// ============================================================
+// TAUSTAN VAIMENNUS (main.py:n suppress_static_background, Task 6
+// - HAKU:n C++-porttaus). Peittaa (valkoisella) alueet jotka
+// vastaavat kalibroinnin puhdasta staattista referenssikuvaa,
+// jottei painettu/staattinen sisalto (sponsoritekstit, viivat)
+// voi tulla virhetunnistetuksi kiveksi HAKU-vaiheessa - katso
+// main.py:n oma kommentti taman alkuperaisesta motivaatiosta.
+// ============================================================
+
+static cv::Mat suppressStaticBackground(
+    const cv::Mat& frame_bgr, const cv::Mat& reference_bgr, double diff_threshold)
+{
+    if (reference_bgr.empty() ||
+        frame_bgr.rows != reference_bgr.rows ||
+        frame_bgr.cols != reference_bgr.cols ||
+        frame_bgr.type() != reference_bgr.type())
+        return frame_bgr.clone();
+
+    cv::Mat diff, diff_gray;
+    cv::absdiff(frame_bgr, reference_bgr, diff);
+    cv::cvtColor(diff, diff_gray, cv::COLOR_BGR2GRAY);
+
+    cv::Mat out = frame_bgr.clone();
+
+    for (int r = 0; r < out.rows; ++r) {
+        const uchar* dptr = diff_gray.ptr<uchar>(r);
+        cv::Vec3b* optr = out.ptr<cv::Vec3b>(r);
+        for (int c = 0; c < out.cols; ++c) {
+            if ((double)dptr[c] < diff_threshold)
+                optr[c] = cv::Vec3b(255, 255, 255);
+        }
+    }
+
+    return out;
 }
 
 
@@ -1276,13 +1331,155 @@ static py::list track_stones_batch(
 }
 
 
+// ============================================================
+// HAKU (main.py:n elavan seurannan HAKU-lohko, Task 6): uuden
+// kiven etsinta kiinteältä paata-rajatulta vyohykkeelta KOKO
+// framen kokoisella maskilla/saturaatiolla - EI ROI-rajattu
+// (toisin kuin SEURANTA), koska hakuvyohyke itse voi jo kattaa
+// ison osan framesta eika ajeta joka framella (katso main.py:n
+// oma kommentti). Uudelleenkayttaa TASMALLEEN samoja funktioita
+// (createGraniteMask, computeSat, locateByGridSearchFast,
+// refinePositionJoint) off_x=off_y=0:lla - EI omaa, erillista
+// logiikkaa naille.
+//
+// Portattu (Python-vastine main.py:ssa):
+//   suppress_static_background, ja elavan HAKU-lohkon oma
+//   kutsujarjestys (k9.create_granite_mask taustavaimennetulle
+//   framelle, saturaatio ALKUPERAISESTA (ei-vaimennetusta)
+//   framesta, k94.locate_by_grid_search_fast + k94.refine_
+//   position_joint_fast).
+// ============================================================
+
+static StoneUpdateResult searchNewStoneOne(
+    const cv::Mat& frame_mat, const cv::Mat& background_reference, double diff_threshold,
+    const std::vector<cv::Point3d>& local_pts_body,
+    const std::vector<cv::Point3d>& local_pts_search,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    double x_center, double x_half_width, double y_center, double y_half_range,
+    double coarse_step_cm, double fine_step_cm, double score_threshold,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess)
+{
+    int frame_w = frame_mat.cols, frame_h = frame_mat.rows;
+
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto t0 = std::chrono::steady_clock::now();
+#endif
+    cv::Mat frame_filtered = suppressStaticBackground(frame_mat, background_reference, diff_threshold);
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto t1 = std::chrono::steady_clock::now();
+#endif
+    cv::Mat mask_search = createGraniteMask(frame_filtered);
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto t2 = std::chrono::steady_clock::now();
+#endif
+    cv::Mat sat_search = computeSat(frame_mat);
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto t3 = std::chrono::steady_clock::now();
+#endif
+
+    StoneUpdateResult out;
+
+    auto best = locateByGridSearchFast(
+        local_pts_search, mask_search, 0, 0,
+        x_center, x_half_width, y_center, y_half_range,
+        coarse_step_cm, fine_step_cm, K, R, t
+    );
+
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto t4 = std::chrono::steady_clock::now();
+    auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    fprintf(stderr, "[HAKU timing] suppress=%.2fms mask=%.2fms sat=%.2fms grid=%.2fms",
+            ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4));
+#endif
+
+    out.score = best.second;
+
+    if (out.score < score_threshold) {
+#ifdef STONE_TRACKER_DEBUG_TIMING
+        fprintf(stderr, " (no refine, score=%.3f)\n", out.score);
+#endif
+        return out;
+    }
+
+    out.has_position = true;
+    out.refined = refinePositionJoint(
+        mask_search, sat_search, 0, 0, frame_w, frame_h, local_pts_body, K, R, t,
+        R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
+    );
+
+#ifdef STONE_TRACKER_DEBUG_TIMING
+    auto t5 = std::chrono::steady_clock::now();
+    fprintf(stderr, " refine=%.2fms\n", ms(t4, t5));
+#endif
+
+    return out;
+}
+
+
+static py::dict search_new_stone(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame_u,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> background_reference,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_search_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+    double x_center, double x_half_width, double y_center, double y_half_range,
+    double coarse_step_cm, double fine_step_cm, double score_threshold,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double diff_threshold = 30.0)
+{
+    auto buf = frame_u.request();
+    if (buf.ndim != 3 || buf.shape[2] != 3)
+        throw std::runtime_error("frame_u must be HxWx3 uint8 BGR");
+
+    cv::Mat frame_mat((int)buf.shape[0], (int)buf.shape[1], CV_8UC3, (void*)buf.ptr);
+
+    cv::Mat ref_mat;
+    auto ref_buf = background_reference.request();
+    if (ref_buf.ndim == 3 && ref_buf.shape[2] == 3)
+        ref_mat = cv::Mat((int)ref_buf.shape[0], (int)ref_buf.shape[1], CV_8UC3, (void*)ref_buf.ptr);
+
+    auto local_pts_body = parsePts3(local_pts_body_arr);
+    auto local_pts_search = parsePts3(local_pts_search_arr);
+    auto K = parseMat33(K_arr);
+    auto R = parseMat33(R_arr);
+    auto t = parseVec3(t_arr);
+
+    StoneUpdateResult result;
+    {
+        py::gil_scoped_release release;
+        result = searchNewStoneOne(
+            frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
+            x_center, x_half_width, y_center, y_half_range,
+            coarse_step_cm, fine_step_cm, score_threshold,
+            R_max_cm, H_total_cm, ring_r_frac_guess
+        );
+    }
+
+    return resultToDict(result);
+}
+
+
 PYBIND11_MODULE(stone_tracker, m)
 {
-    m.doc() = "C++-porttaus SEURANTA-vaiheen kuumasta polusta (Task 5)";
+    m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";
 
     m.def("track_stone_update", &track_stone_update,
           "Yhden kiven ristikkohaku+yhteissovitus (SEURANTA-paivitys)");
 
     m.def("track_stones_batch", &track_stones_batch,
           "Usean kiven ristikkohaku+yhteissovitus rinnakkain std::thread:eilla");
+
+    m.def("search_new_stone", &search_new_stone,
+          "Uuden kiven haku kiinteältä vyohykkeelta (HAKU), koko frame",
+          py::arg("frame_u"), py::arg("background_reference"),
+          py::arg("local_pts_body"), py::arg("local_pts_search"),
+          py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("x_center"), py::arg("x_half_width"),
+          py::arg("y_center"), py::arg("y_half_range"),
+          py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
+          py::arg("score_threshold"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("diff_threshold") = 30.0);
 }
