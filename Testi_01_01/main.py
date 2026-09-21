@@ -875,9 +875,42 @@ def detect_panels_from_reference(gray, reference_panels,
 # MOTION_THRESHOLD_CM tulkitaan AIDOSTI LIIKKUVAKSI (ei jo-paikallaan-
 # olevaksi) - tama siirtymä-havainto ANTAA SIEMENEN (frame_idx, X, Y)
 # k94.track_stone_in_video_fast:lle, joka sitten seuraa koko liu'un.
+#
+# suppress_static_background: k9.create_granite_mask:in kommentti
+# (kamera9_01.py) sanoo 5x5-avauksen poistavan OHUET staattiset
+# rakenteet (sponsoritekstin kirjaimet, maalatut viivat) - mutta
+# testissa havaittiin etta TAMA EI RIITTANYT: staattinen mainosteksti
+# tuli silti virheellisesti tunnistetuksi "kiveksi" (n. 4.5x liian
+# suuri R_max 3D-profiilin sovituksessa, katso git-historia/keskustelu).
+# Koska meilla ON jo kalibroinnin moodikuva (puhdas, kivi-/pelaaja-
+# vapaa staattinen tausta - juuri se mita moodisuodatus on suunniteltu
+# tuottamaan), kayttajan ehdotuksesta: verrataan nykyista framea
+# TAHAN referenssiin ja PEITETAAN (korvataan valkoisella) alueet jotka
+# vastaavat sita - jaljelle jaa vain AIDOSTI poikkeava/vaihtuva sisalto
+# (kivet, pelaajat), joten mikaan staattinen painettu sisalto ei voi
+# enaa tulla virhetunnistetuksi kiveksi tassa vaiheessa.
 # ============================================================
 
-def _scan_stone_candidates(frame_bgr, calib, pose):
+def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
+
+    if reference_bgr is None or frame_bgr.shape != reference_bgr.shape:
+        return frame_bgr
+
+    diff = cv2.absdiff(frame_bgr, reference_bgr)
+    diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    background_mask = diff_gray < diff_threshold
+
+    out = frame_bgr.copy()
+    out[background_mask] = (255, 255, 255)
+
+    return out
+
+def _scan_stone_candidates(frame_bgr, calib, pose, background_reference=None):
+
+    frame_bgr = suppress_static_background(
+        frame_bgr, background_reference
+    )
+
     return k9._candidates_in_frame(
         frame_bgr, calib, pose, calib["H_final"],
         k9.STONE_TRACK_MIN_AREA, k9.STONE_TRACK_MIN_FILL_RATIO,
@@ -933,7 +966,8 @@ STONE_TRACK_WINDOW_SECONDS = 30.0
 
 
 def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
-                                   seed_pos_cm, window_seconds=STONE_TRACK_WINDOW_SECONDS):
+                                   seed_pos_cm, window_seconds=STONE_TRACK_WINDOW_SECONDS,
+                                   background_reference_undistorted=None):
 
     max_jump_cm = k9.STONE_TRACK_MAX_JUMP_CM
     max_misses = k9.STONE_TRACK_MAX_MISSES
@@ -980,8 +1014,12 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
 
         frame_u = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
 
+        frame_u_filtered = suppress_static_background(
+            frame_u, background_reference_undistorted
+        )
+
         candidates_cache[idx] = k94._candidates_in_frame_fast(
-            frame_u, pose, H_final, min_area, min_fill_ratio, min_aspect_ratio
+            frame_u_filtered, pose, H_final, min_area, min_fill_ratio, min_aspect_ratio
         )
 
         idx += 1
@@ -1555,8 +1593,20 @@ def run_pipeline(
 
                 if frame_index >= next_stone_scan_frame:
 
+                    # Kandidaattitunnistuksen syote stabiloidaan SAMALLA
+                    # matriisilla kuin moodikuva-referenssi aikanaan
+                    # laskettiin (engine.add_mode_frame) - muuten
+                    # taustavertailu (suppress_static_background) ei
+                    # osu kohdalleen, ja pikselikoordinaatit eivat
+                    # vastaa poseen kalibrointireferenssia.
+                    stabilized_scan_frame = cv2.warpAffine(
+                        frame, stabilization_matrix, (width, height)
+                    )
+
                     curr_candidates = _scan_stone_candidates(
-                        frame, calib_result["calib"], calib_result["pose"]
+                        stabilized_scan_frame, calib_result["calib"],
+                        calib_result["pose"],
+                        background_reference=calib_result["calib"]["frame"]
                     )
 
                     seed_pos = find_moving_candidate(
@@ -1587,7 +1637,10 @@ def run_pipeline(
                             video_file, calib_result["calib"],
                             calib_result["pose"],
                             seed_frame_idx=frame_index,
-                            seed_pos_cm=seed_pos
+                            seed_pos_cm=seed_pos,
+                            background_reference_undistorted=(
+                                calib_result["calib"]["frame_undistorted"]
+                            )
                         )
 
                         print(
@@ -1740,7 +1793,11 @@ def run_pipeline(
                     and frame_index % k92.SEARCH_EVERY_N_FRAMES == 0
                 ):
 
-                    mask_search = k9.create_granite_mask(frame_u)
+                    frame_u_filtered = suppress_static_background(
+                        frame_u, calib_result["calib"]["frame_undistorted"]
+                    )
+
+                    mask_search = k9.create_granite_mask(frame_u_filtered)
                     sat_search = cv2.cvtColor(
                         frame_u, cv2.COLOR_BGR2HSV
                     )[:, :, 1].astype(np.float32)
