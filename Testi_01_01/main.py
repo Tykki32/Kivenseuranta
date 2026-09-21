@@ -1911,50 +1911,30 @@ def run_pipeline(
 
                     live_state = {
                         "map1": map1, "map2": map2,
-                        # stabilointi (warpAffine) + vaaristyman korjaus
-                        # (remap) YHDISTETTY YHDEKSI resample-askeleeksi
-                        # per frame (katso alla) - map_stack on niiden
-                        # KIINTEA (framesta riippumaton) osa, laskettu
-                        # kerran tanne kuten map1/map2 jo ennestaankin.
-                        "map_stack": cv2.merge([map1, map2]),
                         "local_pts_body": local_pts_body,
                         "local_pts_search": local_pts_search,
                         "R_max": R_max, "H_total": H_total,
                         "ring_r_frac_guess": ring_r_frac_guess,
                     }
 
-                # ------------------------------------------------
-                # STABILOINTI + VAARISTYMAN KORJAUS YHDESSA ASKELEESSA
-                #
-                # Alkuperainen versio teki TAMAN KAHDESSA erillisessa
-                # KOKO FRAMEN resample-vaiheessa (cv2.warpAffine, sitten
-                # cv2.remap) - molemmat kalliita (~10ms yhteensa taman
-                # projektin omissa mittauksissa) JA laadullisesti
-                # huonompia (kaksi perakkaista bilineaarista naytteis-
-                # tysta sumentaa enemman kuin yksi). cv2.warpAffine:n
-                # OLETUSKAYTOS (ilman WARP_INVERSE_MAP-lippua) on:
-                #   stabiloitu(x,y) = frame( invertAffineTransform(M)(x,y) )
-                # ja remap: frame_u(x,y) = stabiloitu( map1(x,y), map2(x,y) )
-                # joten yhdistettyna:
-                #   frame_u(x,y) = frame( invertAffineTransform(M) sovel-
-                #                         lettuna pisteeseen (map1(x,y),
-                #                         map2(x,y)) )
-                # - lasketaan tama YHDISTETTY koordinaattikartta (halpa,
-                # PELKKA lineaarinen muunnos map1/map2-taulukoille, EI
-                # kuvan uudelleennaytteistysta) JA tehdaan sitten VAIN
-                # YKSI remap suoraan alkuperaiseen frameen. Matemaatti-
-                # sesti sama lopputulos (itse asiassa TARKEMPI, koska
-                # vain yksi bilineaarinen naytteistys kahden sijaan).
-                # ------------------------------------------------
+                # HUOM: kokeiltiin taalla yhdistaa warpAffine+remap
+                # yhdeksi remap-kutsuksi (cv2.transform map1/map2:lle +
+                # yksi remap) - eristetty mikrobenchmark nayttii ensin
+                # parannusta, mutta TOISTETTUNA (ja koko putken sisalla)
+                # tulos vaihteli suunnasta toiseen ajojen valilla - ero
+                # oli taman hiekkalaatikon oman kohinan sisalla, EI
+                # luotettavasti mitattavissa (map1/map2 ovat float32
+                # 2-kanavaisia, 8 tavua/pikseli - enemman dataa per
+                # pikseli kuin itse BGR-kuva, joten "halpa" koordinaatti-
+                # muunnos ei ollutkaan niin halpa). Palautettu alku-
+                # peraiseen kahteen erilliseen vaiheeseen - EI otettu
+                # kayttoon todentamatonta optimointia.
                 t_warp0 = time.perf_counter()
-                inv_stab = cv2.invertAffineTransform(
-                    stabilization_matrix.astype(np.float32)
-                )
-                combined_map = cv2.transform(
-                    live_state["map_stack"], inv_stab
+                stabilized = cv2.warpAffine(
+                    frame, stabilization_matrix, (width, height)
                 )
                 frame_u = cv2.remap(
-                    frame, combined_map, None,
+                    stabilized, live_state["map1"], live_state["map2"],
                     interpolation=cv2.INTER_LINEAR
                 )
                 total_warp_remap_time += time.perf_counter() - t_warp0
