@@ -177,6 +177,30 @@ SOLO_TRACK_MAX_RMS_PX = 6.0
 STONE_SCAN_COOLDOWN_FRAMES = 750   # 30s 25fps:lla
 
 # ============================================================
+# ELAVA MONI-KIVEN SEURANTA + CSV
+#
+# Kayttajan pyynnosta: max 4 kiveä samanaikaisesti, yksinkertainen
+# lahin-ehdokas-per-kivi -logiikka riittaa (kivet lahekkain vasta
+# pysahtymisen jalkeen, jolloin ID:lla ei ole enaa merkitysta).
+# Uusien kivien HAKU kaytta kamera9_02.py:n kiinteaa paata-rajattua
+# vyohyketta (SEARCH_X/Y_*, k92-moduulista) - TOISIN kuin 3D-profiilin
+# koko-radan-skannaus (Task 3): kivet HEITETAAN aina samaan suuntaan/
+# paahan, joten kiinteä HAKU-vyohyke on jarkeva/tehokas tassa.
+# ============================================================
+
+MAX_CONCURRENT_STONES = 4
+
+# Jos uusi HAKU-loytö on tata lahempana jotain jo AKTIIVISTA kiveä,
+# tulkitaan samaksi kiveksi (ei uutta ID:ta) - estaa saman kiven
+# kaksoiskirjautumisen.
+NEW_STONE_DEDUP_CM = 50.0
+
+CSV_HEADER = [
+    "frame", "timestamp_s", "stone_id", "x_m", "y_m", "tarkka",
+    "n_runkopistetta", "n_reunapistetta", "rms_px", "rengas_r_cm",
+]
+
+# ============================================================
 # APUFUNKTIOT
 # ============================================================
 
@@ -1047,6 +1071,17 @@ def try_fit_profile(pose, stones, max_rms_px=PROFILE_MAX_RMS_PX,
     return profile, riittava
 
 
+def _write_stone_csv_row(writer, frame_index, timestamp, stone_id, refined):
+
+    writer.writerow([
+        frame_index, f"{timestamp:.3f}", stone_id,
+        f"{refined['X_cm'] / 100.0:.5f}", f"{refined['Y_cm'] / 100.0:.5f}",
+        int(refined["tarkka"]), refined["n_body"], refined["n_ring"],
+        f"{refined['rms_px']:.3f}" if refined["rms_px"] is not None else "",
+        f"{refined['ring_radius_cm']:.3f}" if refined["ring_radius_cm"] is not None else "",
+    ])
+
+
 # ============================================================
 # YKSI PAAPUTKI - kaikki vaiheet (kalibrointi -> kiviprofiilin haku ->
 # elava moni-kiven seuranta) jakavat SAMAN videon peräkkäisen luvun ja
@@ -1060,7 +1095,10 @@ def try_fit_profile(pose, stones, max_rms_px=PROFILE_MAX_RMS_PX,
 def run_pipeline(
     video_file,
     panel_data,
-    calib_diag_output
+    calib_diag_output,
+    csv_output,
+    precomputed_calib_result=None,
+    precomputed_profile_result=None
 ):
 
     engine = mode_engine.ModeEngine(
@@ -1130,7 +1168,7 @@ def run_pipeline(
     frame_index = 0
     next_calib_sample_frame = 0
 
-    calib_result = None
+    calib_result = precomputed_calib_result
 
     stone_scan_interval_frames = max(
         1, int(round(fps * STONE_SCAN_INTERVAL_SECONDS))
@@ -1138,8 +1176,25 @@ def run_pipeline(
     next_stone_scan_frame = 0
     prev_scan_candidates = None
     accumulated_stones = []
-    profile_result = None
+    profile_result = precomputed_profile_result
     next_allowed_scan_track_frame = 0
+
+    if precomputed_calib_result is not None:
+        print(
+            "Kalibrointi annettu valmiiksi laskettuna "
+            "(ohitetaan moodikuva-bootstrap)."
+        )
+    if precomputed_profile_result is not None:
+        print(
+            "3D-kiviprofiili annettu valmiiksi laskettuna "
+            "(ohitetaan koko radan skannaus)."
+        )
+
+    active_stones = []
+    next_stone_id = 0
+    live_state = None
+    csv_writer = None
+    csv_file = None
 
     previous_stabilization_matrix = np.array(
         [
@@ -1602,6 +1657,206 @@ def run_pipeline(
                     prev_scan_candidates = curr_candidates
                     next_stone_scan_frame = frame_index + stone_scan_interval_frames
 
+            # ------------------------------------------------
+            # ELAVA MONI-KIVEN SEURANTA + CSV - vasta kun SEKA
+            # kalibrointi ETTA 3D-kiviprofiili ovat valmiit.
+            # ------------------------------------------------
+
+            else:
+
+                if live_state is None:
+
+                    profile = profile_result
+                    R_max = profile["R_max_cm"]
+                    H_total = profile["H_total_cm"]
+                    shape_deltas = profile["shape_deltas"]
+
+                    camera_matrix = calib_result["calib"]["camera_matrix"]
+                    dist_coeffs = np.array(
+                        [calib_result["calib"]["best_k1"], 0.0, 0.0, 0.0, 0.0],
+                        dtype=np.float64
+                    )
+
+                    map1, map2 = k94._build_undistort_maps(
+                        camera_matrix, dist_coeffs, (width, height)
+                    )
+
+                    local_pts_body = k94.build_local_stone_rings(
+                        R_max, H_total, shape_deltas, n_theta=28, n_per_segment=5
+                    )
+                    local_pts_search = k94.build_local_stone_rings(
+                        R_max, H_total, shape_deltas,
+                        n_theta=k92.SEARCH_HULL_N_THETA,
+                        n_per_segment=k92.SEARCH_HULL_N_PER_SEGMENT
+                    )
+
+                    csv_file = open(csv_output, "w", newline="")
+                    csv_writer = csv.writer(csv_file)
+                    csv_writer.writerow(CSV_HEADER)
+
+                    print()
+                    print(
+                        f"Elava moni-kiven seuranta alkaa (frame "
+                        f"{frame_index}) - CSV: {csv_output}"
+                    )
+
+                    live_state = {
+                        "map1": map1, "map2": map2,
+                        "local_pts_body": local_pts_body,
+                        "local_pts_search": local_pts_search,
+                        "R_max": R_max, "H_total": H_total,
+                    }
+
+                stabilized = cv2.warpAffine(
+                    frame, stabilization_matrix, (width, height)
+                )
+                frame_u = cv2.remap(
+                    stabilized, live_state["map1"], live_state["map2"],
+                    interpolation=cv2.INTER_LINEAR
+                )
+
+                timestamp = frame_index / fps
+                pose = calib_result["pose"]
+                local_pts_body = live_state["local_pts_body"]
+                local_pts_search = live_state["local_pts_search"]
+
+                # --------------------------------------------
+                # HAKU: uusia kiviä kiinteältä paata-rajatulta
+                # vyohykkeelta (kamera9_02.py:n SEARCH_*), vain
+                # jos tilaa (< MAX_CONCURRENT_STONES) ja tama on
+                # hakutarkistusframe.
+                # --------------------------------------------
+
+                if (
+                    len(active_stones) < MAX_CONCURRENT_STONES
+                    and frame_index % k92.SEARCH_EVERY_N_FRAMES == 0
+                ):
+
+                    mask_search = k9.create_granite_mask(frame_u)
+                    sat_search = cv2.cvtColor(
+                        frame_u, cv2.COLOR_BGR2HSV
+                    )[:, :, 1].astype(np.float32)
+
+                    x_center = 0.0
+                    y_center = (
+                        k92.SEARCH_Y_MIN_CM + k92.SEARCH_Y_MAX_CM
+                    ) / 2.0
+                    y_half = (
+                        k92.SEARCH_Y_MAX_CM - k92.SEARCH_Y_MIN_CM
+                    ) / 2.0
+
+                    (bx, by), score = k94.locate_by_grid_search_fast(
+                        local_pts_search, mask_search, x_center,
+                        k92.SEARCH_X_HALF_WIDTH_CM, y_center, y_half,
+                        k92.SEARCH_COARSE_STEP_CM, k92.SEARCH_FINE_STEP_CM,
+                        pose
+                    )
+
+                    if score >= k92.SEARCH_SCORE_THRESHOLD:
+
+                        already_tracked = any(
+                            math.hypot(
+                                bx - s["last_xy"][0], by - s["last_xy"][1]
+                            ) < NEW_STONE_DEDUP_CM
+                            for s in active_stones
+                        )
+
+                        if not already_tracked:
+
+                            refined = k94.refine_position_joint_fast(
+                                mask_search, sat_search, local_pts_body,
+                                pose, profile_result, bx, by
+                            )
+
+                            stone_id = next_stone_id
+                            next_stone_id += 1
+
+                            active_stones.append({
+                                "stone_id": stone_id,
+                                "last_xy": (
+                                    refined["X_cm"], refined["Y_cm"]
+                                ),
+                                "misses": 0,
+                            })
+
+                            print(
+                                f"[frame {frame_index}] Uusi kivi "
+                                f"{stone_id}: "
+                                f"({refined['X_cm']:.1f}, "
+                                f"{refined['Y_cm']:.1f}) cm"
+                            )
+
+                            _write_stone_csv_row(
+                                csv_writer, frame_index, timestamp,
+                                stone_id, refined
+                            )
+
+                # --------------------------------------------
+                # SEURANTA: paivitetaan JOKAINEN aktiivinen kivi
+                # JOKA frame - oma ROI-rajattu maski/saturaatio
+                # per kivi (katso kamera9_04.py:n kommentti ROI-
+                # rajauksesta).
+                # --------------------------------------------
+
+                still_active = []
+
+                for s in active_stones:
+
+                    roi_half_range = (
+                        k92.TRACK_HALF_RANGE_CM
+                        + k93.BOUNDARY_MAX_SHIFT_FROM_APPROX_CM
+                    )
+
+                    roi = k94._track_roi_bounds(
+                        pose, s["last_xy"][0], s["last_xy"][1],
+                        roi_half_range, live_state["R_max"],
+                        live_state["H_total"], width, height
+                    )
+
+                    mask = k94.create_granite_mask_roi(frame_u, roi)
+                    sat = k94.compute_sat_roi(frame_u, roi)
+
+                    (bx, by), score = k94.locate_by_grid_search_fast(
+                        local_pts_search, mask, s["last_xy"][0],
+                        k92.TRACK_HALF_RANGE_CM, s["last_xy"][1],
+                        k92.TRACK_HALF_RANGE_CM,
+                        k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
+                        pose
+                    )
+
+                    if score >= k92.TRACK_SCORE_THRESHOLD:
+
+                        refined = k94.refine_position_joint_fast(
+                            mask, sat, local_pts_body, pose,
+                            profile_result, bx, by
+                        )
+
+                        s["last_xy"] = (
+                            refined["X_cm"], refined["Y_cm"]
+                        )
+                        s["misses"] = 0
+
+                        _write_stone_csv_row(
+                            csv_writer, frame_index, timestamp,
+                            s["stone_id"], refined
+                        )
+
+                        still_active.append(s)
+
+                    else:
+
+                        s["misses"] += 1
+
+                        if s["misses"] < k92.TRACK_LOST_MAX_MISSES:
+                            still_active.append(s)
+                        else:
+                            print(
+                                f"[frame {frame_index}] Kivi "
+                                f"{s['stone_id']} kadotettu."
+                            )
+
+                active_stones = still_active
+
             frame_index += 1
 
             # ------------------------------------------------
@@ -1686,6 +1941,9 @@ def run_pipeline(
             wait=True
         )
 
+        if csv_file is not None:
+            csv_file.close()
+
     print()
 
     print(
@@ -1712,6 +1970,8 @@ def run_pipeline(
         "pose": calib_result["pose"],
         "profile": profile_result,
         "n_profile_observations": len(accumulated_stones),
+        "csv_output": csv_output if live_state is not None else None,
+        "n_stones_seen": next_stone_id,
     }
 
 
@@ -1819,8 +2079,8 @@ def main():
         )
 
     # --------------------------------------------------------
-    # PAAPUTKI: kalibrointi -> 3D-kiviprofiilin haku -> (Task 4
-    # jatkaa tasta elavalla moni-kiven seurannalla myohemmin)
+    # PAAPUTKI: kalibrointi -> 3D-kiviprofiilin haku -> elava
+    # moni-kiven seuranta + CSV
     # --------------------------------------------------------
 
     calib_diag_output = (
@@ -1828,10 +2088,16 @@ def main():
         "_kalibrointi_topdown.png"
     )
 
+    csv_output = (
+        os.path.splitext(video_file)[0] +
+        "_kivien_sijainnit.csv"
+    )
+
     result = run_pipeline(
         video_file,
         panel_data,
-        calib_diag_output
+        calib_diag_output,
+        csv_output
     )
 
     print()
@@ -1865,6 +2131,13 @@ def main():
         print(
             "3D-kiviprofiili EI valmistunut riittavaksi "
             f"({result['n_profile_observations']} havaintoa kerattyna)."
+        )
+
+    if result["csv_output"] is not None:
+
+        print(
+            f"Kivien sijainti-CSV: {result['csv_output']} "
+            f"({result['n_stones_seen']} eri kivea havaittu)"
         )
 
 
