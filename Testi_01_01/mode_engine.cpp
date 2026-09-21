@@ -956,11 +956,27 @@ private:
 
 
                 // ------------------------------------------------
-                // Histogrammit
+                // Havaitut (B,G,R)-arvot pikselia kohti.
                 //
-                // 256 mahdollista arvoa per kanava.
+                // KORJATTU (Testi_01_01): alkuperainen versio laski
+                // moodin JOKAISELLE KANAVALLE ERIKSEEN (3 x 256-
+                // korin histogrammi). Tama voi tuottaa pikselin,
+                // jonka B, G ja R tulevat KOLMESTA ERI naytteesta -
+                // varin, jota missaan yksittaisessa framessa ei
+                // koskaan ollut. Kaukaisen pesan seudulla (pieni
+                // pikselimaara raakakuvassa, topdown-warpissa
+                // valtava suurennuskerroin) tama nakyi keinote-
+                // koisina, kirkkaina pystyraitoina jotka konta-
+                // minoivat pesan reunan tunnistuksen kalibroin-
+                // nissa.
                 //
-                // uint16_t riittaa, koska sampleja on 750.
+                // Korjaus: moodi lasketaan KOKO PIKSELILLE (B,G,R
+                // yhdessa) - lopputulos on AINA jonkin todellisen
+                // naytteen oikea, aidosti esiintynyt vari. Naytteita
+                // on vain muutamia kymmenia, joten per-pikseli
+                // lineaarihaku pienesta listasta (ei 256-korin
+                // histogrammia per kanava) on seka oikeampi etta
+                // kevyempi (myos muistissa).
                 // ------------------------------------------------
 
                 const size_t pixels =
@@ -971,18 +987,18 @@ private:
                         th
                         );
 
-                std::vector<uint16_t> hist_b(
-                    pixels * 256,
+                std::vector<uint32_t> distinct_values(
+                    pixels * static_cast<size_t>(sample_count),
                     0
                 );
 
-                std::vector<uint16_t> hist_g(
-                    pixels * 256,
+                std::vector<uint16_t> distinct_counts(
+                    pixels * static_cast<size_t>(sample_count),
                     0
                 );
 
-                std::vector<uint16_t> hist_r(
-                    pixels * 256,
+                std::vector<uint16_t> distinct_found(
+                    pixels,
                     0
                 );
 
@@ -1030,20 +1046,42 @@ private:
                             const cv::Vec3b pixel =
                                 row[x];
 
-                            ++hist_b[
-                                pixel_index * 256 +
-                                    pixel[0]
-                            ];
+                            const uint32_t packed =
+                                (static_cast<uint32_t>(pixel[0]) << 16) |
+                                (static_cast<uint32_t>(pixel[1]) << 8) |
+                                static_cast<uint32_t>(pixel[2]);
 
-                            ++hist_g[
-                                pixel_index * 256 +
-                                    pixel[1]
-                            ];
+                            const size_t base =
+                                pixel_index *
+                                static_cast<size_t>(sample_count);
 
-                            ++hist_r[
-                                pixel_index * 256 +
-                                    pixel[2]
-                            ];
+                            const int found =
+                                distinct_found[pixel_index];
+
+                            int slot = -1;
+
+                            for (int k = 0;
+                                k < found;
+                                ++k)
+                            {
+                                if (distinct_values[base + k] == packed)
+                                {
+                                    slot = k;
+                                    break;
+                                }
+                            }
+
+                            if (slot >= 0)
+                            {
+                                ++distinct_counts[base + slot];
+                            }
+                            else
+                            {
+                                distinct_values[base + found] = packed;
+                                distinct_counts[base + found] = 1;
+                                distinct_found[pixel_index] =
+                                    static_cast<uint16_t>(found + 1);
+                            }
                         }
                     }
                 }
@@ -1052,7 +1090,9 @@ private:
                 // ------------------------------------------------
                 // Valitaan mode.
                 //
-                // Tasatilanteessa pienempi arvo.
+                // Tasatilanteessa pienempi pakattu (B,G,R)-arvo -
+                // sama periaate kuin alkuperaisessa (pienempi
+                // voittaa), nyt vain koko pikselille yhdessa.
                 // ------------------------------------------------
 
                 cv::Mat* output =
@@ -1092,100 +1132,49 @@ private:
                                 local_x
                                 );
 
+                        const size_t base =
+                            pixel_index *
+                            static_cast<size_t>(sample_count);
 
-                        int best_b = -1;
-                        int best_g = -1;
-                        int best_r = -1;
+                        const int found =
+                            distinct_found[pixel_index];
 
-                        int best_count_b = -1;
-                        int best_count_g = -1;
-                        int best_count_r = -1;
+                        int best_count = -1;
+                        uint32_t best_value = 0;
 
-
-                        for (int value = 0;
-                            value < 256;
-                            ++value)
+                        for (int k = 0;
+                            k < found;
+                            ++k)
                         {
-                            const int count_b =
-                                hist_b[
-                                    pixel_index * 256 +
-                                        value
-                                ];
+                            const int count =
+                                distinct_counts[base + k];
+
+                            const uint32_t value =
+                                distinct_values[base + k];
 
                             if (
-                                count_b > best_count_b ||
+                                count > best_count ||
                                 (
-                                    count_b ==
-                                    best_count_b &&
-                                    value < best_b
+                                    count == best_count &&
+                                    value < best_value
                                     )
                                 )
                             {
-                                best_count_b =
-                                    count_b;
-
-                                best_b =
-                                    value;
-                            }
-
-
-                            const int count_g =
-                                hist_g[
-                                    pixel_index * 256 +
-                                        value
-                                ];
-
-                            if (
-                                count_g > best_count_g ||
-                                (
-                                    count_g ==
-                                    best_count_g &&
-                                    value < best_g
-                                    )
-                                )
-                            {
-                                best_count_g =
-                                    count_g;
-
-                                best_g =
-                                    value;
-                            }
-
-
-                            const int count_r =
-                                hist_r[
-                                    pixel_index * 256 +
-                                        value
-                                ];
-
-                            if (
-                                count_r > best_count_r ||
-                                (
-                                    count_r ==
-                                    best_count_r &&
-                                    value < best_r
-                                    )
-                                )
-                            {
-                                best_count_r =
-                                    count_r;
-
-                                best_r =
-                                    value;
+                                best_count = count;
+                                best_value = value;
                             }
                         }
-
 
                         row[x] =
                             cv::Vec3b(
                                 static_cast<uint8_t>(
-                                    best_b
+                                    (best_value >> 16) & 0xFFu
                                     ),
                                 static_cast<uint8_t>(
-                                    best_g
+                                    (best_value >> 8) & 0xFFu
                                     ),
                                 static_cast<uint8_t>(
-                                    best_r
+                                    best_value & 0xFFu
                                     )
                             );
                     }
