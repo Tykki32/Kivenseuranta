@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <mutex>
@@ -987,20 +988,53 @@ private:
                         th
                         );
 
-                std::vector<uint32_t> distinct_values(
+                // Ryhman EDUSTAJA-arvo (ensimmainen havaittu jasen -
+                // kaytetaan VAIN uusien naytteiden toleranssiver-
+                // tailuun, ei lopputulokseen).
+                std::vector<uint32_t> group_repr(
                     pixels * static_cast<size_t>(sample_count),
                     0
                 );
 
-                std::vector<uint16_t> distinct_counts(
+                // Ryhman jasenten kanavasummat - lopullinen vari on
+                // naiden KESKIARVO, ei pelkka ensimmainen havainto
+                // (katso perustelu ylla).
+                std::vector<uint32_t> group_sum_b(
                     pixels * static_cast<size_t>(sample_count),
                     0
                 );
 
-                std::vector<uint16_t> distinct_found(
+                std::vector<uint32_t> group_sum_g(
+                    pixels * static_cast<size_t>(sample_count),
+                    0
+                );
+
+                std::vector<uint32_t> group_sum_r(
+                    pixels * static_cast<size_t>(sample_count),
+                    0
+                );
+
+                std::vector<uint16_t> group_counts(
+                    pixels * static_cast<size_t>(sample_count),
+                    0
+                );
+
+                std::vector<uint16_t> group_found(
                     pixels,
                     0
                 );
+
+                // Tarkka pikseliyhtasuuruus EI riita ryhmittelyyn:
+                // videon oma pakkauskohina + muutaman pikselin
+                // jaannosvirhe stabiloinnissa nayttein valilla
+                // tekee samasta, muuttumattomasta taustasta lahes
+                // aina hieman eri 8-bittisen arvon joka naytteessa,
+                // jolloin "tasan sama arvo" -ryhmittely hajottaa
+                // OIKEAN, selvan enemmiston moneksi 1 kpl:n ryhmaksi.
+                // Ratkaisu: kaksi nayteta kuuluvat samaan ryhmaan
+                // jos ne ovat toleranssin sisalla TOISISTAAN (ei
+                // bittitarkkaa yhtasuuruutta).
+                const int color_tolerance = 10;
 
 
                 // ------------------------------------------------
@@ -1046,17 +1080,19 @@ private:
                             const cv::Vec3b pixel =
                                 row[x];
 
-                            const uint32_t packed =
-                                (static_cast<uint32_t>(pixel[0]) << 16) |
-                                (static_cast<uint32_t>(pixel[1]) << 8) |
-                                static_cast<uint32_t>(pixel[2]);
+                            const int pb =
+                                static_cast<int>(pixel[0]);
+                            const int pg =
+                                static_cast<int>(pixel[1]);
+                            const int pr =
+                                static_cast<int>(pixel[2]);
 
                             const size_t base =
                                 pixel_index *
                                 static_cast<size_t>(sample_count);
 
                             const int found =
-                                distinct_found[pixel_index];
+                                group_found[pixel_index];
 
                             int slot = -1;
 
@@ -1064,7 +1100,22 @@ private:
                                 k < found;
                                 ++k)
                             {
-                                if (distinct_values[base + k] == packed)
+                                const uint32_t repr =
+                                    group_repr[base + k];
+
+                                const int db = std::abs(
+                                    static_cast<int>((repr >> 16) & 0xFFu) - pb
+                                    );
+                                const int dg = std::abs(
+                                    static_cast<int>((repr >> 8) & 0xFFu) - pg
+                                    );
+                                const int dr = std::abs(
+                                    static_cast<int>(repr & 0xFFu) - pr
+                                    );
+
+                                if (db <= color_tolerance &&
+                                    dg <= color_tolerance &&
+                                    dr <= color_tolerance)
                                 {
                                     slot = k;
                                     break;
@@ -1073,13 +1124,28 @@ private:
 
                             if (slot >= 0)
                             {
-                                ++distinct_counts[base + slot];
+                                ++group_counts[base + slot];
+                                group_sum_b[base + slot] +=
+                                    static_cast<uint32_t>(pb);
+                                group_sum_g[base + slot] +=
+                                    static_cast<uint32_t>(pg);
+                                group_sum_r[base + slot] +=
+                                    static_cast<uint32_t>(pr);
                             }
                             else
                             {
-                                distinct_values[base + found] = packed;
-                                distinct_counts[base + found] = 1;
-                                distinct_found[pixel_index] =
+                                group_repr[base + found] =
+                                    (static_cast<uint32_t>(pb) << 16) |
+                                    (static_cast<uint32_t>(pg) << 8) |
+                                    static_cast<uint32_t>(pr);
+                                group_counts[base + found] = 1;
+                                group_sum_b[base + found] =
+                                    static_cast<uint32_t>(pb);
+                                group_sum_g[base + found] =
+                                    static_cast<uint32_t>(pg);
+                                group_sum_r[base + found] =
+                                    static_cast<uint32_t>(pr);
+                                group_found[pixel_index] =
                                     static_cast<uint16_t>(found + 1);
                             }
                         }
@@ -1088,11 +1154,10 @@ private:
 
 
                 // ------------------------------------------------
-                // Valitaan mode.
+                // Valitaan suurin ryhma, tulos sen KESKIARVO.
                 //
-                // Tasatilanteessa pienempi pakattu (B,G,R)-arvo -
-                // sama periaate kuin alkuperaisessa (pienempi
-                // voittaa), nyt vain koko pikselille yhdessa.
+                // Tasatilanteessa pienempi edustaja-arvo (sama
+                // periaate kuin alkuperaisessa: pienempi voittaa).
                 // ------------------------------------------------
 
                 cv::Mat* output =
@@ -1137,44 +1202,55 @@ private:
                             static_cast<size_t>(sample_count);
 
                         const int found =
-                            distinct_found[pixel_index];
+                            group_found[pixel_index];
 
                         int best_count = -1;
-                        uint32_t best_value = 0;
+                        uint32_t best_repr = 0;
+                        int best_slot = 0;
 
                         for (int k = 0;
                             k < found;
                             ++k)
                         {
                             const int count =
-                                distinct_counts[base + k];
+                                group_counts[base + k];
 
-                            const uint32_t value =
-                                distinct_values[base + k];
+                            const uint32_t repr =
+                                group_repr[base + k];
 
                             if (
                                 count > best_count ||
                                 (
                                     count == best_count &&
-                                    value < best_value
+                                    repr < best_repr
                                     )
                                 )
                             {
                                 best_count = count;
-                                best_value = value;
+                                best_repr = repr;
+                                best_slot = k;
                             }
                         }
+
+                        const size_t best_base =
+                            base + static_cast<size_t>(best_slot);
+
+                        const uint32_t denom =
+                            std::max(
+                                1u,
+                                static_cast<unsigned int>(best_count)
+                                );
 
                         row[x] =
                             cv::Vec3b(
                                 static_cast<uint8_t>(
-                                    (best_value >> 16) & 0xFFu
+                                    (group_sum_b[best_base] + denom / 2) / denom
                                     ),
                                 static_cast<uint8_t>(
-                                    (best_value >> 8) & 0xFFu
+                                    (group_sum_g[best_base] + denom / 2) / denom
                                     ),
                                 static_cast<uint8_t>(
-                                    best_value & 0xFFu
+                                    (group_sum_r[best_base] + denom / 2) / denom
                                     )
                             );
                     }
@@ -1212,6 +1288,30 @@ private:
         {
             thread.join();
         }
+
+
+        // ----------------------------------------------------
+        // Suola-pippuri-kohinan siivous.
+        //
+        // Ohuilla/pienilla yksityiskohdilla (esim. jaahan
+        // maalattu ohut viiva) muutaman pikselin jaannosvirhe
+        // stabiloinnissa nayttein valilla riittaa siihen ettei
+        // yhdellakaan (B,G,R)-arvolla ole selvaa enemmistoa -
+        // lopputulos on tallon satunnainen pikseli kohden.
+        // Koska moodi lasketaan nyt KOKO PIKSELILLE (katso
+        // workerin kommentti ylla), tama nakyy yksittaisina
+        // "suola-pippuri"-pikseleina, ei enaa vanhan per-kanava-
+        // version kaltaisena keinotekoisena mutta visuaalisesti
+        // "sileana" varisekoituksena. Pieni mediaanisuodin
+        // siivoaa nama yksittaiset poikkeavat pikselit sailyttaen
+        // oikeat, isommat rakenteet (renkaat, viivat, teksti).
+        // ----------------------------------------------------
+
+        cv::medianBlur(
+            mode_image,
+            mode_image,
+            3
+        );
 
 
         // ----------------------------------------------------
