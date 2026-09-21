@@ -1363,6 +1363,15 @@ def run_pipeline(
     n_seuranta_calls = 0
     n_seuranta_stone_updates = 0
 
+    # Lisamittarit "mihin loput ajasta menee" -selvitykseen (kayttajan
+    # pyynnosta): engine.read() (videon luku+dekoodaus), stabilointi-
+    # matriisin RANSAC-laskenta, ja warpAffine+remap (KOKO framelle,
+    # jokaisella elavan seurannan framella - nama eivat olleet aiemmin
+    # ollenkaan ajastettuja).
+    total_read_time = 0.0
+    total_stabilize_compute_time = 0.0
+    total_warp_remap_time = 0.0
+
     executor = ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     )
@@ -1371,7 +1380,9 @@ def run_pipeline(
 
         while True:
 
+            t_read0 = time.perf_counter()
             frame = engine.read()
+            total_read_time += time.perf_counter() - t_read0
 
             if frame is None or frame.size == 0:
                 break
@@ -1490,6 +1501,8 @@ def run_pipeline(
             # STABILOINTIMATRIISI
             # ------------------------------------------------
 
+            t_stab0 = time.perf_counter()
+
             valid_reference = []
             valid_current = []
 
@@ -1571,6 +1584,8 @@ def run_pipeline(
             previous_stabilization_matrix = (
                 stabilization_matrix.copy()
             )
+
+            total_stabilize_compute_time += time.perf_counter() - t_stab0
 
             # ------------------------------------------------
             # LÄHETÄ STABILOINNIN MATRIX C++:LLE
@@ -1902,6 +1917,7 @@ def run_pipeline(
                         "ring_r_frac_guess": ring_r_frac_guess,
                     }
 
+                t_warp0 = time.perf_counter()
                 stabilized = cv2.warpAffine(
                     frame, stabilization_matrix, (width, height)
                 )
@@ -1909,6 +1925,7 @@ def run_pipeline(
                     stabilized, live_state["map1"], live_state["map2"],
                     interpolation=cv2.INTER_LINEAR
                 )
+                total_warp_remap_time += time.perf_counter() - t_warp0
 
                 timestamp = frame_index / fps
                 pose = calib_result["pose"]
@@ -2225,6 +2242,12 @@ def run_pipeline(
                     f"({n_seuranta_stone_updates / max(1, n_seuranta_calls):.1f} kivea/kutsu ka), "
                     f"{(total_seuranta_time / processed) * 1000:.2f} ms/ruutu ka"
                 )
+                print(
+                    f"  muu (ei viela optimoitu): "
+                    f"read(video) {(total_read_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"stabilointi-RANSAC {(total_stabilize_compute_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"warpAffine+remap(koko frame) {(total_warp_remap_time / processed) * 1000:.2f} ms/ruutu"
+                )
 
     finally:
 
@@ -2266,9 +2289,23 @@ def run_pipeline(
           "keskimaarin), "
           f"{(total_seuranta_time / processed_frames) * 1000:.2f} ms/ruutu "
           "(koko videon yli keskiarvoistettuna)")
-    print(f"Yhteensa HAKU+SEURANTA: "
-          f"{((total_haku_time + total_seuranta_time) / processed_frames) * 1000:.2f} "
-          "ms/ruutu keskimaarin (25fps-reaaliaikatavoite = 40.0 ms/ruutu)")
+    print(f"read(video): {total_read_time:.2f}s yhteensa, "
+          f"{(total_read_time / processed_frames) * 1000:.2f} ms/ruutu")
+    print(f"stabilointi-RANSAC (cv2.estimateAffinePartial2D+mediaani): "
+          f"{total_stabilize_compute_time:.2f}s yhteensa, "
+          f"{(total_stabilize_compute_time / processed_frames) * 1000:.2f} ms/ruutu")
+    print(f"warpAffine+remap (KOKO frame, joka elavan seurannan ruutu): "
+          f"{total_warp_remap_time:.2f}s yhteensa, "
+          f"{(total_warp_remap_time / processed_frames) * 1000:.2f} ms/ruutu")
+    muu_yhteensa = (
+        total_read_time + total_stabilize_compute_time
+        + total_warp_remap_time + total_gray_time
+        + total_tracking_time + total_transform_time
+    )
+    print(f"Yhteensa HAKU+SEURANTA+muu mitattu: "
+          f"{((total_haku_time + total_seuranta_time + muu_yhteensa) / processed_frames) * 1000:.2f} "
+          "ms/ruutu keskimaarin (25fps-reaaliaikatavoite = 40.0 ms/ruutu, "
+          "tiukempi tavoite hyvalla marginaalilla = 20.0 ms/ruutu)")
     print("===========================================================")
 
     if calib_result is None:
