@@ -174,7 +174,24 @@ PROFILE_SAMPLES_PER_STONE = 25
 #      SIEMENFRAMESTA riippumatta kohteen nopeudesta - karkea mutta
 #      luotettava nopeusrajoitin kalliille yrityksille.
 SOLO_TRACK_MAX_RMS_PX = 6.0
-STONE_SCAN_COOLDOWN_FRAMES = 750   # 30s 25fps:lla
+
+# HUOM (kayttajan huomio: n. 9 heittoa videolla, mutta vain 2
+# hyvaksyttiin): 750 framea (30s) osoittautui liian pitkaksi -
+# lokista nakyi etta UUSI yritys kaynnistyi lahes AINA TASAN
+# jaahdytyksen paatyttya (siis jotain "liikkuvaa" loytyy joka
+# ikinen skannaus), joten jaahdytys itse rajoitti karkeasti
+# videon_pituus/30s attempts-maaran - jos kaksi oikeaa heittoa
+# tapahtuu alle 30s valein, jalkimmainen jai kokonaan loytamatta.
+# track_stone_in_video_windowed on jo AIKAIKKUNAAN rajattu (ei
+# koko videota) joten yrityksen hinta on paljon pienempi kuin
+# alkuperaisessa "kallis" -perustelussa - lyhyempi jaahdytys on
+# nyt varaa. Sama oikea kivi loytyneena kahdesti (esim. jos
+# jaahdytys paattyy kesken sen oman liu'un) ei ole haitallista
+# (background-suodatuksen jalkeen hyvaksytyt havainnot ovat
+# aidosti kivia, joten kaksinkertainen havainto vain vahvistaa
+# sovitusta, ei saastuta sita - toisin kuin aiempi ongelma
+# vaarilla ei-kivi-kandidaateilla).
+STONE_SCAN_COOLDOWN_FRAMES = 300   # 12s 25fps:lla
 
 # ============================================================
 # ELAVA MONI-KIVEN SEURANTA + CSV
