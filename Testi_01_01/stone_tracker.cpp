@@ -1224,6 +1224,23 @@ static py::list track_stones_batch(
     {
         py::gil_scoped_release release;
 
+        // KRIITTINEN: OpenCV:n OMA sisainen rinnakkaistus (GaussianBlur,
+        // morphologyEx, cvtColor jne. - "Parallel framework: pthreads")
+        // yrittaa muuten kayttaa KAIKKIA CPU-ytimia JOKAISESSA alla
+        // olevassa per-kiven worker-saikeessa SAMANAIKAISESTI - eli N
+        // kiven kanssa N kertaa OpenCV:n oma sisainen saiemaara ytimista
+        // kilpailemassa (havaittu kaytannossa: 1 kivi ~33ms, mutta jo
+        // 2 kiveä ~107ms - PAHEMPI kuin sarjallisesti, koska ylikuormitus/
+        // kontekstinvaihto syo koko hyodyn taman tiedoston OMASTA,
+        // ULOMMASTA per-kivi-rinnakkaistuksesta). setNumThreads(1)
+        // pakottaa jokaisen sisaisen OpenCV-kutsun sarjalliseksi TAMAN
+        // kutsun ajaksi, jolloin AINOA rinnakkaistus on tama tiedoston
+        // oma per-kivi std::thread-jako - palautetaan alkuperainen arvo
+        // heti kutsun jalkeen etta muu prosessi (mode_engine.cpp,
+        // Python-puolen paneiliseuranta jne.) ei karsi tasta.
+        int prev_num_threads = cv::getNumThreads();
+        cv::setNumThreads(1);
+
         std::atomic<int> next_idx(0);
         unsigned hw = std::thread::hardware_concurrency();
         int worker_count = std::max(1, std::min(n_stones, (int)(hw == 0 ? 4u : hw)));
@@ -1247,6 +1264,8 @@ static py::list track_stones_batch(
             workers.emplace_back(worker);
         for (auto& w : workers)
             w.join();
+
+        cv::setNumThreads(prev_num_threads);
     }
 
     py::list out;
