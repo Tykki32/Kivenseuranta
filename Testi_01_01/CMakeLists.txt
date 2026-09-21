@@ -9,7 +9,7 @@ set(CMAKE_TOOLCHAIN_FILE
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Käytetään CMake:n uutta Python-tunnistusta.
+# Kï¿½ytetï¿½ï¿½n CMake:n uutta Python-tunnistusta.
 set(PYBIND11_FINDPYTHON ON)
 
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
@@ -45,7 +45,36 @@ if(MSVC)
     )
 endif()
 
-# Laitetaan valmis .pyd suoraan projektikansioon.
+# stone_tracker.cpp: SEURANTA+HAKU-vaiheiden C++-porttaus (Task 5+6) -
+# oma, erillinen pybind11-moduuli (EI kosketa mode_engine:a), sama
+# OpenCV/pybind11-asetus kuin ylla.
+pybind11_add_module(
+    stone_tracker
+    stone_tracker.cpp
+)
+
+target_link_libraries(
+    stone_tracker
+    PRIVATE
+    ${OpenCV_LIBS}
+)
+
+target_include_directories(
+    stone_tracker
+    PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+if(MSVC)
+    target_compile_options(
+        stone_tracker
+        PRIVATE
+        /O2
+        /EHsc
+    )
+endif()
+
+# Laitetaan valmiit .pyd-tiedostot suoraan projektikansioon.
 foreach(CONFIG Debug Release RelWithDebInfo MinSizeRel)
 
     string(
@@ -54,15 +83,19 @@ foreach(CONFIG Debug Release RelWithDebInfo MinSizeRel)
         CONFIG_UPPER
     )
 
-    set_target_properties(
-        mode_engine
-        PROPERTIES
+    foreach(TARGET_NAME mode_engine stone_tracker)
 
-        RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER}
-        "${CMAKE_SOURCE_DIR}"
+        set_target_properties(
+            ${TARGET_NAME}
+            PROPERTIES
 
-        LIBRARY_OUTPUT_DIRECTORY_${CONFIG_UPPER}
-        "${CMAKE_SOURCE_DIR}"
-    )
+            RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER}
+            "${CMAKE_SOURCE_DIR}"
+
+            LIBRARY_OUTPUT_DIRECTORY_${CONFIG_UPPER}
+            "${CMAKE_SOURCE_DIR}"
+        )
+
+    endforeach()
 
 endforeach()
