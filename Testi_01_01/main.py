@@ -170,15 +170,20 @@ PROFILE_SAMPLES_PER_STONE = 25
 PROFILE_R_MAX_MIN_CM = 10.0
 PROFILE_R_MAX_MAX_CM = 20.0
 
-# Kayttajan pyynnosta: RMS-kynnyksen ylittava profiili voi
-# teoriassa jo kelvata parilla kivella, mutta useampi AIDOSTI
-# eri kivi (eri kohdista/kulmista radalla) tekee sovituksesta
-# tukevamman - jatketaan skannausta VAIKKA riittava profiili
-# olisi jo loytynyt, kunnes vahintaan tama maara erillisia
-# kandidaatteja on lapaissyt yksinaisen tarkistuksen (tai video
-# loppuu, jolloin kaytetaan viimeisinta riittavaa tulosta jos
-# sellainen on).
-PROFILE_MIN_ACCEPTED_STONES = 6
+# Kayttajan huomio (tarkea arkkitehtuurikorjaus): koko radan HIDASTA
+# segmentointipohjaista skannausta EI kannata jatkaa keraamaan monta
+# kivea - sen ainoa tehtava on saada AIKAISEKSI jokin RIITTAVA
+# profiili mahdollisimman NOPEASTI. Sen jalkeen ELAVA SEURANTA (katso
+# alempana "ELAVA MONI-KIVEN SEURANTA") jo hakee UUDET kivet paljon
+# tehokkaammin JA luotettavammin: mallipohjaisella ristikkohaulla
+# VAIN kaukaisen paan kiinnealta vyohykkeelta (k92.SEARCH_Y_MIN/MAX_CM
+# = kaukainen hogline...pesan ulkoreuna, k92.SEARCH_X_HALF_WIDTH_CM=
+# +-50cm keskiviivasta) - ei enaa tarvitse luottaa hitaaseen, harjasta
+# helposti hairiintyvaan vapaamuotoiseen liikkeentunnistukseen koko
+# radalla. Siksi PROFILE_MIN_ACCEPTED_STONES=1: skannaus pysahtyy heti
+# ensimmaisen riittavan profiilin loydyttya, ja loput heitot jaavat
+# ELAVAN SEURANNAN (nopeamman, tarkemman) vastuulle.
+PROFILE_MIN_ACCEPTED_STONES = 1
 
 # Testatessa oikealla videolla loytyi KAKSI ongelmaa jotka nama
 # kynnysarvot/mekanismit korjaavat:
