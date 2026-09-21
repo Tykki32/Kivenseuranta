@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import filedialog
 from concurrent.futures import ThreadPoolExecutor
 import mode_engine
+import stone_tracker
 from collections import deque
 
 
@@ -1856,6 +1857,16 @@ def run_pipeline(
                         n_per_segment=k92.SEARCH_HULL_N_PER_SEGMENT
                     )
 
+                    # stone_tracker.cpp:n refine_position_joint-portin
+                    # ring_r_frac_guess - katso kamera9_04.py:n refine_
+                    # position_joint_fast:in oma laskenta, riippuu vain
+                    # profiilin muodosta (shape_deltas), ei framesta,
+                    # joten lasketaan kerran tanne kuten muukin live_
+                    # state.
+                    ring_r_frac_guess = float(
+                        (k9._TEMPLATE_R_FRAC + shape_deltas)[-1]
+                    )
+
                     csv_file = open(csv_output, "w", newline="")
                     csv_writer = csv.writer(csv_file)
                     csv_writer.writerow(CSV_HEADER)
@@ -1871,6 +1882,7 @@ def run_pipeline(
                         "local_pts_body": local_pts_body,
                         "local_pts_search": local_pts_search,
                         "R_max": R_max, "H_total": H_total,
+                        "ring_r_frac_guess": ring_r_frac_guess,
                     }
 
                 stabilized = cv2.warpAffine(
@@ -1970,118 +1982,129 @@ def run_pipeline(
 
                 # --------------------------------------------
                 # SEURANTA: paivitetaan JOKAINEN aktiivinen kivi
-                # JOKA frame - oma ROI-rajattu maski/saturaatio
-                # per kivi (katso kamera9_04.py:n kommentti ROI-
-                # rajauksesta).
+                # JOKA frame - C++-porttaus (stone_tracker.cpp,
+                # Task 5) laskee KAIKKIEN taman framen SEURANTA-
+                # kivien ROI-rajatun maskin/saturaation, ristikko-
+                # haun ja LM-yhteissovituksen YHDESSA std::thread-
+                # rinnakkaistetussa kutsussa (yksi worker-saie per
+                # kivi, atominen tyonvarastus - katso mode_engine.
+                # cpp:n save_mode-kommentti samasta periaatteesta).
+                # TASMALLEEN sama matematiikka/algoritmi kuin
+                # k94.locate_by_grid_search_fast + k94.refine_
+                # position_joint_fast - katso stone_tracker.cpp:n
+                # oma kommentti numeerisesta validoinnista (oikealla
+                # videolla, Python-tulosta vasten) seka tiedoston
+                # alun kommentti sen tunnetusta, algoritmin OMASTA
+                # (ei porttausvirheen) numeerisesta herkkyydesta
+                # refine_position_joint:in MAD-poikkeavien-hylkays-
+                # kynnyksella.
                 # --------------------------------------------
 
                 still_active = []
 
-                for s in active_stones:
+                seuranta_stones = [
+                    s for s in active_stones
+                    if s["stone_id"] not in newly_found_ids
+                ]
 
-                    if s["stone_id"] in newly_found_ids:
-                        # Juuri loytynyt HAKU:ssa tassa samassa
-                        # framessa - rivi jo kirjoitettu, ei
-                        # seurata viela toiseen kertaan.
-                        still_active.append(s)
-                        continue
+                if seuranta_stones:
 
-                    roi_half_range = (
-                        k92.TRACK_HALF_RANGE_CM
-                        + k93.BOUNDARY_MAX_SHIFT_FROM_APPROX_CM
+                    X0_arr = np.array(
+                        [s["last_xy"][0] for s in seuranta_stones],
+                        dtype=np.float64
+                    )
+                    Y0_arr = np.array(
+                        [s["last_xy"][1] for s in seuranta_stones],
+                        dtype=np.float64
                     )
 
-                    roi = k94._track_roi_bounds(
-                        pose, s["last_xy"][0], s["last_xy"][1],
-                        roi_half_range, live_state["R_max"],
-                        live_state["H_total"], width, height
-                    )
-
-                    mask = k94.create_granite_mask_roi(frame_u, roi)
-                    sat = k94.compute_sat_roi(frame_u, roi)
-
-                    (bx, by), score = k94.locate_by_grid_search_fast(
-                        local_pts_search, mask, s["last_xy"][0],
-                        k92.TRACK_HALF_RANGE_CM, s["last_xy"][1],
+                    batch_results = stone_tracker.track_stones_batch(
+                        frame_u, X0_arr, Y0_arr,
+                        local_pts_body, local_pts_search,
+                        pose["K"], pose["R"], pose["t"],
                         k92.TRACK_HALF_RANGE_CM,
                         k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
-                        pose
+                        k92.TRACK_SCORE_THRESHOLD,
+                        live_state["R_max"], live_state["H_total"],
+                        live_state["ring_r_frac_guess"]
                     )
 
-                    if score >= k92.TRACK_SCORE_THRESHOLD:
+                    for s, refined in zip(seuranta_stones, batch_results):
 
-                        refined = k94.refine_position_joint_fast(
-                            mask, sat, local_pts_body, pose,
-                            profile_result, bx, by
-                        )
+                        if refined["found"]:
 
-                        s["last_xy"] = (
-                            refined["X_cm"], refined["Y_cm"]
-                        )
-                        s["misses"] = 0
+                            s["last_xy"] = (
+                                refined["X_cm"], refined["Y_cm"]
+                            )
+                            s["misses"] = 0
 
-                        _write_stone_csv_row(
-                            csv_writer, frame_index, timestamp,
-                            s["stone_id"], refined
-                        )
-
-                        # --------------------------------
-                        # PYSAHTYMISTARKISTUS: katso taman
-                        # tiedoston alkupaan kommentti STOP_
-                        # TRACKING_SECONDS/DISPLACEMENT_CM:sta.
-                        # Liukuva ikkuna framen INDEKSIN, ei
-                        # listan pituuden, mukaan - kestaa
-                        # satunnaiset valiin jaavat missit.
-                        # --------------------------------
-
-                        history = s["position_history"]
-                        history.append((
-                            frame_index,
-                            refined["X_cm"], refined["Y_cm"]
-                        ))
-
-                        while (
-                            history[-1][0] - history[0][0]
-                            > stop_tracking_frames
-                        ):
-                            history.pop(0)
-
-                        stopped = False
-
-                        if (
-                            history[-1][0] - history[0][0]
-                            >= stop_tracking_frames
-                        ):
-                            _, old_x, old_y = history[0]
-                            displacement = math.hypot(
-                                s["last_xy"][0] - old_x,
-                                s["last_xy"][1] - old_y
+                            _write_stone_csv_row(
+                                csv_writer, frame_index, timestamp,
+                                s["stone_id"], refined
                             )
 
-                            if displacement < STOP_TRACKING_DISPLACEMENT_CM:
-                                stopped = True
-                                print(
-                                    f"[frame {frame_index}] Kivi "
-                                    f"{s['stone_id']} pysahtynyt "
-                                    f"(liikkunut {displacement:.1f}cm "
-                                    f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
-                                    "aikana) - lopetetaan seuranta."
+                            # --------------------------------
+                            # PYSAHTYMISTARKISTUS: katso taman
+                            # tiedoston alkupaan kommentti STOP_
+                            # TRACKING_SECONDS/DISPLACEMENT_CM:sta.
+                            # Liukuva ikkuna framen INDEKSIN, ei
+                            # listan pituuden, mukaan - kestaa
+                            # satunnaiset valiin jaavat missit.
+                            # --------------------------------
+
+                            history = s["position_history"]
+                            history.append((
+                                frame_index,
+                                refined["X_cm"], refined["Y_cm"]
+                            ))
+
+                            while (
+                                history[-1][0] - history[0][0]
+                                > stop_tracking_frames
+                            ):
+                                history.pop(0)
+
+                            stopped = False
+
+                            if (
+                                history[-1][0] - history[0][0]
+                                >= stop_tracking_frames
+                            ):
+                                _, old_x, old_y = history[0]
+                                displacement = math.hypot(
+                                    s["last_xy"][0] - old_x,
+                                    s["last_xy"][1] - old_y
                                 )
 
-                        if not stopped:
-                            still_active.append(s)
+                                if displacement < STOP_TRACKING_DISPLACEMENT_CM:
+                                    stopped = True
+                                    print(
+                                        f"[frame {frame_index}] Kivi "
+                                        f"{s['stone_id']} pysahtynyt "
+                                        f"(liikkunut {displacement:.1f}cm "
+                                        f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
+                                        "aikana) - lopetetaan seuranta."
+                                    )
 
-                    else:
+                            if not stopped:
+                                still_active.append(s)
 
-                        s["misses"] += 1
-
-                        if s["misses"] < k92.TRACK_LOST_MAX_MISSES:
-                            still_active.append(s)
                         else:
-                            print(
-                                f"[frame {frame_index}] Kivi "
-                                f"{s['stone_id']} kadotettu."
-                            )
+
+                            s["misses"] += 1
+
+                            if s["misses"] < k92.TRACK_LOST_MAX_MISSES:
+                                still_active.append(s)
+                            else:
+                                print(
+                                    f"[frame {frame_index}] Kivi "
+                                    f"{s['stone_id']} kadotettu."
+                                )
+
+                still_active.extend(
+                    s for s in active_stones
+                    if s["stone_id"] in newly_found_ids
+                )
 
                 active_stones = still_active
 
