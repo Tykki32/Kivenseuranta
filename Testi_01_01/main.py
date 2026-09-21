@@ -146,9 +146,29 @@ STONE_MOTION_THRESHOLD_CM = 15.0
 # eri kivesta/hetkesta), YHDISTAEN havainnot samaan sovitukseen.
 # ============================================================
 
-PROFILE_MAX_RMS_PX = 5.0
+# HUOM (kayttajan huomio: osa heitoista osittain harjan peittamia):
+# aidon kiven yksinainen jaannosvirhe voi olla 6-11px kun osa reunasta
+# on harjan takana - kun useampi taman tasoinen havainto YHDISTETAAN
+# (kayttajan pyynto: vahintaan PROFILE_MIN_ACCEPTED_STONES kivea),
+# pooled-sovituksen RMS luonnollisesti kasvaa (yhteinen malli selittaa
+# useampaa, kohinaisempaa havaintoa yhtaikaa) - 5.0px oli viritetty
+# ajalta jolloin PARI puhdasta havaintoa riitti. 10.0px sallii tuon
+# realistisen kohinatason turvautumatta R_max:in fysikaaliseen
+# jarkevyystarkistukseen (katso alla) ainoana suojana vaarilta
+# kandidaateilta.
+PROFILE_MAX_RMS_PX = 10.0
 PROFILE_MIN_SAMPLES = 15
 PROFILE_SAMPLES_PER_STONE = 25
+
+# Turvaverkko RMS-kynnyksen LISAKSI (ei sen sijaan): kamera9_01.py:n
+# fit_stone_profile:in oma dokumentaatio sanoo R_max:in olevan
+# fyysisesti n. 14.0-14.6cm (oikean kiven halkaisija ~28cm). Aiemmin
+# testatessa loydettiin tapaus jossa vaara kandidaatti (mainosteksti)
+# lapaisi RMS-kynnyksen mutta antoi R_max~66cm - n. 4.5x liian ison.
+# Reilut rajat (paljon RMS-kynnysta tiukemmat vaatimukset olisivat
+# turhia, mutta karsivat selvasti fysiikan vastaiset tulokset).
+PROFILE_R_MAX_MIN_CM = 10.0
+PROFILE_R_MAX_MAX_CM = 20.0
 
 # Kayttajan pyynnosta: RMS-kynnyksen ylittava profiili voi
 # teoriassa jo kelvata parilla kivella, mutta useampi AIDOSTI
@@ -1141,12 +1161,20 @@ def try_fit_profile(pose, stones, max_rms_px=PROFILE_MAX_RMS_PX,
 
     profile = k9.fit_stone_profile(pose, stones)
 
-    riittava = profile["residual_rms_px"] <= max_rms_px
+    rms_ok = profile["residual_rms_px"] <= max_rms_px
+
+    r_max_ok = (
+        PROFILE_R_MAX_MIN_CM <= profile["R_max_cm"] <= PROFILE_R_MAX_MAX_CM
+    )
+
+    riittava = rms_ok and r_max_ok
 
     print(
         f"  {label}: {len(stones)} havaintoa, "
         f"RMS={profile['residual_rms_px']:.2f}px "
-        f"(kynnys {max_rms_px}px) -> "
+        f"(kynnys {max_rms_px}px), "
+        f"R_max={profile['R_max_cm']:.2f}cm "
+        f"(sallittu {PROFILE_R_MAX_MIN_CM}-{PROFILE_R_MAX_MAX_CM}cm) -> "
         f"{'RIITTAVA' if riittava else 'ei riittava'}"
     )
 
