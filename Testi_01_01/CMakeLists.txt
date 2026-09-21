@@ -21,6 +21,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # K�ytet��n CMake:n uutta Python-tunnistusta.
 set(PYBIND11_FINDPYTHON ON)
 
+# PAKOTETTU Python 3.12 (sama kuin pybind11_DIR alla ja se "python"
+# jolla main.py oikeasti ajetaan) - ilman tata find_package(Python)
+# saattaa loytaa VAARAN Python-asennuksen (esim. Anacondan) PATH:in
+# hakujarjestyksesta riippuen, jolloin kaannetyt .pyd-tiedostot eivat
+# ole tuotavissa sailla Pythonilla jota oikeasti kaytetaan.
+set(Python_EXECUTABLE "C:/Python312/python.exe")
+
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 set(pybind11_DIR "C:/Python312/Lib/site-packages/pybind11/share/cmake/pybind11")
 
