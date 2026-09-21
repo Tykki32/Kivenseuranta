@@ -38,6 +38,31 @@
 // Python-puolella KERRAN (kamera9_04.py:n build_local_stone_rings,
 // koskematon) ja annetaan tanne valmiina pistetaulukkoina, koska
 // niiden Catmull-Rom-splini-rakennus ei ole per-frame-kuuma polku.
+//
+// TUNNETTU, ALGORITMIN OMA (EI PORTTAUSVIRHE) NUMEERINEN HERKKYYS:
+// numeerisessa validoinnissa (400 SEURANTA-framea oikealta videolta,
+// Python-tulos vs. tama C++-versio TASMALLEEN samoilla syotteilla)
+// ristikkohaku+peitto-osuus TASMAA AINA (0 poikkeamaa pisteytyksessa,
+// koska hullOverlapScore:n int32-typistys - EI pyoristys, katso alla -
+// ja maskin laskenta ovat bittitarkasti Pythonin kanssa samat). refine_
+// position_joint:in LM-sovitus kuitenkin paatyy n. 40%:ssa framejsta
+// LAHELLA MUTTA EI TASMALLEEN samaan (X,Y)-pisteeseen kuin Python -
+// molemmat sovitukset ovat YHTA HYVIA (rms_px lahes identtinen,
+// esim. 0.53 vs 0.57px pahimmassakin havaitussa tapauksessa, vaikka
+// (X,Y)-ero oli 24cm) koska refine_position_joint_fast:in MAD-pohjainen
+// poikkeavien hylkays (3.0*1.4826*MAD kova raja-arvo) on ITSESSAAN
+// EPAJATKUVA funktio residuaaleista - jos yksi piste on TASMALLEEN
+// rajalla, koneepsilonin tasoinen ero (esim. numpy/LAPACK:in
+// np.linalg.solve vs. taman tiedoston oma Gaussin eliminaatio
+// osittaisella pivotoinnilla solve3x3:ssa, tai cv::pointPolygonTest:in
+// liukulukusummauksen jarjestys) voi kaantaa taman pisteen sisa-/
+// ulkopuolelle-paatoksen, mika johtaa LM:n konvergoitumiseen ERI
+// (mutta yhta patevaan) lahialueen minimiin. Tama EI ole korjattavissa
+// muuttamatta itse algoritmia (esim. pehmentamalla kynnysarvoa), mika
+// on nimenomaisesti KIELLETTY (katso ylla) - tama on Pythonin OMAN
+// algoritmin (kamera8_01.py:n _levenberg_marquardt + refine_position_
+// joint_fast:in MAD-hylkays) sisaanrakennettu herkkyys, joka nayttaytyy
+// vasta eri kielella/kirjastolla lasketun liukulukuaritmetiikan kautta.
 // ============================================================
 
 #include <pybind11/pybind11.h>
@@ -156,12 +181,20 @@ static double hullOverlapScore(
     if (hull.size() < 3)
         return 0.0;
 
+    // Python: hull_int = hull.astype(np.int32) - TRUNKOI kohti nollaa
+    // (EI PYORISTA lahimpaan, kuten C:n (int)-cast) KOKO FRAMEN
+    // koordinaatistossa ENNEN mitaan ROI-siirtoa (Pythonissa mask on
+    // taman funktion nakokulmasta aina koko-framen kokoinen, nolla-
+    // taytetty taulukko - katso create_granite_mask_roi/compute_sat_roi).
+    // off_x/off_y ovat kokonaislukuja, mutta trunc(x-k) != trunc(x)-k
+    // yleisesti kun x-k voi ylittaa nollan (esim. x=0.3,k=1: trunc(x-k)=
+    // trunc(-0.7)=0, mutta trunc(x)-k=0-1=-1) - siksi TRUNKOINTI ON
+    // TEHTAVA ENNEN off_x/off_y-vahennysta, ei jalkeen, jotta tama
+    // tasmaa tasmalleen Pythonin tulokseen.
     std::vector<cv::Point> hull_int(hull.size());
     for (size_t i = 0; i < hull.size(); ++i)
-        hull_int[i] = cv::Point(
-            (int)std::lround(hull[i].x - off_x),
-            (int)std::lround(hull[i].y - off_y)
-        );
+        hull_int[i] = cv::Point((int)(hull[i].x), (int)(hull[i].y));
+    for (auto& p : hull_int) { p.x -= off_x; p.y -= off_y; }
 
     cv::Rect bbox = cv::boundingRect(hull_int);
 
@@ -846,12 +879,38 @@ struct RefineResult {
 
 
 static RefineResult refinePositionJoint(
-    const cv::Mat& mask_crop, const cv::Mat& sat_crop, int off_x, int off_y,
+    const cv::Mat& mask_crop_roi, const cv::Mat& sat_crop_roi, int off_x_roi, int off_y_roi,
+    int frame_w, int frame_h,
     const std::vector<cv::Point3d>& local_pts_body,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     double R_max_cm, double H_total_cm, double ring_r_frac_guess,
     double X0_approx, double Y0_approx)
 {
+    // Python: mask/sat ANNETAAN AINA koko-framen kokoisina taulukkoina
+    // (nollataytettyja ROI:n ulkopuolella - katso create_granite_mask_roi/
+    // compute_sat_roi), joten mika tahansa piste TODELLISEN FRAMEN
+    // sisalla on aina laillinen naytepiste Pythonissa (arvo 0 jos ROI:n
+    // ulkopuolella), vaikka se olisi taman ROI-rajatun crop:in OMAN
+    // pienen taulukon ulkopuolella. Jaljitellaan tama tarkalleen
+    // tayttamalla crop nollareunuksella (leikattuna todellisiin frame-
+    // rajoihin asti, aivan kuten Pythonin oikea taulukko olisi) ennen
+    // kontuuri-/rengashakua - muuten bilineaarinaytto hylkaisi Pythonissa
+    // KELVOLLISIA (ROI:n reunan lahella olevia) pisteita vain koska ne
+    // ovat taman PIENEN crop:in omien pikselirajojen ulkopuolella.
+    const int PAD = 200;
+    int pad_left = std::max(0, std::min(PAD, off_x_roi));
+    int pad_top = std::max(0, std::min(PAD, off_y_roi));
+    int pad_right = std::max(0, std::min(PAD, frame_w - (off_x_roi + mask_crop_roi.cols)));
+    int pad_bottom = std::max(0, std::min(PAD, frame_h - (off_y_roi + mask_crop_roi.rows)));
+
+    cv::Mat mask_crop, sat_crop;
+    cv::copyMakeBorder(mask_crop_roi, mask_crop, pad_top, pad_bottom, pad_left, pad_right,
+                        cv::BORDER_CONSTANT, cv::Scalar(0));
+    cv::copyMakeBorder(sat_crop_roi, sat_crop, pad_top, pad_bottom, pad_left, pad_right,
+                        cv::BORDER_CONSTANT, cv::Scalar(0));
+    int off_x = off_x_roi - pad_left;
+    int off_y = off_y_roi - pad_top;
+
     double ring_height_cm = H_total_cm;
 
     std::vector<cv::Point3d> approx3d{ cv::Point3d(X0_approx, Y0_approx, H_total_cm / 2.0) };
@@ -1065,7 +1124,7 @@ static StoneUpdateResult trackStoneUpdateOne(
 
     out.has_position = true;
     out.refined = refinePositionJoint(
-        mask_crop, sat_crop, roi.x, roi.y, local_pts_body, K, R, t,
+        mask_crop, sat_crop, roi.x, roi.y, frame_w, frame_h, local_pts_body, K, R, t,
         R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
     );
 
