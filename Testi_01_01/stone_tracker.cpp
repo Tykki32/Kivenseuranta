@@ -1,3 +1,12 @@
+// M_PI (kaytetaan mm. kulmalaskennassa alempana) EI ole standardin
+// C++ osa - MSVC:n <cmath> paljastaa sen VAIN jos _USE_MATH_DEFINES
+// on maaritelty ENNEN ensimmaista <cmath>-includea (myos transitiivisia,
+// esim. OpenCV/pybind11:n omien headereiden kautta) - siksi tama on
+// TIEDOSTON ENSIMMAINEN rivi. GCC/Linux paljastaa M_PI:n oletuksena
+// ilman tata, minka vuoksi tama puuttui alkuperaisesta Linux-
+// kehitysversiosta.
+#define _USE_MATH_DEFINES
+
 // ============================================================
 // stone_tracker.cpp - Testi_01_01
 //
@@ -1111,7 +1120,7 @@ static std::vector<cv::Point3d> parsePts3(py::array_t<double, py::array::c_style
 {
     auto b = arr.unchecked<2>();
     std::vector<cv::Point3d> out((size_t)b.shape(0));
-    for (ssize_t i = 0; i < b.shape(0); ++i)
+    for (py::ssize_t i = 0; i < b.shape(0); ++i)
         out[(size_t)i] = cv::Point3d(b(i, 0), b(i, 1), b(i, 2));
     return out;
 }
