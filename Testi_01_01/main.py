@@ -150,6 +150,16 @@ PROFILE_MAX_RMS_PX = 5.0
 PROFILE_MIN_SAMPLES = 15
 PROFILE_SAMPLES_PER_STONE = 25
 
+# Kayttajan pyynnosta: RMS-kynnyksen ylittava profiili voi
+# teoriassa jo kelvata parilla kivella, mutta useampi AIDOSTI
+# eri kivi (eri kohdista/kulmista radalla) tekee sovituksesta
+# tukevamman - jatketaan skannausta VAIKKA riittava profiili
+# olisi jo loytynyt, kunnes vahintaan tama maara erillisia
+# kandidaatteja on lapaissyt yksinaisen tarkistuksen (tai video
+# loppuu, jolloin kaytetaan viimeisinta riittavaa tulosta jos
+# sellainen on).
+PROFILE_MIN_ACCEPTED_STONES = 6
+
 # Testatessa oikealla videolla loytyi KAKSI ongelmaa jotka nama
 # kynnysarvot/mekanismit korjaavat:
 #
@@ -1237,6 +1247,8 @@ def run_pipeline(
     next_stone_scan_frame = 0
     prev_scan_candidates = None
     accumulated_stones = []
+    n_accepted_stones = 0
+    best_sufficient_profile = None
     profile_result = precomputed_profile_result
     next_allowed_scan_track_frame = 0
 
@@ -1714,6 +1726,7 @@ def run_pipeline(
                                 accumulated_stones.extend(
                                     candidate_observations
                                 )
+                                n_accepted_stones += 1
 
                                 profile, riittava = try_fit_profile(
                                     calib_result["pose"],
@@ -1722,13 +1735,32 @@ def run_pipeline(
 
                                 if riittava:
 
-                                    print(
-                                        "3D-kiviprofiili riittava - "
-                                        "lopetetaan koko radan "
-                                        "skannaus."
-                                    )
+                                    best_sufficient_profile = profile
 
-                                    profile_result = profile
+                                    if (
+                                        n_accepted_stones >=
+                                        PROFILE_MIN_ACCEPTED_STONES
+                                    ):
+
+                                        print(
+                                            "3D-kiviprofiili riittava "
+                                            f"({n_accepted_stones} "
+                                            "hyvaksyttya kiveä) - "
+                                            "lopetetaan koko radan "
+                                            "skannaus."
+                                        )
+
+                                        profile_result = profile
+
+                                    else:
+
+                                        print(
+                                            f"  profiili jo riittava, "
+                                            "mutta jatketaan viela "
+                                            f"lisaa kivia varten "
+                                            f"({n_accepted_stones}/"
+                                            f"{PROFILE_MIN_ACCEPTED_STONES})."
+                                        )
 
                     prev_scan_candidates = curr_candidates
                     next_stone_scan_frame = frame_index + stone_scan_interval_frames
@@ -2046,6 +2078,14 @@ def run_pipeline(
             "Kalibrointi ei onnistunut - video loppui kesken "
             "moodinaytteiden keruun (video liian lyhyt?)."
         )
+
+    if profile_result is None and best_sufficient_profile is not None:
+        print(
+            f"VAROITUS: alle {PROFILE_MIN_ACCEPTED_STONES} kivea "
+            f"loytyi ({n_accepted_stones} kpl) ennen videon loppua - "
+            "kaytetaan viimeisinta riittavaa profiilia silti."
+        )
+        profile_result = best_sufficient_profile
 
     if profile_result is None:
         print(
