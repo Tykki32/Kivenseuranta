@@ -164,14 +164,17 @@ PROFILE_SAMPLES_PER_STONE = 25
 #      pysyvasti.
 #   2) SAMA fyysinen kohde (oli se sitten kivi tai hylatty ei-kivi)
 #      loydettiin uudelleen JOKA skannauksella niin kauan kuin se pysyi
-#      liikkeessa (esim. kavelevaa pelaaja useiden 2s-ikkunoiden ajan) -
-#      RECENT_SEED_COOLDOWN_CM+FRAMES estaa UUDEN kalliin taydellisen
-#      seurannan aloittamisen jos edellisesta yrityksesta on kulunut
-#      alle RECENT_SEED_COOLDOWN_FRAMES framea JA uusi siemen on
-#      lahella edellisen seurannan VIIMEISTA tunnettua sijaintia.
+#      liikkeessa (esim. kavelevaa/juokseva pelaaja useiden 2s-ikkunoiden
+#      ajan) - HUOM: sijaintipohjainen jaahdytys EI RIITA, koska nopeasti
+#      liikkuva kohde (kayttajan testivideolla havaittu, luultavasti
+#      pelaaja, n. 200cm/2s) karkaa sijaintikynnyksen ulkopuolelle ennen
+#      jaahdytysajan paattymista. Sen sijaan STONE_SCAN_COOLDOWN_FRAMES
+#      estaa uuden kalliin taydellisen seurannan koko taman monta framea
+#      kattavalla IKKUNALLA viimeisimman yrityksen (kivi tai hylatty)
+#      SIEMENFRAMESTA riippumatta kohteen nopeudesta - karkea mutta
+#      luotettava nopeusrajoitin kalliille yrityksille.
 SOLO_TRACK_MAX_RMS_PX = 6.0
-RECENT_SEED_COOLDOWN_FRAMES = 250   # 10s 25fps:lla
-RECENT_SEED_COOLDOWN_CM = 200.0
+STONE_SCAN_COOLDOWN_FRAMES = 750   # 30s 25fps:lla
 
 # ============================================================
 # APUFUNKTIOT
@@ -997,8 +1000,7 @@ def run_pipeline(
     prev_scan_candidates = None
     accumulated_stones = []
     profile_result = None
-    recent_seed_frame = None
-    recent_seed_pos = None
+    next_allowed_scan_track_frame = 0
 
     previous_stabilization_matrix = np.array(
         [
@@ -1362,25 +1364,13 @@ def run_pipeline(
                     )
 
                     # ------------------------------------------
-                    # JAAHDYTYS: sama fyysinen kohde (kivi TAI
-                    # hylatty ei-kivi, esim. kavelevä pelaaja) nakyy
-                    # helposti liikkuvana MYOS seuraavalla skannauksella
-                    # - katso taman tiedoston alkupaan kommentti. Jos
-                    # uusi siemen on lahella JUURI kasitellyn siemenen
-                    # sijaintia eika jaahdytysaika ole viela kulunut,
-                    # ohitetaan (EI aloiteta uutta kallista taydellista
-                    # seurantaa samalle kohteelle).
+                    # JAAHDYTYS: katso taman tiedoston alkupaan
+                    # kommentti MIKSI taman on oltava frame-ikkuna-
+                    # pohjainen (ei sijaintipohjainen) - nopeasti
+                    # liikkuva ei-kivi karkaisi sijaintikynnyksesta.
                     # ------------------------------------------
 
-                    if (
-                        seed_pos is not None
-                        and recent_seed_pos is not None
-                        and (frame_index - recent_seed_frame) < RECENT_SEED_COOLDOWN_FRAMES
-                        and math.hypot(
-                            seed_pos[0] - recent_seed_pos[0],
-                            seed_pos[1] - recent_seed_pos[1]
-                        ) < RECENT_SEED_COOLDOWN_CM
-                    ):
+                    if frame_index < next_allowed_scan_track_frame:
                         seed_pos = None
 
                     if seed_pos is not None:
@@ -1404,9 +1394,8 @@ def run_pipeline(
                             f"  seuranta valmis: {len(track)} havaintoa."
                         )
 
-                        recent_seed_frame = frame_index
-                        recent_seed_pos = (
-                            track[-1]["pos_cm"] if track else seed_pos
+                        next_allowed_scan_track_frame = (
+                            frame_index + STONE_SCAN_COOLDOWN_FRAMES
                         )
 
                         if len(track) >= 2:
