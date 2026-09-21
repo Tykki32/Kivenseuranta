@@ -649,10 +649,23 @@ static double angularSpreadDeg(const std::vector<cv::Point2d>& points, double cx
 // KAHVASUODATUS (kamera9_04.py:n filter_ice_boundary_points_fast)
 // ============================================================
 
+// KOKORAJA (kayttajan pyynnosta, ei kamera9_03.py:ssa - taman
+// tiedoston OMA lisays, EI porttaus): _find_contour_near hyvaksyi
+// aiemmin LAHIMMAN riittavan ISON kontuurin ilMAN ylarajaa - jos
+// lahin kontuuri sattui olemaan esim. pelaajan/lakaisijan siluetti
+// (havaittu kayttajan omasta datasta: n_body hyppasi 27:sta yli
+// 250:een, RMS 1.9px:sta yli 15px:iin, kun SEURANTA harhautui
+// kiveltä kyykistyneeseen pelaajaan), se hyvaksyttiin siina missa
+// oikea kivikin. max_area rajaa taman - laskettu KUTSUJASSA kiven
+// oman, taman kandidaattipaikan projisoidun rungon pinta-alasta
+// (etaisyys kamerasta huomioitu automaattisesti, koska tama on
+// sama projisointi jota ristikkohaku/sovitus jo kayttavat), joten
+// sama absoluuttinen kerroin toimii kiven koko liu'un matkalla.
 static bool findContourNear(
     const cv::Mat& mask, cv::Point2d approx_px, std::vector<cv::Point>& best,
     double max_dist_px = BODY_CONTOUR_MAX_SEARCH_DIST_PX,
-    double min_area = BODY_CONTOUR_MIN_AREA_PX)
+    double min_area = BODY_CONTOUR_MIN_AREA_PX,
+    double max_area = -1.0)
 {
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
@@ -664,6 +677,8 @@ static bool findContourNear(
 
         double area = cv::contourArea(c);
         if (area < min_area)
+            continue;
+        if (max_area > 0.0 && area > max_area)
             continue;
 
         cv::Moments M = cv::moments(c);
@@ -1049,8 +1064,24 @@ static RefineResult refinePositionJoint(
     auto approx_proj = project3d(K, R, t, approx3d);
     cv::Point2d approx_px_crop(approx_proj[0].x - off_x, approx_proj[0].y - off_y);
 
+    // Odotettu kontuurin pinta-ala TASSA kandidaattipaikassa (huomioi
+    // automaattisesti etaisyyden kamerasta, koska tama on sama pro-
+    // jisointi jota ristikkohaku/sovitus jo kayttavat) - katso
+    // findContourNear:in oma kommentti taman motivaatiosta.
+    static const double BODY_CONTOUR_MAX_AREA_MULTIPLIER = 4.0;
+    auto approx_hull = predictedHull(local_pts_body, X0_approx, Y0_approx, K, R, t);
+    double max_contour_area = -1.0;
+    if (!approx_hull.empty()) {
+        double expected_area = cv::contourArea(approx_hull);
+        if (expected_area > 0.0)
+            max_contour_area = BODY_CONTOUR_MAX_AREA_MULTIPLIER * expected_area;
+    }
+
     std::vector<cv::Point> raw_contour;
-    bool has_contour = findContourNear(mask_crop, approx_px_crop, raw_contour);
+    bool has_contour = findContourNear(
+        mask_crop, approx_px_crop, raw_contour,
+        BODY_CONTOUR_MAX_SEARCH_DIST_PX, BODY_CONTOUR_MIN_AREA_PX, max_contour_area
+    );
 
     std::vector<cv::Point2d> body_pts;
     if (has_contour) {
