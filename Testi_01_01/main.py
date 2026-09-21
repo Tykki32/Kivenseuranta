@@ -1727,6 +1727,8 @@ def run_pipeline(
                 # hakutarkistusframe.
                 # --------------------------------------------
 
+                newly_found_ids = set()
+
                 if (
                     len(active_stones) < MAX_CONCURRENT_STONES
                     and frame_index % k92.SEARCH_EVERY_N_FRAMES == 0
@@ -1778,6 +1780,7 @@ def run_pipeline(
                                 ),
                                 "misses": 0,
                             })
+                            newly_found_ids.add(stone_id)
 
                             print(
                                 f"[frame {frame_index}] Uusi kivi "
@@ -1801,6 +1804,13 @@ def run_pipeline(
                 still_active = []
 
                 for s in active_stones:
+
+                    if s["stone_id"] in newly_found_ids:
+                        # Juuri loytynyt HAKU:ssa tassa samassa
+                        # framessa - rivi jo kirjoitettu, ei
+                        # seurata viela toiseen kertaan.
+                        still_active.append(s)
+                        continue
 
                     roi_half_range = (
                         k92.TRACK_HALF_RANGE_CM
