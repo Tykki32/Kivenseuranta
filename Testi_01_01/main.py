@@ -3418,11 +3418,6 @@ def main(debug=None, start_time=None, end_time=None):
         ]
     )
 
-    video_file = os.path.join(
-        os.path.dirname(input_file),
-        "leikattu.mp4"
-    )
-
     root.destroy()
 
     if not input_file:
@@ -3432,6 +3427,13 @@ def main(debug=None, start_time=None, end_time=None):
         )
 
         return
+
+    input_stem, _input_ext = os.path.splitext(os.path.basename(input_file))
+
+    video_file = os.path.join(
+        os.path.dirname(input_file),
+        f"{input_stem}_leikattu.mp4"
+    )
 
     print()
     print(
