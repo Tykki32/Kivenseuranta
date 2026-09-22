@@ -1513,6 +1513,24 @@ def run_pipeline(
         max_workers=MAX_WORKERS
     )
 
+    # HAKU (stone_tracker.search_new_stone) ja SEURANTA (stone_tracker.
+    # track_stones_batch) ovat riippumattomia (molemmat lukevat vain
+    # jo valmiin frame_u:n, eivat toistensa tulosta) - kayttajan
+    # pyynnosta HAKU kaynnistetaan omalle taustasaikeelle JA SEURANTA
+    # ajetaan SAMAAN AIKAAN paasaikeessa, katso alempana "HAKU:
+    # kaynnistetaan..." ja "HAKU:n tuloksen keraaminen...". Uuden
+    # kiven rekisterointi pysyy SILTI samalla framella kuin ennen -
+    # HAKU:n tulos noudetaan (.result()) SEURANTAN VALMISTUTTUA,
+    # ennen seuraavaan frameen siirtymista, EI viivastu. Vain 1
+    # HAKU-kutsu voi olla kerrallaan kesken (SEARCH_EVERY_N_FRAMES
+    # varmistaa etta edellinen on aina jo koottu ennen seuraavaa).
+    haku_executor = ThreadPoolExecutor(max_workers=1)
+
+    def _run_haku_timed(*args):
+        t0 = time.time()
+        result = stone_tracker.search_new_stone(*args)
+        return result, time.time() - t0
+
     try:
 
         while True:
@@ -2088,20 +2106,26 @@ def run_pipeline(
                 # hakutarkistusframe. C++-porttaus (stone_tracker.
                 # cpp:n search_new_stone, Task 6) - ristikkohaku
                 # JA yhteissovitus yhdessa kutsussa, samaan tapaan
-                # kuin SEURANTA (Task 5). HUOM: taman C++-kutsu
-                # tekee yhteissovituksen AINA kun ristikkohaun
-                # pisteytys ylittaa kynnyksen, MYOS silloin kun
-                # loydetty ehdokas myohemmin osoittautuu jo
-                # seurattavaksi kiveksi (already_tracked alla) -
-                # pieni, harvinainen turha laskenta (~10-15ms),
-                # EI vaikuta lopputulokseen (Pythonin alkuperaisessa
-                # jarjestyksessa yhteissovitus tehtiin vasta dedup-
-                # tarkistuksen JALKEEN kalliimman refine-kutsun
-                # sailostamiseksi - C++:ssa molemmat ovat jo niin
-                # nopeita etta jarjestyksella ei ole merkitysta).
+                # kuin SEURANTA (Task 5).
+                #
+                # KAYNNISTETAAN OMALLE TAUSTASAIKEELLE (kayttajan
+                # pyynnosta): HAKU ja SEURANTA ovat riippumattomia
+                # (molemmat lukevat vain jo valmiin frame_u:n,
+                # eivat toistensa tulosta talta framelta), joten
+                # ne ajetaan SAMANAIKAISESTI - HAKU taustasaikeessa,
+                # SEURANTA paasaikeessa alempana. TULOS KERATAAN
+                # VASTA SEURANTAN JALKEEN (katso "HAKU:n tuloksen
+                # keraaminen" alempana) - uuden kiven rekisterointi
+                # pysyy SILTI TASMALLEEN samalla framella kuin ennen,
+                # EI viivastu, koska odotamme HAKU:n tuloksen ennen
+                # seuraavaan frameen siirtymista. Katso stone_tracker.
+                # cpp:n search_new_stone/track_stones_batch -kommentit
+                # (ScopedSingleThreadedOpenCV) OpenCV:n oman sisaisen
+                # rinnakkaistuksen turvallisesta poiskytkennasta taman
+                # samanaikaisuuden ajaksi.
                 # --------------------------------------------
 
-                newly_found_ids = set()
+                haku_future = None
 
                 if (
                     len(active_stones) < MAX_CONCURRENT_STONES
@@ -2116,8 +2140,8 @@ def run_pipeline(
                         k92.SEARCH_Y_MAX_CM - k92.SEARCH_Y_MIN_CM
                     ) / 2.0
 
-                    t_haku0 = time.time()
-                    haku_result = stone_tracker.search_new_stone(
+                    haku_future = haku_executor.submit(
+                        _run_haku_timed,
                         frame_u, calib_result["calib"]["frame_undistorted"],
                         local_pts_body, local_pts_search,
                         pose["K"], pose["R"], pose["t"],
@@ -2127,50 +2151,6 @@ def run_pipeline(
                         live_state["R_max"], live_state["H_total"],
                         live_state["ring_r_frac_guess"]
                     )
-                    total_haku_time += time.time() - t_haku0
-                    n_haku_calls += 1
-
-                    if haku_result["found"]:
-
-                        refined = haku_result
-                        bx, by = refined["X_cm"], refined["Y_cm"]
-
-                        already_tracked = any(
-                            math.hypot(
-                                bx - s["last_xy"][0], by - s["last_xy"][1]
-                            ) < NEW_STONE_DEDUP_CM
-                            for s in active_stones
-                        )
-
-                        if not already_tracked:
-
-                            stone_id = next_stone_id
-                            next_stone_id += 1
-
-                            active_stones.append({
-                                "stone_id": stone_id,
-                                "last_xy": (
-                                    refined["X_cm"], refined["Y_cm"]
-                                ),
-                                "misses": 0,
-                                "position_history": [(
-                                    frame_index,
-                                    refined["X_cm"], refined["Y_cm"]
-                                )],
-                            })
-                            newly_found_ids.add(stone_id)
-
-                            print(
-                                f"[frame {frame_index}] Uusi kivi "
-                                f"{stone_id}: "
-                                f"({refined['X_cm']:.1f}, "
-                                f"{refined['Y_cm']:.1f}) cm"
-                            )
-
-                            _write_stone_csv_row(
-                                csv_writer, frame_index, timestamp,
-                                stone_id, refined
-                            )
 
                 # --------------------------------------------
                 # SEURANTA: paivitetaan JOKAINEN aktiivinen kivi
@@ -2194,10 +2174,11 @@ def run_pipeline(
 
                 still_active = []
 
-                seuranta_stones = [
-                    s for s in active_stones
-                    if s["stone_id"] not in newly_found_ids
-                ]
+                # HAKU:n (jos kaynnissa) mahdollisesti loytama uusi
+                # kivi EI ole viela active_stones:issa tassa vaiheessa
+                # (sen tulos kerataan vasta alempana) - ei siis
+                # tarvetta erikseen suodattaa sita pois taalta.
+                seuranta_stones = active_stones
 
                 if seuranta_stones:
 
@@ -2297,12 +2278,66 @@ def run_pipeline(
                                     f"{s['stone_id']} kadotettu."
                                 )
 
-                still_active.extend(
-                    s for s in active_stones
-                    if s["stone_id"] in newly_found_ids
-                )
-
                 active_stones = still_active
+
+                # --------------------------------------------
+                # HAKU:n tuloksen keraaminen - SEURANTA (ylla) ehti
+                # jo laskea RINNAN HAKU:n kanssa, joten odotus tassa
+                # (.result(), jos HAKU on viela kesken) on vain sen
+                # verran kuin HAKU oli SEURANTAa hitaampi (yleensa
+                # HAKU on selvasti hitaampi -> odotus n. HAKU_aika -
+                # SEURANTA_aika, joskus jopa 0 jos SEURANTA oli
+                # hitaampi). Uusi kivi lisataan TASSA active_stones:
+                # iin - TASMALLEEN samalla framella/timestampilla
+                # kuin ennen, EI viivastynyt kayttaytyminen.
+                # --------------------------------------------
+
+                if haku_future is not None:
+
+                    haku_result, haku_dt = haku_future.result()
+                    total_haku_time += haku_dt
+                    n_haku_calls += 1
+
+                    if haku_result["found"]:
+
+                        refined = haku_result
+                        bx, by = refined["X_cm"], refined["Y_cm"]
+
+                        already_tracked = any(
+                            math.hypot(
+                                bx - s["last_xy"][0], by - s["last_xy"][1]
+                            ) < NEW_STONE_DEDUP_CM
+                            for s in active_stones
+                        )
+
+                        if not already_tracked:
+
+                            stone_id = next_stone_id
+                            next_stone_id += 1
+
+                            active_stones.append({
+                                "stone_id": stone_id,
+                                "last_xy": (
+                                    refined["X_cm"], refined["Y_cm"]
+                                ),
+                                "misses": 0,
+                                "position_history": [(
+                                    frame_index,
+                                    refined["X_cm"], refined["Y_cm"]
+                                )],
+                            })
+
+                            print(
+                                f"[frame {frame_index}] Uusi kivi "
+                                f"{stone_id}: "
+                                f"({refined['X_cm']:.1f}, "
+                                f"{refined['Y_cm']:.1f}) cm"
+                            )
+
+                            _write_stone_csv_row(
+                                csv_writer, frame_index, timestamp,
+                                stone_id, refined
+                            )
 
             frame_index += 1
 
@@ -2401,6 +2436,10 @@ def run_pipeline(
     finally:
 
         executor.shutdown(
+            wait=True
+        )
+
+        haku_executor.shutdown(
             wait=True
         )
 

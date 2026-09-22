@@ -85,10 +85,69 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 namespace py = pybind11;
+
+
+// ============================================================
+// OpenCV:n sisaisen rinnakkaistuksen turvallinen, VIITELASKURILLINEN
+// poiskytkenta (kayttajan pyynnosta: HAKU ja SEURANTA ajetaan nyt
+// samanaikaisesti kahdesta eri saikeesta - main.py:n elava seuranta).
+//
+// TAUSTA: cv::setNumThreads on PROSESSINLAAJUINEN (globaali) tila,
+// EI saiekohtainen. track_stones_batch (SEURANTA) kytkee sen pois
+// PAALTA omaa per-kivi-saiejakoaan varten (muuten OpenCV:n oma
+// sisainen rinnakkaistus kilpailisi jokaisen per-kivi-saikeen SISALLA
+// - mitattu: 1 kivi ~33ms, mutta 2 kiveä ~107ms, PAHEMPI kuin
+// sarjallisesti). Ennen taman kayttoonottoa search_new_stone (HAKU)
+// EI kytkenyt sita pois lainkaan, koska se ajettiin AINA sarjallisesti
+// - koskaan SAMAAN AIKAAN track_stones_batch:in kanssa.
+//
+// Nyt kun HAKU ja SEURANTA voivat olla kaynnissa SAMANAIKAISESTI ERI
+// SAIKEISTA, naiivi per-kutsu "tallenna alkuperainen -> aseta 1 ->
+// palauta alkuperainen" (kummallakin funktiolla OMA, TOISISTAAN
+// TIETAMATON versio) EI OLE TURVALLINEN: jos molemmat ovat kaynnissa
+// yhtaaikaa, jalkimmainen sisaanmenija voi lukea jo ykkoseksi
+// asetetun arvon "alkuperaiseksi" arvokseen, ja palauttaessaan
+// TAMAN saastaa OpenCV:n rinnakkaistuksen PYSYVASTI 1 saikeeseen
+// LOPUKSI ASTI - HILJAA, ilman virhetta, huomattavasti hidastaen
+// KAIKKEA myohempaa (warpAffine+remap, paneiliseuranta, jne.).
+//
+// Korjaus: viitelaskuri mutexin takana - VAIN ensimmainen sisaan-
+// menija tallentaa alkuperaisen arvon ja asettaa 1:n, VAIN viimeinen
+// poistuja palauttaa sen - valissa olevat samanaikaiset kutsujat
+// vain kasvattavat/vahentavat laskuria eivatka koske itse arvoon.
+// ============================================================
+
+namespace {
+std::mutex g_cv_single_thread_mutex;
+int g_cv_single_thread_refcount = 0;
+int g_cv_single_thread_saved = 1;
+}
+
+class ScopedSingleThreadedOpenCV {
+public:
+    ScopedSingleThreadedOpenCV() {
+        std::lock_guard<std::mutex> lock(g_cv_single_thread_mutex);
+        if (g_cv_single_thread_refcount == 0) {
+            g_cv_single_thread_saved = cv::getNumThreads();
+            cv::setNumThreads(1);
+        }
+        g_cv_single_thread_refcount++;
+    }
+    ~ScopedSingleThreadedOpenCV() {
+        std::lock_guard<std::mutex> lock(g_cv_single_thread_mutex);
+        g_cv_single_thread_refcount--;
+        if (g_cv_single_thread_refcount == 0) {
+            cv::setNumThreads(g_cv_single_thread_saved);
+        }
+    }
+    ScopedSingleThreadedOpenCV(const ScopedSingleThreadedOpenCV&) = delete;
+    ScopedSingleThreadedOpenCV& operator=(const ScopedSingleThreadedOpenCV&) = delete;
+};
 
 
 // ============================================================
@@ -2180,14 +2239,14 @@ static py::list track_stones_batch(
         // kilpailemassa (havaittu kaytannossa: 1 kivi ~33ms, mutta jo
         // 2 kiveä ~107ms - PAHEMPI kuin sarjallisesti, koska ylikuormitus/
         // kontekstinvaihto syo koko hyodyn taman tiedoston OMASTA,
-        // ULOMMASTA per-kivi-rinnakkaistuksesta). setNumThreads(1)
+        // ULOMMASTA per-kivi-rinnakkaistuksesta). ScopedSingleThreadedOpenCV
         // pakottaa jokaisen sisaisen OpenCV-kutsun sarjalliseksi TAMAN
         // kutsun ajaksi, jolloin AINOA rinnakkaistus on tama tiedoston
-        // oma per-kivi std::thread-jako - palautetaan alkuperainen arvo
-        // heti kutsun jalkeen etta muu prosessi (mode_engine.cpp,
-        // Python-puolen paneiliseuranta jne.) ei karsi tasta.
-        int prev_num_threads = cv::getNumThreads();
-        cv::setNumThreads(1);
+        // oma per-kivi std::thread-jako. VIITELASKURILLINEN (katso sen
+        // oma kommentti) koska search_new_stone (HAKU) voi olla
+        // kaynnissa SAMANAIKAISESTI eri saikeesta - naiivi per-kutsu
+        // save/restore ei olisi turvallinen silloin.
+        ScopedSingleThreadedOpenCV single_threaded_opencv_guard;
 
         std::atomic<int> next_idx(0);
         unsigned hw = std::thread::hardware_concurrency();
@@ -2213,7 +2272,8 @@ static py::list track_stones_batch(
         for (auto& w : workers)
             w.join();
 
-        cv::setNumThreads(prev_num_threads);
+        // single_threaded_opencv_guard palauttaa OpenCV:n saiemaaran
+        // tahan tuhoutuessaan (scope-lopun RAII, katso sen kommentti).
     }
 
     py::list out;
@@ -2345,6 +2405,23 @@ static py::dict search_new_stone(
     StoneUpdateResult result;
     {
         py::gil_scoped_release release;
+
+        // main.py:n elava seuranta kutsuu tata NYT (kayttajan pyynnosta)
+        // omalta taustasaikeeltaan SAMAAN AIKAAN kun track_stones_batch
+        // (SEURANTA) ajaa OMAa per-kivi-saiejakoaan paasaikeessa - HAKU
+        // ja SEURANTA ovat riippumattomia (molemmat vain lukevat jo
+        // valmiin framen, eivat toistensa tuloksia). ScopedSingleThreaded
+        // OpenCV (katso sen oma kommentti) kytkee OpenCV:n oman sisaisen
+        // rinnakkaistuksen pois PAALTA taman YHDEN kutsun ajaksi (VIITE-
+        // LASKURILLISESTI, koska track_stones_batch voi olla kaynnissa
+        // SAMANAIKAISESTI) ettei se kilpaile SEURANTAn per-kivi-saikeiden
+        // kanssa - EI globaalisti koko elavan seurannan ajaksi (se
+        // aiemmin kokeiltu lahestymistapa mitattiin kayttajan koneella
+        // HITAAMMAKSI, koska se esti OpenCV:ta kayttamasta montaa
+        // ydinta MUISSA, tayden framen operaatioissa kuten warpAffine+
+        // remap - katso git-historia).
+        ScopedSingleThreadedOpenCV single_threaded_opencv_guard;
+
         result = searchNewStoneOne(
             frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
             x_center, x_half_width, y_center, y_half_range,
