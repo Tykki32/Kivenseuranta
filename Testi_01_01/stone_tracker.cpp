@@ -2357,6 +2357,201 @@ static py::dict search_new_stone(
 }
 
 
+// ============================================================
+// KIVIKANDIDAATTIEN SKANNAUS (kamera9_01.py:n find_stone_candidates +
+// ray_plane_intersection + kamera9_04.py:n _candidates_in_frame_fast:in
+// C++-porttaus, kayttajan pyynnosta) - nopeuttaa main.py:n track_
+// stone_in_video_windowed:ia (3D-kiviprofiilin skannausvaihe, katso
+// sen oma kommentti) - EI KOSKETA elavan seurannan (HAKU/SEURANTA)
+// hot pathia, tama on VAIN kertaluontoisen kalibroinnin/profiilin
+// skannausvaihetta varten. Kayttaa jo olemassaolevia createGraniteMask/
+// suppressStaticBackground-funktioita (validoitu HAKU:n kautta) -
+// UUTTA tassa on vain kontuuri->ellipsi->suodatus->fyysinen sijainti
+// -ketju, joka kayttaa SUORAAN samoja OpenCV-alkeisfunktioita
+// (cv::findContours/fitEllipse/contourArea) kuin Python cv2-versiokin,
+// joten tuloksen pitaisi olla TASMALLEEN sama - validoitu A/B-
+// vertailulla Pythonin cv2-versioon (katso git-historia).
+// ============================================================
+
+static std::pair<double, double> rayPlaneIntersectionZ0(
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    double u, double v)
+{
+    cv::Matx33d K_inv = K.inv();
+    cv::Vec3d uv1(u, v, 1.0);
+    cv::Vec3d ray_cam = K_inv * uv1;
+
+    cv::Matx33d R_t = R.t();
+    cv::Vec3d C = -(R_t * t);
+    cv::Vec3d d = R_t * ray_cam;
+
+    double s = (0.0 - C[2]) / d[2];
+    double X = C[0] + s * d[0];
+    double Y = C[1] + s * d[1];
+
+    return { X, Y };
+}
+
+
+struct StoneCandidateFast {
+    cv::RotatedRect ellipse;
+    std::vector<cv::Point> contour;
+    double area = 0.0;
+    double X_cm = 0.0, Y_cm = 0.0;
+};
+
+static std::vector<StoneCandidateFast> findStoneCandidatesFast(
+    const cv::Mat& mask, const cv::Matx33d& H_final,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    double min_area, double max_area, double min_fill_ratio, double min_aspect_ratio,
+    double x_min, double x_max, double y_min, double y_max,
+    double pixels_per_cm, double output_x_min_cm, double output_y_max_cm)
+{
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    std::vector<StoneCandidateFast> candidates;
+
+    for (auto& contour : contours) {
+
+        double area = cv::contourArea(contour);
+
+        if (area < min_area || area > max_area || contour.size() < 5)
+            continue;
+
+        cv::RotatedRect ellipse = cv::fitEllipse(contour);
+        double cx = ellipse.center.x, cy = ellipse.center.y;
+        double w = ellipse.size.width, h = ellipse.size.height;
+
+        double ellipse_area = M_PI * (w / 2.0) * (h / 2.0);
+        if (ellipse_area < 1e-6)
+            continue;
+
+        double fill_ratio = area / ellipse_area;
+        if (fill_ratio < min_fill_ratio)
+            continue;
+
+        double aspect_ratio = std::min(w, h) / std::max(w, h);
+        if (aspect_ratio < min_aspect_ratio)
+            continue;
+
+        cv::Vec3d hp = H_final * cv::Vec3d(cx, cy, 1.0);
+        double out_px_x = hp[0] / hp[2];
+        double out_px_y = hp[1] / hp[2];
+
+        double phys_x = out_px_x / pixels_per_cm + output_x_min_cm;
+        double phys_y = output_y_max_cm - out_px_y / pixels_per_cm;
+
+        if (!(phys_x >= x_min && phys_x <= x_max && phys_y >= y_min && phys_y <= y_max))
+            continue;
+
+        StoneCandidateFast cand;
+        cand.ellipse = ellipse;
+        cand.contour = contour;
+        cand.area = area;
+
+        auto pos = rayPlaneIntersectionZ0(K, R, t, cx, cy);
+        cand.X_cm = pos.first;
+        cand.Y_cm = pos.second;
+
+        candidates.push_back(cand);
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const StoneCandidateFast& a, const StoneCandidateFast& b) { return a.area > b.area; });
+
+    return candidates;
+}
+
+
+static std::vector<StoneCandidateFast> scanStoneCandidates(
+    const cv::Mat& frame_bgr, const cv::Mat& background_reference, double diff_threshold,
+    const cv::Matx33d& H_final, const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    double min_area, double max_area, double min_fill_ratio, double min_aspect_ratio,
+    double x_min, double x_max, double y_min, double y_max,
+    double pixels_per_cm, double output_x_min_cm, double output_y_max_cm)
+{
+    cv::Mat frame_filtered = suppressStaticBackground(frame_bgr, background_reference, diff_threshold);
+    cv::Mat mask = createGraniteMask(frame_filtered);
+    return findStoneCandidatesFast(
+        mask, H_final, K, R, t, min_area, max_area, min_fill_ratio, min_aspect_ratio,
+        x_min, x_max, y_min, y_max, pixels_per_cm, output_x_min_cm, output_y_max_cm
+    );
+}
+
+
+static py::list stoneCandidatesToList(const std::vector<StoneCandidateFast>& cands)
+{
+    py::list out;
+
+    for (auto& c : cands) {
+
+        py::dict d;
+
+        py::tuple center = py::make_tuple(c.ellipse.center.x, c.ellipse.center.y);
+        py::tuple size = py::make_tuple(c.ellipse.size.width, c.ellipse.size.height);
+        d["ellipse"] = py::make_tuple(center, size, c.ellipse.angle);
+
+        std::vector<py::ssize_t> shape{ (py::ssize_t)c.contour.size(), 1, 2 };
+        py::array_t<int32_t> contour_arr(shape);
+        auto buf = contour_arr.mutable_unchecked<3>();
+        for (py::ssize_t i = 0; i < (py::ssize_t)c.contour.size(); ++i) {
+            buf(i, 0, 0) = c.contour[(size_t)i].x;
+            buf(i, 0, 1) = c.contour[(size_t)i].y;
+        }
+        d["contour"] = contour_arr;
+
+        d["pos_cm"] = py::make_tuple(c.X_cm, c.Y_cm);
+
+        out.append(d);
+    }
+
+    return out;
+}
+
+
+static py::list scan_stone_candidates(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame_bgr,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> background_reference,
+    py::array_t<double, py::array::c_style | py::array::forcecast> H_final_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+    double min_area, double max_area, double min_fill_ratio, double min_aspect_ratio,
+    double x_min, double x_max, double y_min, double y_max,
+    double pixels_per_cm, double output_x_min_cm, double output_y_max_cm,
+    double diff_threshold = 30.0)
+{
+    auto buf = frame_bgr.request();
+    if (buf.ndim != 3 || buf.shape[2] != 3)
+        throw std::runtime_error("frame_bgr must be HxWx3 uint8 BGR");
+
+    cv::Mat frame_mat((int)buf.shape[0], (int)buf.shape[1], CV_8UC3, (void*)buf.ptr);
+
+    cv::Mat ref_mat;
+    auto ref_buf = background_reference.request();
+    if (ref_buf.ndim == 3 && ref_buf.shape[2] == 3)
+        ref_mat = cv::Mat((int)ref_buf.shape[0], (int)ref_buf.shape[1], CV_8UC3, (void*)ref_buf.ptr);
+
+    auto H_final = parseMat33(H_final_arr);
+    auto K = parseMat33(K_arr);
+    auto R = parseMat33(R_arr);
+    auto t = parseVec3(t_arr);
+
+    std::vector<StoneCandidateFast> result;
+    {
+        py::gil_scoped_release release;
+        result = scanStoneCandidates(
+            frame_mat, ref_mat, diff_threshold, H_final, K, R, t,
+            min_area, max_area, min_fill_ratio, min_aspect_ratio,
+            x_min, x_max, y_min, y_max, pixels_per_cm, output_x_min_cm, output_y_max_cm
+        );
+    }
+
+    return stoneCandidatesToList(result);
+}
+
+
 PYBIND11_MODULE(stone_tracker, m)
 {
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";
@@ -2377,5 +2572,16 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
           py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("diff_threshold") = 30.0);
+
+    m.def("scan_stone_candidates", &scan_stone_candidates,
+          "Kivikandidaattien skannaus yhdesta framesta (3D-kiviprofiilin "
+          "skannausvaihe - EI elavan seurannan hot path)",
+          py::arg("frame_bgr"), py::arg("background_reference"),
+          py::arg("H_final"), py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("min_area"), py::arg("max_area"),
+          py::arg("min_fill_ratio"), py::arg("min_aspect_ratio"),
+          py::arg("x_min"), py::arg("x_max"), py::arg("y_min"), py::arg("y_max"),
+          py::arg("pixels_per_cm"), py::arg("output_x_min_cm"), py::arg("output_y_max_cm"),
           py::arg("diff_threshold") = 30.0);
 }

@@ -1079,15 +1079,17 @@ STONE_TRACK_WINDOW_SECONDS = 30.0
 STONE_TRACK_PRECHECK_WINDOW_SECONDS = 3.0
 STONE_TRACK_PRECHECK_MIN_SAMPLES = 5
 STONE_TRACK_PRECHECK_MAX_RMS_PX = 24.0
-# HUOM (kayttajan mittaama loydos): stride=5 heikensi havaittavasti
-# profiilisovituksen tarkkuutta (RMS n. 5.9px -> 10.9px samalle
-# oikealle kivelle taydessa 30s ikkunassa) - riittavan lahella
-# PROFILE_MAX_RMS_PX=10.0px-kynnysta etta yksi muuten kelvollinen
-# kivi ei enaa riittanyt sellaisenaan, ja koko skannaus joutui
-# keraamaan useampia kivia ennen riittavaa profiilia. stride=3 on
-# varovaisempi kompromissi (kolmasosa kalliista vaiheista tayden
-# sijaan, lyhyempi 120ms vali naytteiden valilla 200ms:n sijaan).
-STONE_TRACK_SAMPLE_STRIDE = 3
+# HUOM (kayttajan mittaama loydos + paatos): stride=5 JA stride=3
+# heikensivat molemmat havaittavasti profiilisovituksen laatua (RMS
+# n. 5.9px -> 10.9px stride=5:lla samalle oikealle kivelle taydessa
+# 30s ikkunassa - riittavan lahella PROFILE_MAX_RMS_PX=10.0px
+# -kynnysta etta yksi muuten kelvollinen kivi ei enaa riittanyt
+# sellaisenaan). Kayttaja paatti sen sijaan pitaa TAYDEN
+# framekohtaisen tarkkuuden (stride=1, degeneroituu tayteen
+# tiheyteen build_indices:issa) ja nojata nopeuteen sen sijaan
+# halpaan esitarkistukseen + C++-porttaukseen (katso alempana
+# scan_stone_candidates/stone_tracker.cpp).
+STONE_TRACK_SAMPLE_STRIDE = 1
 
 
 def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
@@ -1097,6 +1099,7 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
     max_jump_cm = k9.STONE_TRACK_MAX_JUMP_CM * STONE_TRACK_SAMPLE_STRIDE
     max_misses = k9.STONE_TRACK_MAX_MISSES
     min_area = k9.STONE_TRACK_MIN_AREA
+    max_area = 200000
     min_fill_ratio = k9.STONE_TRACK_MIN_FILL_RATIO
     min_aspect_ratio = k9.STONE_TRACK_MIN_ASPECT_RATIO
 
@@ -1105,6 +1108,21 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
     dist_coeffs = np.array(
         [calib["best_k1"], 0.0, 0.0, 0.0, 0.0], dtype=np.float64
     )
+
+    # Kandidaattien skannaus (suppress_static_background + find_stone_
+    # candidates + ray_plane_intersection) tehdaan C++:ssa (stone_tracker.
+    # scan_stone_candidates) - katso alempana scan_indices. Rajat tasan
+    # samat kuin kamera9_01.py:n find_stone_candidates:in oletusarvot.
+    K = pose["K"]
+    R = pose["R"]
+    t = pose["t"]
+    x_min = k8.OUTPUT_X_MIN_CM - k9.STONE_SHEET_MARGIN_CM
+    x_max = k8.OUTPUT_X_MAX_CM + k9.STONE_SHEET_MARGIN_CM
+    y_min = k8.OUTPUT_Y_MIN_CM - k9.STONE_SHEET_MARGIN_CM
+    y_max = k8.OUTPUT_Y_MAX_CM + k9.STONE_SHEET_MARGIN_CM
+    pixels_per_cm = k8.PIXELS_PER_CM
+    output_x_min_cm = k8.OUTPUT_X_MIN_CM
+    output_y_max_cm = k8.OUTPUT_Y_MAX_CM
 
     cap = cv2.VideoCapture(video_path)
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -1154,11 +1172,12 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
                 break
             if idx in wanted:
                 frame_u = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
-                frame_u_filtered = suppress_static_background(
-                    frame_u, background_reference_undistorted
-                )
-                cache[idx] = k94._candidates_in_frame_fast(
-                    frame_u_filtered, pose, H_final, min_area, min_fill_ratio, min_aspect_ratio
+                cache[idx] = stone_tracker.scan_stone_candidates(
+                    frame_u, background_reference_undistorted,
+                    H_final, K, R, t,
+                    min_area, max_area, min_fill_ratio, min_aspect_ratio,
+                    x_min, x_max, y_min, y_max,
+                    pixels_per_cm, output_x_min_cm, output_y_max_cm
                 )
             idx += 1
         return cache
