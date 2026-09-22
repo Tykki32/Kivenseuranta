@@ -254,7 +254,7 @@ SOLO_TRACK_MAX_RMS_PX = 12.0
 # aidosti kivia, joten kaksinkertainen havainto vain vahvistaa
 # sovitusta, ei saastuta sita - toisin kuin aiempi ongelma
 # vaarilla ei-kivi-kandidaateilla).
-STONE_SCAN_COOLDOWN_FRAMES = 300   # 12s 25fps:lla
+STONE_SCAN_COOLDOWN_FRAMES = 150   # 6s 25fps:lla
 
 # ============================================================
 # ELAVA MONI-KIVEN SEURANTA + CSV
