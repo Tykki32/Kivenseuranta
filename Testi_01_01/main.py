@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 import mode_engine
 import stone_tracker
 from collections import deque
+import subprocess
 
 
 # ============================================================
@@ -2674,7 +2675,7 @@ def main(debug=None):
     root = tk.Tk()
     root.withdraw()
 
-    video_file = filedialog.askopenfilename(
+    input_file = filedialog.askopenfilename(
         title="Valitse video",
         filetypes=[
             (
@@ -2701,9 +2702,18 @@ def main(debug=None):
 
     print()
     print(
-        f"Video: {video_file}"
+        f"Video: {input_file}"
     )
 
+    subprocess.run([
+        "ffmpeg",
+        "-ss", "00:10:00",
+        "-i", input_file,
+        "-t", "00:11:00",
+        "-c", "copy",
+        video_file
+    ], check=True)
+    
     # --------------------------------------------------------
     # PANEELIT - automaattitunnistus referenssitiedoston lahelta
     # (katso detect_panels_from_reference:in kommentti) - EI enaa
