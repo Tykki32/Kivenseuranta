@@ -304,6 +304,64 @@ NEW_STONE_DEDUP_CM = 100.0
 STOP_TRACKING_SECONDS = 1.0
 STOP_TRACKING_DISPLACEMENT_CM = 20.0
 
+# VARIREFERENSSI (kayttajan pyynnosta): SEURANTA voi harvoin "hypata"
+# pitkaan seuratusta oikeasta kivesta lahella olevaan vieraaseen
+# kohteeseen (esim. pelaaja pesan lahella) - naytonmuoto-tarkistus
+# (tarkka) menee tassa tapauksessa LAPI, koska vieras kohde sattuu
+# olemaan riittavan kiven-muotoinen. Rakennetaan siis KERRAN, heti kun
+# 3D-profiili on valmis, kiven OMA pintavarireferenssi hyvaksytyn
+# profiilin havainnoista (build_stone_color_reference) - PER PISTE
+# local_pts_body:sta (EI keskiarvoistettuna yhdeksi lukemaksi koko
+# pinnalta!), jotta graniitin n. keskikorkeudella nakyva vaaleampi
+# nauha ("paiva"/leveimmillaan-kohta, _TEMPLATE_EQUATOR_IDX) sailyy
+# omana piirteenaan eika sekoitu muun pinnan keskiarvoon. Kayttajan
+# huomio: nauha EI nay kaukana olevissa kivissa (resoluutio) - siksi
+# seka referenssin rakennus etta elavan osuman vertailu HYLKAAVAT
+# (skip, ei estoa) havainnot/osumat joissa kivi on kuvassa liian pieni
+# nauhan (tai minkaan hienon piirteen) luotettavaan erottamiseen -
+# tarkistus vaikuttaa siis kaytannossa vain lahelta (esim. pesan
+# lahella) otettuihin osumiin, mika sopii yhteen sen kanssa etta juuri
+# se on havaittu ongelma-alue.
+#
+# SUUNNITTELUPAATOS (useiden testikierrosten jalkeen - kayttajan
+# prioriteetti "heittaja/lakaisija ei saa aiheuttaa kiven katoamista"
+# ohjaa tata): varitarkistus EI vaikuta MITENKAAN normaaliin SEURANTAan
+# (haku-ankkuri, s["misses"], "kadotettu") - kokeiltiin ensin useita
+# hystereesi-/streak-pohjaisia versioita jotka KASVATTIVAT/vahensivat
+# "huonoa" laskuria ja kayttivat sita joko hyvaksymiseen TAI kiven
+# katoamiseen, mutta havaittiin etta MIKA TAHANSA vuotava/palautuva
+# laskuri lopulta "antaa anteeksi" pysyvasti vaaran kohteen (esim.
+# pelaajan jalka), koska aidosti kohiseva data tuottaa ENNEMMIN TAI
+# MYOHEMMIN riittavan pitkan "hyvan" jakson kumotakseen kertyneen
+# laskurin - TAMA PATEE YHTA LAILLA todelliseen kiveen jota peittaa
+# pitkaan (havaittu: 30+ ruutua/1.2s+) esim. mittaava pelaaja, jonka
+# aikana muototunnistus (refined["found"]) pysyy silti onnistuneena.
+# Koska aito peitto ja aito identiteettihyppy nayttavat siis VARILTAAN
+# samankaltaisilta pitkalla aikavalilla, MIKAAN kynnys+streak-yhdistelma
+# ei erottele niita luotettavasti - vain KESTO eroaa (peitto loppuu,
+# hyppy ei koskaan "korjaannu").
+#
+# Sen sijaan varitarkistus vaikuttaa VAIN "pysahtynyt"-ilmoitukseen
+# (alempana SEURANTA-silmukassa): liukuvan ikkunan (color_diff_history,
+# sama aikaikkuna kuin position_history) KESKIARVO on oltava aidosti
+# graniittimainen ennen kuin pysahtyminen hyvaksytaan LOPULLISENA - jos
+# ei, ilmoitus vain LYKKAANTYY (kivi pysyy normaalisti aktiivisena/
+# seurattuna, ei koskaan "kadotettu" varin takia). Tama kohdistuu
+# suoraan alkuperaiseen ongelmaan (vaaran kohteen virheellinen
+# kirjaaminen "pysahtyneeksi kiveksi") ilman etta se voi koskaan
+# aiheuttaa oikean, vain hetkellisesti/pitkaan peitetyn kiven katoamista.
+#
+# Kynnysarvot kalibroitu oikealla videolla (stone0:n omat, itse
+# vahvistetut lahelta-pesaa -havainnot dbg_full_v3.csv:sta) - katso
+# kommentti color_match_median_diff:in MEDIAANI-aggregoinnin kohdalla
+# (miksi ei keskiarvo per piste). Saman kiven oma mitattu keskimaarainen
+# poikkeama itsestaan: min=0.085, max=0.204, ka=0.141 (30 nayteruutua) -
+# COLOR_STOP_MAX_AVG_DIFF pidetty reilusti taman ylapuolella.
+COLOR_REF_MIN_RING_SPACING_PX = 2.5
+COLOR_REF_MIN_OBSERVATIONS = 3
+COLOR_MATCH_MIN_VALID_POINTS = 20
+COLOR_STOP_MAX_AVG_DIFF = 0.22
+
 CSV_HEADER = [
     "frame", "timestamp_s", "stone_id", "x_m", "y_m", "tarkka",
     "n_runkopistetta", "n_reunapistetta", "rms_px", "rengas_r_cm",
@@ -1374,6 +1432,239 @@ def _write_stone_csv_row(writer, frame_index, timestamp, stone_id, refined):
     ])
 
 
+def _equator_row_index(n_theta, n_dense):
+    """local_pts_body (build_local_stone_rings) on litistetty (n_dense,
+    n_theta) -ristikko, z (korkeus) hitaammin vaihtuvana - palauttaa
+    RIVIN INDEKSIN joka vastaa "paivaa" (leveimmalla kohdalla,
+    _TEMPLATE_EQUATOR_IDX) - sama rengas jolla graniitin nauha nakyy."""
+
+    z_equator_frac = float(k9._TEMPLATE_Z_FRAC[k9._TEMPLATE_EQUATOR_IDX])
+    z_frac_dense = np.linspace(0.0, 1.0, n_dense)
+    return int(np.argmin(np.abs(z_frac_dense - z_equator_frac)))
+
+
+def _ring_spacing_px(u, v, n_theta, equator_row):
+    """"Paiva"-renkaan vierekkaisten theta-pisteiden mediaanietaisyys
+    kuvassa (px) - kertoo onko kivi kuvassa riittavan iso hienon
+    pintakuvion (esim. nauhan) luotettavaan erottamiseen. Katso
+    kommentti COLOR_REF_*-vakioiden kohdalla."""
+
+    n_dense = len(u) // n_theta
+    u_grid = u.reshape(n_dense, n_theta)
+    v_grid = v.reshape(n_dense, n_theta)
+    ring_u = u_grid[equator_row]
+    ring_v = v_grid[equator_row]
+    du = np.diff(np.concatenate([ring_u, ring_u[:1]]))
+    dv = np.diff(np.concatenate([ring_v, ring_v[:1]]))
+    return float(np.median(np.hypot(du, dv)))
+
+
+def build_stone_color_reference(video_file, calib, pose, local_pts_body,
+                                 n_theta, observations):
+    """Rakentaa kiven OMAN pintavarireferenssin PER PISTE local_pts_
+    body:sta (sama pistejoukko jota elava SEURANTA kayttaa) hyvaksytyn
+    3D-profiilin havainnoista - katso kommentti COLOR_REF_*-vakioiden
+    kohdalla taman tiedoston alkupaassa. Lukee havainnoista uudelleen
+    todelliset videoruudut (frame_idx/pos_cm) naytteistaakseen oikean
+    pikselivarin jokaisessa pisteessa - EI ainoastaan ellipse/contour
+    joita profiilisovitus kaytti.
+
+    Palauttaa None jos yhtaan pistetta ei saatu riittavan monesta
+    (COLOR_REF_MIN_OBSERVATIONS) resoluutioltaan kelvollisesta
+    havainnosta - ominaisuus jaa tallöin hiljaisesti pois kaytosta.
+    """
+
+    n_pts = local_pts_body.shape[0]
+    n_dense = n_pts // n_theta
+    equator_row = _equator_row_index(n_theta, n_dense)
+
+    camera_matrix = calib["camera_matrix"]
+    dist_coeffs = np.array(
+        [calib["best_k1"], 0.0, 0.0, 0.0, 0.0], dtype=np.float64
+    )
+    frame_h, frame_w = calib["frame_undistorted"].shape[:2]
+    map1, map2 = k94._build_undistort_maps(
+        camera_matrix, dist_coeffs, (frame_w, frame_h)
+    )
+
+    color_sum = np.zeros((n_pts, 3), dtype=np.float64)
+    counts = np.zeros(n_pts, dtype=np.int64)
+    n_observations_used = 0
+    n_observations_skipped_resolution = 0
+
+    cap = cv2.VideoCapture(video_file)
+
+    for obs in observations:
+
+        if "frame_idx" not in obs or "pos_cm" not in obs:
+            continue
+
+        X0, Y0 = obs["pos_cm"]
+        pts = local_pts_body + np.array([X0, Y0, 0.0])
+        u, v = k9._project_3d(pose["K"], pose["R"], pose["t"], pts)
+
+        if not (np.all(np.isfinite(u)) and np.all(np.isfinite(v))):
+            continue
+
+        # --------------------------------
+        # RESOLUUTIOTARKISTUS: katso kommentti COLOR_REF_*-vakioiden
+        # kohdalla - "paiva"-renkaan (leveimmalla kohdalla, sama rengas
+        # jolla graniitin nauha nakyy) vierekkaisten theta-pisteiden
+        # mediaanietaisyys kuvassa kertoo onko kivi kuvassa riittavan
+        # iso hienon pintakuvion luotettavaan erottamiseen - jos ei,
+        # koko havainto hylataan (ei vain nauhaosalta - muutenkin
+        # epaluotettava).
+        # --------------------------------
+
+        ring_spacing_px = _ring_spacing_px(u, v, n_theta, equator_row)
+
+        if ring_spacing_px < COLOR_REF_MIN_RING_SPACING_PX:
+            n_observations_skipped_resolution += 1
+            continue
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(obs["frame_idx"]))
+        ok, frame = cap.read()
+
+        if not ok:
+            continue
+
+        frame_u = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
+
+        valid = (
+            (u >= 0) & (u < frame_w - 1) &
+            (v >= 0) & (v < frame_h - 1)
+        )
+
+        b = k94._bilinear_sample_vec(frame_u[:, :, 0].astype(np.float64), u, v)
+        g = k94._bilinear_sample_vec(frame_u[:, :, 1].astype(np.float64), u, v)
+        r = k94._bilinear_sample_vec(frame_u[:, :, 2].astype(np.float64), u, v)
+
+        pt_valid = valid & np.isfinite(b) & np.isfinite(g) & np.isfinite(r)
+
+        if not np.any(pt_valid):
+            continue
+
+        # kirkkausnormalisointi: jakaa taman havainnon naytteet OMALLA
+        # keskikirkkaudellaan, jotta valaistuksen/altistuksen vaihtelu
+        # eri havaintojen valilla ei vaikuta - vain suhteelliset varit
+        # sailyvat.
+        brightness = float(np.mean([b[pt_valid], g[pt_valid], r[pt_valid]]))
+
+        if brightness < 1e-6:
+            continue
+
+        colors = np.stack([b, g, r], axis=-1) / brightness
+
+        color_sum[pt_valid] += colors[pt_valid]
+        counts[pt_valid] += 1
+        n_observations_used += 1
+
+    cap.release()
+
+    print(
+        f"  varireferenssi: {n_observations_used} havaintoa kaytetty, "
+        f"{n_observations_skipped_resolution} hylatty (kivi liian "
+        "pieni kuvassa)."
+    )
+
+    valid_mask = counts >= COLOR_REF_MIN_OBSERVATIONS
+
+    if n_observations_used == 0 or not np.any(valid_mask):
+
+        print(
+            "  varireferenssia ei saatu (ei riittavasti lahelta "
+            "otettuja havaintoja) - ominaisuus pois kaytosta talla "
+            "ajolla."
+        )
+
+        return None
+
+    reference_color = np.zeros((n_pts, 3), dtype=np.float64)
+    reference_color[valid_mask] = (
+        color_sum[valid_mask] / counts[valid_mask, None]
+    )
+
+    print(
+        f"  varireferenssi valmis: {int(np.count_nonzero(valid_mask))}/"
+        f"{n_pts} pistetta kelvollista."
+    )
+
+    return {
+        "reference_color": reference_color,
+        "valid_mask": valid_mask,
+        "n_theta": n_theta,
+        "equator_row": equator_row,
+    }
+
+
+def color_match_median_diff(frame_u_f64, local_pts_body, pose, X0, Y0,
+                             color_ref, frame_w, frame_h):
+    """Vertaa SEURANTA-osuman (X0,Y0) todellista pintavaria kiven
+    varireferenssiin (build_stone_color_reference) - katso kommentti
+    COLOR_REF_*/COLOR_MATCH_*-vakioiden kohdalla. Palauttaa None jos
+    liian vahan vertailukelpoisia pisteita (esim. kivi liian kaukana/
+    pieni) - tallöin tarkistusta EI voida tehda luotettavasti (osuma
+    hyvaksytaan kutsukohdassa oletuksena)."""
+
+    pts = local_pts_body + np.array([X0, Y0, 0.0])
+    u, v = k9._project_3d(pose["K"], pose["R"], pose["t"], pts)
+
+    if not (np.all(np.isfinite(u)) and np.all(np.isfinite(v))):
+        return None
+
+    # --------------------------------
+    # RESOLUUTIOTARKISTUS (osuman OMA, EI referenssin rakennusaikainen):
+    # katso kommentti COLOR_REF_*-vakioiden kohdalla - jos TAMA osuma on
+    # kuvassa liian pieni (esim. kivi viela kaukana), vertailua ei voida
+    # tehda luotettavasti vaikka referenssi itse olisikin kunnossa -
+    # tarkistus jaa siis pois kaytosta talla osumalla (hyvaksytaan
+    # oletuksena), ei vain kun referenssia rakennettiin.
+    # --------------------------------
+
+    ring_spacing_px = _ring_spacing_px(
+        u, v, color_ref["n_theta"], color_ref["equator_row"]
+    )
+
+    if ring_spacing_px < COLOR_REF_MIN_RING_SPACING_PX:
+        return None
+
+    valid = (
+        color_ref["valid_mask"] &
+        (u >= 0) & (u < frame_w - 1) &
+        (v >= 0) & (v < frame_h - 1)
+    )
+
+    if np.count_nonzero(valid) < COLOR_MATCH_MIN_VALID_POINTS:
+        return None
+
+    b = k94._bilinear_sample_vec(frame_u_f64[:, :, 0], u, v)
+    g = k94._bilinear_sample_vec(frame_u_f64[:, :, 1], u, v)
+    r = k94._bilinear_sample_vec(frame_u_f64[:, :, 2], u, v)
+
+    pt_valid = valid & np.isfinite(b) & np.isfinite(g) & np.isfinite(r)
+
+    if np.count_nonzero(pt_valid) < COLOR_MATCH_MIN_VALID_POINTS:
+        return None
+
+    brightness = float(np.mean([b[pt_valid], g[pt_valid], r[pt_valid]]))
+
+    if brightness < 1e-6:
+        return None
+
+    colors = np.stack([b, g, r], axis=-1) / brightness
+    diff = np.abs(colors[pt_valid] - color_ref["reference_color"][pt_valid])
+    per_point_diff = np.mean(diff, axis=1)
+
+    # MEDIANI (EI keskiarvo) yli pisteiden: kayttajan aiemman
+    # vaatimuksen mukaisesti (heittaja/lakaisija saa nakya kiven
+    # PAALLA/vieressa) osa pisteista voi olla oikeasti graniittia
+    # peittavan ihmisen varinen ilman etta osuma on vaara - mediaani
+    # sietaa vahemmiston (esim. jalka ohittaa kiven) vaikuttamatta
+    # kokonaistulokseen, kun taas KESKIARVO vaaristyisi jo muutamasta
+    # peittyneesta pisteesta.
+    return float(np.median(per_point_diff))
+
+
 # ============================================================
 # YKSI PAAPUTKI - kaikki vaiheet (kalibrointi -> kiviprofiilin haku ->
 # elava moni-kiven seuranta) jakavat SAMAN videon peräkkäisen luvun ja
@@ -1974,6 +2265,15 @@ def run_pipeline(
                                 {
                                     "ellipse": track[i]["ellipse"],
                                     "contour": track[i]["contour"],
+                                    # frame_idx/pos_cm: EI kayteta
+                                    # profiilisovitukseen (try_fit_
+                                    # profile), vain myohempaan
+                                    # varireferenssin rakennukseen
+                                    # (build_stone_color_reference) -
+                                    # katso kommentti COLOR_REF_*-
+                                    # vakioiden kohdalla.
+                                    "frame_idx": track[i]["frame_idx"],
+                                    "pos_cm": track[i]["pos_cm"],
                                 }
                                 for i in idxs
                             ]
@@ -2089,6 +2389,17 @@ def run_pipeline(
                         (k9._TEMPLATE_R_FRAC + shape_deltas)[-1]
                     )
 
+                    print(
+                        "Rakennetaan kiven pintavarireferenssia "
+                        f"({len(accumulated_stones)} havainnosta)..."
+                    )
+
+                    stone_color_reference = build_stone_color_reference(
+                        video_file, calib_result["calib"],
+                        calib_result["pose"], local_pts_body, 28,
+                        accumulated_stones
+                    )
+
                     csv_file = open(csv_output, "w", newline="")
                     csv_writer = csv.writer(csv_file)
                     csv_writer.writerow(CSV_HEADER)
@@ -2113,6 +2424,7 @@ def run_pipeline(
                         "local_pts_search": local_pts_search,
                         "R_max": R_max, "H_total": H_total,
                         "ring_r_frac_guess": ring_r_frac_guess,
+                        "color_reference": stone_color_reference,
                     }
 
                 # HUOM: kokeiltiin taalla yhdistaa warpAffine+remap
@@ -2261,7 +2573,60 @@ def run_pipeline(
                     n_seuranta_calls += 1
                     n_seuranta_stone_updates += len(seuranta_stones)
 
+                    color_ref = live_state["color_reference"]
+                    frame_u_f64 = None
+
                     for s, refined in zip(seuranta_stones, batch_results):
+
+                        # --------------------------------
+                        # VARITARKISTUS: katso kommentti COLOR_REF_*/
+                        # COLOR_STOP_MAX_AVG_DIFF:in kohdalla taman
+                        # tiedoston alkupaassa. HUOM (kayttajan pyynnosta
+                        # tehty uudelleensuunnittelu): tama EI vaikuta
+                        # MITENKAAN normaaliin SEURANTAan (haku-ankkuri,
+                        # s["misses"], "kadotettu") - position-/miss-
+                        # logiikka alla on identtinen kuin ennen vari-
+                        # tarkistuksen lisaamista, joten heittaja/
+                        # lakaisija kiven paalla EI VOI aiheuttaa kiven
+                        # katoamista sen enempaa kuin ennenkaan. Vari
+                        # keraytyy vain LIUKUVAAN IKKUNAAN (color_diff_
+                        # history, sama aikaikkuna kuin position_history)
+                        # ja sen KESKIARVOA kaytetaan LISAEHTONA vasta
+                        # "pysahtynyt"-ilmoituksen kohdalla (alempana) -
+                        # jos vari ei vahvista, ilmoitus vain LYKKAANTYY
+                        # (kivi pysyy normaalisti seurattuna), ei koskaan
+                        # katoa/vaaristu taman takia.
+                        # --------------------------------
+
+                        if refined["found"] and color_ref is not None:
+
+                            if frame_u_f64 is None:
+                                frame_u_f64 = frame_u.astype(np.float64)
+
+                            median_diff = color_match_median_diff(
+                                frame_u_f64, local_pts_body, pose,
+                                refined["X_cm"], refined["Y_cm"],
+                                color_ref, width, height
+                            )
+
+                            if median_diff is not None:
+
+                                diff_history = s["color_diff_history"]
+                                diff_history.append((frame_index, median_diff))
+
+                                while (
+                                    diff_history
+                                    and frame_index - diff_history[0][0]
+                                    > stop_tracking_frames
+                                ):
+                                    diff_history.pop(0)
+
+                                if os.environ.get("COLOR_DEBUG"):
+                                    print(
+                                        f"[COLOR_DEBUG] frame={frame_index} "
+                                        f"stone={s['stone_id']} "
+                                        f"diff={median_diff:.3f}"
+                                    )
 
                         if refined["found"]:
 
@@ -2316,14 +2681,42 @@ def run_pipeline(
                                 )
 
                                 if displacement < STOP_TRACKING_DISPLACEMENT_CM:
-                                    stopped = True
-                                    print(
-                                        f"[frame {frame_index}] Kivi "
-                                        f"{s['stone_id']} pysahtynyt "
-                                        f"(liikkunut {displacement:.1f}cm "
-                                        f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
-                                        "aikana) - lopetetaan seuranta."
-                                    )
+
+                                    # --------------------------------
+                                    # VARIVAHVISTUS: katso kommentti
+                                    # COLOR_STOP_MAX_AVG_DIFF:in kohdalla.
+                                    # Viimeisen sekunnin KESKIMAARAINEN
+                                    # vari (EI yksittainen ruutu - kestaa
+                                    # siis kohinan/hetkelliset poikkeamat)
+                                    # on oltava aidosti graniittimainen
+                                    # ennen kuin "pysahtynyt" hyvaksytaan
+                                    # lopullisena - estaa vaaran kohteen
+                                    # (esim. pelaaja) virheellisen
+                                    # kirjaamisen kiveksi.
+                                    # --------------------------------
+
+                                    color_confirms = True
+
+                                    if color_ref is not None and s["color_diff_history"]:
+                                        recent_diffs = [
+                                            d for _, d in s["color_diff_history"]
+                                        ]
+                                        avg_diff = (
+                                            sum(recent_diffs) / len(recent_diffs)
+                                        )
+                                        color_confirms = (
+                                            avg_diff <= COLOR_STOP_MAX_AVG_DIFF
+                                        )
+
+                                    if color_confirms:
+                                        stopped = True
+                                        print(
+                                            f"[frame {frame_index}] Kivi "
+                                            f"{s['stone_id']} pysahtynyt "
+                                            f"(liikkunut {displacement:.1f}cm "
+                                            f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
+                                            "aikana) - lopetetaan seuranta."
+                                        )
 
                             if not stopped:
                                 still_active.append(s)
@@ -2389,6 +2782,7 @@ def run_pipeline(
                                     refined["X_cm"], refined["Y_cm"]
                                 ),
                                 "misses": 0,
+                                "color_diff_history": [],
                                 "position_history": [(
                                     frame_index,
                                     refined["X_cm"], refined["Y_cm"]
