@@ -2661,7 +2661,7 @@ def run_pipeline(
 # MAIN
 # ============================================================
 
-def main(debug=None):
+def main(debug=None, start_time=None, end_time=None):
 
     # debug=None (oletus): kayta DEBUG_SAVE_TRACKING_VIDEO-vakion
     # arvoa (katso sen kommentti). debug=True/False komentoriviltä
@@ -2675,6 +2675,8 @@ def main(debug=None):
     root = tk.Tk()
     root.withdraw()
 
+    video_file = "leikattu.mp4"
+    
     input_file = filedialog.askopenfilename(
         title="Valitse video",
         filetypes=[
@@ -2692,7 +2694,7 @@ def main(debug=None):
 
     root.destroy()
 
-    if not video_file:
+    if not input_file:
 
         print(
             "Videota ei valittu."
@@ -2705,14 +2707,19 @@ def main(debug=None):
         f"Video: {input_file}"
     )
 
-    subprocess.run([
-        "ffmpeg",
-        "-ss", "00:10:00",
-        "-i", input_file,
-        "-t", "00:11:00",
-        "-c", "copy",
-        video_file
-    ], check=True)
+    command = ["ffmpeg"]
+    
+    if start_time is not None:
+        command += ["-ss", start_time]
+    
+    command += ["-i", input_file]
+    
+    if end_time is not None:
+        command += ["-to", end_time]
+    
+    command += ["-c", "copy", video_file]
+    
+    subprocess.run(command, check=True)
     
     # --------------------------------------------------------
     # PANEELIT - automaattitunnistus referenssitiedoston lahelta
@@ -2876,6 +2883,23 @@ if __name__ == "__main__":
             "VIDEO-vakion. Ilman tata lippua kaytetaan vakion arvoa."
         )
     )
+
+    _arg_parser.add_argument(
+        "--start",
+        type=str,
+        default=None,
+        help="Videon alkuaika, esim. 00:10:00"
+    )
+
+    _arg_parser.add_argument(
+        "--end",
+        type=str,
+        default=None,
+        help="Videon loppuaika, esim. 00:21:00"
+    )
+    
     _args = _arg_parser.parse_args()
 
-    main(debug=_args.debug)
+    main(debug=_args.debug,
+        start_time=_args.start,
+        end_time=_args.end)
