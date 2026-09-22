@@ -44,6 +44,325 @@ k8 = k94.k8
 
 
 # ============================================================
+# KAUKAISEN PESAN LOYTAMISEN VARMISTAMINEN (kayttajan pyynnosta) -
+# koskematon kamera9_01.py:n calibrate_camera_from_image tekee sokean
+# ristikkohaun (COARSE-vaihe) AINA saman kiinteän oletuksen (X=0, Y=0
+# eli tasan FAR_HOUSE_Y_CM:n paassa, keskilinjalla) ymparilta. Uudella
+# kamerakulmalla (kayttajan lahettama leikattu_kalibrointi_moodikuva.
+# png) tama oletus osui liian kauas oikeasta sijainnista, ja COARSE-
+# haku lukkiutui vaarn kohteeseen (havaittu: skaala pieneni jokaisella
+# hakuvaiheella 0.7->0.5->0.42, mika ei tapahdu OIKEAAN kaukaiseen
+# pesaan lukkiutuessa - katso alla oleva calibrate_camera_from_image_
+# with_seed, joka TOISTAA kamera9_01.py:n calibrate_camera_from_image:
+# in TASMALLEEN, MUUTTAEN VAIN COARSE-vaiheen alkuarvausta).
+#
+# Alkuarvaus haetaan etsimalla KUVASTA KAIKKI pienet sinireunaiset
+# rengaskandidaatit (sama k8.find_house_ellipses jota lahemman pesan
+# tunnistus jo kayttaa, vain paljon pienemmalla min_area:lla ja
+# lahempi pesa itse poissuljettuna) ja kaantamalla jokaisen keskipiste
+# jaatasolle (Z=0) TASMALLEEN k8.project_point:in oman, koskemattoman
+# kameramallin avulla - katso unproject_to_ice_plane. Fysikaalisesti
+# uskottavin (Y lahinna FAR_HOUSE_Y_CM:aa) kandidaatti kaytetaan
+# alkuarvauksena COARSE-haulle (SAMALLA hakualueella/-tarkkuudella
+# kuin ennen - vain KESKIPISTE muuttuu). Jos mitaan uskottavaa
+# kandidaattia ei loydy, palataan vanhaan (0,0)-oletukseen - EI
+# regressiota jos kuvassa ei ole naita pieniä kandidaatteja lainkaan.
+#
+# Validoitu: testattu SEKA uudella kamerakulmalla (leikattu_
+# kalibrointi_moodikuva.png - korjasi virheellisen kalibroinnin,
+# RMS 7.6-22cm -> 5.4-8.5cm, skaala vakautui 0.47:aan eika enaa
+# laskenut jokaisella kierroksella, topdown-kuvassa nyt yksi selkea
+# kaukainen rengaskohde aiemman kaksoiskuvan sijaan) ETTA vanhalla,
+# jo toimivalla kamerakulmalla (00011 - Trim.mp4:n oma ruutu - tuotti
+# lahes identtisen topdown-kuvan ja laadun kuin koskematon, seedaamaton
+# versio: RMS 5.39cm->5.39cm, worst_ratio 0.966->0.982).
+# ============================================================
+
+def unproject_to_ice_plane(px, py, camera, v_t, v_cl):
+    """Kaantaa k8.project_point:in (koskematon, kamera9_01.py:n
+    calibrate_camera_from_image:in sisainen kameramalli) - pikselista
+    (px,py) arvioitu (X,Y) jaatasolla (Z=0). v_t/v_cl ovat ortonormaalit
+    (katso k8.build_image_directions), joten projektio niille on pelkkä
+    pistetulo - suljetun muodon kaannos on siis suoraviivainen."""
+
+    diff = np.array([px, py], dtype=np.float64) - camera["center"]
+    local_u = float(np.dot(diff, v_t))
+    local_v = float(np.dot(diff, v_cl))
+
+    f = camera["f"]
+    theta = camera["theta"]
+    camera_height = camera["camera_height"]
+    near_depth = k8.NEAR_HOUSE_Y_CM * math.sin(theta) + camera_height
+
+    denom = f * math.cos(theta) - local_v * math.sin(theta)
+
+    if abs(denom) < 1e-8:
+        return None
+
+    relative_Y = local_v * near_depth / denom
+    Y = relative_Y + k8.NEAR_HOUSE_Y_CM
+
+    Zc = near_depth + relative_Y * math.sin(theta)
+
+    if Zc <= 1e-8:
+        return None
+
+    X = local_u * Zc / f
+
+    return X, Y
+
+
+def find_far_house_coarse_seed(blue_mask, near_blue_outer, camera, v_t, v_cl,
+                                min_area=20, min_ratio=0.5,
+                                exclude_radius_px=None,
+                                max_y_error_cm=1000.0, max_x_abs_cm=400.0):
+    """Etsii PIENIA sinisia rengaskandidaatteja (paitsi jo tunnettu
+    lahempi pesa) koko kuvasta kaukaisen pesan COARSE-haun alkuarvaukseksi
+    - katso kommentti taman tiedoston alkupaassa. Palauttaa None jos
+    mitaan fysikaalisesti uskottavaa (Y lahella FAR_HOUSE_Y_CM:aa, X
+    jarkevan lahella keskilinjaa) ei loytynyt - haku kayttaa tallöin
+    vanhaa (0,0)-oletusta (ei regressiota)."""
+
+    if exclude_radius_px is None:
+        exclude_radius_px = max(near_blue_outer[1]) * 0.6
+
+    near_center = np.array(near_blue_outer[0], dtype=np.float64)
+
+    candidates = k8.find_house_ellipses(blue_mask, min_area=min_area, min_ratio=min_ratio)
+
+    best = None
+    best_y_error = None
+
+    for c in candidates:
+
+        if np.linalg.norm(c["center"] - near_center) < exclude_radius_px:
+            continue
+
+        r = unproject_to_ice_plane(c["center"][0], c["center"][1], camera, v_t, v_cl)
+
+        if r is None:
+            continue
+
+        X, Y = r
+
+        if abs(X) > max_x_abs_cm:
+            continue
+
+        y_error = abs(Y - k8.FAR_HOUSE_Y_CM)
+
+        if y_error > max_y_error_cm:
+            continue
+
+        if best is None or y_error < best_y_error:
+            best = (X, Y - k8.FAR_HOUSE_Y_CM)
+            best_y_error = y_error
+
+    if best is None:
+        return None
+
+    return {"x_offset_cm": best[0], "y_offset_cm": best[1], "y_error_cm": best_y_error}
+
+
+def calibrate_camera_from_image_with_seed(filename):
+    """TARKALLEEN kamera9_01.py:n calibrate_camera_from_image, MUUTETTUNA
+    VAIN siten etta kaukaisen pesan COARSE-haun alkuarvaus (center_x/
+    center_y) haetaan datasta (find_far_house_coarse_seed) sokean
+    (0,0)-oletuksen sijaan - katso kommentti taman tiedoston alkupaassa.
+    Kaikki muu (FINE/ULTRA-vaiheet, homografia, vaaristyman korjaus,
+    geometrinen hienosaato) on TASMALLEEN sama koskemattomien k8/k9-
+    funktioiden kutsuja kuin alkuperaisessa."""
+
+    frame = cv2.imread(filename)
+
+    if frame is None:
+        raise RuntimeError(f"Kuvaa ei voitu avata: {filename}")
+
+    image_height, image_width = frame.shape[:2]
+
+    near_blue_mask = k8.create_blue_mask(frame)
+    near_red_mask = k8.create_red_mask(frame)
+
+    blue_outer, blue_inner = k8.find_house_pair(
+        near_blue_mask, k8.NEAR_BLUE_MIN_AREA, k8.NEAR_BLUE_MIN_RATIO, k8.NEAR_BLUE_MIN_SIZE_RATIO
+    )
+    red_outer, red_inner = k8.find_house_pair(
+        near_red_mask, k8.NEAR_RED_MIN_AREA, k8.NEAR_RED_MIN_RATIO, k8.NEAR_RED_MIN_SIZE_RATIO
+    )
+
+    if blue_outer is None or blue_inner is None or red_outer is None or red_inner is None:
+        raise RuntimeError("Lahemman pesan renkaita ei loytynyt kokonaan.")
+
+    segments = k8.detect_line_segments(frame, blue_outer)
+    (t_pair, centerline_pair, t_line, centerline, house_center) = k8.select_t_and_centerline(
+        segments, blue_outer
+    )
+    v_t, v_cl = k8.build_image_directions(t_pair, centerline_pair)
+
+    observations = k8.build_calibration_observations(blue_outer, blue_inner, red_outer, red_inner)
+
+    if len(observations) < 2:
+        raise RuntimeError("Kalibrointiin tarvitaan vahintaan 2 ympyraa.")
+
+    camera = k8.build_camera_model(observations, image_width, image_height)
+
+    template = k8.build_near_house_template(frame, blue_outer, camera, v_t, v_cl)
+    template["_hsv"] = template["hsv_model"]["hsv"]
+
+    seed = find_far_house_coarse_seed(near_blue_mask, blue_outer, camera, v_t, v_cl)
+    seed_x = seed["x_offset_cm"] if seed else 0.0
+    seed_y = seed["y_offset_cm"] if seed else 0.0
+
+    print(
+        "  kaukaisen pesan alkuarvaus: "
+        f"X={seed_x:.1f} Y-siirto={seed_y:.1f} "
+        f"({'loytyi' if seed else 'ei loytynyt, kaytetaan oletusta 0,0'})"
+    )
+
+    coarse = k8.search_far_house(
+        template, frame, camera, v_t, v_cl,
+        center_x=seed_x, center_y=seed_y,
+        center_range=k8.SEARCH_CENTER_RANGE_CM, center_step=k8.COARSE_CENTER_STEP_CM,
+        angle_center=0.0, angle_range=k8.SEARCH_CENTER_RANGE_DEG, angle_step=k8.COARSE_ANGLE_STEP_DEG,
+        scale_center=1.2, scale_range=k8.SEARCH_CENTER_RANGE_SCALE, scale_step=k8.COARSE_SCALE_STEP,
+        description="COARSE"
+    )
+    fine = k8.search_far_house(
+        template, frame, camera, v_t, v_cl,
+        center_x=coarse["x_offset_cm"], center_y=coarse["y_offset_cm"],
+        center_range=k8.FINE_CENTER_RANGE_CM, center_step=k8.FINE_CENTER_STEP_CM,
+        angle_center=coarse["angle_deg"], angle_range=k8.FINE_ANGLE_RANGE_DEG,
+        angle_step=k8.FINE_ANGLE_STEP_DEG,
+        scale_center=coarse["scale"], scale_range=k8.FINE_SCALE_RANGE, scale_step=k8.FINE_SCALE_STEP,
+        description="FINE"
+    )
+    optimized = k8.search_far_house(
+        template, frame, camera, v_t, v_cl,
+        center_x=fine["x_offset_cm"], center_y=fine["y_offset_cm"],
+        center_range=k8.ULTRA_CENTER_RANGE_CM, center_step=k8.ULTRA_CENTER_STEP_CM,
+        angle_center=fine["angle_deg"], angle_range=k8.ULTRA_ANGLE_RANGE_DEG,
+        angle_step=k8.ULTRA_ANGLE_STEP_DEG,
+        scale_center=fine["scale"], scale_range=k8.ULTRA_SCALE_RANGE, scale_step=k8.ULTRA_SCALE_STEP,
+        description="ULTRA FINE"
+    )
+
+    x_offset, y_offset = optimized["x_offset_cm"], optimized["y_offset_cm"]
+    angle_deg, scale = optimized["angle_deg"], optimized["scale"]
+
+    far_center_raw = k8.project_point(x_offset, k8.FAR_HOUSE_Y_CM + y_offset, camera, v_t, v_cl)
+    far_left_raw = k8.project_point(x_offset - k8.HOUSE_RADIUS_CM, k8.FAR_HOUSE_Y_CM + y_offset, camera, v_t, v_cl)
+    far_right_raw = k8.project_point(x_offset + k8.HOUSE_RADIUS_CM, k8.FAR_HOUSE_Y_CM + y_offset, camera, v_t, v_cl)
+
+    if far_center_raw is None or far_left_raw is None or far_right_raw is None:
+        raise RuntimeError("Kaukaisen pesan projisointi epaonnistui.")
+
+    far_left_x, far_left_y = k8.transform_projected_points(
+        far_left_raw[0], far_left_raw[1], far_center_raw[0], far_center_raw[1], angle_deg, 1
+    )
+    far_right_x, far_right_y = k8.transform_projected_points(
+        far_right_raw[0], far_right_raw[1], far_center_raw[0], far_center_raw[1], angle_deg, 1
+    )
+
+    far_left = np.array([float(far_left_x), float(far_left_y)])
+    far_right = np.array([float(far_right_x), float(far_right_y)])
+    far_center_est = np.asarray(far_center_raw, dtype=np.float64)
+
+    dir_forward = far_center_est - np.asarray(house_center, dtype=np.float64)
+    dir_forward /= np.linalg.norm(dir_forward)
+    dir_lateral = far_right - far_left
+    dir_lateral /= np.linalg.norm(dir_lateral)
+
+    near_img_pts, near_phys_pts, near_labels = k8.near_house_correspondences(
+        t_line, centerline, house_center, blue_outer, blue_inner, red_outer, red_inner,
+        dir_lateral, dir_forward
+    )
+
+    theoretical_img_pts, theoretical_phys_pts, _ = k8.theoretical_far_house_correspondences(
+        x_offset, y_offset, angle_deg, scale, camera, v_t, v_cl, far_center_est
+    )
+
+    hue_result = k8.create_far_house_hue_masks(frame, x_offset, y_offset, camera, v_t, v_cl, angle_deg, scale)
+    far_ellipses = k8.find_far_house_ellipses_from_hue(hue_result)
+    hue_img_pts, hue_phys_pts, _, _ = k8.far_house_correspondences_from_ellipses(
+        far_ellipses, dir_lateral, dir_forward, far_center_est
+    )
+
+    candidates = []
+
+    if len(theoretical_img_pts) >= 3:
+        candidates.append((theoretical_img_pts, theoretical_phys_pts))
+
+    if len(hue_img_pts) >= 3:
+        candidates.append((hue_img_pts, hue_phys_pts))
+
+    if not candidates:
+        raise RuntimeError("Kaukaiselle pesalle ei saatu yhtaan alkukorrespondenssia.")
+
+    far_img_pts, far_phys_pts = min(
+        candidates,
+        key=lambda c: k8._homography_rms(
+            np.array(near_img_pts + c[0], dtype=np.float64),
+            k8.physical_to_output_px(near_phys_pts + c[1])
+        )
+    )
+
+    all_img_pts = near_img_pts + far_img_pts
+    all_phys_pts = near_phys_pts + far_phys_pts
+
+    camera_matrix = k8.build_camera_matrix(image_width, image_height)
+
+    best_k1, best_k1_rms, baseline_rms = k8.estimate_radial_distortion_k1(
+        all_img_pts, all_phys_pts, camera_matrix
+    )
+    k1_improvement = (
+        (baseline_rms - best_k1_rms) / baseline_rms
+        if baseline_rms > 1e-9 and math.isfinite(baseline_rms) else 0.0
+    )
+
+    if k1_improvement > k8.K1_MIN_RELATIVE_IMPROVEMENT and abs(best_k1) > k8.K1_MIN_MAGNITUDE:
+        dist_coeffs = np.array([best_k1, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    else:
+        best_k1 = 0.0
+        dist_coeffs = np.zeros(5, dtype=np.float64)
+
+    frame_undistorted = cv2.undistort(frame, camera_matrix, dist_coeffs)
+
+    near_pts_frame = k8.undistort_points_px(np.array(near_img_pts, dtype=np.float64), camera_matrix, best_k1)
+    far_pts_frame_init = k8.undistort_points_px(np.array(far_img_pts, dtype=np.float64), camera_matrix, best_k1)
+
+    src_pts = np.vstack([near_pts_frame, far_pts_frame_init]).astype(np.float32)
+    dst_pts = k8.physical_to_output_px(all_phys_pts).astype(np.float32)
+
+    H_init, _ = cv2.findHomography(src_pts, dst_pts, method=0)
+
+    if H_init is None:
+        raise RuntimeError("Alustavan homografian laskenta epaonnistui.")
+
+    output_w = int(round((k8.OUTPUT_X_MAX_CM - k8.OUTPUT_X_MIN_CM) * k8.PIXELS_PER_CM))
+    output_h = int(round((k8.OUTPUT_Y_MAX_CM - k8.OUTPUT_Y_MIN_CM) * k8.PIXELS_PER_CM))
+
+    near_phys_arr = np.array(near_phys_pts, dtype=np.float64)
+
+    refined = k8.refine_geometric_homography(
+        frame_undistorted, H_init, near_pts_frame, near_phys_arr, output_w, output_h
+    )
+
+    return {
+        "frame": frame,
+        "frame_undistorted": frame_undistorted,
+        "camera_matrix": camera_matrix,
+        "best_k1": best_k1,
+        "H_final": refined["H_final"],
+        "quality": refined["quality"],
+        "image_width": image_width,
+        "image_height": image_height,
+        "output_w": output_w,
+        "output_h": output_h,
+        "near_pts_frame": near_pts_frame,
+        "near_phys": near_phys_arr,
+    }
+
+
+# ============================================================
 # ASETUKSET
 # ============================================================
 
@@ -2145,11 +2464,11 @@ def run_pipeline(
 
                     print(
                         "Kalibroidaan moodikuvasta "
-                        "(calibrate_camera_from_image + "
+                        "(calibrate_camera_from_image_with_seed + "
                         "build_pose_from_calibration)..."
                     )
 
-                    calib = k9.calibrate_camera_from_image(
+                    calib = calibrate_camera_from_image_with_seed(
                         calib_mode_output
                     )
 
