@@ -630,53 +630,6 @@ static cv::Mat computeSat(const cv::Mat& frame_bgr)
 }
 
 
-// OPTIMOINTI (EI numeerista eroa): SEURANTA:ssa (trackStoneUpdateOne)
-// createGraniteMask(crop) JA computeSat(crop) kutsuttiin aiemmin
-// PERAKKAIN SAMALLE crop:lle - molemmat laskivat cv::cvtColor(...,
-// COLOR_BGR2HSV):n itsenaisesti, eli sama HSV-muunnos tehtiin KAHDESTI
-// turhaan. Tama funktio laskee HSV:n KERRAN ja johtaa siita seka
-// maskin etta saturaation - TASMALLEEN sama laskentaketju/tulos kuin
-// erillisilla createGraniteMask+computeSat-kutsuilla, vain ilman
-// toistuvaa muunnosta. EI kaytossa HAKU:ssa (search_new_stone), koska
-// siella maski ja saturaatio lasketaan ERI syotekuvista (taustan-
-// vaimennettu vs. alkuperainen frame) - katso searchNewStoneOne.
-static cv::Mat createGraniteMaskAndSat(const cv::Mat& frame_bgr, cv::Mat& sat_out)
-{
-    cv::Mat hsv, gray, gray_f, bg, darkness;
-
-    cv::cvtColor(frame_bgr, hsv, cv::COLOR_BGR2HSV);
-    cv::cvtColor(frame_bgr, gray, cv::COLOR_BGR2GRAY);
-    gray.convertTo(gray_f, CV_32F);
-    cv::GaussianBlur(gray_f, bg, cv::Size(0, 0), STONE_DARKNESS_SIGMA);
-    darkness = bg - gray_f;
-
-    std::vector<cv::Mat> hsv_ch;
-    cv::split(hsv, hsv_ch);
-    const cv::Mat& sat_ch = hsv_ch[1];
-    sat_ch.convertTo(sat_out, CV_32F);
-
-    cv::Mat mask = cv::Mat::zeros(frame_bgr.size(), CV_8UC1);
-
-    for (int r = 0; r < mask.rows; ++r) {
-        const uchar* satp = sat_ch.ptr<uchar>(r);
-        const float* darkp = darkness.ptr<float>(r);
-        uchar* mp = mask.ptr<uchar>(r);
-        for (int c = 0; c < mask.cols; ++c) {
-            bool low_saturation = satp[c] < STONE_MAX_SATURATION;
-            bool dark_enough = darkp[c] > (float)STONE_MIN_DARKNESS;
-            mp[c] = (low_saturation && dark_enough) ? 255 : 0;
-        }
-    }
-
-    cv::Mat kernel_open = cv::Mat::ones(5, 5, CV_8U);
-    cv::Mat kernel_close = cv::Mat::ones(3, 3, CV_8U);
-    cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel_open);
-    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel_close);
-
-    return mask;
-}
-
-
 // ============================================================
 // TAUSTAN VAIMENNUS (main.py:n suppress_static_background, Task 6
 // - HAKU:n C++-porttaus). Peittaa (valkoisella) alueet jotka
@@ -2078,7 +2031,7 @@ struct StoneUpdateResult {
 
 
 static StoneUpdateResult trackStoneUpdateOne(
-    const cv::Mat& frame_mat,
+    const cv::Mat& frame_mat, const cv::Mat& background_reference, double diff_threshold,
     const std::vector<cv::Point3d>& local_pts_body,
     const std::vector<cv::Point3d>& local_pts_search,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
@@ -2101,8 +2054,29 @@ static StoneUpdateResult trackStoneUpdateOne(
     auto ts0 = std::chrono::steady_clock::now();
 #endif
     cv::Mat crop = frame_mat(roi);
-    cv::Mat sat_crop;
-    cv::Mat mask_crop = createGraniteMaskAndSat(crop, sat_crop);
+
+    // Kayttajan pyynnosta (katso git-historia): taustanvaimennus (sama
+    // suppressStaticBackground jo HAKU:ssa/searchNewStoneOne:ssa) nyt
+    // myos SEURANTAlle - ilman tata kivi menetti tarkkuutensa (joskus
+    // koko sijaintinsa) aina kun se ylitti staattisen jaamerkinnan
+    // (pesan renkaat, hogline, mainokset), koska nama nayttavat
+    // maskille TASMALLEEN yhta kivenkaltaisilta kuin itse kivi (matala
+    // saturaatio + paikallisesti tumma) - mitattu oikealla videolla:
+    // RMS normaalisti ~2px, hogline-ylityksella jopa 130-146px. Sama
+    // jarjestys kuin searchNewStoneOne:ssa: MASKI lasketaan vaimenne-
+    // tusta crop:ista (jottei staattinen merkinta nay maskissa), mutta
+    // SATURAATIO alkuperaisesta (vaimennus valkaisee suppressoidut
+    // pikselit, mika loisi keinotekoisen terävän saturaatiorajan
+    // kiven reunalle jos sita kaytettaisiin reunanhakuun).
+    cv::Mat crop_filtered = crop;
+    if (!background_reference.empty() && background_reference.size() == frame_mat.size()
+        && background_reference.type() == frame_mat.type()) {
+        cv::Mat ref_crop = background_reference(roi);
+        crop_filtered = suppressStaticBackground(crop, ref_crop, diff_threshold);
+    }
+
+    cv::Mat sat_crop = computeSat(crop);
+    cv::Mat mask_crop = createGraniteMask(crop_filtered);
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts1 = std::chrono::steady_clock::now();
 #endif
@@ -2173,6 +2147,7 @@ static py::dict resultToDict(const StoneUpdateResult& r)
 
 static py::dict track_stone_update(
     py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame_u,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> background_reference,
     py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_search_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
@@ -2181,13 +2156,19 @@ static py::dict track_stone_update(
     double X0, double Y0,
     double track_half_range_cm, double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double diff_threshold = 30.0)
 {
     auto buf = frame_u.request();
     if (buf.ndim != 3 || buf.shape[2] != 3)
         throw std::runtime_error("frame_u must be HxWx3 uint8 BGR");
 
     cv::Mat frame_mat((int)buf.shape[0], (int)buf.shape[1], CV_8UC3, (void*)buf.ptr);
+
+    cv::Mat ref_mat;
+    auto ref_buf = background_reference.request();
+    if (ref_buf.ndim == 3 && ref_buf.shape[2] == 3)
+        ref_mat = cv::Mat((int)ref_buf.shape[0], (int)ref_buf.shape[1], CV_8UC3, (void*)ref_buf.ptr);
 
     auto local_pts_body = parsePts3(local_pts_body_arr);
     auto local_pts_search = parsePts3(local_pts_search_arr);
@@ -2199,7 +2180,7 @@ static py::dict track_stone_update(
     {
         py::gil_scoped_release release;
         result = trackStoneUpdateOne(
-            frame_mat, local_pts_body, local_pts_search, K, R, t,
+            frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
             X0, Y0, track_half_range_cm, coarse_step_cm, fine_step_cm,
             score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess
         );
@@ -2211,6 +2192,7 @@ static py::dict track_stone_update(
 
 static py::list track_stones_batch(
     py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame_u,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> background_reference,
     py::array_t<double, py::array::c_style | py::array::forcecast> X0_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> Y0_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
@@ -2220,13 +2202,19 @@ static py::list track_stones_batch(
     py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
     double track_half_range_cm, double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double diff_threshold = 30.0)
 {
     auto buf = frame_u.request();
     if (buf.ndim != 3 || buf.shape[2] != 3)
         throw std::runtime_error("frame_u must be HxWx3 uint8 BGR");
 
     cv::Mat frame_mat((int)buf.shape[0], (int)buf.shape[1], CV_8UC3, (void*)buf.ptr);
+
+    cv::Mat ref_mat;
+    auto ref_buf = background_reference.request();
+    if (ref_buf.ndim == 3 && ref_buf.shape[2] == 3)
+        ref_mat = cv::Mat((int)ref_buf.shape[0], (int)ref_buf.shape[1], CV_8UC3, (void*)ref_buf.ptr);
 
     auto local_pts_body = parsePts3(local_pts_body_arr);
     auto local_pts_search = parsePts3(local_pts_search_arr);
@@ -2270,7 +2258,7 @@ static py::list track_stones_batch(
                 if (i >= n_stones)
                     break;
                 results[(size_t)i] = trackStoneUpdateOne(
-                    frame_mat, local_pts_body, local_pts_search, K, R, t,
+                    frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
                     X0b(i), Y0b(i), track_half_range_cm, coarse_step_cm, fine_step_cm,
                     score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess
                 );
@@ -2663,10 +2651,26 @@ PYBIND11_MODULE(stone_tracker, m)
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";
 
     m.def("track_stone_update", &track_stone_update,
-          "Yhden kiven ristikkohaku+yhteissovitus (SEURANTA-paivitys)");
+          "Yhden kiven ristikkohaku+yhteissovitus (SEURANTA-paivitys)",
+          py::arg("frame_u"), py::arg("background_reference"),
+          py::arg("local_pts_body"), py::arg("local_pts_search"),
+          py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("X0"), py::arg("Y0"),
+          py::arg("track_half_range_cm"), py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
+          py::arg("score_threshold"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("diff_threshold") = 30.0);
 
     m.def("track_stones_batch", &track_stones_batch,
-          "Usean kiven ristikkohaku+yhteissovitus rinnakkain std::thread:eilla");
+          "Usean kiven ristikkohaku+yhteissovitus rinnakkain std::thread:eilla",
+          py::arg("frame_u"), py::arg("background_reference"),
+          py::arg("X0_arr"), py::arg("Y0_arr"),
+          py::arg("local_pts_body"), py::arg("local_pts_search"),
+          py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("track_half_range_cm"), py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
+          py::arg("score_threshold"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("diff_threshold") = 30.0);
 
     m.def("search_new_stone", &search_new_stone,
           "Uuden kiven haku kiinteältä vyohykkeelta (HAKU), koko frame",

@@ -2211,7 +2211,12 @@ def run_pipeline(
                 # alun kommentti sen tunnetusta, algoritmin OMASTA
                 # (ei porttausvirheen) numeerisesta herkkyydesta
                 # refine_position_joint:in MAD-poikkeavien-hylkays-
-                # kynnyksella.
+                # kynnyksella. Kayttajan pyynnosta (katso git-historia):
+                # SAA nyt taustanvaimennuksen (calib_result:in staattinen
+                # referenssikuva) SAMOIN kuin HAKU jo aiemmin - ilman
+                # tata kivi menetti tarkkuutensa (rms_px jopa 130-146px
+                # normaalin ~2px sijaan) aina kun se ylitti staattisen
+                # jaamerkinnan (pesan renkaat, hogline, mainokset).
                 # --------------------------------------------
 
                 still_active = []
@@ -2241,7 +2246,8 @@ def run_pipeline(
 
                     t_seuranta0 = time.time()
                     batch_results = stone_tracker.track_stones_batch(
-                        frame_u, X0_arr, Y0_arr,
+                        frame_u, calib_result["calib"]["frame_undistorted"],
+                        X0_arr, Y0_arr,
                         local_pts_body, local_pts_search,
                         pose["K"], pose["R"], pose["t"],
                         k92.TRACK_HALF_RANGE_CM,
