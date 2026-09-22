@@ -2149,7 +2149,8 @@ static py::list track_stones_batch(
     py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
     double track_half_range_cm, double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    int max_workers = -1)
 {
     auto buf = frame_u.request();
     if (buf.ndim != 3 || buf.shape[2] != 3)
@@ -2191,7 +2192,15 @@ static py::list track_stones_batch(
 
         std::atomic<int> next_idx(0);
         unsigned hw = std::thread::hardware_concurrency();
-        int worker_count = std::max(1, std::min(n_stones, (int)(hw == 0 ? 4u : hw)));
+        int hw_i = (int)(hw == 0 ? 4u : hw);
+        // max_workers > 0: kutsuja (elavan seurannan putkistus, katso
+        // main.py:n LIVE_PIPELINE_RESERVED_THREADS) on varannut osan
+        // ytimista muille rinnakkaisille saikeille (esikasittely-
+        // putki + ei-blokkaava HAKU) - rajataan tama oma per-kivi-
+        // saiemaara sen mukaan ettei se kilpaile niiden kanssa.
+        // max_workers <= 0 (oletus): kayta kaikkia ytimia kuten ennen.
+        int cap = (max_workers > 0) ? std::min(max_workers, hw_i) : hw_i;
+        int worker_count = std::max(1, std::min(n_stones, cap));
 
         auto worker = [&]() {
             while (true) {
@@ -2560,7 +2569,14 @@ PYBIND11_MODULE(stone_tracker, m)
           "Yhden kiven ristikkohaku+yhteissovitus (SEURANTA-paivitys)");
 
     m.def("track_stones_batch", &track_stones_batch,
-          "Usean kiven ristikkohaku+yhteissovitus rinnakkain std::thread:eilla");
+          "Usean kiven ristikkohaku+yhteissovitus rinnakkain std::thread:eilla",
+          py::arg("frame_u"), py::arg("X0_arr"), py::arg("Y0_arr"),
+          py::arg("local_pts_body"), py::arg("local_pts_search"),
+          py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("track_half_range_cm"), py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
+          py::arg("score_threshold"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("max_workers") = -1);
 
     m.def("search_new_stone", &search_new_stone,
           "Uuden kiven haku kiinteältä vyohykkeelta (HAKU), koko frame",
