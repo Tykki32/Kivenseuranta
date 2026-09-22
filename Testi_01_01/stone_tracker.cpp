@@ -84,6 +84,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -1335,6 +1336,161 @@ static std::vector<double> jointResidualsLinearized(const LinearizedResidualCont
 }
 
 
+// ============================================================
+// ANALYYTTINEN JACOBIAN (UUSI, EI Python-porttaus - kayttajan
+// pyynnosta: "koska se on nyt lineaarinen"): evalLinearizedHull/Ring
+// tuottaa karkipisteet AFFIININA parametrien funktiona (d(karkipiste)/
+// d(param) = jac_*[k], VAKIO - ei riipu siita missa arvioidaan). Piste-
+// aariviiva-etaisyys (lahimman reunan etaisyys) on derivoituva funktio
+// reunan kahdesta paatepisteesta (poissa kulmista) - ketjusaannolla
+// d(residuaali)/d(param) = d(etaisyys)/d(karkipiste) * jac_*[karki].
+// Tama antaa TARKAN Jacobianin YHDESSA O(N) lahin-reuna-haussa - EI
+// tarvitse finite-difference:in 2-3 YLIMAARAISTA koko residuaalijoukon
+// uudelleenlaskentaa jokaisella ulommalla LM-iteraatiolla.
+//
+// polygonResidualWithGrad laskee residuaalin ARVON ja gradientin
+// SAMASSA O(N)-lapikaynnissa (seka sisa-/ulkopuolella-testi etta lahin-
+// reuna-haku - HUOM: taman on oltava YKSI lapikaynti eika kaksi, muuten
+// nopeushyoty katoaa). Gradienttia ei kuitenkaan lasketa jokaiselle
+// LM:n damping-kokeilulle (kalliimpaa kuin pelkka arvo) - vain kerran
+// per HYVAKSYTTY askel (jointResidualsLinearized/cv::pointPolygonTest
+// riittaa halvaksi arvo-vain-tarkistukseksi kokeiluille).
+// ============================================================
+
+struct ResidualWithGrad {
+    double value = 0.0;
+    double dX = 0.0, dY = 0.0, dR = 0.0;
+};
+
+static ResidualWithGrad polygonResidualWithGrad(
+    const std::vector<cv::Point2f>& pts,
+    const float* jac_ux, const float* jac_uy, const float* jac_ur,
+    const float* jac_vx, const float* jac_vy, const float* jac_vr,
+    const cv::Point2f& p)
+{
+    ResidualWithGrad out;
+
+    size_t n = pts.size();
+    if (n < 3) {
+        out.value = 1000.0;
+        return out;
+    }
+
+    bool inside = false;
+    double best_d2 = std::numeric_limits<double>::max();
+    size_t best_i1 = 0, best_i2 = 0;
+    double best_t = 0.0;
+    double px = (double)p.x, py = (double)p.y;
+
+    for (size_t i = 0; i < n; ++i) {
+        size_t j = (i + 1) % n;
+        double v1x = pts[i].x, v1y = pts[i].y;
+        double v2x = pts[j].x, v2y = pts[j].y;
+
+        if ((v1y > py) != (v2y > py)) {
+            double x_cross = v1x + (py - v1y) / (v2y - v1y) * (v2x - v1x);
+            if (px < x_cross)
+                inside = !inside;
+        }
+
+        double dx = v2x - v1x, dy = v2y - v1y;
+        double len2 = dx * dx + dy * dy;
+        double t;
+        if (len2 < 1e-12) {
+            t = 0.0;
+        } else {
+            double wx = px - v1x, wy = py - v1y;
+            t = (wx * dx + wy * dy) / len2;
+            if (t < 0.0) t = 0.0;
+            if (t > 1.0) t = 1.0;
+        }
+        double qx = v1x + t * dx, qy = v1y + t * dy;
+        double ex = px - qx, ey = py - qy;
+        double d2 = ex * ex + ey * ey;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best_i1 = i; best_i2 = j; best_t = t;
+        }
+    }
+
+    double sign = inside ? 1.0 : -1.0;
+    double D = std::sqrt(best_d2);
+    out.value = sign * D;
+
+    if (D < 1e-9)
+        return out;
+
+    size_t i1 = best_i1, i2 = best_i2;
+    double t = best_t;
+    double qx = pts[i1].x + t * (pts[i2].x - pts[i1].x);
+    double qy = pts[i1].y + t * (pts[i2].y - pts[i1].y);
+    double ux = (qx - px) / D;
+    double uy = (qy - py) / D;
+
+    double dQx_dX = (1.0 - t) * jac_ux[i1] + t * jac_ux[i2];
+    double dQx_dY = (1.0 - t) * jac_uy[i1] + t * jac_uy[i2];
+    double dQy_dX = (1.0 - t) * jac_vx[i1] + t * jac_vx[i2];
+    double dQy_dY = (1.0 - t) * jac_vy[i1] + t * jac_vy[i2];
+
+    out.dX = sign * (ux * dQx_dX + uy * dQy_dX);
+    out.dY = sign * (ux * dQx_dY + uy * dQy_dY);
+
+    if (jac_ur != nullptr) {
+        double dQx_dR = (1.0 - t) * jac_ur[i1] + t * jac_ur[i2];
+        double dQy_dR = (1.0 - t) * jac_vr[i1] + t * jac_vr[i2];
+        out.dR = sign * (ux * dQx_dR + uy * dQy_dR);
+    }
+
+    return out;
+}
+
+
+struct ResidualsAndJacobian {
+    std::vector<double> residuals;
+    std::vector<std::array<double, 3>> J;
+};
+
+static ResidualsAndJacobian jointResidualsAndJacobianLinearized(
+    const LinearizedResidualContext& ctx, const cv::Vec3d& params)
+{
+    ResidualsAndJacobian out;
+    double dX = params[0] - ctx.X0_ref;
+    double dY = params[1] - ctx.Y0_ref;
+    double dR = params[2] - ctx.R0_ref;
+
+    if (!ctx.body_pts_f->empty()) {
+        if (ctx.hull_lin->valid) {
+            auto hull = evalLinearizedHull(*ctx.hull_lin, dX, dY);
+            for (auto& p : *ctx.body_pts_f) {
+                auto rg = polygonResidualWithGrad(
+                    hull, ctx.hull_lin->jac_ux.data(), ctx.hull_lin->jac_uy.data(), nullptr,
+                    ctx.hull_lin->jac_vx.data(), ctx.hull_lin->jac_vy.data(), nullptr, p);
+                out.residuals.push_back(rg.value);
+                out.J.push_back({ rg.dX, rg.dY, 0.0 });
+            }
+        } else {
+            for (size_t i = 0; i < ctx.body_pts_f->size(); ++i) {
+                out.residuals.push_back(1000.0);
+                out.J.push_back({ 0.0, 0.0, 0.0 });
+            }
+        }
+    }
+
+    if (!ctx.ring_pts_f->empty()) {
+        auto ring = evalLinearizedRing(*ctx.ring_lin, dX, dY, dR);
+        for (auto& p : *ctx.ring_pts_f) {
+            auto rg = polygonResidualWithGrad(
+                ring, ctx.ring_lin->jac_ux.data(), ctx.ring_lin->jac_uy.data(), ctx.ring_lin->jac_ur.data(),
+                ctx.ring_lin->jac_vx.data(), ctx.ring_lin->jac_vy.data(), ctx.ring_lin->jac_vr.data(), p);
+            out.residuals.push_back(rg.value);
+            out.J.push_back({ rg.dX, rg.dY, rg.dR });
+        }
+    }
+
+    return out;
+}
+
+
 static cv::Vec3d levenbergMarquardt3Linearized(
     const ResidualContext& ctx, cv::Vec3d params0,
     int max_iterations = 30, double lambda_init = 1e-3, double rel_tol = 1e-10)
@@ -1346,41 +1502,23 @@ static cv::Vec3d levenbergMarquardt3Linearized(
 
     LinearizedResidualContext lctx{ &hull_lin, &ring_lin, ctx.body_pts_f, ctx.ring_pts_f, params0[0], params0[1], params0[2] };
 
-    cv::Vec3d params = params0;
-    auto residuals = jointResidualsLinearized(lctx, params);
-
     auto sumsq = [](const std::vector<double>& v) {
         double s = 0.0;
         for (double x : v) s += x * x;
         return s;
     };
 
+    cv::Vec3d params = params0;
+    auto rj = jointResidualsAndJacobianLinearized(lctx, params);
+    auto residuals = rj.residuals;
+    auto J = rj.J;
+
     double cost = sumsq(residuals);
     double lam = lambda_init;
-    const double eps = 1e-6;
 
     for (int iter = 0; iter < max_iterations; ++iter) {
 
         size_t m = residuals.size();
-        std::vector<std::array<double, 3>> J(m);
-
-        bool skip_r_column = ctx.ring_pts_f->empty();
-
-        for (int j = 0; j < 3; ++j) {
-
-            if (j == 2 && skip_r_column) {
-                for (size_t i = 0; i < m; ++i)
-                    J[i][2] = 0.0;
-                continue;
-            }
-
-            double step = eps * std::max(1.0, std::abs(params[j]));
-            cv::Vec3d p_plus = params;
-            p_plus[j] += step;
-            auto r_plus = jointResidualsLinearized(lctx, p_plus);
-            for (size_t i = 0; i < m; ++i)
-                J[i][(size_t)j] = (r_plus[i] - residuals[i]) / step;
-        }
 
         double JTJ[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
         double JTr[3] = {0, 0, 0};
@@ -1416,6 +1554,11 @@ static cv::Vec3d levenbergMarquardt3Linearized(
                 continue;
             }
 
+            // Kokeiluaskeleen hyvaksynta/hylkays tarvitsee VAIN
+            // kustannuksen (arvon) - kaytetaan halpaa arvo-vain-
+            // funktiota (cv::pointPolygonTest). Gradientti lasketaan
+            // vain KERRAN hyvaksytylle askeleelle (alla) - katso
+            // taman lohkon alun kommentti.
             cv::Vec3d trial = params + cv::Vec3d(delta[0], delta[1], delta[2]);
             auto trial_res = jointResidualsLinearized(lctx, trial);
             double trial_cost = sumsq(trial_res);
@@ -1423,7 +1566,9 @@ static cv::Vec3d levenbergMarquardt3Linearized(
             if (trial_cost < cost) {
                 rel_improvement = (cost - trial_cost) / std::max(cost, 1e-12);
                 params = trial;
-                residuals = trial_res;
+                auto rj_new = jointResidualsAndJacobianLinearized(lctx, params);
+                residuals = rj_new.residuals;
+                J = rj_new.J;
                 cost = trial_cost;
                 lam = std::max(lam / 5.0, 1e-12);
                 step_taken = true;
