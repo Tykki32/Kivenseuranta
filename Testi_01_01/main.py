@@ -3,8 +3,6 @@ import sys
 import math
 import csv
 import time
-import queue
-import threading
 import importlib.util
 import cv2
 import numpy as np
@@ -63,17 +61,6 @@ DISPLAY_HEIGHT = 800
 MAX_POSITION_ERROR = 20.0
 REPORT_EVERY = 1000
 MAX_WORKERS = 8
-
-# Elavan moni-kiven seurannan putkistus (kayttajan pyynnosta): kun
-# eloankiven seuranta alkaa, esikasittely (read+harmaasavy+paneili-
-# seuranta+RANSAC+warpAffine+remap) siirretaan omalle taustasaikeelle
-# YHTA framea edelle (ei riipu saman framen HAKU/SEURANTA-tuloksesta)
-# ja HAKU muuttuu ei-blokkaavaksi omalle taustasaikeelleen (katso
-# run_pipeline:in "ELAVA MONI-KIVEN SEURANTA - PUTKISTETTU" -osio).
-# Nama 2 kiintean saikeen varaavat ytimia jotka vahennetaan SEURANTAn
-# (track_stones_batch) omasta per-kivi-saiemaarasta ettei se kilpaile
-# niiden kanssa - katso track_stones_batch:in max_workers-parametri.
-LIVE_PIPELINE_RESERVED_THREADS = 2
 
 ROI_HALF_WIDTH = 100
 ROI_HALF_HEIGHT = 120
@@ -1477,8 +1464,6 @@ def run_pipeline(
     live_state = None
     csv_writer = None
     csv_file = None
-    live_pipeline_started = False
-    reached_eof = False
 
     previous_stabilization_matrix = np.array(
         [
@@ -1528,76 +1513,6 @@ def run_pipeline(
         max_workers=MAX_WORKERS
     )
 
-    # ------------------------------------------------------------
-    # ETA/nopeusraportti - erotettu omaksi funktioksi jotta seka
-    # alkuperainen (kalibrointi+profiiliskannaus, synkroninen)
-    # paasilmukka etta elavan seurannan PUTKISTETTU paasilmukka
-    # (katso alempana "ELAVA MONI-KIVEN SEURANTA - PUTKISTETTU")
-    # voivat kutsua samaa, muuttamatonta raportointikoodia.
-    # ------------------------------------------------------------
-
-    def _print_progress_report():
-
-        if (
-            frame_index % REPORT_EVERY == 0
-            or frame_index == total_frames
-        ):
-
-            elapsed = time.time() - start_time
-
-            if frame_index > 0:
-                frames_per_second = frame_index / elapsed
-                remaining_frames = total_frames - frame_index
-                eta_seconds = remaining_frames / frames_per_second
-            else:
-                frames_per_second = 0
-                eta_seconds = 0
-
-            elapsed_minutes = int(elapsed // 60)
-            elapsed_secs = int(elapsed % 60)
-            eta_minutes = int(eta_seconds // 60)
-            eta_secs = int(eta_seconds % 60)
-
-            print(
-                f"Ruutu "
-                f"{frame_index} / "
-                f"{total_frames} | "
-                f"C++:lle tallennettuja kuvia: "
-                f"{engine.mode_frame_count()} | "
-                f"nopeus: "
-                f"{frames_per_second:.1f} r/s | "
-                f"kulunut: "
-                f"{elapsed_minutes:02d}:"
-                f"{elapsed_secs:02d} | "
-                f"ETA: "
-                f"{eta_minutes:02d}:"
-                f"{eta_secs:02d}"
-            )
-            processed = frame_index
-            print(
-                f"  keskimäärin: "
-                f"gray {(total_gray_time / processed) * 1000:.1f} ms | "
-                f"tracking {(total_tracking_time / processed) * 1000:.1f} ms | "
-                f"transform {(total_transform_time / processed) * 1000:.3f} ms | "
-                f"sample {(total_sample_time / max(1, engine.mode_frame_count())) * 1000:.1f} ms"
-            )
-            print(
-                f"  kivenseuranta (C++): "
-                f"HAKU {n_haku_calls} kutsua, "
-                f"ka {(total_haku_time / max(1, n_haku_calls)) * 1000:.1f} ms/kutsu, "
-                f"{(total_haku_time / processed) * 1000:.2f} ms/ruutu ka | "
-                f"SEURANTA {n_seuranta_calls} kutsua, "
-                f"ka {(total_seuranta_time / max(1, n_seuranta_calls)) * 1000:.1f} ms/kutsu "
-                f"({n_seuranta_stone_updates / max(1, n_seuranta_calls):.1f} kivea/kutsu ka), "
-                f"{(total_seuranta_time / processed) * 1000:.2f} ms/ruutu ka"
-            )
-            print(
-                f"  muu (ei viela optimoitu): "
-                f"read(video) {(total_read_time / processed) * 1000:.2f} ms/ruutu | "
-                f"stabilointi-RANSAC {(total_stabilize_compute_time / processed) * 1000:.2f} ms/ruutu | "
-                f"warpAffine+remap(koko frame) {(total_warp_remap_time / processed) * 1000:.2f} ms/ruutu"
-            )
-
     try:
 
         while True:
@@ -1607,7 +1522,6 @@ def run_pipeline(
             total_read_time += time.perf_counter() - t_read0
 
             if frame is None or frame.size == 0:
-                reached_eof = True
                 break
             t0 = time.perf_counter()
             gray = cv2.cvtColor(
@@ -2392,450 +2306,97 @@ def run_pipeline(
 
             frame_index += 1
 
-            _print_progress_report()
-
             # ------------------------------------------------
-            # SIIRTYMA PUTKISTETTUUN ELAVAAN SEURANTAAN: ensimmainen
-            # elavan seurannan frame (yo. live_state-alustus) on
-            # juuri kasitelty TAVALLISEEN, synkroniseen tapaan -
-            # katkaistaan taman perussilmukka nyt ja jatketaan
-            # lopuille frameille alempana omalla, putkistetulla
-            # silmukalla (katso "ELAVA MONI-KIVEN SEURANTA -
-            # PUTKISTETTU"). Kalibrointi- ja profiiliskannausvaiheet
-            # EIVAT muutu - vain elavan seurannan paasilmukka.
+            # ETA
             # ------------------------------------------------
 
-            if live_state is not None and not live_pipeline_started:
-                live_pipeline_started = True
-                break
-
-        if live_pipeline_started and not reached_eof:
-
-            # ------------------------------------------------
-            # ELAVA MONI-KIVEN SEURANTA - PUTKISTETTU (kayttajan
-            # pyynnosta): esikasittely (read+harmaasavy+paneili-
-            # seuranta+RANSAC+warpAffine+remap) YHDELLA omalla
-            # taustasaikeella YHTA framea edella (ei riipu saman
-            # framen HAKU/SEURANTA-tuloksesta - vain EDELLISEN
-            # framen omista paneilipisteista, jotka on jo laskettu
-            # kun se frame tuotettiin). HAKU muuttuu EI-BLOKKAAVAKSI
-            # omalle taustasaikeelleen (enintaan 1 kutsu kerrallaan -
-            # uuden kiven rekisterointi voi siis viivastya enintaan
-            # yhden HAKU-valin verran, SEARCH_EVERY_N_FRAMES=10
-            # framea=0.4s - kayttajan hyvaksyma kompromissi).
-            #
-            # cv2.setNumThreads(1): OpenCV:n oma sisainen rinnak-
-            # kaistus on PROSESSINLAAJUINEN asetus (EI saiekohtainen)
-            # - jos se saisi kayttaa useita ytimia SAMAAN AIKAAN kun
-            # esikasittelysaie, HAKU-saie ja SEURANTAn oma per-kivi-
-            # saiejako kaikki yrittavat kayttaa ytimia yhtaaikaa,
-            # lopputulos on ylikuormitus (sama ongelma kuin track_
-            # stones_batch:in oma kommentti kuvaa YHDEN kutsun
-            # sisalla - tama pate nyt myos KUTSUJEN VALILLA, koska
-            # esikasittely/HAKU/SEURANTA voivat kaikki olla kaynnissa
-            # samaan aikaan). Siksi OpenCV:n oma rinnakkaistus
-            # kytketaan pois PAALTA koko putkistetun elavan seurannan
-            # ajaksi, ja AINOA rinnakkaistus tulee taman tiedoston
-            # OMISTA, eksplisiittisista saikeista (esikasittely +
-            # HAKU + SEURANTAn per-kivi-tyontekijat, joiden maara
-            # rajataan max_workers:illa LIVE_PIPELINE_RESERVED_
-            # THREADS-verran pienemmaksi ettei se kilpaile naiden
-            # kanssa).
-            # ------------------------------------------------
-
-            prev_cv_threads = cv2.getNumThreads()
-            cv2.setNumThreads(1)
-
-            seuranta_max_workers = max(
-                1, (os.cpu_count() or 4) - LIVE_PIPELINE_RESERVED_THREADS
-            )
-
-            frame_q = queue.Queue(maxsize=1)
-            prefetch_stop_event = threading.Event()
-
-            def _prefetch_worker():
-
-                nonlocal previous_stabilization_matrix
-
-                while not prefetch_stop_event.is_set():
-
-                    t_read0 = time.perf_counter()
-                    frame_raw = engine.read()
-                    dt_read = time.perf_counter() - t_read0
-
-                    if frame_raw is None or frame_raw.size == 0:
-                        frame_q.put(None)
-                        return
-
-                    t0 = time.perf_counter()
-                    gray = cv2.cvtColor(frame_raw, cv2.COLOR_BGR2GRAY)
-                    t1 = time.perf_counter()
-
-                    futures = []
-
-                    for panel_index in range(len(panel_data)):
-
-                        previous_center = (
-                            histories[panel_index][-1]
-                            if histories[panel_index]
-                            else reference_centers[panel_index]
-                        )
-
-                        futures.append(
-                            executor.submit(track_panel, gray, previous_center)
-                        )
-
-                    current_centers = []
-
-                    for panel_index, future in enumerate(futures):
-
-                        result = future.result()
-
-                        if result is None:
-                            current_centers.append(None)
-                            continue
-
-                        center = np.asarray(result["center"], dtype=np.float32)
-
-                        previous_center = (
-                            histories[panel_index][-1]
-                            if histories[panel_index]
-                            else reference_centers[panel_index]
-                        )
-
-                        error = np.linalg.norm(center - previous_center)
-
-                        if error <= MAX_POSITION_ERROR:
-                            histories[panel_index].append(center.copy())
-                            if len(histories[panel_index]) > HISTORY_LENGTH:
-                                histories[panel_index].pop(0)
-                            current_centers.append(center)
-                        else:
-                            current_centers.append(None)
-
-                    t3 = time.perf_counter()
-
-                    t_stab0 = time.perf_counter()
-
-                    valid_reference = []
-                    valid_current = []
-
-                    for i in range(len(reference_centers)):
-                        if current_centers[i] is not None:
-                            valid_reference.append(reference_centers[i])
-                            valid_current.append(current_centers[i])
-
-                    stab_matrix = previous_stabilization_matrix.copy()
-
-                    if len(valid_reference) >= 2:
-
-                        reference = np.asarray(valid_reference, dtype=np.float32)
-                        current = np.asarray(valid_current, dtype=np.float32)
-
-                        M, inliers = cv2.estimateAffinePartial2D(
-                            reference, current, method=cv2.RANSAC,
-                            ransacReprojThreshold=3.0, maxIters=2000,
-                            confidence=0.99
-                        )
-
-                        if M is not None:
-                            stab_matrix = cv2.invertAffineTransform(M)
-
-                    stabilization_history.append(stab_matrix.copy())
-                    stab_matrix = np.median(
-                        np.stack(stabilization_history, axis=0), axis=0
-                    )
-                    stab_matrix = np.asarray(stab_matrix, dtype=np.float64)
-                    previous_stabilization_matrix = stab_matrix.copy()
-
-                    t_stab1 = time.perf_counter()
-
-                    t4 = time.perf_counter()
-                    engine.set_transform(stab_matrix)
-                    t5 = time.perf_counter()
-
-                    t_warp0 = time.perf_counter()
-                    stabilized = cv2.warpAffine(
-                        frame_raw, stab_matrix, (width, height)
-                    )
-                    frame_u = cv2.remap(
-                        stabilized, live_state["map1"], live_state["map2"],
-                        interpolation=cv2.INTER_LINEAR
-                    )
-                    t_warp1 = time.perf_counter()
-
-                    timing = (
-                        dt_read, t1 - t0, t3 - t1, t_stab1 - t_stab0,
-                        t5 - t4, t_warp1 - t_warp0
-                    )
-
-                    frame_q.put((frame_raw, frame_u, timing))
-
-            prefetch_thread = threading.Thread(
-                target=_prefetch_worker, daemon=True
-            )
-            prefetch_thread.start()
-
-            haku_executor = ThreadPoolExecutor(max_workers=1)
-            haku_future = None
-            haku_future_ctx = None
-
-            def _run_haku(
-                frame_u_snapshot, pose_k, pose_r, pose_t,
-                x_c, x_hw, y_c, y_hw, ref_frame, lpb, lps,
-                r_max, h_total, ring_frac
+            if (
+                frame_index % REPORT_EVERY == 0
+                or frame_index == total_frames
             ):
-                t0 = time.time()
-                result = stone_tracker.search_new_stone(
-                    frame_u_snapshot, ref_frame, lpb, lps, pose_k, pose_r, pose_t,
-                    x_c, x_hw, y_c, y_hw,
-                    k92.SEARCH_COARSE_STEP_CM, k92.SEARCH_FINE_STEP_CM,
-                    k92.SEARCH_SCORE_THRESHOLD,
-                    r_max, h_total, ring_frac
+
+                elapsed = (
+                    time.time() -
+                    start_time
                 )
-                return result, time.time() - t0
 
-            try:
+                if frame_index > 0:
 
-                while True:
-
-                    item = frame_q.get()
-
-                    if item is None:
-                        reached_eof = True
-                        break
-
-                    frame, frame_u, timing = item
-                    (
-                        dt_read, dt_gray, dt_tracking, dt_stabilize,
-                        dt_transform, dt_warp_remap
-                    ) = timing
-
-                    total_read_time += dt_read
-                    total_gray_time += dt_gray
-                    total_tracking_time += dt_tracking
-                    total_stabilize_compute_time += dt_stabilize
-                    total_transform_time += dt_transform
-                    total_warp_remap_time += dt_warp_remap
-
-                    timestamp = frame_index / fps
-                    pose = calib_result["pose"]
-                    local_pts_body = live_state["local_pts_body"]
-                    local_pts_search = live_state["local_pts_search"]
-
-                    # --------------------------------------------
-                    # HAKU: kerataan edellisen kutsun tulos (jos
-                    # valmis) - katso talla lohkolla silmukan
-                    # ylapuolella oleva kommentti.
-                    # --------------------------------------------
-
-                    newly_found_ids = set()
-
-                    if haku_future is not None and haku_future.done():
-
-                        haku_result, haku_dt = haku_future.result()
-                        haku_frame_index, haku_timestamp = haku_future_ctx
-                        haku_future = None
-                        haku_future_ctx = None
-                        total_haku_time += haku_dt
-
-                        if haku_result["found"]:
-
-                            bx, by = haku_result["X_cm"], haku_result["Y_cm"]
-
-                            already_tracked = any(
-                                math.hypot(
-                                    bx - s["last_xy"][0], by - s["last_xy"][1]
-                                ) < NEW_STONE_DEDUP_CM
-                                for s in active_stones
-                            )
-
-                            if not already_tracked:
-
-                                stone_id = next_stone_id
-                                next_stone_id += 1
-
-                                active_stones.append({
-                                    "stone_id": stone_id,
-                                    "last_xy": (
-                                        haku_result["X_cm"], haku_result["Y_cm"]
-                                    ),
-                                    "misses": 0,
-                                    "position_history": [(
-                                        haku_frame_index,
-                                        haku_result["X_cm"], haku_result["Y_cm"]
-                                    )],
-                                })
-                                newly_found_ids.add(stone_id)
-
-                                print(
-                                    f"[frame {haku_frame_index}] Uusi kivi "
-                                    f"{stone_id}: "
-                                    f"({haku_result['X_cm']:.1f}, "
-                                    f"{haku_result['Y_cm']:.1f}) cm"
-                                )
-
-                                _write_stone_csv_row(
-                                    csv_writer, haku_frame_index, haku_timestamp,
-                                    stone_id, haku_result
-                                )
-
-                    if (
-                        haku_future is None
-                        and len(active_stones) < MAX_CONCURRENT_STONES
-                        and frame_index % k92.SEARCH_EVERY_N_FRAMES == 0
-                    ):
-
-                        x_center = 0.0
-                        y_center = (
-                            k92.SEARCH_Y_MIN_CM + k92.SEARCH_Y_MAX_CM
-                        ) / 2.0
-                        y_half = (
-                            k92.SEARCH_Y_MAX_CM - k92.SEARCH_Y_MIN_CM
-                        ) / 2.0
-
-                        haku_future_ctx = (frame_index, timestamp)
-                        haku_future = haku_executor.submit(
-                            _run_haku, frame_u,
-                            pose["K"], pose["R"], pose["t"],
-                            x_center, k92.SEARCH_X_HALF_WIDTH_CM, y_center, y_half,
-                            calib_result["calib"]["frame_undistorted"],
-                            local_pts_body, local_pts_search,
-                            live_state["R_max"], live_state["H_total"],
-                            live_state["ring_r_frac_guess"]
-                        )
-                        n_haku_calls += 1
-
-                    # --------------------------------------------
-                    # SEURANTA: paivitetaan jokainen aktiivinen kivi
-                    # - katso taman tiedoston alkupaan kommentti
-                    # (sama logiikka kuin ei-putkistetussa versiossa,
-                    # ainoa ero on max_workers-parametri).
-                    # --------------------------------------------
-
-                    still_active = []
-
-                    seuranta_stones = [
-                        s for s in active_stones
-                        if s["stone_id"] not in newly_found_ids
-                    ]
-
-                    if seuranta_stones:
-
-                        X0_arr = np.array(
-                            [s["last_xy"][0] for s in seuranta_stones],
-                            dtype=np.float64
-                        )
-                        Y0_arr = np.array(
-                            [s["last_xy"][1] for s in seuranta_stones],
-                            dtype=np.float64
-                        )
-
-                        t_seuranta0 = time.time()
-                        batch_results = stone_tracker.track_stones_batch(
-                            frame_u, X0_arr, Y0_arr,
-                            local_pts_body, local_pts_search,
-                            pose["K"], pose["R"], pose["t"],
-                            k92.TRACK_HALF_RANGE_CM,
-                            k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
-                            k92.TRACK_SCORE_THRESHOLD,
-                            live_state["R_max"], live_state["H_total"],
-                            live_state["ring_r_frac_guess"],
-                            max_workers=seuranta_max_workers
-                        )
-                        total_seuranta_time += time.time() - t_seuranta0
-                        n_seuranta_calls += 1
-                        n_seuranta_stone_updates += len(seuranta_stones)
-
-                        for s, refined in zip(seuranta_stones, batch_results):
-
-                            if refined["found"]:
-
-                                s["last_xy"] = (
-                                    refined["X_cm"], refined["Y_cm"]
-                                )
-                                s["misses"] = 0
-
-                                _write_stone_csv_row(
-                                    csv_writer, frame_index, timestamp,
-                                    s["stone_id"], refined
-                                )
-
-                                history = s["position_history"]
-                                history.append((
-                                    frame_index,
-                                    refined["X_cm"], refined["Y_cm"]
-                                ))
-
-                                while (
-                                    history[-1][0] - history[0][0]
-                                    > stop_tracking_frames
-                                ):
-                                    history.pop(0)
-
-                                stopped = False
-
-                                if (
-                                    history[-1][0] - history[0][0]
-                                    >= stop_tracking_frames
-                                ):
-                                    _, old_x, old_y = history[0]
-                                    displacement = math.hypot(
-                                        s["last_xy"][0] - old_x,
-                                        s["last_xy"][1] - old_y
-                                    )
-
-                                    if displacement < STOP_TRACKING_DISPLACEMENT_CM:
-                                        stopped = True
-                                        print(
-                                            f"[frame {frame_index}] Kivi "
-                                            f"{s['stone_id']} pysahtynyt "
-                                            f"(liikkunut {displacement:.1f}cm "
-                                            f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
-                                            "aikana) - lopetetaan seuranta."
-                                        )
-
-                                if not stopped:
-                                    still_active.append(s)
-
-                            else:
-
-                                s["misses"] += 1
-
-                                if s["misses"] < k92.TRACK_LOST_MAX_MISSES:
-                                    still_active.append(s)
-                                else:
-                                    print(
-                                        f"[frame {frame_index}] Kivi "
-                                        f"{s['stone_id']} kadotettu."
-                                    )
-
-                    still_active.extend(
-                        s for s in active_stones
-                        if s["stone_id"] in newly_found_ids
+                    frames_per_second = (
+                        frame_index /
+                        elapsed
                     )
 
-                    active_stones = still_active
+                    remaining_frames = (
+                        total_frames -
+                        frame_index
+                    )
 
-                    frame_index += 1
+                    eta_seconds = (
+                        remaining_frames /
+                        frames_per_second
+                    )
 
-                    _print_progress_report()
+                else:
 
-            finally:
+                    frames_per_second = 0
+                    eta_seconds = 0
 
-                prefetch_stop_event.set()
+                elapsed_minutes = int(
+                    elapsed // 60
+                )
 
-                while not frame_q.empty():
-                    try:
-                        frame_q.get_nowait()
-                    except queue.Empty:
-                        break
+                elapsed_secs = int(
+                    elapsed % 60
+                )
 
-                prefetch_thread.join(timeout=5.0)
+                eta_minutes = int(
+                    eta_seconds // 60
+                )
 
-                haku_executor.shutdown(wait=True)
+                eta_secs = int(
+                    eta_seconds % 60
+                )
 
-                cv2.setNumThreads(prev_cv_threads)
+                print(
+                    f"Ruutu "
+                    f"{frame_index} / "
+                    f"{total_frames} | "
+                    f"C++:lle tallennettuja kuvia: "
+                    f"{engine.mode_frame_count()} | "
+                    f"nopeus: "
+                    f"{frames_per_second:.1f} r/s | "
+                    f"kulunut: "
+                    f"{elapsed_minutes:02d}:"
+                    f"{elapsed_secs:02d} | "
+                    f"ETA: "
+                    f"{eta_minutes:02d}:"
+                    f"{eta_secs:02d}"
+                )
+                processed = frame_index
+                print(
+                    f"  keskimäärin: "
+                    f"gray {(total_gray_time / processed) * 1000:.1f} ms | "
+                    f"tracking {(total_tracking_time / processed) * 1000:.1f} ms | "
+                    f"transform {(total_transform_time / processed) * 1000:.3f} ms | "
+                    f"sample {(total_sample_time / max(1, engine.mode_frame_count())) * 1000:.1f} ms"
+                )
+                print(
+                    f"  kivenseuranta (C++): "
+                    f"HAKU {n_haku_calls} kutsua, "
+                    f"ka {(total_haku_time / max(1, n_haku_calls)) * 1000:.1f} ms/kutsu, "
+                    f"{(total_haku_time / processed) * 1000:.2f} ms/ruutu ka | "
+                    f"SEURANTA {n_seuranta_calls} kutsua, "
+                    f"ka {(total_seuranta_time / max(1, n_seuranta_calls)) * 1000:.1f} ms/kutsu "
+                    f"({n_seuranta_stone_updates / max(1, n_seuranta_calls):.1f} kivea/kutsu ka), "
+                    f"{(total_seuranta_time / processed) * 1000:.2f} ms/ruutu ka"
+                )
+                print(
+                    f"  muu (ei viela optimoitu): "
+                    f"read(video) {(total_read_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"stabilointi-RANSAC {(total_stabilize_compute_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"warpAffine+remap(koko frame) {(total_warp_remap_time / processed) * 1000:.2f} ms/ruutu"
+                )
 
     finally:
 
