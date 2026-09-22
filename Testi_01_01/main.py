@@ -1039,12 +1039,62 @@ def find_moving_candidate(candidates_prev, candidates_curr,
 
 STONE_TRACK_WINDOW_SECONDS = 30.0
 
+# KAYTTAJAN MITTAAMA LOYDOS (oikea video, todellinen skannaus alusta
+# asti): track_stone_in_video_windowed oli 73.7% koko kalibrointi+
+# skannausvaiheen ajasta, JA 5/6 kutsusta (83%) kohdistui HYLATTYYN
+# ehdokkaaseen (pelaaja/kohina) - jokainen hylkays maksoi silti taysin
+# saman KOKO 60s ikkunan (1501 framea) hinnan kuin hyvaksytty kivikin,
+# koska solo_ok-kelvollisuustarkistus tehtiin vasta KOKO ikkunan
+# skannauksen JALKEEN. Kaksi toisiaan taydentavaa optimointia (EI
+# Python-porttaus/kamera9_04.py-muutos - vain tama tiedosto):
+#
+# 1) HALPA ESITARKISTUS ENNEN taytta ikkunaa: skannataan ensin vain
+#    +-STONE_TRACK_PRECHECK_WINDOW_SECONDS (paljon lyhyempi), ja jos
+#    tama nayttaa jo selvasti EI-kivelta, hylataan HETI ilman koko
+#    60s ikkunan skannausta. Kayttaa LOYHEMPAA RMS-kynnysta kuin
+#    lopullinen solo_ok-tarkistus (STONE_TRACK_PRECHECK_MAX_RMS_PX),
+#    koska lyhyt ikkuna antaa vahemman kulmavaihtelua (katso taman
+#    tiedoston toisen kommentin selitys profiilisovituksen kulma-
+#    vaihtelutarpeesta) - tama tekisi RMS:sta systemaattisesti
+#    huonomman myos AIDOLLE kivelle, joten liian tiukka kynnys
+#    hylkaisi vaarin. R_max-jarkevyystarkistus (try_fit_profile:in
+#    SISALLA, PROFILE_R_MAX_MIN/MAX_CM) pysyy silti samana - se on
+#    fyysinen koko-tarkistus joka ei riipu ikkunan pituudesta, ja
+#    havaitussa datassa (R_max=21-247cm hylatyilla vs. 12.28cm
+#    hyvaksytylla) juuri TAMA erotti selvimmin.
+#    Jos esitarkistuksen data on liian niukka paatokseen (alle
+#    STONE_TRACK_PRECHECK_MIN_SAMPLES havaintoa), EI hylata datan
+#    puutteen takia - jatketaan varovaisuudesta taydelliseen ikkunaan.
+#
+# 2) NAYTTEISTYS: taydessa (ja esitarkistus-) ikkunassa kasitellaan
+#    VAIN joka STONE_TRACK_SAMPLE_STRIDE:s frame taysin (vaanto+tausta
+#    vaimennus+kandidaattitunnistus - kalliit vaiheet), ei jokaista -
+#    kandidaattitunnistukseen kaytetyt havainnot (PROFILE_SAMPLES_
+#    PER_STONE=25) ovat joka tapauksessa paljon harvempia kuin taysi
+#    1501 framen tiheys tuottaisi, joten tiheampi kuin naytteistetty
+#    seuranta ei lisaa profiilin laatua. max_jump_cm skaalataan
+#    STRIDE:lla (perustason kynnys on mitoitettu PERAKKAISILLE
+#    framille) - muuten nopeasti liikkuva kivi voisi karata seurannasta
+#    naytteiden valilla.
+STONE_TRACK_PRECHECK_WINDOW_SECONDS = 3.0
+STONE_TRACK_PRECHECK_MIN_SAMPLES = 5
+STONE_TRACK_PRECHECK_MAX_RMS_PX = 24.0
+# HUOM (kayttajan mittaama loydos): stride=5 heikensi havaittavasti
+# profiilisovituksen tarkkuutta (RMS n. 5.9px -> 10.9px samalle
+# oikealle kivelle taydessa 30s ikkunassa) - riittavan lahella
+# PROFILE_MAX_RMS_PX=10.0px-kynnysta etta yksi muuten kelvollinen
+# kivi ei enaa riittanyt sellaisenaan, ja koko skannaus joutui
+# keraamaan useampia kivia ennen riittavaa profiilia. stride=3 on
+# varovaisempi kompromissi (kolmasosa kalliista vaiheista tayden
+# sijaan, lyhyempi 120ms vali naytteiden valilla 200ms:n sijaan).
+STONE_TRACK_SAMPLE_STRIDE = 3
+
 
 def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
                                    seed_pos_cm, window_seconds=STONE_TRACK_WINDOW_SECONDS,
                                    background_reference_undistorted=None):
 
-    max_jump_cm = k9.STONE_TRACK_MAX_JUMP_CM
+    max_jump_cm = k9.STONE_TRACK_MAX_JUMP_CM * STONE_TRACK_SAMPLE_STRIDE
     max_misses = k9.STONE_TRACK_MAX_MISSES
     min_area = k9.STONE_TRACK_MIN_AREA
     min_fill_ratio = k9.STONE_TRACK_MIN_FILL_RATIO
@@ -1066,102 +1116,170 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
         camera_matrix, dist_coeffs, (frame_w, frame_h)
     )
 
+    # Naytteistetyt indeksit +-half_window_frames -alueella, AINA
+    # tasmalleen seed_frame_idx:sta lahtien molempiin suuntiin
+    # STONE_TRACK_SAMPLE_STRIDE:n valein - talla tavalla esitarkistuksen
+    # (lyhyt ikkuna) indeksit ovat AINA tasan taman saman hilan
+    # osajoukko kuin taysi ikkuna, joten esitarkistuksen tulokset
+    # voidaan uudelleenkayttaa suoraan taydessa skannauksessa.
+    def build_indices(half_window_frames):
+        idxs = list(range(
+            seed_frame_idx,
+            max(0, seed_frame_idx - half_window_frames) - 1,
+            -STONE_TRACK_SAMPLE_STRIDE
+        ))
+        idxs += list(range(
+            seed_frame_idx + STONE_TRACK_SAMPLE_STRIDE,
+            min(n_frames - 1, seed_frame_idx + half_window_frames) + 1,
+            STONE_TRACK_SAMPLE_STRIDE
+        ))
+        return sorted(set(i for i in idxs if 0 <= i < n_frames))
+
+    # YKSI haku ensimmaisen halutun indeksin kohdalle (ei per-frame haku
+    # - katso kamera9_04.py:n kommentti seek:in hitaudesta/epatarkkuudesta),
+    # sitten sekvenssiluku - kalliit vaiheet (vaanto+taustavaimennus+
+    # kandidaattitunnistus) tehdaan VAIN halutuille (naytteistetyille)
+    # indekseille, muut framet vain dekoodataan (halpa) ohi.
+    def scan_indices(indices):
+        if not indices:
+            return {}
+        wanted = set(indices)
+        cache = {}
+        cap.set(cv2.CAP_PROP_POS_FRAMES, indices[0])
+        idx = indices[0]
+        last = indices[-1]
+        while idx <= last:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if idx in wanted:
+                frame_u = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
+                frame_u_filtered = suppress_static_background(
+                    frame_u, background_reference_undistorted
+                )
+                cache[idx] = k94._candidates_in_frame_fast(
+                    frame_u_filtered, pose, H_final, min_area, min_fill_ratio, min_aspect_ratio
+                )
+            idx += 1
+        return cache
+
+    def build_track_from_cache(cache, half_window_frames):
+
+        start_frame = max(0, seed_frame_idx - half_window_frames)
+        end_frame = min(n_frames - 1, seed_frame_idx + half_window_frames)
+
+        def candidates_at(i):
+            return cache.get(i, [])
+
+        seed_cands = candidates_at(seed_frame_idx)
+
+        if not seed_cands:
+            return []
+
+        seed = min(
+            seed_cands,
+            key=lambda c: math.hypot(
+                c["pos_cm"][0] - seed_pos_cm[0], c["pos_cm"][1] - seed_pos_cm[1]
+            )
+        )
+        seed["frame_idx"] = seed_frame_idx
+
+        def track_direction(step):
+
+            track = []
+            last_pos = seed["pos_cm"]
+            misses = 0
+            idx = seed_frame_idx + step * STONE_TRACK_SAMPLE_STRIDE
+
+            while start_frame <= idx <= end_frame and misses < max_misses:
+
+                cands = candidates_at(idx)
+
+                if cands:
+
+                    best = min(
+                        cands,
+                        key=lambda c: math.hypot(
+                            c["pos_cm"][0] - last_pos[0], c["pos_cm"][1] - last_pos[1]
+                        )
+                    )
+
+                    d = math.hypot(
+                        best["pos_cm"][0] - last_pos[0], best["pos_cm"][1] - last_pos[1]
+                    )
+
+                    if d <= max_jump_cm:
+                        best["frame_idx"] = idx
+                        track.append(best)
+                        last_pos = best["pos_cm"]
+                        misses = 0
+                    else:
+                        misses += 1
+                else:
+                    misses += 1
+
+                idx += step * STONE_TRACK_SAMPLE_STRIDE
+
+            return track
+
+        backward = track_direction(-1)
+        forward = track_direction(+1)
+
+        full_track = list(reversed(backward)) + [seed] + forward
+        full_track.sort(key=lambda t: t["frame_idx"])
+
+        return full_track
+
+    # ------------------------------------------------
+    # VAIHE 1: HALPA ESITARKISTUS (katso taman funktion
+    # ylapuolella oleva kommentti)
+    # ------------------------------------------------
+
+    precheck_half_frames = int(round(STONE_TRACK_PRECHECK_WINDOW_SECONDS * fps))
+    precheck_indices = build_indices(precheck_half_frames)
+    precheck_cache = scan_indices(precheck_indices)
+    precheck_track = build_track_from_cache(precheck_cache, precheck_half_frames)
+
+    if len(precheck_track) >= STONE_TRACK_PRECHECK_MIN_SAMPLES:
+
+        idxs = sorted(set(
+            np.linspace(
+                0, len(precheck_track) - 1,
+                min(STONE_TRACK_PRECHECK_MIN_SAMPLES, len(precheck_track))
+            ).astype(int).tolist()
+        ))
+
+        precheck_observations = [
+            {"ellipse": precheck_track[i]["ellipse"], "contour": precheck_track[i]["contour"]}
+            for i in idxs
+        ]
+
+        _, precheck_ok = try_fit_profile(
+            pose, precheck_observations,
+            max_rms_px=STONE_TRACK_PRECHECK_MAX_RMS_PX,
+            min_samples=STONE_TRACK_PRECHECK_MIN_SAMPLES,
+            label="  esitarkistus (%.0fs)" % STONE_TRACK_PRECHECK_WINDOW_SECONDS
+        )
+
+        if not precheck_ok:
+            cap.release()
+            return []
+
+    # ------------------------------------------------
+    # VAIHE 2: TAYSI IKKUNA (uudelleenkayttaa esitarkistuksen
+    # jo skannaamat framet - katso build_indices:in kommentti)
+    # ------------------------------------------------
+
     window_frames = int(round(window_seconds * fps))
-    start_frame = max(0, seed_frame_idx - window_frames)
-    end_frame = min(n_frames - 1, seed_frame_idx + window_frames)
+    full_indices = build_indices(window_frames)
+    remaining_indices = [i for i in full_indices if i not in precheck_cache]
 
-    # YKSI haku ikkunan alkuun (ei per-frame haku - katso kamera9_04.py:n
-    # kommentti seek:in hitaudesta/epatarkkuudesta), sitten sekvenssiluku
-    # ikkunan yli - taman kayttotarkoituksen (karkean siemenen tarkka
-    # seuranta) ei tarvitse olla framen tarkka, toisin kuin lopullinen
-    # kalibrointi.
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-    candidates_cache = {}
-    idx = start_frame
-
-    while idx <= end_frame:
-
-        ok, frame = cap.read()
-
-        if not ok:
-            break
-
-        frame_u = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
-
-        frame_u_filtered = suppress_static_background(
-            frame_u, background_reference_undistorted
-        )
-
-        candidates_cache[idx] = k94._candidates_in_frame_fast(
-            frame_u_filtered, pose, H_final, min_area, min_fill_ratio, min_aspect_ratio
-        )
-
-        idx += 1
+    full_cache = dict(precheck_cache)
+    full_cache.update(scan_indices(remaining_indices))
 
     cap.release()
 
-    def candidates_at(i):
-        return candidates_cache.get(i, [])
-
-    seed_cands = candidates_at(seed_frame_idx)
-
-    if not seed_cands:
-        return []
-
-    seed = min(
-        seed_cands,
-        key=lambda c: math.hypot(
-            c["pos_cm"][0] - seed_pos_cm[0], c["pos_cm"][1] - seed_pos_cm[1]
-        )
-    )
-    seed["frame_idx"] = seed_frame_idx
-
-    def track_direction(step):
-
-        track = []
-        last_pos = seed["pos_cm"]
-        misses = 0
-        idx = seed_frame_idx + step
-
-        while start_frame <= idx <= end_frame and misses < max_misses:
-
-            cands = candidates_at(idx)
-
-            if cands:
-
-                best = min(
-                    cands,
-                    key=lambda c: math.hypot(
-                        c["pos_cm"][0] - last_pos[0], c["pos_cm"][1] - last_pos[1]
-                    )
-                )
-
-                d = math.hypot(
-                    best["pos_cm"][0] - last_pos[0], best["pos_cm"][1] - last_pos[1]
-                )
-
-                if d <= max_jump_cm:
-                    best["frame_idx"] = idx
-                    track.append(best)
-                    last_pos = best["pos_cm"]
-                    misses = 0
-                else:
-                    misses += 1
-            else:
-                misses += 1
-
-            idx += step
-
-        return track
-
-    backward = track_direction(-1)
-    forward = track_direction(+1)
-
-    full_track = list(reversed(backward)) + [seed] + forward
-    full_track.sort(key=lambda t: t["frame_idx"])
-
-    return full_track
+    return build_track_from_cache(full_cache, window_frames)
 
 
 def try_fit_profile(pose, stones, max_rms_px=PROFILE_MAX_RMS_PX,
