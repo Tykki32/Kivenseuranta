@@ -3377,6 +3377,18 @@ def run_pipeline(
 # MAIN
 # ============================================================
 
+def _time_str_to_seconds(time_str):
+    """Muuntaa "[HH:]MM:SS"-muotoisen ajan (tai pelkan sekuntiluvun)
+    sekunneiksi."""
+
+    seconds = 0.0
+
+    for part in time_str.split(":"):
+        seconds = seconds * 60 + float(part)
+
+    return seconds
+
+
 def main(debug=None, start_time=None, end_time=None):
 
     # debug=None (oletus): kayta DEBUG_SAVE_TRACKING_VIDEO-vakion
@@ -3427,15 +3439,32 @@ def main(debug=None, start_time=None, end_time=None):
     )
 
     command = ["ffmpeg"]
-    
+
     if start_time is not None:
         command += ["-ss", start_time]
-    
+
     command += ["-i", input_file]
-    
+
     if end_time is not None:
-        command += ["-to", end_time]
-    
+        # HUOM: "-to" input-option "-ss":n jalkeen EI viittaa alkuperaisen
+        # videon aikajanaan vaan "-ss":n siirtamaan (nollasta alkavaan)
+        # ulostulon aikajanaan - "--end 00:21:00" leikkaisi siis 21 min
+        # PITUISEN palan alkaen "--start"-kohdasta, ei alkuperaisen videon
+        # kohtaan 21 min asti. Lasketaan siksi KESTO ("-t") itse.
+        start_seconds = (
+            _time_str_to_seconds(start_time) if start_time is not None else 0.0
+        )
+        end_seconds = _time_str_to_seconds(end_time)
+        duration_seconds = end_seconds - start_seconds
+
+        if duration_seconds <= 0:
+            raise ValueError(
+                f"--end ({end_time}) on ennen tai samassa kohdassa kuin "
+                f"--start ({start_time})."
+            )
+
+        command += ["-t", str(duration_seconds)]
+
     command += ["-c", "copy", video_file]
     
     subprocess.run(command, check=True)
