@@ -166,6 +166,87 @@ def find_far_house_coarse_seed(blue_mask, near_blue_outer, camera, v_t, v_cl,
     return {"x_offset_cm": best[0], "y_offset_cm": best[1], "y_error_cm": best_y_error}
 
 
+# Kaukaisen pesan FINE-haun pisteytyspinta on paikoin lahes tasapelissa
+# usean eri kiertokulman/skaalan valilla (kaksi lahes identtista
+# moodikuvaa samasta paikallaan pysyvasta kamerasta antoivat FINE-
+# vaiheessa TAYSIN eri parhaan kulman, -12 vs -36 astetta - katso
+# diagnoosi taman ominaisuuden kehityshistoriassa) - yhden globaalin
+# parhaan sijasta pidetaan hengissa FAR_HOUSE_FINE_TOPK eri (x,y)-
+# ruudun parasta tulosta, viedaan JOKAINEN niista ULTRA-vaiheen lapi,
+# ja PAATETAAN vasta lopuksi homografian RMS:lla (katso alempana) kumpi
+# niista on oikeasti oikea - sama periaate jota koodi jo kayttaa
+# teoreettisen/varipohjaisen kaukaisen pesan kandidaatin valinnassa.
+FAR_HOUSE_FINE_TOPK = 20
+
+
+def _search_far_house_topk(
+    template, frame, camera, v_t, v_cl,
+    center_x, center_y, center_range, center_step,
+    angle_center, angle_range, angle_step,
+    scale_center, scale_range, scale_step,
+    description, top_k
+):
+    """Kuten k8.search_far_house, mutta palauttaa YHDEN parhaan tuloksen
+    sijasta listan TOP-K parasta ERI (x,y)-ruutua (kullekin ruudulle
+    silti vain sen oma paras kulma+skaala, sama valinta kuin k8.search_
+    far_house tekisi sille ruudulle) - katso FAR_HOUSE_FINE_TOPK:n
+    kommentti."""
+
+    x_values = k8.make_range(center_x, center_range, center_step)
+    y_values = k8.make_range(center_y, center_range, center_step)
+    angle_values = k8.make_range(angle_center, angle_range, angle_step)
+    scale_values = k8.make_range(scale_center, scale_range, scale_step)
+
+    image_height, image_width = frame.shape[:2]
+    hsv = template["_hsv"]
+    hsv_model = template["hsv_model"]
+
+    print()
+    print("=" * 65)
+    print(f"KAUKAISEN PESAN HAKU: {description}")
+    print("=" * 65)
+    print(f"Kandidaatteja yhteensa: {len(x_values) * len(y_values) * len(angle_values) * len(scale_values)}")
+
+    per_cell_best = []
+
+    for x_offset in x_values:
+        for y_offset in y_values:
+
+            projected = k8._project_template_for_offset(
+                template, x_offset, y_offset, camera, v_t, v_cl
+            )
+
+            if projected["far_center"] is None:
+                continue
+
+            scores = k8.score_far_candidates_batch(
+                projected, angle_values, scale_values, hsv, hsv_model,
+                image_width, image_height
+            )
+
+            local_best_idx = int(np.argmax(scores))
+            local_best_angle = float(angle_values[local_best_idx // len(scale_values)])
+            local_best_scale = float(scale_values[local_best_idx % len(scale_values)])
+
+            per_cell_best.append({
+                "x_offset_cm": x_offset, "y_offset_cm": y_offset,
+                "angle_deg": local_best_angle, "scale": local_best_scale,
+                "score": float(scores[local_best_idx]),
+            })
+
+    per_cell_best.sort(key=lambda r: r["score"], reverse=True)
+    top = per_cell_best[:top_k]
+
+    for rank, r in enumerate(top):
+        print(
+            f"  #{rank}: X={r['x_offset_cm']:.3f} Y={r['y_offset_cm']:.3f} "
+            f"kulma={r['angle_deg']:.3f} skaala={r['scale']:.4f} "
+            f"pisteytys={r['score']:.6f}"
+        )
+
+    return top
+
+
 def calibrate_camera_from_image_with_seed(filename):
     """TARKALLEEN kamera9_01.py:n calibrate_camera_from_image, MUUTETTUNA
     VAIN siten etta kaukaisen pesan COARSE-haun alkuarvaus (center_x/
@@ -229,84 +310,115 @@ def calibrate_camera_from_image_with_seed(filename):
         scale_center=1.2, scale_range=k8.SEARCH_CENTER_RANGE_SCALE, scale_step=k8.COARSE_SCALE_STEP,
         description="COARSE"
     )
-    fine = k8.search_far_house(
+    fine_candidates = _search_far_house_topk(
         template, frame, camera, v_t, v_cl,
         center_x=coarse["x_offset_cm"], center_y=coarse["y_offset_cm"],
         center_range=k8.FINE_CENTER_RANGE_CM, center_step=k8.FINE_CENTER_STEP_CM,
         angle_center=coarse["angle_deg"], angle_range=k8.FINE_ANGLE_RANGE_DEG,
         angle_step=k8.FINE_ANGLE_STEP_DEG,
         scale_center=coarse["scale"], scale_range=k8.FINE_SCALE_RANGE, scale_step=k8.FINE_SCALE_STEP,
-        description="FINE"
-    )
-    optimized = k8.search_far_house(
-        template, frame, camera, v_t, v_cl,
-        center_x=fine["x_offset_cm"], center_y=fine["y_offset_cm"],
-        center_range=k8.ULTRA_CENTER_RANGE_CM, center_step=k8.ULTRA_CENTER_STEP_CM,
-        angle_center=fine["angle_deg"], angle_range=k8.ULTRA_ANGLE_RANGE_DEG,
-        angle_step=k8.ULTRA_ANGLE_STEP_DEG,
-        scale_center=fine["scale"], scale_range=k8.ULTRA_SCALE_RANGE, scale_step=k8.ULTRA_SCALE_STEP,
-        description="ULTRA FINE"
+        description="FINE", top_k=FAR_HOUSE_FINE_TOPK
     )
 
-    x_offset, y_offset = optimized["x_offset_cm"], optimized["y_offset_cm"]
-    angle_deg, scale = optimized["angle_deg"], optimized["scale"]
+    # Jokainen FINE-vaiheen top-K-kandidaatti viedaan ULTRA-vaiheen lapi
+    # (tasmalleen sama k8.search_far_house kuin ennen, ei muutoksia
+    # itse hakuun), ja PARAS lopullinen kandidaatti valitaan vasta
+    # homografian RMS:lla (near+far pisteet yhdessa) - katso FAR_HOUSE_
+    # FINE_TOPK:n kommentti. Sama RMS-vertailu joka jo aiemmin valitsi
+    # teoreettisen/varipohjaisen kaukaisen pesan valilla, laajennettu
+    # nyt vertailemaan myos naita eri FINE-kandidaatteja keskenaan.
+    best_overall_rms = float("inf")
+    best_overall = None
 
-    far_center_raw = k8.project_point(x_offset, k8.FAR_HOUSE_Y_CM + y_offset, camera, v_t, v_cl)
-    far_left_raw = k8.project_point(x_offset - k8.HOUSE_RADIUS_CM, k8.FAR_HOUSE_Y_CM + y_offset, camera, v_t, v_cl)
-    far_right_raw = k8.project_point(x_offset + k8.HOUSE_RADIUS_CM, k8.FAR_HOUSE_Y_CM + y_offset, camera, v_t, v_cl)
+    for fine_idx, fine in enumerate(fine_candidates):
 
-    if far_center_raw is None or far_left_raw is None or far_right_raw is None:
-        raise RuntimeError("Kaukaisen pesan projisointi epaonnistui.")
+        optimized = k8.search_far_house(
+            template, frame, camera, v_t, v_cl,
+            center_x=fine["x_offset_cm"], center_y=fine["y_offset_cm"],
+            center_range=k8.ULTRA_CENTER_RANGE_CM, center_step=k8.ULTRA_CENTER_STEP_CM,
+            angle_center=fine["angle_deg"], angle_range=k8.ULTRA_ANGLE_RANGE_DEG,
+            angle_step=k8.ULTRA_ANGLE_STEP_DEG,
+            scale_center=fine["scale"], scale_range=k8.ULTRA_SCALE_RANGE, scale_step=k8.ULTRA_SCALE_STEP,
+            description=f"ULTRA FINE (kandidaatti {fine_idx})"
+        )
 
-    far_left_x, far_left_y = k8.transform_projected_points(
-        far_left_raw[0], far_left_raw[1], far_center_raw[0], far_center_raw[1], angle_deg, 1
-    )
-    far_right_x, far_right_y = k8.transform_projected_points(
-        far_right_raw[0], far_right_raw[1], far_center_raw[0], far_center_raw[1], angle_deg, 1
-    )
+        x_offset, y_offset = optimized["x_offset_cm"], optimized["y_offset_cm"]
+        angle_deg, scale = optimized["angle_deg"], optimized["scale"]
 
-    far_left = np.array([float(far_left_x), float(far_left_y)])
-    far_right = np.array([float(far_right_x), float(far_right_y)])
-    far_center_est = np.asarray(far_center_raw, dtype=np.float64)
+        far_center_raw = k8.project_point(x_offset, k8.FAR_HOUSE_Y_CM + y_offset, camera, v_t, v_cl)
+        far_left_raw = k8.project_point(x_offset - k8.HOUSE_RADIUS_CM, k8.FAR_HOUSE_Y_CM + y_offset, camera, v_t, v_cl)
+        far_right_raw = k8.project_point(x_offset + k8.HOUSE_RADIUS_CM, k8.FAR_HOUSE_Y_CM + y_offset, camera, v_t, v_cl)
 
-    dir_forward = far_center_est - np.asarray(house_center, dtype=np.float64)
-    dir_forward /= np.linalg.norm(dir_forward)
-    dir_lateral = far_right - far_left
-    dir_lateral /= np.linalg.norm(dir_lateral)
+        if far_center_raw is None or far_left_raw is None or far_right_raw is None:
+            continue
 
-    near_img_pts, near_phys_pts, near_labels = k8.near_house_correspondences(
-        t_line, centerline, house_center, blue_outer, blue_inner, red_outer, red_inner,
-        dir_lateral, dir_forward
-    )
+        far_left_x, far_left_y = k8.transform_projected_points(
+            far_left_raw[0], far_left_raw[1], far_center_raw[0], far_center_raw[1], angle_deg, 1
+        )
+        far_right_x, far_right_y = k8.transform_projected_points(
+            far_right_raw[0], far_right_raw[1], far_center_raw[0], far_center_raw[1], angle_deg, 1
+        )
 
-    theoretical_img_pts, theoretical_phys_pts, _ = k8.theoretical_far_house_correspondences(
-        x_offset, y_offset, angle_deg, scale, camera, v_t, v_cl, far_center_est
-    )
+        far_left = np.array([float(far_left_x), float(far_left_y)])
+        far_right = np.array([float(far_right_x), float(far_right_y)])
+        far_center_est = np.asarray(far_center_raw, dtype=np.float64)
 
-    hue_result = k8.create_far_house_hue_masks(frame, x_offset, y_offset, camera, v_t, v_cl, angle_deg, scale)
-    far_ellipses = k8.find_far_house_ellipses_from_hue(hue_result)
-    hue_img_pts, hue_phys_pts, _, _ = k8.far_house_correspondences_from_ellipses(
-        far_ellipses, dir_lateral, dir_forward, far_center_est
-    )
+        dir_forward = far_center_est - np.asarray(house_center, dtype=np.float64)
+        dir_forward /= np.linalg.norm(dir_forward)
+        dir_lateral = far_right - far_left
+        dir_lateral /= np.linalg.norm(dir_lateral)
 
-    candidates = []
+        near_img_pts, near_phys_pts, near_labels = k8.near_house_correspondences(
+            t_line, centerline, house_center, blue_outer, blue_inner, red_outer, red_inner,
+            dir_lateral, dir_forward
+        )
 
-    if len(theoretical_img_pts) >= 3:
-        candidates.append((theoretical_img_pts, theoretical_phys_pts))
+        theoretical_img_pts, theoretical_phys_pts, _ = k8.theoretical_far_house_correspondences(
+            x_offset, y_offset, angle_deg, scale, camera, v_t, v_cl, far_center_est
+        )
 
-    if len(hue_img_pts) >= 3:
-        candidates.append((hue_img_pts, hue_phys_pts))
+        hue_result = k8.create_far_house_hue_masks(frame, x_offset, y_offset, camera, v_t, v_cl, angle_deg, scale)
+        far_ellipses = k8.find_far_house_ellipses_from_hue(hue_result)
+        hue_img_pts, hue_phys_pts, _, _ = k8.far_house_correspondences_from_ellipses(
+            far_ellipses, dir_lateral, dir_forward, far_center_est
+        )
 
-    if not candidates:
+        candidate_sources = []
+
+        if len(theoretical_img_pts) >= 3:
+            candidate_sources.append((theoretical_img_pts, theoretical_phys_pts))
+
+        if len(hue_img_pts) >= 3:
+            candidate_sources.append((hue_img_pts, hue_phys_pts))
+
+        if not candidate_sources:
+            continue
+
+        far_img_pts, far_phys_pts = min(
+            candidate_sources,
+            key=lambda c: k8._homography_rms(
+                np.array(near_img_pts + c[0], dtype=np.float64),
+                k8.physical_to_output_px(near_phys_pts + c[1])
+            )
+        )
+
+        rms = k8._homography_rms(
+            np.array(near_img_pts + far_img_pts, dtype=np.float64),
+            k8.physical_to_output_px(near_phys_pts + far_phys_pts)
+        )
+
+        print(f"  ULTRA-kandidaatti {fine_idx}: koko homografian RMS = {rms:.3f} cm")
+
+        if rms < best_overall_rms:
+            best_overall_rms = rms
+            best_overall = (near_img_pts, near_phys_pts, far_img_pts, far_phys_pts)
+
+    if best_overall is None:
         raise RuntimeError("Kaukaiselle pesalle ei saatu yhtaan alkukorrespondenssia.")
 
-    far_img_pts, far_phys_pts = min(
-        candidates,
-        key=lambda c: k8._homography_rms(
-            np.array(near_img_pts + c[0], dtype=np.float64),
-            k8.physical_to_output_px(near_phys_pts + c[1])
-        )
-    )
+    print(f"  Valittu ULTRA-kandidaatti, RMS = {best_overall_rms:.3f} cm")
+
+    near_img_pts, near_phys_pts, far_img_pts, far_phys_pts = best_overall
 
     all_img_pts = near_img_pts + far_img_pts
     all_phys_pts = near_phys_pts + far_phys_pts
