@@ -107,7 +107,7 @@ TILE_SIZE = 128
 # uudelleensijoittelun tuoma ero referenssiin).
 # ============================================================
 
-PANEL_REFERENCE_SEARCH_SCALE = 2.5
+PANEL_REFERENCE_SEARCH_SCALE = 10
 
 # ============================================================
 # AUTOMAATTINEN KALIBROINTI - MOODIKUVA-POHJAINEN
