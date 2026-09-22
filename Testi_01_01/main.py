@@ -2674,11 +2674,6 @@ def main(debug=None, start_time=None, end_time=None):
 
     root = tk.Tk()
     root.withdraw()
-
-    video_file = os.path.join(
-        os.path.dirname(input_file),
-        "leikattu.mp4"
-    )
     
     input_file = filedialog.askopenfilename(
         title="Valitse video",
@@ -2693,6 +2688,11 @@ def main(debug=None, start_time=None, end_time=None):
                 "*.*"
             )
         ]
+    )
+
+    video_file = os.path.join(
+        os.path.dirname(input_file),
+        "leikattu.mp4"
     )
 
     root.destroy()
