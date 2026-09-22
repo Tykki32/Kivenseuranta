@@ -172,7 +172,19 @@ static const double BOUNDARY_CONVERGENCE_CM = 0.05;
 static const double BOUNDARY_MAX_SHIFT_FROM_APPROX_CM = 25.0;
 
 static const double BODY_CONTOUR_MIN_AREA_PX = 15.0;
-static const double BODY_CONTOUR_MAX_SEARCH_DIST_PX = 60.0;
+// Pienennetty 60:sta 40:een (kayttajan pyynnosta, katso git-historia):
+// vahentaa toistuvasti havaittua virhetta, jossa ristikkohaku osuu
+// pelaajan vaatetukseen ja findContourNear nappaa TAYSIN ERILLISEN,
+// vain sattumalta lahella olevan tumman kontuurinpalan (esim. toinen
+// pelaaja tai vaatteen poimu) sen sijaan etta hylkaisi liian isona.
+// EI muutettu BODY_CONTOUR_MAX_AREA_MULTIPLIER:ia (alla) - se on eri
+// suoja (varmistaa etta LOYDETTY kontuuri ei ole liian iso) joka
+// pitaa saada pysya loyhana, koska juuri heitetyn/lakaistavan kiven
+// oma maskikontuuri voi olla YHTENAINEN heittajan/lakaisijan kanssa
+// (kayttaja: "heittäjä näkyy kiven yli alussa") - EI haluta hylata
+// oikeaa kivea vain siksi etta jotain muutakin nakyy sen vieressa/
+// paalla, kunhan LOYTYNYT kontuuri ITSE on lahella kandidaattipaikkaa.
+static const double BODY_CONTOUR_MAX_SEARCH_DIST_PX = 40.0;
 static const double BODY_HANDLE_CHECK_DIST_PX = 2.5;
 static const int BODY_MIN_VALID_POINTS = 8;
 
@@ -2360,8 +2372,25 @@ static StoneUpdateResult searchNewStoneOne(
     );
 
     // Sama liian-ison-kontuurin hylkays kuin trackStoneUpdateOne:ssa -
-    // katso sen kommentti.
-    out.has_position = !out.refined.oversized_reject;
+    // katso sen kommentti. LISAKSI (kayttajan pyynnosta, katso git-
+    // historia): UUDEN kiven hyvaksyminen (HAKU, VAIN tama funktio -
+    // EI trackStoneUpdateOne/SEURANTA, joka jatkaa jo VAKIINTUNUTTA
+    // kiveä ja sietaa satunnaisen epatarkan framen normaalisti) vaatii
+    // LISAKSI etta yhteissovitus oikeasti ONNISTUI (refined.tarkka) -
+    // ei riita etta ristikkohaun peittopisteytys (hullOverlapScore =
+    // pelkka peitto-osuus, ei ylarajaa ymparoivan tumman alueen
+    // koolle) ylitti kynnyksen, koska pelaajan tumma vaatetus peittaa
+    // aivan yhta hyvin (jopa paremmin) pienen kivimallin kuin oikea
+    // kivi - EROTTAVA tekija on ONKO siina OIKEASTI kiven pyorea
+    // reuna/rengasrakenne loydettavissa (detectBoundaryPoints+LM-
+    // sovitus, refined.tarkka), EI onko jotain tummaa lahella. Tama
+    // HYVAKSYY edelleen kiven joka on OSITTAIN heittajan/lakaisijan
+    // peitossa TAI liitoksissa heihin maskissa (esim. juuri heitetty
+    // kivi jonka yli heittaja nakyy) - riittaa etta kiven OMA reuna
+    // on paikoin nakyvissa niin etta sovitus konvergoi - EI hylkaa
+    // pelkastaan siksi etta jotain muutakin (esim. pelaaja) on
+    // samassa maskin yhtenaisessa alueessa/lahella.
+    out.has_position = !out.refined.oversized_reject && out.refined.tarkka;
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto t5 = std::chrono::steady_clock::now();
