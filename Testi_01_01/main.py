@@ -3,6 +3,7 @@ import sys
 import math
 import csv
 import time
+import argparse
 import importlib.util
 import cv2
 import numpy as np
@@ -57,7 +58,9 @@ ENABLE_MODE_FILTER = False
 # =juuri HAKU:n loytama uusi kivi, punainen=SEURANTA hukkasi taman
 # framen (piirretaan viimeisimpaan tunnettuun sijaintiin). HIDASTAA
 # ajoa (VideoWriter-enkoodaus joka framella) - pida False normaali-
-# ajoissa, aseta True vain debugatessa.
+# ajoissa, aseta True vain debugatessa. Voidaan myos kytkea paalle
+# dynaamisesti komentorivilta TATA VAKIOTA muokkaamatta: aja
+# "python main.py --debug" (tai "-d") - katso if __name__=="__main__".
 DEBUG_SAVE_TRACKING_VIDEO = False
 
 WALL_OFFSET = 40
@@ -2651,7 +2654,16 @@ def run_pipeline(
 # MAIN
 # ============================================================
 
-def main():
+def main(debug=None):
+
+    # debug=None (oletus): kayta DEBUG_SAVE_TRACKING_VIDEO-vakion
+    # arvoa (katso sen kommentti). debug=True/False komentoriviltä
+    # (-d/--debug, katso alempana if __name__=="__main__") ohittaa
+    # vakion - kayttajan pyynnosta dynaaminen paalle/pois-kytkenta
+    # ilman lahdekoodin muokkausta.
+    effective_debug = (
+        DEBUG_SAVE_TRACKING_VIDEO if debug is None else debug
+    )
 
     root = tk.Tk()
     root.withdraw()
@@ -2767,7 +2779,7 @@ def main():
 
     debug_video_output = None
 
-    if DEBUG_SAVE_TRACKING_VIDEO:
+    if effective_debug:
 
         debug_video_output = (
             os.path.splitext(video_file)[0] +
@@ -2834,4 +2846,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+
+    # Kayttajan pyynnosta: debug-seurantavideon (DEBUG_SAVE_TRACKING_
+    # VIDEO, katso sen kommentti) voi kytkea paalle komentorivilta
+    # ilman lahdekoodin muokkausta, esim: python main.py --debug
+    _arg_parser = argparse.ArgumentParser()
+    _arg_parser.add_argument(
+        "--debug", "-d", action="store_true", default=None,
+        help=(
+            "Tallenna debug-seurantavideo (<video>_debug_seuranta.mp4) "
+            "jossa HAKU/SEURANTA-tunnistusten ennustetut ääriviivat on "
+            "piirretty framejen paalle. Ohittaa DEBUG_SAVE_TRACKING_"
+            "VIDEO-vakion. Ilman tata lippua kaytetaan vakion arvoa."
+        )
+    )
+    _args = _arg_parser.parse_args()
+
+    main(debug=_args.debug)
