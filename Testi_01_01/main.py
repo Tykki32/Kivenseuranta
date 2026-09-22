@@ -17,19 +17,22 @@ import subprocess
 
 
 # ============================================================
-# MUUT PROJEKTIN TIEDOSTOT (kamera8_01.py/kamera9_01.py/kamera9_04.py) -
-# ladataan dynaamisesti Testi_01_01-kansion YLAPUOLELTA (Kivenseuranta-
-# juurikansiosta), EI KOSKETA niita - sama periaate kuin kamera9_02.py
-# -> kamera9_04.py -ketjussa tassa projektissa: uudelleenkaytetaan jo
-# validoitua koodia (automaattinen kalibrointi, 3D-kiviprofiilin
-# sovitus, nopeutettu yhteissovitus) sen sijaan etta kirjoitettaisiin
-# se uudelleen.
+# MUUT PROJEKTIN TIEDOSTOT (kamera8_01.py/kamera9_01.py/.../kamera9_04.py)
+# - kayttajan pyynnosta (2026-09) siirretty TAHAN kansioon OMIKSI
+# kopioikseen, jotta Testi_01_01 ei enaa riipu Kivenseuranta-
+# juurikansion versioista (jotka jaavat koskemattomiksi arkisto-
+# referensseiksi muuta kehitysta varten). Ladataan silti dynaamisesti
+# (ei tavallisella import-lauseella) - sama periaate kuin kamera9_02.py
+# -> kamera9_04.py -ketjussa NAIDEN OMIEN kopioiden sisalla (kukin
+# lataa seuraavan SAMASTA kansiosta kuin itse on - katso niiden omat
+# _load_kamera*-funktiot): uudelleenkaytetaan jo validoitua koodia
+# (automaattinen kalibrointi, 3D-kiviprofiilin sovitus, nopeutettu
+# yhteissovitus) sen sijaan etta kirjoitettaisiin se uudelleen.
 # ============================================================
 
 def _load_project_module(module_name, filename):
     here = os.path.dirname(os.path.abspath(__file__))
-    parent = os.path.dirname(here)
-    path = os.path.join(parent, filename)
+    path = os.path.join(here, filename)
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
