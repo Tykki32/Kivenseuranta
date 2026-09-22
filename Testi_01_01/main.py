@@ -47,6 +47,19 @@ k8 = k94.k8
 
 ENABLE_MODE_FILTER = False
 
+# Kayttajan pyynnosta: debug-ominaisuus joka tallentaa elavan moni-
+# kiven seurannan ajalta UUDEN videotiedoston (<video>_debug_seuranta.
+# mp4), jossa jokaisen tunnistetun/seuratun kiven ENNUSTETTU ääriviiva
+# (k94.predicted_stone_hull_fast - sama profiilimalli jota itse
+# yhteissovituskin kayttaa) on piirretty framen paalle, jotta nakee
+# SUORAAN missa/miksi HAKU tai SEURANTA tunnistaa jotain vaarin
+# (esim. pelaajan kivena). Vihrea=tarkka, oranssi=ei-tarkka, keltainen
+# =juuri HAKU:n loytama uusi kivi, punainen=SEURANTA hukkasi taman
+# framen (piirretaan viimeisimpaan tunnettuun sijaintiin). HIDASTAA
+# ajoa (VideoWriter-enkoodaus joka framella) - pida False normaali-
+# ajoissa, aseta True vain debugatessa.
+DEBUG_SAVE_TRACKING_VIDEO = False
+
 WALL_OFFSET = 40
 GRAY_RADIUS = 2
 HISTORY_LENGTH = 10
@@ -253,6 +266,17 @@ STONE_SCAN_COOLDOWN_FRAMES = 300   # 12s 25fps:lla
 # ============================================================
 
 MAX_CONCURRENT_STONES = 4
+
+# HAKU-valin PAIKALLINEN ylikirjoitus (kayttajan pyynnosta) - EI
+# muuteta kamera9_02.py:n omaa SEARCH_EVERY_N_FRAMES:ia (se tiedosto
+# on koskematon referenssi, katso taman tiedoston alkupaan kommentti).
+# kamera9_02.py:n oma arvo (10 framea=0.4s 25fps:lla) vaihdettu
+# harvempaan, sekuntipohjaiseen valiin - vahemman HAKU-kutsuja
+# (jokainen n. 150-220ms taydella kuormalla) maksaa vahemman CPU-
+# aikaa, hintana etta uuden kiven havaitsemisessa voi kestaa taman
+# verran pidempaan (radalle tulevan kiven ensimmaiset havainnot
+# puuttuvat CSV:sta talta ajalta).
+HAKU_SEARCH_INTERVAL_SECONDS = 1.0
 
 # Jos uusi HAKU-loytö on tata lahempana jotain jo AKTIIVISTA kiveä,
 # tulkitaan samaksi kiveksi (ei uutta ID:ta) - estaa saman kiven
@@ -1362,7 +1386,8 @@ def run_pipeline(
     calib_diag_output,
     csv_output,
     precomputed_calib_result=None,
-    precomputed_profile_result=None
+    precomputed_profile_result=None,
+    debug_video_output=None
 ):
 
     engine = mode_engine.ModeEngine(
@@ -1374,6 +1399,11 @@ def run_pipeline(
     height = engine.height()
     fps = engine.fps()
     total_frames = engine.total_frames()
+
+    # katso HAKU_SEARCH_INTERVAL_SECONDS:in kommentti - korvaa
+    # kamera9_02.py:n SEARCH_EVERY_N_FRAMES:in elavan seurannan
+    # HAKU-ajastuksessa (koskematon kamera9_02.py itse ennallaan).
+    haku_interval_frames = max(1, int(round(HAKU_SEARCH_INTERVAL_SECONDS * fps)))
 
     print()
     print(
@@ -1464,6 +1494,7 @@ def run_pipeline(
     live_state = None
     csv_writer = None
     csv_file = None
+    debug_video_writer = None
 
     previous_stabilization_matrix = np.array(
         [
@@ -2058,6 +2089,14 @@ def run_pipeline(
                     csv_writer = csv.writer(csv_file)
                     csv_writer.writerow(CSV_HEADER)
 
+                    if debug_video_output is not None:
+
+                        debug_video_writer = cv2.VideoWriter(
+                            debug_video_output,
+                            cv2.VideoWriter_fourcc(*"mp4v"),
+                            fps, (width, height)
+                        )
+
                     print()
                     print(
                         f"Elava moni-kiven seuranta alkaa (frame "
@@ -2129,7 +2168,7 @@ def run_pipeline(
 
                 if (
                     len(active_stones) < MAX_CONCURRENT_STONES
-                    and frame_index % k92.SEARCH_EVERY_N_FRAMES == 0
+                    and frame_index % haku_interval_frames == 0
                 ):
 
                     x_center = 0.0
@@ -2174,6 +2213,12 @@ def run_pipeline(
 
                 still_active = []
 
+                # DEBUG_SAVE_TRACKING_VIDEO:in kerays - katso taman
+                # tiedoston alkupaan kommentti. Lista (X_cm, Y_cm,
+                # stone_id, vari_bgr, teksti) - piirretaan framelle
+                # HAKU:n tuloksen keraamisen jalkeen alempana.
+                debug_draw_items = []
+
                 # HAKU:n (jos kaynnissa) mahdollisesti loytama uusi
                 # kivi EI ole viela active_stones:issa tassa vaiheessa
                 # (sen tulos kerataan vasta alempana) - ei siis
@@ -2214,6 +2259,13 @@ def run_pipeline(
                                 refined["X_cm"], refined["Y_cm"]
                             )
                             s["misses"] = 0
+
+                            debug_draw_items.append((
+                                refined["X_cm"], refined["Y_cm"],
+                                s["stone_id"],
+                                (0, 255, 0) if refined["tarkka"] else (0, 165, 255),
+                                str(s["stone_id"])
+                            ))
 
                             _write_stone_csv_row(
                                 csv_writer, frame_index, timestamp,
@@ -2269,6 +2321,12 @@ def run_pipeline(
                         else:
 
                             s["misses"] += 1
+
+                            debug_draw_items.append((
+                                s["last_xy"][0], s["last_xy"][1],
+                                s["stone_id"], (0, 0, 255),
+                                f"{s['stone_id']} MISS"
+                            ))
 
                             if s["misses"] < k92.TRACK_LOST_MAX_MISSES:
                                 still_active.append(s)
@@ -2327,6 +2385,12 @@ def run_pipeline(
                                 )],
                             })
 
+                            debug_draw_items.append((
+                                refined["X_cm"], refined["Y_cm"],
+                                stone_id, (0, 255, 255),
+                                f"{stone_id} UUSI"
+                            ))
+
                             print(
                                 f"[frame {frame_index}] Uusi kivi "
                                 f"{stone_id}: "
@@ -2338,6 +2402,55 @@ def run_pipeline(
                                 csv_writer, frame_index, timestamp,
                                 stone_id, refined
                             )
+
+                # --------------------------------------------
+                # DEBUG_SAVE_TRACKING_VIDEO: piirretaan taman framen
+                # kaikkien HAKU/SEURANTA-havaintojen (debug_draw_items,
+                # katso yllapuoliset kohdat) ENNUSTETUT ääriviivat
+                # (k94.predicted_stone_hull_fast - sama profiilimalli
+                # jota itse yhteissovituskin kayttaa) frame_u:n paalle
+                # ja kirjoitetaan debug-videoon. Katso taman tiedoston
+                # alkupaan DEBUG_SAVE_TRACKING_VIDEO-kommentti varien
+                # merkityksesta.
+                # --------------------------------------------
+
+                if debug_video_writer is not None:
+
+                    debug_frame = frame_u.copy()
+
+                    for bx, by, s_id, color, label in debug_draw_items:
+
+                        hull = k94.predicted_stone_hull_fast(
+                            local_pts_body, pose, bx, by
+                        )
+
+                        if hull is None:
+                            continue
+
+                        hull_i = hull.astype(np.int32)
+
+                        cv2.polylines(
+                            debug_frame, [hull_i], True, color, 2
+                        )
+
+                        cv2.putText(
+                            debug_frame, label,
+                            (
+                                int(hull_i[:, 0, 0].min()),
+                                int(hull_i[:, 0, 1].min()) - 8
+                            ),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2
+                        )
+
+                    cv2.putText(
+                        debug_frame,
+                        f"frame {frame_index}  t={timestamp:.2f}s  "
+                        f"kivia={len(active_stones)}",
+                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                        (255, 255, 255), 2
+                    )
+
+                    debug_video_writer.write(debug_frame)
 
             frame_index += 1
 
@@ -2446,6 +2559,9 @@ def run_pipeline(
         if csv_file is not None:
             csv_file.close()
 
+        if debug_video_writer is not None:
+            debug_video_writer.release()
+
     print()
 
     print(
@@ -2525,6 +2641,9 @@ def run_pipeline(
         "n_profile_observations": len(accumulated_stones),
         "csv_output": csv_output if live_state is not None else None,
         "n_stones_seen": next_stone_id,
+        "debug_video_output": (
+            debug_video_output if debug_video_writer is not None else None
+        ),
     }
 
 
@@ -2646,11 +2765,25 @@ def main():
         "_kivien_sijainnit.csv"
     )
 
+    debug_video_output = None
+
+    if DEBUG_SAVE_TRACKING_VIDEO:
+
+        debug_video_output = (
+            os.path.splitext(video_file)[0] +
+            "_debug_seuranta.mp4"
+        )
+
+        print(
+            f"Debug-seurantavideo: {debug_video_output}"
+        )
+
     result = run_pipeline(
         video_file,
         panel_data,
         calib_diag_output,
-        csv_output
+        csv_output,
+        debug_video_output=debug_video_output
     )
 
     print()
@@ -2691,6 +2824,12 @@ def main():
         print(
             f"Kivien sijainti-CSV: {result['csv_output']} "
             f"({result['n_stones_seen']} eri kivea havaittu)"
+        )
+
+    if result["debug_video_output"] is not None:
+
+        print(
+            f"Debug-seurantavideo: {result['debug_video_output']}"
         )
 
 
