@@ -166,6 +166,167 @@ def find_far_house_coarse_seed(blue_mask, near_blue_outer, camera, v_t, v_cl,
     return {"x_offset_cm": best[0], "y_offset_cm": best[1], "y_error_cm": best_y_error}
 
 
+def find_far_house_candidate_centers_px(blue_mask, near_blue_outer, min_area=20, min_ratio=0.5,
+                                         exclude_radius_px=None):
+    """Palauttaa KAIKKIEN pienten sinisten rengaskandidaattien (paitsi jo
+    tunnettu lahempi pesa) pikselikeskipisteet kuvasta - sama havainto-
+    joukko jota find_far_house_coarse_seed kayttaa alkuarvaukseen, mutta
+    KAIKKI kandidaatit, ei vain lahinna FAR_HOUSE_Y_CM:aa oleva yksi.
+    Kaytetaan MAAPERUSTANA (kayttajan pyynnosta, katso kommentti
+    calibrate_camera_from_image_with_seed:issa) sen varmistamiseen etta
+    haun lopputulos osoittaa OIKEASTI johonkin kuvassa nakyvaan pieneen
+    sinisen renkaan kaltaiseen kohteeseen - ei esim. hyllyn/taulun
+    kuvioon joka sattuu sopimaan mallipohjaiseen pisteytykseen."""
+
+    if exclude_radius_px is None:
+        exclude_radius_px = max(near_blue_outer[1]) * 0.6
+
+    near_center = np.array(near_blue_outer[0], dtype=np.float64)
+
+    candidates = k8.find_house_ellipses(blue_mask, min_area=min_area, min_ratio=min_ratio)
+
+    return [
+        c["center"] for c in candidates
+        if np.linalg.norm(c["center"] - near_center) >= exclude_radius_px
+    ]
+
+
+def find_far_house_scored_seed(blue_mask, near_blue_outer, camera, v_t, v_cl, template, frame):
+    """Vaihtoehto find_far_house_coarse_seed:lle - kayttajan pyynnosta
+    tehty keskiviivan pistetyspinnan koko-radan skannaus paljasti kaksi
+    asiaa: (1) unproject_to_ice_plane (kaanteiskuvaus pikseli->fyysinen)
+    on numeerisesti epavakaa taalla etaisyydella - muutaman pikselin
+    kohina vastaa satoja senttimetreja virhetta Y:ssa - JA (2) SAMA
+    kuvassa nakyva pieni rengas voi selittya LAHES YHTA HYVIN usealla
+    aivan eri (Y,scale)-yhdistelmalla (todettu: Y=2330cm ja Y=3980cm
+    -hypoteesit projisoituivat lahes samaan pikseliin ja saivat lahes
+    saman pistetyksen) - kameramallin ekstrapolointi taalla etaisyydella
+    ei siis riita erottamaan "lahempana+pienempi" vs "kauempana+isompi"
+    -selityksia toisistaan pelkalla pistetyksella eika pelkalla
+    kameramallin ennusteella.
+
+    RATKAISU (kayttajan pyynnosta, vahvistettu visuaalisesti oikeasta
+    kuvasta): sen sijaan etta LUOTETTAISIIN yhteen ainoaan alkuarvaukseen
+    (joko kaanteiskuvaukseen tai kameramallin ennusteeseen), KAIKKI
+    OIKEASTI HAVAITUT pienet sinisen renkaan kaltaiset kandidaatit
+    (find_far_house_candidate_centers_px - sama pieni, muutaman
+    kandidaatin joukko) PISTEYTETAAN SUORAAN (k8.score_far_candidates_
+    batch, sama pisteytys jota koko haku muutenkin kayttaa) kukin omalla
+    parhaalla paikallisella (x,y,angle,scale):lla, ja PARAS PISTEYS
+    NIIDEN JOUKOSSA voittaa - EI valita sita joka on lahinna jotain
+    ennustetta. Tama rajaa haun vain OIKEASTI kuvassa oleviin kohteisiin
+    (ei hyllykon kuvioon, joka ei ole yksikaan naista kandidaateista)
+    mutta antaa silti pistetyksen ITSE PAATTAA nailla harvoilla oikeilla
+    kandidaateilla - juuri sen minka keskiviivaskannaus osoitti toimivan
+    (korkein pistetys osui visuaalisesti oikeaan pesaan)."""
+
+    candidate_centers = find_far_house_candidate_centers_px(blue_mask, near_blue_outer)
+
+    if not candidate_centers:
+        return None
+
+    image_height, image_width = frame.shape[:2]
+    hsv = template["_hsv"]
+    hsv_model = template["hsv_model"]
+    angle_values = np.arange(-30.0, 30.0 + 1e-6, 3.0)
+    scale_values = np.arange(0.30, 1.6 + 1e-6, 0.05)
+
+    best = None
+    best_score = -float("inf")
+
+    for center_px in candidate_centers:
+
+        r = unproject_to_ice_plane(center_px[0], center_px[1], camera, v_t, v_cl)
+
+        if r is None:
+            continue
+
+        X, Y = r
+        y_offset = Y - k8.FAR_HOUSE_Y_CM
+
+        projected = k8._project_template_for_offset(template, X, y_offset, camera, v_t, v_cl)
+
+        if projected["far_center"] is None:
+            continue
+
+        scores = k8.score_far_candidates_batch(
+            projected, angle_values, scale_values, hsv, hsv_model, image_width, image_height
+        )
+        local_best_idx = int(np.argmax(scores))
+        local_best_score = float(scores[local_best_idx])
+
+        if local_best_score > best_score:
+            best_score = local_best_score
+            best = {
+                "x_offset_cm": X, "y_offset_cm": y_offset,
+                "center_px": center_px, "score": local_best_score,
+            }
+
+    return best
+
+
+def find_far_house_wide_scan_seed(template, frame, camera, v_t, v_cl,
+                                   x_range_cm=150.0, x_step_cm=25.0,
+                                   y_min_cm=300.0, y_max_cm=None, y_step_cm=15.0):
+    """Vaihtoehto find_far_house_scored_seed:lle - kayttajan pyynnosta
+    tehty keskiviivan pistetyspinnan koko-radan skannaus (kiinteä X=0,
+    Y koko fyysiselta radalta) LOYSI ja KAYTTAJA VAHVISTI VISUAALISESTI
+    OIKEASTA KUVASTA kaukaisen pesan sijainnin joka on PALJON LAHEMPANA
+    (Y~2330cm) kuin FAR_HOUSE_Y_CM (~3658cm) olettaisi - eika tama
+    sijainti ollut minkaan find_house_ellipses:in HAVAITSEMAN pienen
+    sinisen kandidaatin tarkka keskipiste (find_far_house_scored_seed
+    valitsi silti VAARAN, koska sen kandidaattijoukko rajoittuu noihin
+    blob-keskipisteisiin, jotka ovat taalla resoluutiolla epatarkkoja).
+
+    Tama funktio tekee siis TAYDEN (ei vain X=0) mutta silti KOHTUU-
+    HINTAISEN ruudukkohaun: X kapealla alueella keskiviivan lahella,
+    Y KOKO fyysisella radalla (ei rajattuna minkaan yksittaisen seedin
+    +-200cm-ikkunaan, joka aiemmin OSOITTAUTUI liian kapeaksi - todellinen
+    sijainti oli sen ulkopuolella). Palauttaa YHDEN globaalin parhaan
+    (ei top-K, koska tama ON jo koko-radan haku eika tarvitse enaa
+    erillista COARSE-vaihetta)."""
+
+    if y_max_cm is None:
+        y_max_cm = k8.OUTPUT_Y_MAX_CM
+
+    image_height, image_width = frame.shape[:2]
+    hsv = template["_hsv"]
+    hsv_model = template["hsv_model"]
+
+    x_values = np.arange(-x_range_cm, x_range_cm + 1e-6, x_step_cm)
+    y_values_cm = np.arange(y_min_cm, y_max_cm + 1e-6, y_step_cm)
+    angle_values = np.arange(-30.0, 30.0 + 1e-6, 3.0)
+    scale_values = np.arange(0.30, 1.6 + 1e-6, 0.05)
+
+    best = None
+    best_score = -float("inf")
+
+    for x_offset in x_values:
+        for Y_cm in y_values_cm:
+
+            y_offset = Y_cm - k8.FAR_HOUSE_Y_CM
+
+            projected = k8._project_template_for_offset(template, x_offset, y_offset, camera, v_t, v_cl)
+
+            if projected["far_center"] is None:
+                continue
+
+            scores = k8.score_far_candidates_batch(
+                projected, angle_values, scale_values, hsv, hsv_model, image_width, image_height
+            )
+            local_best_idx = int(np.argmax(scores))
+            local_best_score = float(scores[local_best_idx])
+
+            if local_best_score > best_score:
+                best_score = local_best_score
+                best = {
+                    "x_offset_cm": float(x_offset), "y_offset_cm": float(y_offset),
+                    "Y_cm": float(Y_cm), "score": local_best_score,
+                }
+
+    return best
+
+
 # Kaukaisen pesan FINE-haun pisteytyspinta on paikoin lahes tasapelissa
 # usean eri kiertokulman/skaalan valilla (kaksi lahes identtista
 # moodikuvaa samasta paikallaan pysyvasta kamerasta antoivat FINE-
@@ -189,6 +350,17 @@ FAR_HOUSE_FINE_TOPK = 5
 # FINE_TOPK_PER_COARSE ULTRA+geometrinen-korjaus -ajoa).
 COARSE_TOPK = 6
 FINE_TOPK_PER_COARSE = 6
+
+# Suurin sallittu etaisyys TOPDOWN-pikseleina (2px/cm, tasainen kaikkialla
+# - katso alempana kandidaattisilmukassa oleva kommentti siita MIKSI
+# tama pitaa mitata topdown- eika lahdekuvan pikseliavaruudessa) kandi-
+# daatin lopullisen (H_final:in jalkeisen) kaukaisen pesan sijainnin ja
+# lahimman OIKEASTI havaitun pienen sinisen rengaskandidaatin valilla -
+# katso find_far_house_candidate_centers_px:n ja ground_truth_gate:n
+# kommentit. 150px = 75cm - reilusti alle kaukaisen pesan oman
+# halkaisijan (~365cm topdown-pikseleina) mutta reilusti yli havaitun
+# mittauskohinan.
+FAR_HOUSE_GROUND_TRUTH_MAX_PX_DIST = 150.0
 
 
 def _search_far_house_topk(
@@ -260,18 +432,32 @@ def _search_far_house_topk(
 
 
 def calibrate_camera_from_image_with_seed(filename):
-    """kamera9_01.py:n calibrate_camera_from_image, laajennettuna kahdella
-    tavalla (kayttajan pyynnosta, katso kommentit alempana koodissa):
+    """kamera9_01.py:n calibrate_camera_from_image, laajennettuna kayttajan
+    pyynnosta (katso kommentit alempana koodissa - vaikeimman kuvakulman
+    kaukaisen pesan loytaminen osoittautui monivaiheiseksi ongelmaksi):
 
-    1) Kaukaisen pesan COARSE-haun alkuarvaus (center_x/center_y) haetaan
-       datasta (find_far_house_coarse_seed) sokean (0,0)-oletuksen sijaan.
-    2) Kaukaisen pesan haku (COARSE/FINE) pitaa hengissa TOP-K parasta eri
-       (x,y)-kandidaattia yhden globaalin parhaan sijasta (katso COARSE_
-       TOPK/FAR_HOUSE_FINE_TOPK:n kommentit), jokainen viedaan ULTRA-
-       vaiheen + taman TASMALLEEN k8.refine_geometric_homography:n lapi,
-       ja PAras lopullinen kandidaatti valitaan sen OIKEASTI lopullisesta
-       pyoreydesta/koosta/hoglinen kulmasta - ei pelkasta pistesovituksen
-       RMS:sta, joka osoittautui riittamattomaksi (katso kommentit).
+    1) Kaukaisen pesan alkuarvaus haetaan pisteyttamalla KOKO fyysinen
+       rata (find_far_house_wide_scan_seed) - havaittu etta mallipohjainen
+       pisteytys on paikoin lahes kohinatasolla ja etta kameramallin
+       ekstrapolointi taalla etaisyydella ei riittanyt erottamaan eri
+       (etaisyys,skaala)-selityksia samalle kuvakohteelle (skaala-syvyys-
+       degeneraatio) - siksi KOKO radan skannaus, ei vain paikallinen haku
+       jonkin ennusteen ymparilta. find_far_house_scored_seed ja find_far_
+       house_coarse_seed varalla jos laaja skannaus ei loyda mitaan.
+    2) Kun seed on jo koko-radan skannauksen paras, COARSE-haun oma
+       position-vapaus on TIUKKA (vain hienosaatoa varten - katso
+       coarse_center_range_cm) - LAAJA paikallinen haku vain ajautuisi
+       pois hyvasta seedista kohti merkityksetonta kohinaa.
+    3) Kaukaisen pesan haku (COARSE/FINE) pitaa silti hengissa TOP-K
+       parasta eri kandidaattia yhden globaalin parhaan sijasta (COARSE_
+       TOPK/FAR_HOUSE_FINE_TOPK), jokainen viedaan ULTRA-vaiheen +
+       k8.refine_geometric_homography:n lapi, ja PARAS lopullinen
+       kandidaatti valitaan (jarjestyksessa) sen mukaan: (a) osuuko
+       lopputulos OIKEASTI johonkin kuvassa havaittuun rengaskandidaattiin
+       (ground_truth_gate, topdown-pikseliavaruudessa), (b) tayttaako
+       pyoreys kayttajan vaatimuksen (>0.95), (c) kuinka pieni lahemman/
+       kaukaisen hoglinen kulmapoikkeama on - ei pelkasta pistesovituksen
+       RMS:sta, joka osoittautui riittamattomaksi yksinaan.
 
     Itse k8/k9-funktioihin (haku, pisteytys, homografia, vaaristyman
     korjaus) EI ole koskettu - kaikki uusi logiikka on tata orkestrointia,
@@ -297,6 +483,18 @@ def calibrate_camera_from_image_with_seed(filename):
     if blue_outer is None or blue_inner is None or red_outer is None or red_inner is None:
         raise RuntimeError("Lahemman pesan renkaita ei loytynyt kokonaan.")
 
+    # Kayttajan pyynnosta: piirrettiin mallin olettama kaukaisen pesan
+    # sijainti takaisin lahdekuvaan (H_final:in kaanteismuunnoksella) ja
+    # havaittiin etta se osui hyllykon/taulun kuvioon, EI mihinkaan
+    # oikeaan sinisen renkaan kaltaiseen kohteeseen - pyoreys/hogline-
+    # kulma-mittarit eivat huomaa tallaista, koska ne ovat itseviittaavia
+    # (mittaavat vain lopputuloksen SISAISEN johdonmukaisuuden, eivat
+    # sita osuuko se OIKEASTI kuvassa nakyvaan kohteeseen). Kaikkien
+    # mahdollisten oikeiden kaukaisen pesan kandidaattien (samat pienet
+    # siniset renkaat joita find_far_house_coarse_seed jo etsii)
+    # pikselikeskipisteet talteen MAAPERUSTAKSI - katso alempaa.
+    far_candidate_centers_px = find_far_house_candidate_centers_px(near_blue_mask, blue_outer)
+
     segments = k8.detect_line_segments(frame, blue_outer)
     (t_pair, centerline_pair, t_line, centerline, house_center) = k8.select_t_and_centerline(
         segments, blue_outer
@@ -313,20 +511,54 @@ def calibrate_camera_from_image_with_seed(filename):
     template = k8.build_near_house_template(frame, blue_outer, camera, v_t, v_cl)
     template["_hsv"] = template["hsv_model"]["hsv"]
 
-    seed = find_far_house_coarse_seed(near_blue_mask, blue_outer, camera, v_t, v_cl)
+    # find_far_house_wide_scan_seed on ensisijainen (katso sen kommentti -
+    # skannaa KOKO fyysisen radan, ei rajoitu mihinkaan yhteen seed-
+    # ennusteeseen tai havaittuun kandidaattiin) - kayttajan itse
+    # vahvistama toimivaksi. find_far_house_scored_seed (rajattu oikeisiin
+    # havaittuihin kandidaatteihin) ja find_far_house_coarse_seed varalla
+    # jos laaja skannaus ei jostain syysta loyda mitaan.
+    seed = find_far_house_wide_scan_seed(template, frame, camera, v_t, v_cl)
+    seed_kind = "wide_scan"
+
+    if seed is None:
+        seed = find_far_house_scored_seed(near_blue_mask, blue_outer, camera, v_t, v_cl, template, frame)
+        seed_kind = "scored (varalla)"
+
+    if seed is None:
+        seed = find_far_house_coarse_seed(near_blue_mask, blue_outer, camera, v_t, v_cl)
+        seed_kind = "coarse (varalla)"
+
     seed_x = seed["x_offset_cm"] if seed else 0.0
     seed_y = seed["y_offset_cm"] if seed else 0.0
 
     print(
-        "  kaukaisen pesan alkuarvaus: "
+        f"  kaukaisen pesan alkuarvaus ({seed_kind}): "
         f"X={seed_x:.1f} Y-siirto={seed_y:.1f} "
         f"({'loytyi' if seed else 'ei loytynyt, kaytetaan oletusta 0,0'})"
     )
 
+    # HUOM (kayttajan pyynnosta tehdyn keskiviivaskannauksen loydos):
+    # mallipohjainen pisteytys osoittautui LAHES KOHINATASOLLA taman
+    # kuvakulman kaukaisen pesan alueella LUKUUNOTTAMATTA oikeaa kohdetta
+    # - LAAJA COARSE-haku (+-200cm) vain AJAUTUU pois jo hyvasta seedista
+    # kohti sattumanvaraisesti hieman korkeampaa (mutta merkityksetonta)
+    # pistetysta tyhjalla jaalla. Kun seed ITSE on jo koko-radan
+    # skannauksen paras (find_far_house_wide_scan_seed - EI enaa tarvitse
+    # koko-radan uudelleenhakua), COARSE-haun position-vapaus tehdaan
+    # siis TIUKAKSI (vain muutama cm) - hienosaatoa varten, ei uutta
+    # laajaa hakua. Jos seed EI ollut wide_scan (varamenetelma), kaytetaan
+    # edelleen alkuperaista laajaa hakua.
+    if seed_kind == "wide_scan":
+        coarse_center_range_cm = 15.0
+        coarse_center_step_cm = 5.0
+    else:
+        coarse_center_range_cm = k8.SEARCH_CENTER_RANGE_CM
+        coarse_center_step_cm = k8.COARSE_CENTER_STEP_CM
+
     coarse_candidates = _search_far_house_topk(
         template, frame, camera, v_t, v_cl,
         center_x=seed_x, center_y=seed_y,
-        center_range=k8.SEARCH_CENTER_RANGE_CM, center_step=k8.COARSE_CENTER_STEP_CM,
+        center_range=coarse_center_range_cm, center_step=coarse_center_step_cm,
         angle_center=0.0, angle_range=k8.SEARCH_CENTER_RANGE_DEG, angle_step=k8.COARSE_ANGLE_STEP_DEG,
         scale_center=1.2, scale_range=k8.SEARCH_CENTER_RANGE_SCALE, scale_step=k8.COARSE_SCALE_STEP,
         description="COARSE", top_k=COARSE_TOPK
@@ -523,6 +755,61 @@ def calibrate_camera_from_image_with_seed(filename):
         far_hog_pts_topdown = k8.detect_hogline_points(cand_topdown_final, k8.FAR_HOGLINE_Y_CM)
         far_hog_angle, far_hog_conf = k8.robust_line_angle_from_points(far_hog_pts_topdown)
 
+        # MAAPERUSTA-portti (katso find_far_house_candidate_centers_px:n
+        # kommentti) - TARKEA HUOM: taman TAYTYY kayttaa LOPULLISTA
+        # (H_final:in jalkeista, ei alkuperaista far_center_raw:ta)
+        # sijaintia, koska k8.refine_geometric_homography:n oma sisainen
+        # iteraatio TUNNISTAA kaukaisen renkaan UUDELLEEN JOKA KIERROKSELLA
+        # SUORAAN warpatusta topdown-kuvasta (far_house_ring_points_in_
+        # frame) - jos tama sisainen uudelleentunnistus ajautuu (esim.
+        # hyllykon kuvioon), lopputulos voi olla eri paikassa kuin mista
+        # haku aloitti, VAIKKA alkuperainen kandidaatti olisi ollut
+        # oikein maaperustettu. Todettu visuaalisesti (piirrettiin
+        # H_final:in kaanteismuunnoksella mallin olettama sijainti
+        # takaisin lahdekuvaan - osui hyllykon kohdalle) etta juuri tama
+        # oli aiemman version puute.
+        cand_far_view = k8.crop_house_view(cand_topdown_final, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM)
+        cand_far_expected_center = k8.expected_house_center_in_crop(
+            cand_topdown_final.shape[0], k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM
+        )
+        cand_far_verify = k8.detect_far_house_shared_ellipses(cand_far_view, cand_far_expected_center)
+        cand_far_ring = cand_far_verify.get("blue_outer") or cand_far_verify.get("red_outer")
+
+        # HUOM (toinen bugikorjaus): etaisyys pitaa mitata TOPDOWN-
+        # pikseliavaruudessa (tasainen 2px/cm KAIKKIALLA), EI oikaistun
+        # LAHDEKUVAN pikseliavaruudessa. Kaukaisen paan aarimmaisen
+        # perspektiivikutistuman takia SAMA fyysinen etaisyysvirhe
+        # vastaa lahdekuvassa VAIN muutamaa pikselia mutta topdown-
+        # kuvassa satoja - 50px:n raja lahdekuvan pikseliavaruudessa
+        # osoittautui siis KAYTANNOSSA merkityksettomaksi (kandidaatti
+        # joka visuaalisesti osui hyllykon kuvioon lapaisi silti sen,
+        # koska ero lahdekuvan pikseleina oli pieni vaikka topdown-
+        # kuvassa ero on valtava).
+        if cand_far_ring is not None and far_candidate_centers_px:
+            cand_far_row_top, _ = k8.compute_crop_row_range(
+                cand_topdown_final.shape[0], k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM
+            )
+            cand_far_center_topdown = np.array([
+                cand_far_ring[0][0], cand_far_ring[0][1] + cand_far_row_top
+            ])
+
+            cand_far_candidates_undistorted = k8.undistort_points_px(
+                np.array(far_candidate_centers_px, dtype=np.float64), camera_matrix, cand_best_k1
+            )
+            cand_far_candidates_h = np.column_stack([
+                cand_far_candidates_undistorted, np.ones(len(cand_far_candidates_undistorted))
+            ])
+            cand_far_candidates_topdown_h = (cand_refined["H_final"] @ cand_far_candidates_h.T).T
+            cand_far_candidates_topdown = (
+                cand_far_candidates_topdown_h[:, :2] / cand_far_candidates_topdown_h[:, 2:3]
+            )
+
+            far_ground_truth_dist = float(np.min(np.linalg.norm(
+                cand_far_candidates_topdown - cand_far_center_topdown, axis=1
+            )))
+        else:
+            far_ground_truth_dist = None
+
         # HUOM: kaukainen hogline-alue taman videon kuvakulmalla on
         # osoitettu (suora visuaalinen + pistediagnostiikka) osittain
         # mainostaulujen/hyllyjen peitossa - matalan luottamuksen
@@ -548,12 +835,24 @@ def calibrate_camera_from_image_with_seed(filename):
             f"kauko={far_hog_angle:.2f}deg(luott={far_hog_conf:.0f})"
         )
 
-        # Portti: kelpuutetaan vain kandidaatit joiden pyoreys tayttaa
-        # kayttajan vaatimuksen (>0.95) - muuten hoglinen sattumanvarainen
-        # hyva kulma huonommalla pyoreydella voisi voittaa. Sen sisalla
-        # valinta ensisijaisesti pienimman hogline-poikkeaman mukaan.
+        print(f"    maaperusta-etaisyys lahimpaan oikeaan kandidaattiin: {far_ground_truth_dist}")
+
+        # Portit (ensisijaisuusjarjestyksessa):
+        # 1) MAAPERUSTA - kandidaatin olettama kaukainen pesa OSUU johonkin
+        #    oikeasti kuvasta havaittuun pieneen sinisen renkaan kaltaiseen
+        #    kohteeseen (katso far_candidate_centers_px:n kommentti) - ilman
+        #    tata mikaan muu mittari ei kelpaa, koska ne kaikki mittaavat
+        #    vain SISAISTA johdonmukaisuutta, eivat osu-oikeaan-kohteeseen.
+        # 2) Pyoreys tayttaa kayttajan vaatimuksen (>0.95).
+        # Naiden sisalla valinta ensisijaisesti pienimman hogline-
+        # poikkeaman mukaan.
+        ground_truth_gate = (
+            far_ground_truth_dist is not None
+            and far_ground_truth_dist <= FAR_HOUSE_GROUND_TRUTH_MAX_PX_DIST
+        )
         roundness_gate = cand_quality["worst_ratio"] > 0.95
         candidate_key = (
+            ground_truth_gate,
             roundness_gate,
             -hog_angle_penalty,
             cand_quality["worst_ratio"],
