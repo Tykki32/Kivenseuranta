@@ -206,62 +206,44 @@ def _fit_circle_algebraic(points):
     return cx, cy, r
 
 
-def _refine_far_center_three_ellipse_fit(frame_undistorted, target_px, window_px=260.0):
-    """Tarkentaa karkean (rivi-skannauksesta takaisinprojisoidun) arvion
-    kaukaisen pesan keskipisteesta KOLMEN ELLIPSIN SOVITUKSELLA (sama
-    menetelma jolla kaukainen pesa alunperin loydettiin luotettavasti
-    talla kamerakulmalla - katso taman tiedoston alkupaan kommentti):
-    rakentaa PAIKALLISEN ROI:n arvion ymparille, saataa sinisen/punaisen
-    HSV-kynnyksen pinta-alaosuuteen (FAR_HOUSE_ROI_TARGET_*_FRACTION),
-    ja sovittaa ympyran KOLMELLE renkaalle (sininen ulko/sisa, punainen
-    ulko) SATEITTAISELLA reunanhaulla (_radial_ring_edges - kerää
-    pisteita molemmista nakyvista kaarista symmetrisesti, toisin kuin
-    yksittainen find_house_pair-kontuuri joka voi tarttua vain YHTEEN
-    pirstoutuneeseen renkaan palaan ja antaa vinon keskipisteen -
-    havaittu kehitysvaiheessa). Palauttaa kolmen sovituksen keskipisteiden
-    KESKIARVON, tai alkuperaisen karkean arvion jos yhtaan ei loydy."""
+def _three_ellipse_fit_center_in_crop(crop, center_col_hint, search_radius_px=None):
+    """YDINSOVITUS (kayttajan pyynnosta - katso keskusteluhistoria):
+    vahvistaa etta cropista loytyy sininen-punainen-sininen -kuvio
+    (_find_blue_red_blue_pattern) annetun center_col_hint:in ymparilta,
+    rakentaa sen ymparille ROI:n (pienin ymparoiva ympyra), saataa
+    sinisen/punaisen HSV-kynnyksen pinta-alaosuuteen (FAR_HOUSE_ROI_
+    TARGET_*_FRACTION), ja sovittaa ympyran KOLMELLE renkaalle (sininen
+    ulko/sisa, punainen ulko) SATEITTAISELLA reunanhaulla (_radial_
+    ring_edges - kerää pisteita molemmista nakyvista kaarista
+    symmetrisesti, toisin kuin yksittainen suurin-kontuuri-haku joka
+    voi tarttua vain YHTEEN pirstoutuneeseen renkaan palaan ja antaa
+    vinon keskipisteen). Palauttaa kolmen sovituksen keskipisteiden
+    KESKIARVON crop-paikallisissa koordinaateissa, tai None jos kuviota
+    ei loydy tai yhtaan ympyraa ei saada sovitettua."""
 
-    h, w = frame_undistorted.shape[:2]
-    cx0, cy0 = target_px
-    x0, x1 = int(max(0, cx0 - window_px)), int(min(w, cx0 + window_px))
-    y0, y1 = int(max(0, cy0 - window_px)), int(min(h, cy0 + window_px))
-    crop = frame_undistorted[y0:y1, x0:x1]
-
-    # Kayttajan pyynnosta (katso keskusteluhistoria): PELKKA sinisen
-    # maskin minEnclosingCircle tarttuu helposti vaaraan kohteeseen
-    # (esim. mainospaneeliin) jos sellainen sattuu olemaan ikkunan
-    # sisalla. Vahvistetaan siis ETTA paikallisesta blue/red-maskista
-    # loytyy oikea sininen-punainen-sininen -kuvio (sama tarkistus kuin
-    # koko-kuvan rivi-skannauksessa) ENNEN kuin ROI rakennetaan sen
-    # ymparille - jos kuviota ei loydy paikallisesti, palataan karkeaan
-    # arvioon (EI luoteta pelkkaan "suurin sininen alue" -oletukseen).
     blue_raw = k8.create_blue_mask(crop)
     red_raw = k8.create_red_mask(crop)
-    local_center_col = int(round(cx0 - x0))
-    pattern = _find_blue_red_blue_pattern(blue_raw, red_raw, local_center_col)
+    pattern = _find_blue_red_blue_pattern(blue_raw, red_raw, int(round(center_col_hint)))
     if pattern is None:
-        return np.asarray(target_px, dtype=np.float64)
+        return None
     pattern_row, pattern_col = pattern
 
     ys, xs = np.where(blue_raw > 0)
     if len(xs) < 5:
-        return np.asarray(target_px, dtype=np.float64)
+        return None
     pts_all = np.column_stack([xs, ys]).astype(np.float32)
-    dists = np.hypot(pts_all[:, 0] - pattern_col, pts_all[:, 1] - pattern_row)
-    # Rajataan minEnclosingCircle vain niihin sinisiin pisteisiin jotka
-    # ovat jarkevan lahella VARMISTETTUA kuvion sijaintia (ei koko
-    # ikkunan kaikkea sinista, joka voisi silti sisaltaa erillisen
-    # vaaran sinisen kohteen).
-    near_pattern = pts_all[dists <= window_px * 0.6]
-    if len(near_pattern) < 5:
-        near_pattern = pts_all
-    (ecx, ecy), erad = cv2.minEnclosingCircle(near_pattern)
+    if search_radius_px is not None:
+        dists = np.hypot(pts_all[:, 0] - pattern_col, pts_all[:, 1] - pattern_row)
+        near_pattern = pts_all[dists <= search_radius_px]
+        if len(near_pattern) >= 5:
+            pts_all = near_pattern
+    (ecx, ecy), erad = cv2.minEnclosingCircle(pts_all)
 
     roi_mask = np.zeros(crop.shape[:2], dtype=np.uint8)
     cv2.circle(roi_mask, (int(ecx), int(ecy)), int(erad), 255, -1)
     roi_area = np.count_nonzero(roi_mask)
     if roi_area == 0:
-        return np.asarray(target_px, dtype=np.float64)
+        return None
 
     s_blue = _search_s_low_for_area_fraction(
         _hsv_blue_mask_s_low, crop, roi_mask, roi_area, FAR_HOUSE_ROI_TARGET_BLUE_FRACTION
@@ -283,10 +265,9 @@ def _refine_far_center_three_ellipse_fit(frame_undistorted, target_px, window_px
             centers.append((fit[0], fit[1]))
 
     if not centers:
-        return np.asarray(target_px, dtype=np.float64)
+        return None
 
-    mean_local = np.mean(np.array(centers), axis=0)
-    return np.array([mean_local[0] + x0, mean_local[1] + y0], dtype=np.float64)
+    return tuple(np.mean(np.array(centers), axis=0))
 
 
 def build_far_house_center_seed(frame_undistorted, near_pts_frame, near_phys_pts):
@@ -317,34 +298,58 @@ def build_far_house_center_seed(frame_undistorted, near_pts_frame, near_phys_pts
         )
     found_row, found_col = estimate
 
+    # "Skaalataan" (pystysuora affiini venytys/puristus, ankkuroituna
+    # lahempaan pesaan Y=0:ssa/ext_h:ssa) KOKO laajennettu topdown-KUVA
+    # niin etta loydetty rivi osuu tarkalleen FAR_HOUSE_Y_CM:n kohdalle -
+    # TARKALLEEN sama jarjestys kuin kasin tehdyssa prosessissa (katso
+    # keskusteluhistoria): tama tehdaan KUVALLE, EI vain yhdelle
+    # pisteelle, koska kolmen ellipsin sovitus PITAA tehda jo suunnilleen
+    # oikein skaalatussa TOPDOWN-avaruudessa (missa rengas nayttaa jo
+    # suunnilleen ympyralta) - EI takaisinprojisoituna vaaristyneeseen
+    # KEHYSAVARUUTEEN (missa kaukainen pieni rengas nakyy hyvin ohuena/
+    # venyneena ellipsina ja sateittainen reunanhaku/pattern-tarkistus
+    # toimii epaluotettavammin, todettu kehitysvaiheessa: leikattu-kuvan
+    # tarkistus epaonnistui systemaattisesti kehysavaruudessa).
     target_row = (extended_y_max_cm - k8.FAR_HOUSE_Y_CM) * k8.PIXELS_PER_CM
     anchor_row = float(ext_h)
     scale_factor = (anchor_row - target_row) / (anchor_row - found_row)
     a = scale_factor
     b = anchor_row * (1.0 - scale_factor)
-    corrected_row_ext = a * found_row + b
+    rescale_M = np.array([[1.0, 0.0, 0.0], [0.0, a, b]], dtype=np.float64)
+    topdown_rescaled_ext = cv2.warpAffine(topdown_extended, rescale_M, (ext_w, ext_h))
 
+    # Rivi<->Y-suhde on nyt (affiinin rakentamistavan ansiosta) sama
+    # VAKIOKAAVA koko kuvan matkalta kuin standardikanvaasilla - katso
+    # keskusteluhistorian perustelu - joten voidaan kayttaa tavallista
+    # k8.crop_house_view:ta suoraan FAR_HOUSE_Y_CM:n ymparille, kunhan
+    # kuva ensin tulkitaan "EXTENDED_Y_MAX_CM asti ulottuvana standardi-
+    # kanvaasina" (sama PIXELS_PER_CM, vain korkeampi).
+    far_row_top_ext, _ = k8.compute_crop_row_range(
+        ext_h, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM
+    )
+    far_crop_rescaled = k8.crop_house_view(topdown_rescaled_ext, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM)
+    expected_center_local = k8.expected_house_center_in_crop(ext_h, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM)
+
+    fit_local = _three_ellipse_fit_center_in_crop(far_crop_rescaled, expected_center_local[0])
+
+    if fit_local is None:
+        # Ei loytynyt kolmen ellipsin sovitusta rescaloidusta topdownista
+        # (esim. liikesumennuksen pirstoma rengas) - kaytetaan silti
+        # rivi-skannauksen omaa karkeaa (row,col)-arviota takaisin-
+        # projisoituna, parempi kuin ei mitaan.
+        fit_row_ext = far_row_top_ext + expected_center_local[1]
+        fit_col_ext = found_col
+    else:
+        fit_col_ext, fit_local_row = fit_local
+        fit_row_ext = far_row_top_ext + fit_local_row
+
+    # Takaisin: rescaloitu-extended -> extended (kaanteinen affiini) ->
+    # kehys (kaanteinen H_near_only).
+    fit_row_ext_unrescaled = (fit_row_ext - b) / a
     H_inv = np.linalg.inv(H_near_only)
-    far_center_frame_crude = cv2.perspectiveTransform(
-        np.array([[[found_col, corrected_row_ext]]], dtype=np.float64), H_inv
+    far_center_frame = cv2.perspectiveTransform(
+        np.array([[[fit_col_ext, fit_row_ext_unrescaled]]], dtype=np.float64), H_inv
     )[0, 0]
-
-    # H_near_only:n ekstrapolointi on tallakin korjatulla asteikolla
-    # yha epatarkka (~satojen pikselien luokkaa) - karkea takaisin-
-    # projisoitu piste EI viela osu tarkalleen renkaan keskelle (havaittu
-    # kehitysvaiheessa). Tarkennetaan se KOLMEN ELLIPSIN SOVITUKSELLA
-    # (_refine_far_center_three_ellipse_fit - sama menetelma jolla
-    # kaukainen rengas alunperin loydettiin luotettavasti tallä kamera-
-    # kulmalla) ennen H_v1:n rakentamista - yksittainen find_house_pair
-    # (suurin kontuuri) tarttuu helposti vain yhteen pirstoutuneeseen
-    # renkaan palaan ja antaa vinon keskipisteen (todettu ja korjattu
-    # kehitysvaiheessa). HUOM (myos kehitysvaiheessa todettu): vasen/
-    # oikea-pisteen LISAAMINEN ellipsin vaaka-akselia pitkin osoittautui
-    # VAARAKSI - T-linjan suunta kuvatasossa EI ole talla etaisyydella
-    # vaakasuora (perspektiivi), joten tallainen oletus vaaristi koko
-    # H_v1:n rajusti (RMS >200cm). Kaytetaan siis VAIN keskipistetta -
-    # loppu skaala/kierto tulee geometrisesta tarkennussilmukasta.
-    far_center_frame = _refine_far_center_three_ellipse_fit(frame_undistorted, far_center_frame_crude)
 
     output_w = int(round((k8.OUTPUT_X_MAX_CM - k8.OUTPUT_X_MIN_CM) * k8.PIXELS_PER_CM))
     output_h = int(round(k8.OUTPUT_Y_MAX_CM * k8.PIXELS_PER_CM))
@@ -434,7 +439,7 @@ def far_ring_points_color_based(topdown_raw, H_current, max_points_per_ring=30):
     )
     view = k8.crop_house_view(topdown_raw, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM)
 
-    # Sama vahvistus kuin _refine_far_center_three_ellipse_fit:issa
+    # Sama vahvistus kuin _three_ellipse_fit_center_in_crop:issa
     # (kayttajan pyynnosta): ei luoteta pelkkaan "suurin sininen alue"
     # -oletukseen, koska nykyinen H_current voi silla hetkella olla
     # viela riittavan vino etta crop osuu vaaraan kohteeseen (esim.
