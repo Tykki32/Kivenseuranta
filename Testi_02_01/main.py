@@ -1079,6 +1079,41 @@ MAX_CONCURRENT_STONES = 4
 
 TRACK_LOST_GRACE_SECONDS = 3.0
 
+# ============================================================
+# "UUSI KIVI" -REKISTEROINNIN VAHVISTUS LIIKKEELLA (Testi_02_01,
+# havaittu oikean 5min Testivideo-julkaisun analyysissa): kivien
+# Y-koordinaatti PIENENEE ajassa taman videon suunnistuksessa (heitto-
+# paa/HAKU-vyohyke = suuri Y, lahempi pesa = pieni Y - VAHVISTETTU
+# oikealla datalla: aidot, koko matkan onnistuneesti seuratut heitot
+# nayttavat sileaa, HIDASTUVAA Y:n pienenemista n. 1.8-1.9 m/s:sta
+# muutamaan kymmeneen cm/s:iin - fysikaalisesti oikea kitkahidastuvuus).
+#
+# HAVAITTU ONGELMA (samalla oikealla datalla, 13 rekisteroitya stone_
+# id:ta ~5-6 aidon heiton sijaan): HAKU (kiintea kaukaisen paan
+# vyohyke) loytaa saannollisesti UUDELLEEN saman jo LEVOSSA olevan
+# (aiemmin jo raportoidun/pysahtyneen TAI peiton takia kadotetun)
+# kiven tai muun paikallaan olevan kohteen, koska se poistuu active_
+# stones:ista ("pysahtynyt" TAI "kadotettu" jalkeen) ja seuraava HAKU-
+# kierros (1s valein) loytaa saman paikallaan olevan kohteen taas -
+# rekisteroiden sen VIRHEELLISESTI UUTENA kivena. Esimerkkeja oikealta
+# datalta: monta stone_id:ta joiden koko elinika oli alle 5s ja netto-
+# siirtyma vain 1-250cm (verrattuna aitojen heittojen n. 2900-3100cm:iin
+# koko HAKU-loytohetkesta lahemman pesan levahdyspaikkaan).
+#
+# Korjaus: koska KAIKKI aidot kivet ovat jo LIIKKEESSA kun HAKU loytaa
+# ne ja jatkavat matkaansa satoja senttteja ENNEN pysahtymista, mutta
+# paikallaan-jo-olevat kohteet eivat LIIKU merkittavasti: vaaditaan etta
+# uusi HAKU-loytö siirtyy vahintaan taman verran (itseisarvo, ensim-
+# maisesta havainnosta) ENNEN kuin sen havainnot kirjataan CSV:hen
+# aitona heittona - katso pending_rows/confirmed-kasittely alempana.
+# Kunnes vahvistus tapahtuu, havainnot puskuroidaan (ei kirjoiteta) -
+# jos kivi kadotetaan/pysahtyy KOSKAAN vahvistumatta, koko puskuroitu
+# havaintosarja hylataan hiljaisesti (ei CSV-rivia, ei lasketa mukaan
+# "n_stones_seen":iin). Aito heitetty kivi ylittaa tamän kynnyksen jo
+# ensimmaisen sekunnin sisalla (katso yllapuoliset esimerkit); pai-
+# kallaan lepäävä kohde ei koskaan.
+MIN_CONFIRMED_THROW_DISPLACEMENT_CM = 25.0
+
 # HAKU-valin PAIKALLINEN ylikirjoitus (kayttajan pyynnosta) - EI
 # muuteta kamera9_02.py:n omaa SEARCH_EVERY_N_FRAMES:ia (se tiedosto
 # on koskematon referenssi, katso taman tiedoston alkupaan kommentti).
@@ -2680,6 +2715,11 @@ def run_pipeline(
 
     active_stones = []
     next_stone_id = 0
+    # Lasketaan VAIN liikevahvistetut (katso MIN_CONFIRMED_THROW_
+    # DISPLACEMENT_CM) kivet - EI raakoja HAKU-ehdokkaita, joista suurin
+    # osa (katso ASETUKSET-kommentti) on paikallaan-jo-olevien kohteiden
+    # virheellisia uudelleenlöytöjä, ei aitoja heittoja.
+    n_confirmed_stones = 0
     live_state = None
     csv_writer = None
     csv_file = None
@@ -3536,10 +3576,47 @@ def run_pipeline(
                                 str(s["stone_id"])
                             ))
 
-                            _write_stone_csv_row(
-                                csv_writer, frame_index, timestamp,
-                                s["stone_id"], refined
-                            )
+                            # --------------------------------
+                            # LIIKEVAHVISTUS: katso ASETUKSET-kommentti
+                            # MIN_CONFIRMED_THROW_DISPLACEMENT_CM:in
+                            # kohdalla - ei kirjoiteta CSV:hen ENNEN
+                            # kuin kivi on siirtynyt riittavasti ensim-
+                            # maisesta havainnostaan (torjuu paikallaan
+                            # jo olevien kohteiden toistuvan virheelli-
+                            # sen uudelleenrekisteroinnin). Puskuroidut
+                            # rivit kirjoitetaan KAIKKI KERRALLA heti
+                            # kun vahvistus tapahtuu - ei menetetä aikai-
+                            # sia, aitoja havaintoja.
+                            # --------------------------------
+
+                            if not s["confirmed"]:
+
+                                s["pending_rows"].append(
+                                    (frame_index, timestamp, dict(refined))
+                                )
+
+                                if (
+                                    abs(refined["Y_cm"] - s["y0_first_cm"])
+                                    >= MIN_CONFIRMED_THROW_DISPLACEMENT_CM
+                                ):
+
+                                    s["confirmed"] = True
+                                    n_confirmed_stones += 1
+
+                                    for pf, pt, prow in s["pending_rows"]:
+                                        _write_stone_csv_row(
+                                            csv_writer, pf, pt,
+                                            s["stone_id"], prow
+                                        )
+
+                                    s["pending_rows"] = []
+
+                            else:
+
+                                _write_stone_csv_row(
+                                    csv_writer, frame_index, timestamp,
+                                    s["stone_id"], refined
+                                )
 
                             # --------------------------------
                             # PYSAHTYMISTARKISTUS: katso taman
@@ -3604,13 +3681,29 @@ def run_pipeline(
 
                                     if color_confirms:
                                         stopped = True
-                                        print(
-                                            f"[frame {frame_index}] Kivi "
-                                            f"{s['stone_id']} pysahtynyt "
-                                            f"(liikkunut {displacement:.1f}cm "
-                                            f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
-                                            "aikana) - lopetetaan seuranta."
-                                        )
+                                        if s["confirmed"]:
+                                            print(
+                                                f"[frame {frame_index}] Kivi "
+                                                f"{s['stone_id']} pysahtynyt "
+                                                f"(liikkunut {displacement:.1f}cm "
+                                                f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
+                                                "aikana) - lopetetaan seuranta."
+                                            )
+                                        else:
+                                            # Ei koskaan liikkunut riittavasti
+                                            # (katso MIN_CONFIRMED_THROW_
+                                            # DISPLACEMENT_CM) - todennakoisesti
+                                            # jo paikallaan ollut kohde, ei aito
+                                            # heitto. Puskuroidut havainnot
+                                            # hylataan hiljaisesti (EI CSV-riviä).
+                                            s["pending_rows"] = []
+                                            print(
+                                                f"[frame {frame_index}] Ehdokas "
+                                                f"{s['stone_id']} hylatty "
+                                                "(ei liikkunut riittavasti - "
+                                                "todennakoisesti jo paikallaan "
+                                                "ollut kohde, ei aito heitto)."
+                                            )
 
                             if not stopped:
                                 still_active.append(s)
@@ -3627,10 +3720,19 @@ def run_pipeline(
 
                             if s["misses"] < track_lost_max_misses:
                                 still_active.append(s)
-                            else:
+                            elif s["confirmed"]:
                                 print(
                                     f"[frame {frame_index}] Kivi "
                                     f"{s['stone_id']} kadotettu."
+                                )
+                            else:
+                                s["pending_rows"] = []
+                                print(
+                                    f"[frame {frame_index}] Ehdokas "
+                                    f"{s['stone_id']} hylatty (kadotettu "
+                                    "ennen kuin liikkui riittavasti - "
+                                    "todennakoisesti jo paikallaan ollut "
+                                    "kohde, ei aito heitto)."
                                 )
 
                 active_stones = still_active
@@ -3681,6 +3783,17 @@ def run_pipeline(
                                     frame_index,
                                     refined["X_cm"], refined["Y_cm"]
                                 )],
+                                # katso ASETUKSET-kommentti MIN_CONFIRMED_
+                                # THROW_DISPLACEMENT_CM:in kohdalla - ei
+                                # kirjoiteta CSV:hen ennen kuin liike on
+                                # vahvistettu (torjuu paikallaan-jo-olevien
+                                # kohteiden toistuvan uudelleenrekisterointi-
+                                # ongelman).
+                                "y0_first_cm": refined["Y_cm"],
+                                "confirmed": False,
+                                "pending_rows": [
+                                    (frame_index, timestamp, dict(refined))
+                                ],
                             })
 
                             debug_draw_items.append((
@@ -3690,15 +3803,11 @@ def run_pipeline(
                             ))
 
                             print(
-                                f"[frame {frame_index}] Uusi kivi "
+                                f"[frame {frame_index}] Uusi kivi-ehdokas "
                                 f"{stone_id}: "
                                 f"({refined['X_cm']:.1f}, "
-                                f"{refined['Y_cm']:.1f}) cm"
-                            )
-
-                            _write_stone_csv_row(
-                                csv_writer, frame_index, timestamp,
-                                stone_id, refined
+                                f"{refined['Y_cm']:.1f}) cm "
+                                "(odottaa liikevahvistusta ennen CSV-kirjausta)"
                             )
 
                 # --------------------------------------------
@@ -3938,7 +4047,7 @@ def run_pipeline(
         "profile": profile_result,
         "n_profile_observations": len(accumulated_stones),
         "csv_output": csv_output if live_state is not None else None,
-        "n_stones_seen": next_stone_id,
+        "n_stones_seen": n_confirmed_stones,
         "debug_video_output": (
             debug_video_output if debug_video_writer is not None else None
         ),

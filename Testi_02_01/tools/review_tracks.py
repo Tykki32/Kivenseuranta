@@ -207,23 +207,34 @@ def build_grid(topdown_path, chains, output_path, n_cols=4,
 
 
 def hogline_crossing_timestamp(chain, hogline_y_cm):
-    """Testi_02_01 (kayttajan pyynnosta): etsii ENSIMMAISEN peräkkäisen
-    pistepairin jonka valissa y_cm ylittaa hogline_y_cm:n (kivi kulkee
-    lahempaa hoglinea kohti kaukaista, katso kamera9_02.py:n kommentti -
-    y_cm siis KASVAA ajassa), ja palauttaa LINEAARISESTI interpoloidun
-    aikaleiman (sekunteina) tuolta ylitykselta - suoraan verrattavissa
-    kayttajan itse katsomiin/kirjaamiin ajanhetkiin. Palauttaa None jos
-    ketju ei koskaan ylita tata hoglinea."""
+    """Testi_02_01 (VAHVISTETTU oikean Testivideo-julkaisun analyysissa
+    - katso main.py:n MIN_CONFIRMED_THROW_DISPLACEMENT_CM:in kommentti):
+    kiven Y-koordinaatti PIENENEE ajassa taman videon suunnistuksessa
+    (HAKU-vyohyke/heittopaa = suuri Y, lahempi pesa = pieni Y/0) - siis
+    PAINVASTOIN kuin talle tiedostolle alunperin oletettiin. Etsii
+    ENSIMMAISEN perakkaisen pistepairin jonka valissa y_cm LASKEE
+    hogline_y_cm:n ALI, ja palauttaa (aikaleima, tarkka) - tarkka=True
+    jos aikaleima on LINEAARISESTI interpoloitu oikealta ylitykselta
+    (suoraan verrattavissa kayttajan itse katsomiin/kirjaamiin ajan-
+    hetkiin), tarkka=False jos ketju alkaa JO hoglinen ALAPUOLELTA
+    (esim. HAKU:n 1s valein tapahtuva kiintea-vyohyke-tarkistus, katso
+    main.py:n HAKU_SEARCH_INTERVAL_SECONDS, ehti loytaa kiven vasta
+    hoglinen ylitettya) - talloin palautetaan ketjun ENSIMMAINEN
+    aikaleima YLARAJANA (todellinen ylitys tapahtui hieman AIEMMIN).
+    Palauttaa (None, None) jos ketju ei koskaan ylita/ala hoglinen
+    alapuolelta."""
 
     pts = chain["pts"]
     for i in range(1, len(pts)):
         f0, t0, x0, y0 = pts[i - 1]
         f1, t1, x1, y1 = pts[i]
-        if y0 < hogline_y_cm <= y1:
-            span = y1 - y0
-            frac = (hogline_y_cm - y0) / span if abs(span) > 1e-9 else 0.0
-            return t0 + frac * (t1 - t0)
-    return None
+        if y0 >= hogline_y_cm > y1:
+            span = y0 - y1
+            frac = (y0 - hogline_y_cm) / span if abs(span) > 1e-9 else 0.0
+            return t0 + frac * (t1 - t0), True
+    if pts[0][3] < hogline_y_cm:
+        return pts[0][1], False
+    return None, None
 
 
 def format_mmss(seconds):
@@ -270,13 +281,14 @@ def main():
     print("Kaukaisen hoglinen ylitysajat (taydet heitot, aikajarjestyksessa):")
     crossings = []
     for chain in full_chains:
-        ts = hogline_crossing_timestamp(chain, FAR_HOGLINE_Y_CM)
+        ts, exact = hogline_crossing_timestamp(chain, FAR_HOGLINE_Y_CM)
         if ts is not None:
-            crossings.append((ts, chain))
+            crossings.append((ts, exact, chain))
     crossings.sort(key=lambda c: c[0])
-    for ts, chain in crossings:
+    for ts, exact, chain in crossings:
         ids_str = "+".join(str(i) for i in chain["ids"])
-        print(f"  {format_mmss(ts)}  (id{ids_str}, n={len(chain['pts'])})")
+        marker = "" if exact else " (~, ketju alkoi jo hoglinen alapuolelta)"
+        print(f"  {format_mmss(ts)}{marker}  (id{ids_str}, n={len(chain['pts'])})")
 
     # --------------------------------------------------------------
     # VAJAAT/EPAILYTTAVAT KETJUT: eivat ylita molempia hoglineja -
