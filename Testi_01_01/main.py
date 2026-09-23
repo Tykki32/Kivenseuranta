@@ -176,7 +176,19 @@ def find_far_house_coarse_seed(blue_mask, near_blue_outer, camera, v_t, v_cl,
 # ja PAATETAAN vasta lopuksi homografian RMS:lla (katso alempana) kumpi
 # niista on oikeasti oikea - sama periaate jota koodi jo kayttaa
 # teoreettisen/varipohjaisen kaukaisen pesan kandidaatin valinnassa.
-FAR_HOUSE_FINE_TOPK = 20
+FAR_HOUSE_FINE_TOPK = 5
+
+# Sama ongelma toistuu jo COARSE-vaiheessa: kaksi lahes identtista
+# moodikuvaa antoivat COARSE:sta TASMALLEEN saman (vaaran) -24 asteen
+# kulman, ja koska FINE-vaiheen hakuikkuna (keskitetty COARSE:n yhteen
+# tulokseen) on vain +-80cm leveä, se ei koskaan tavoita sita (x,y)-
+# aluetta missa oikea (hoglinen mukaan lukien oikeasti vaakasuora)
+# vastaus olisi. Pidetaan siis hengissa myos COARSE_TOPK eri (x,y)-
+# ruudun tulosta, ja jokaisesta ajetaan oma FINE_TOPK_PER_COARSE:n
+# FINE-haku - kokonaismaara pysyy suunnilleen ennallaan (COARSE_TOPK *
+# FINE_TOPK_PER_COARSE ULTRA+geometrinen-korjaus -ajoa).
+COARSE_TOPK = 6
+FINE_TOPK_PER_COARSE = 6
 
 
 def _search_far_house_topk(
@@ -248,13 +260,22 @@ def _search_far_house_topk(
 
 
 def calibrate_camera_from_image_with_seed(filename):
-    """TARKALLEEN kamera9_01.py:n calibrate_camera_from_image, MUUTETTUNA
-    VAIN siten etta kaukaisen pesan COARSE-haun alkuarvaus (center_x/
-    center_y) haetaan datasta (find_far_house_coarse_seed) sokean
-    (0,0)-oletuksen sijaan - katso kommentti taman tiedoston alkupaassa.
-    Kaikki muu (FINE/ULTRA-vaiheet, homografia, vaaristyman korjaus,
-    geometrinen hienosaato) on TASMALLEEN sama koskemattomien k8/k9-
-    funktioiden kutsuja kuin alkuperaisessa."""
+    """kamera9_01.py:n calibrate_camera_from_image, laajennettuna kahdella
+    tavalla (kayttajan pyynnosta, katso kommentit alempana koodissa):
+
+    1) Kaukaisen pesan COARSE-haun alkuarvaus (center_x/center_y) haetaan
+       datasta (find_far_house_coarse_seed) sokean (0,0)-oletuksen sijaan.
+    2) Kaukaisen pesan haku (COARSE/FINE) pitaa hengissa TOP-K parasta eri
+       (x,y)-kandidaattia yhden globaalin parhaan sijasta (katso COARSE_
+       TOPK/FAR_HOUSE_FINE_TOPK:n kommentit), jokainen viedaan ULTRA-
+       vaiheen + taman TASMALLEEN k8.refine_geometric_homography:n lapi,
+       ja PAras lopullinen kandidaatti valitaan sen OIKEASTI lopullisesta
+       pyoreydesta/koosta/hoglinen kulmasta - ei pelkasta pistesovituksen
+       RMS:sta, joka osoittautui riittamattomaksi (katso kommentit).
+
+    Itse k8/k9-funktioihin (haku, pisteytys, homografia, vaaristyman
+    korjaus) EI ole koskettu - kaikki uusi logiikka on tata orkestrointia,
+    joka kutsuu niita moneen kertaan ja vertailee tuloksia."""
 
     frame = cv2.imread(filename)
 
@@ -302,23 +323,26 @@ def calibrate_camera_from_image_with_seed(filename):
         f"({'loytyi' if seed else 'ei loytynyt, kaytetaan oletusta 0,0'})"
     )
 
-    coarse = k8.search_far_house(
+    coarse_candidates = _search_far_house_topk(
         template, frame, camera, v_t, v_cl,
         center_x=seed_x, center_y=seed_y,
         center_range=k8.SEARCH_CENTER_RANGE_CM, center_step=k8.COARSE_CENTER_STEP_CM,
         angle_center=0.0, angle_range=k8.SEARCH_CENTER_RANGE_DEG, angle_step=k8.COARSE_ANGLE_STEP_DEG,
         scale_center=1.2, scale_range=k8.SEARCH_CENTER_RANGE_SCALE, scale_step=k8.COARSE_SCALE_STEP,
-        description="COARSE"
+        description="COARSE", top_k=COARSE_TOPK
     )
-    fine_candidates = _search_far_house_topk(
-        template, frame, camera, v_t, v_cl,
-        center_x=coarse["x_offset_cm"], center_y=coarse["y_offset_cm"],
-        center_range=k8.FINE_CENTER_RANGE_CM, center_step=k8.FINE_CENTER_STEP_CM,
-        angle_center=coarse["angle_deg"], angle_range=k8.FINE_ANGLE_RANGE_DEG,
-        angle_step=k8.FINE_ANGLE_STEP_DEG,
-        scale_center=coarse["scale"], scale_range=k8.FINE_SCALE_RANGE, scale_step=k8.FINE_SCALE_STEP,
-        description="FINE", top_k=FAR_HOUSE_FINE_TOPK
-    )
+
+    fine_candidates = []
+    for coarse_idx, coarse in enumerate(coarse_candidates):
+        fine_candidates.extend(_search_far_house_topk(
+            template, frame, camera, v_t, v_cl,
+            center_x=coarse["x_offset_cm"], center_y=coarse["y_offset_cm"],
+            center_range=k8.FINE_CENTER_RANGE_CM, center_step=k8.FINE_CENTER_STEP_CM,
+            angle_center=coarse["angle_deg"], angle_range=k8.FINE_ANGLE_RANGE_DEG,
+            angle_step=k8.FINE_ANGLE_STEP_DEG,
+            scale_center=coarse["scale"], scale_range=k8.FINE_SCALE_RANGE, scale_step=k8.FINE_SCALE_STEP,
+            description=f"FINE (coarse {coarse_idx})", top_k=FINE_TOPK_PER_COARSE
+        ))
 
     # Jokainen FINE-vaiheen top-K-kandidaatti viedaan ULTRA-vaiheen lapi
     # (tasmalleen sama k8.search_far_house kuin ennen, ei muutoksia
@@ -327,8 +351,13 @@ def calibrate_camera_from_image_with_seed(filename):
     # FINE_TOPK:n kommentti. Sama RMS-vertailu joka jo aiemmin valitsi
     # teoreettisen/varipohjaisen kaukaisen pesan valilla, laajennettu
     # nyt vertailemaan myos naita eri FINE-kandidaatteja keskenaan.
-    best_overall_rms = float("inf")
-    best_overall = None
+    camera_matrix = k8.build_camera_matrix(image_width, image_height)
+    output_w = int(round((k8.OUTPUT_X_MAX_CM - k8.OUTPUT_X_MIN_CM) * k8.PIXELS_PER_CM))
+    output_h = int(round((k8.OUTPUT_Y_MAX_CM - k8.OUTPUT_Y_MIN_CM) * k8.PIXELS_PER_CM))
+
+    best_overall_key = None
+    best_overall_result = None
+    best_overall_rms = None
 
     for fine_idx, fine in enumerate(fine_candidates):
 
@@ -407,74 +436,158 @@ def calibrate_camera_from_image_with_seed(filename):
             k8.physical_to_output_px(near_phys_pts + far_phys_pts)
         )
 
-        print(f"  ULTRA-kandidaatti {fine_idx}: koko homografian RMS = {rms:.3f} cm")
+        # HUOM (kayttajan pyynnosta, korjaa aiemman version puutteen):
+        # pelkka near+far-pisteiden RMS EI riittavasti erottele hyvaa/
+        # huonoa kandidaattia toisistaan - homografia voi sovittaa nama
+        # ~20 pistetta kohtalaisen hyvin (matala RMS) vaikka kaukainen
+        # pesa nayttaisi silti vinolta/vaaran kokoiselta lopullisessa
+        # topdown-kuvassa (todettu: RMS=48.7cm kandidaatti tuotti silti
+        # vinon topdown-kuvan). Myos "halpa" pelkkaan cv2.findHomography-
+        # arvioon (ilman objektiivin vaaristyman korjausta) perustuva
+        # pyoreysmittaus todettiin EPALUOTETTAVAKSI (nayttaa hyvalta
+        # ilman undistort:ia, mutta lopullinen - oikea - tulos huonompi)
+        # - siksi jokaiselle kandidaatille ajetaan TASMALLEEN sama
+        # tayspitka putki kuin voittajalle aiemmin ajettiin (best_k1 +
+        # undistort + k8.refine_geometric_homography, joka tunnistaa
+        # SEKA lahemman etta kaukaisen pesan renkaat JA molemmat
+        # hoglinet SUORAAN lopullisesta warpatusta kuvasta), ja valinta
+        # tehdaan sen OIKEASTI lopullisesta k8.measure_house_quality-
+        # tuloksesta (pyoreys ensisijaisena, koko-virhe ja RMS
+        # tasapelin ratkaisijoina).
+        all_img_pts = near_img_pts + far_img_pts
+        all_phys_pts = near_phys_pts + far_phys_pts
 
-        if rms < best_overall_rms:
+        cand_best_k1, cand_best_k1_rms, cand_baseline_rms = k8.estimate_radial_distortion_k1(
+            all_img_pts, all_phys_pts, camera_matrix
+        )
+        cand_k1_improvement = (
+            (cand_baseline_rms - cand_best_k1_rms) / cand_baseline_rms
+            if cand_baseline_rms > 1e-9 and math.isfinite(cand_baseline_rms) else 0.0
+        )
+
+        if cand_k1_improvement > k8.K1_MIN_RELATIVE_IMPROVEMENT and abs(cand_best_k1) > k8.K1_MIN_MAGNITUDE:
+            cand_dist_coeffs = np.array([cand_best_k1, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        else:
+            cand_best_k1 = 0.0
+            cand_dist_coeffs = np.zeros(5, dtype=np.float64)
+
+        cand_frame_undistorted = cv2.undistort(frame, camera_matrix, cand_dist_coeffs)
+
+        cand_near_pts_frame = k8.undistort_points_px(
+            np.array(near_img_pts, dtype=np.float64), camera_matrix, cand_best_k1
+        )
+        cand_far_pts_frame_init = k8.undistort_points_px(
+            np.array(far_img_pts, dtype=np.float64), camera_matrix, cand_best_k1
+        )
+
+        cand_src_pts = np.vstack([cand_near_pts_frame, cand_far_pts_frame_init]).astype(np.float32)
+        cand_dst_pts = k8.physical_to_output_px(all_phys_pts).astype(np.float32)
+
+        cand_H_init, _ = cv2.findHomography(cand_src_pts, cand_dst_pts, method=0)
+
+        if cand_H_init is None:
+            continue
+
+        cand_near_phys_arr = np.array(near_phys_pts, dtype=np.float64)
+
+        cand_refined = k8.refine_geometric_homography(
+            cand_frame_undistorted, cand_H_init, cand_near_pts_frame, cand_near_phys_arr,
+            output_w, output_h
+        )
+        cand_quality = cand_refined["quality"]
+
+        # HUOM (kayttajan pyynnosta, toinen puute edellisessa versiossa):
+        # pyoreys+koko EIVAT reagoi lainkaan koko topdown-kuvan YHTEISEEN
+        # KIERTOON - ympyra pysyy ympyrana vaikka koko kuva olisi
+        # vaarassa kulmassa. Todettiin etta usea kandidaatti (my "fixed"
+        # tulos mukaan lukien) lapaisi taydella pyoreydella/koolla mutta
+        # hogline oli silti ~15-18 astetta vinossa. Mitataan siis myos
+        # lahemman hoglinen kulma SUORAAN kandidaatin omasta lopullisesta
+        # topdown-kuvasta (k8.detect_hogline_points + k8.robust_line_
+        # angle_from_points, sama funktio jota kaytetaan muualla) ja
+        # painotetaan tata ENSISIJAISESTI - pyoreys/koko toimivat vasta
+        # tasapelin ratkaisijoina saman kulmaluokan sisalla.
+        #
+        # HUOM (bugikorjaus): cand_refined["topdown_raw"] on renderoity
+        # H_current:lla SITA ITERAATIOTA EDELTAVALLA homografialla, ei
+        # lopullisella H_final:lla (topdown_raw tallennetaan iteraation
+        # ALUSSA, H_final=H_new lasketaan VASTA sen jalkeen samalla
+        # kierroksella) - hogline pitaa siis mitata TUOREELTA, H_final:
+        # lla itse warpatulta kuvalta, muuten mittaus on yhden iteraation
+        # jaljessa todellisesta lopputuloksesta.
+        cand_topdown_final = cv2.warpPerspective(
+            cand_frame_undistorted, cand_refined["H_final"], (output_w, output_h)
+        )
+        near_hog_pts_topdown = k8.detect_hogline_points(cand_topdown_final, k8.NEAR_HOGLINE_Y_CM)
+        near_hog_angle, near_hog_conf = k8.robust_line_angle_from_points(near_hog_pts_topdown)
+        far_hog_pts_topdown = k8.detect_hogline_points(cand_topdown_final, k8.FAR_HOGLINE_Y_CM)
+        far_hog_angle, far_hog_conf = k8.robust_line_angle_from_points(far_hog_pts_topdown)
+
+        # HUOM: kaukainen hogline-alue taman videon kuvakulmalla on
+        # osoitettu (suora visuaalinen + pistediagnostiikka) osittain
+        # mainostaulujen/hyllyjen peitossa - matalan luottamuksen
+        # (raakojen pisteiden rivi vaihtelee epajohdonmukaisesti,
+        # ei muodosta oikeaa suoraa) kaukainen lukema on siis KOHINAA,
+        # ei todiste vaarasta kierrosta - sama ilmio jo dokumentoitu
+        # kamera7_06.py:n refine_geometric_homography:ssa 00008.png/
+        # Kivilla.png:lle (katso sen kommentti). Luotetaan kaukaiseen
+        # vain jos luottamus on samaa suuruusluokkaa kuin tyypillinen
+        # aito lahempi havainto (>=800) - muuten sita EI kayteta
+        # rangaistuksena, koska se palkitsisi vain sattumanvaraisesti
+        # "sopivan nakoisia" kohinapisteita.
+        HOGLINE_MIN_TRUST_CONFIDENCE = 800.0
+
+        hog_angle_penalty = abs(near_hog_angle) if near_hog_conf > 0.0 else 999.0
+        if far_hog_conf >= HOGLINE_MIN_TRUST_CONFIDENCE:
+            hog_angle_penalty = max(hog_angle_penalty, abs(far_hog_angle))
+
+        print(
+            f"  ULTRA-kandidaatti {fine_idx}: RMS={rms:.3f} cm, "
+            f"{k8.house_quality_str(cand_quality)}, "
+            f"hogline lahi={near_hog_angle:.2f}deg(luott={near_hog_conf:.0f}) "
+            f"kauko={far_hog_angle:.2f}deg(luott={far_hog_conf:.0f})"
+        )
+
+        # Portti: kelpuutetaan vain kandidaatit joiden pyoreys tayttaa
+        # kayttajan vaatimuksen (>0.95) - muuten hoglinen sattumanvarainen
+        # hyva kulma huonommalla pyoreydella voisi voittaa. Sen sisalla
+        # valinta ensisijaisesti pienimman hogline-poikkeaman mukaan.
+        roundness_gate = cand_quality["worst_ratio"] > 0.95
+        candidate_key = (
+            roundness_gate,
+            -hog_angle_penalty,
+            cand_quality["worst_ratio"],
+            -cand_quality["worst_size_err"],
+            -rms,
+        )
+
+        if best_overall_key is None or candidate_key > best_overall_key:
+            best_overall_key = candidate_key
             best_overall_rms = rms
-            best_overall = (near_img_pts, near_phys_pts, far_img_pts, far_phys_pts)
+            best_overall_result = {
+                "frame": frame,
+                "frame_undistorted": cand_frame_undistorted,
+                "camera_matrix": camera_matrix,
+                "best_k1": cand_best_k1,
+                "H_final": cand_refined["H_final"],
+                "quality": cand_quality,
+                "image_width": image_width,
+                "image_height": image_height,
+                "output_w": output_w,
+                "output_h": output_h,
+                "near_pts_frame": cand_near_pts_frame,
+                "near_phys": cand_near_phys_arr,
+            }
 
-    if best_overall is None:
+    if best_overall_result is None:
         raise RuntimeError("Kaukaiselle pesalle ei saatu yhtaan alkukorrespondenssia.")
 
-    print(f"  Valittu ULTRA-kandidaatti, RMS = {best_overall_rms:.3f} cm")
-
-    near_img_pts, near_phys_pts, far_img_pts, far_phys_pts = best_overall
-
-    all_img_pts = near_img_pts + far_img_pts
-    all_phys_pts = near_phys_pts + far_phys_pts
-
-    camera_matrix = k8.build_camera_matrix(image_width, image_height)
-
-    best_k1, best_k1_rms, baseline_rms = k8.estimate_radial_distortion_k1(
-        all_img_pts, all_phys_pts, camera_matrix
-    )
-    k1_improvement = (
-        (baseline_rms - best_k1_rms) / baseline_rms
-        if baseline_rms > 1e-9 and math.isfinite(baseline_rms) else 0.0
+    print(
+        f"  Valittu ULTRA-kandidaatti: RMS = {best_overall_rms:.3f} cm, "
+        f"{k8.house_quality_str(best_overall_result['quality'])}"
     )
 
-    if k1_improvement > k8.K1_MIN_RELATIVE_IMPROVEMENT and abs(best_k1) > k8.K1_MIN_MAGNITUDE:
-        dist_coeffs = np.array([best_k1, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    else:
-        best_k1 = 0.0
-        dist_coeffs = np.zeros(5, dtype=np.float64)
-
-    frame_undistorted = cv2.undistort(frame, camera_matrix, dist_coeffs)
-
-    near_pts_frame = k8.undistort_points_px(np.array(near_img_pts, dtype=np.float64), camera_matrix, best_k1)
-    far_pts_frame_init = k8.undistort_points_px(np.array(far_img_pts, dtype=np.float64), camera_matrix, best_k1)
-
-    src_pts = np.vstack([near_pts_frame, far_pts_frame_init]).astype(np.float32)
-    dst_pts = k8.physical_to_output_px(all_phys_pts).astype(np.float32)
-
-    H_init, _ = cv2.findHomography(src_pts, dst_pts, method=0)
-
-    if H_init is None:
-        raise RuntimeError("Alustavan homografian laskenta epaonnistui.")
-
-    output_w = int(round((k8.OUTPUT_X_MAX_CM - k8.OUTPUT_X_MIN_CM) * k8.PIXELS_PER_CM))
-    output_h = int(round((k8.OUTPUT_Y_MAX_CM - k8.OUTPUT_Y_MIN_CM) * k8.PIXELS_PER_CM))
-
-    near_phys_arr = np.array(near_phys_pts, dtype=np.float64)
-
-    refined = k8.refine_geometric_homography(
-        frame_undistorted, H_init, near_pts_frame, near_phys_arr, output_w, output_h
-    )
-
-    return {
-        "frame": frame,
-        "frame_undistorted": frame_undistorted,
-        "camera_matrix": camera_matrix,
-        "best_k1": best_k1,
-        "H_final": refined["H_final"],
-        "quality": refined["quality"],
-        "image_width": image_width,
-        "image_height": image_height,
-        "output_w": output_w,
-        "output_h": output_h,
-        "near_pts_frame": near_pts_frame,
-        "near_phys": near_phys_arr,
-    }
+    return best_overall_result
 
 
 # ============================================================
