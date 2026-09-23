@@ -116,33 +116,37 @@ def _physical_to_output_px_extended(physical_pts, extended_y_max_cm):
     return np.column_stack([ox, oy])
 
 
-def find_far_house_row_scan_estimate(topdown_extended, extended_y_max_cm):
-    """Skannaa laajennetun (lahi-pesa-only-homografialla tehdyn) topdown-
-    kuvan rivi kerrallaan: etsii rivit joilla on sinista maskia keski-
-    viivan molemmin puolin JA punaista niiden valissa (katso taman
-    tiedoston alkupaan kommentti). Lahemman pesan oma alue (aivan
-    kuvan alareunassa, jossa ehto tayttyy itsestaan selvasti) suljetaan
-    pois. Palauttaa (found_row, found_col) suurimman loydetyn rivi-
-    klusterin keskikohtana, tai None jos mitaan ei loydy."""
+def _find_blue_red_blue_pattern(blue_mask, red_mask, center_col, row_range=None,
+                                 margin_px=FAR_HOUSE_ROW_SCAN_CENTER_MARGIN_PX,
+                                 max_gap_px=FAR_HOUSE_ROW_SCAN_MAX_GAP_PX):
+    """YDINTARKISTUS koko taman tiedoston kaukaisen pesan loytamiselle
+    (kayttajan pyynnosta - katso keskusteluhistoria): etsii rivit joilla
+    on sinista maskia center_col:in MOLEMMIN puolin JA punaista niiden
+    VALISSA - tama kuvio on riittavan erikoislaatuinen etta se EI osu
+    esim. mainospaneeleihin tai muihin sinisiin/punaisiin kohteisiin
+    jotka eivat ole oikeasti rengasmaisia (todettu ja korjattu kehitys-
+    vaiheessa: pelkka "suurin sininen kontuuri" -haku tarttui toistuvasti
+    vaariin kohteisiin). Kaytetaan seka koko-kuvan karkeaan hakuun etta
+    paikalliseen tarkennukseen/vahvistukseen (samalla funktiolla - sama
+    tarkistus, vain eri hakualue). Palauttaa (found_row, found_col)
+    suurimman loydetyn rivi-klusterin keskikohtana, tai None jos mitaan
+    riittavan pitkaa yhtenaista kuviota ei loydy."""
 
-    blue = k8.create_blue_mask(topdown_extended)
-    red = k8.create_red_mask(topdown_extended)
-    h, w = blue.shape
-    center_col = int(round((0.0 - k8.OUTPUT_X_MIN_CM) * k8.PIXELS_PER_CM))
-    near_house_exclude_row = h - (k8.HOUSE_RADIUS_CM + 100.0) * k8.PIXELS_PER_CM
+    h = blue_mask.shape[0]
+    y_lo, y_hi = (0, h) if row_range is None else row_range
 
     qualifying = []
-    for y in range(int(near_house_exclude_row)):
-        blue_cols = np.where(blue[y] > 0)[0]
+    for y in range(y_lo, y_hi):
+        blue_cols = np.where(blue_mask[y] > 0)[0]
         if len(blue_cols) == 0:
             continue
-        left_cols = blue_cols[blue_cols < center_col - FAR_HOUSE_ROW_SCAN_CENTER_MARGIN_PX]
-        right_cols = blue_cols[blue_cols > center_col + FAR_HOUSE_ROW_SCAN_CENTER_MARGIN_PX]
+        left_cols = blue_cols[blue_cols < center_col - margin_px]
+        right_cols = blue_cols[blue_cols > center_col + margin_px]
         if len(left_cols) == 0 or len(right_cols) == 0:
             continue
         left_edge = left_cols.max()
         right_edge = right_cols.min()
-        red_cols = np.where(red[y] > 0)[0]
+        red_cols = np.where(red_mask[y] > 0)[0]
         red_between = red_cols[(red_cols > left_edge) & (red_cols < right_edge)]
         if len(red_between) == 0:
             continue
@@ -159,7 +163,7 @@ def find_far_house_row_scan_estimate(topdown_extended, extended_y_max_cm):
     clusters = []
     start_idx = 0
     for i in range(1, len(rows_sorted)):
-        if rows_sorted[i] - rows_sorted[i - 1] > FAR_HOUSE_ROW_SCAN_MAX_GAP_PX:
+        if rows_sorted[i] - rows_sorted[i - 1] > max_gap_px:
             clusters.append((start_idx, i))
             start_idx = i
     clusters.append((start_idx, len(rows_sorted)))
@@ -169,6 +173,23 @@ def find_far_house_row_scan_estimate(topdown_extended, extended_y_max_cm):
     found_row = float(np.mean(rows_sorted[lo:hi]))
     found_col = float(np.mean(cols_sorted[lo:hi]))
     return found_row, found_col
+
+
+def find_far_house_row_scan_estimate(topdown_extended, extended_y_max_cm):
+    """Skannaa laajennetun (lahi-pesa-only-homografialla tehdyn) topdown-
+    kuvan sininen-punainen-sininen-kuviolla (_find_blue_red_blue_pattern)
+    KOKO kuvan leveydelta, keskiviivan ymparilta. Lahemman pesan oma
+    alue (aivan kuvan alareunassa, jossa ehto tayttyy itsestaan
+    selvasti) suljetaan pois haista. Palauttaa (found_row, found_col)
+    tai None jos mitaan ei loydy."""
+
+    blue = k8.create_blue_mask(topdown_extended)
+    red = k8.create_red_mask(topdown_extended)
+    h, w = blue.shape
+    center_col = int(round((0.0 - k8.OUTPUT_X_MIN_CM) * k8.PIXELS_PER_CM))
+    near_house_exclude_row = int(h - (k8.HOUSE_RADIUS_CM + 100.0) * k8.PIXELS_PER_CM)
+
+    return _find_blue_red_blue_pattern(blue, red, center_col, row_range=(0, near_house_exclude_row))
 
 
 def _fit_circle_algebraic(points):
@@ -206,12 +227,35 @@ def _refine_far_center_three_ellipse_fit(frame_undistorted, target_px, window_px
     y0, y1 = int(max(0, cy0 - window_px)), int(min(h, cy0 + window_px))
     crop = frame_undistorted[y0:y1, x0:x1]
 
+    # Kayttajan pyynnosta (katso keskusteluhistoria): PELKKA sinisen
+    # maskin minEnclosingCircle tarttuu helposti vaaraan kohteeseen
+    # (esim. mainospaneeliin) jos sellainen sattuu olemaan ikkunan
+    # sisalla. Vahvistetaan siis ETTA paikallisesta blue/red-maskista
+    # loytyy oikea sininen-punainen-sininen -kuvio (sama tarkistus kuin
+    # koko-kuvan rivi-skannauksessa) ENNEN kuin ROI rakennetaan sen
+    # ymparille - jos kuviota ei loydy paikallisesti, palataan karkeaan
+    # arvioon (EI luoteta pelkkaan "suurin sininen alue" -oletukseen).
     blue_raw = k8.create_blue_mask(crop)
+    red_raw = k8.create_red_mask(crop)
+    local_center_col = int(round(cx0 - x0))
+    pattern = _find_blue_red_blue_pattern(blue_raw, red_raw, local_center_col)
+    if pattern is None:
+        return np.asarray(target_px, dtype=np.float64)
+    pattern_row, pattern_col = pattern
+
     ys, xs = np.where(blue_raw > 0)
     if len(xs) < 5:
         return np.asarray(target_px, dtype=np.float64)
     pts_all = np.column_stack([xs, ys]).astype(np.float32)
-    (ecx, ecy), erad = cv2.minEnclosingCircle(pts_all)
+    dists = np.hypot(pts_all[:, 0] - pattern_col, pts_all[:, 1] - pattern_row)
+    # Rajataan minEnclosingCircle vain niihin sinisiin pisteisiin jotka
+    # ovat jarkevan lahella VARMISTETTUA kuvion sijaintia (ei koko
+    # ikkunan kaikkea sinista, joka voisi silti sisaltaa erillisen
+    # vaaran sinisen kohteen).
+    near_pattern = pts_all[dists <= window_px * 0.6]
+    if len(near_pattern) < 5:
+        near_pattern = pts_all
+    (ecx, ecy), erad = cv2.minEnclosingCircle(near_pattern)
 
     roi_mask = np.zeros(crop.shape[:2], dtype=np.uint8)
     cv2.circle(roi_mask, (int(ecx), int(ecy)), int(erad), 255, -1)
@@ -390,12 +434,32 @@ def far_ring_points_color_based(topdown_raw, H_current, max_points_per_ring=30):
     )
     view = k8.crop_house_view(topdown_raw, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM)
 
+    # Sama vahvistus kuin _refine_far_center_three_ellipse_fit:issa
+    # (kayttajan pyynnosta): ei luoteta pelkkaan "suurin sininen alue"
+    # -oletukseen, koska nykyinen H_current voi silla hetkella olla
+    # viela riittavan vino etta crop osuu vaaraan kohteeseen (esim.
+    # mainospaneeliin) - vahvistetaan ETTA sininen-punainen-sininen
+    # -kuvio loytyy paikallisesti ENNEN kuin renkaan pisteita palautetaan
+    # geometriselle ratkaisijalle. Jos kuviota ei loydy, palautetaan
+    # TYHJA (turvallisempi kuin vaara rengas - silloin ratkaisija
+    # nojaa vain lahempaan pesaan + hoglineihin talla kierroksella).
     blue_raw = k8.create_blue_mask(view)
+    red_raw = k8.create_red_mask(view)
+    center_col = int(round((0.0 - k8.OUTPUT_X_MIN_CM) * k8.PIXELS_PER_CM))
+    pattern = _find_blue_red_blue_pattern(blue_raw, red_raw, center_col)
+    if pattern is None:
+        return np.zeros((0, 2)), np.zeros(0)
+    pattern_row, pattern_col = pattern
+
     ys, xs = np.where(blue_raw > 0)
     if len(xs) < 5:
         return np.zeros((0, 2)), np.zeros(0)
     pts_all = np.column_stack([xs, ys]).astype(np.float32)
-    (ecx, ecy), erad = cv2.minEnclosingCircle(pts_all)
+    dists = np.hypot(pts_all[:, 0] - pattern_col, pts_all[:, 1] - pattern_row)
+    near_pattern = pts_all[dists <= k8.HOUSE_CROP_HALF_HEIGHT_CM * k8.PIXELS_PER_CM * 0.6]
+    if len(near_pattern) < 5:
+        near_pattern = pts_all
+    (ecx, ecy), erad = cv2.minEnclosingCircle(near_pattern)
 
     roi_mask = np.zeros(view.shape[:2], dtype=np.uint8)
     cv2.circle(roi_mask, (int(ecx), int(ecy)), int(erad), 255, -1)
