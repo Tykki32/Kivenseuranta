@@ -1735,6 +1735,83 @@ def load_panel_reference(filename):
 
 
 # ============================================================
+# PANEELIEN KASIN-MERKINTA (VARAMENETTELY)
+#
+# Kayttajan pyynnosta: jos automaattitunnistus (referenssin lahelta)
+# ei loyda vahintaan MIN_AUTO_PANELS_BEFORE_MANUAL (6) paneelia, se ei
+# riita luotettavaan stabilointiin koko videon ajaksi - avataan siis
+# skaalattavan kokoinen (cv2.WINDOW_NORMAL, kayttaja voi venyttaa
+# ikkunan haluamaansa kokoon) ikkuna jossa kayttaja klikkaa PUUTTUVAT
+# paneelit hiirella. Jo automaattisesti loydetyt paneelit nakyvat
+# valmiiksi merkittyina (vihrea nelikulmio + jarjestysnumero), joten
+# kayttajan tarvitsee klikata vain loput. Jokainen klikkaus ajaa
+# saman detect_panel-tunnistuksen (tarkka kulma-/subpikselisovitus)
+# klikkauskohdan ymparilta - sama menetelma kuin automaattitunnistus,
+# vain hakupisteen ALKUPERA on kasin annettu. Enter lopettaa (vaatii
+# vahintaan 2 paneelia yhteensa), Esc peruuttaa kokonaan.
+# ============================================================
+
+MIN_AUTO_PANELS_BEFORE_MANUAL = 6
+
+
+def select_panels_manually(gray, frame_bgr=None, existing_panel_data=None,
+                            window_name="Klikkaa puuttuvat paneelit (Enter=valmis, Esc=peruuta)"):
+
+    display_base = frame_bgr if frame_bgr is not None else cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    display_base = display_base.copy()
+
+    panel_data = list(existing_panel_data) if existing_panel_data else []
+    n_preexisting = len(panel_data)
+
+    def on_mouse(event, x, y, flags, param):
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        result = detect_panel(gray, float(x), float(y))
+        if result is None:
+            print(f"  Ei loytynyt paneelia klikkauskohdasta ({x},{y}) - kokeile uudelleen (klikkaa lahempana paneelin keskikohtaa).")
+            return
+        panel_data.append(result)
+        print(f"  Paneeli {len(panel_data)} merkitty kohtaan ({x},{y}).")
+
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(window_name, on_mouse)
+
+    print(
+        f"  Avataan kasin-merkinta-ikkuna: {n_preexisting} paneelia jo "
+        f"automaattisesti loydetty, klikkaa loput hiirella. Enter lopettaa "
+        f"(vahintaan 2 paneelia yhteensa), Esc peruuttaa."
+    )
+
+    try:
+        while True:
+            display = display_base.copy()
+            for i, result in enumerate(panel_data):
+                corners = result["corners"].astype(int)
+                color = (0, 200, 255) if i < n_preexisting else (0, 255, 0)
+                cv2.polylines(display, [corners], True, color, 2)
+                center = tuple(result["center"].astype(int))
+                cv2.putText(display, str(i + 1), center, cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            cv2.putText(
+                display, f"Paneeleita merkitty: {len(panel_data)} - Enter=valmis, Esc=peruuta",
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2
+            )
+            cv2.imshow(window_name, display)
+            key = cv2.waitKey(20) & 0xFF
+
+            if key in (13, 10):
+                if len(panel_data) >= 2:
+                    break
+                print("  Vahintaan 2 paneelia tarvitaan ennen kuin voi jatkaa.")
+            elif key == 27:
+                raise RuntimeError("Kayttaja peruutti paneelien kasin-merkinnan.")
+    finally:
+        cv2.destroyWindow(window_name)
+
+    print(f"  Paneelien kasin-merkinta valmis: {len(panel_data)} paneelia yhteensa.")
+    return panel_data
+
+
+# ============================================================
 # PANEELIEN AUTOMAATTITUNNISTUS REFERENSSIN LAHELTA
 #
 # Kayttajan pyynnosta (korvaa kasin-klikkauksen select_panels): jokaista
@@ -1749,7 +1826,7 @@ def load_panel_reference(filename):
 # videolle erikseen (kameran zoomi voi muuttaa paneelin PIKSELIKOKOA).
 # ============================================================
 
-def detect_panels_from_reference(gray, reference_panels,
+def detect_panels_from_reference(gray, reference_panels, frame_bgr=None,
                                   search_scale=PANEL_REFERENCE_SEARCH_SCALE):
 
     search_w = int(round(ROI_HALF_WIDTH * search_scale))
@@ -1789,11 +1866,13 @@ def detect_panels_from_reference(gray, reference_panels,
         f"{len(reference_panels)} loytyi ({missing} puuttuu)."
     )
 
-    if len(panel_data) < 2:
-        raise RuntimeError(
-            "Liian vahan paneeleita loytyi automaattisesti "
-            "(vahintaan 2 tarvitaan stabilointiin)."
+    if len(panel_data) < MIN_AUTO_PANELS_BEFORE_MANUAL:
+        print(
+            f"Automaattitunnistus loysi vain {len(panel_data)}/"
+            f"{MIN_AUTO_PANELS_BEFORE_MANUAL} vaadittua paneelia - "
+            f"avataan kasin-merkinta puuttuvien loytamiseksi."
         )
+        panel_data = select_panels_manually(gray, frame_bgr, existing_panel_data=panel_data)
 
     return panel_data
 
@@ -3975,7 +4054,7 @@ def main(debug=None, start_time=None, end_time=None):
         first_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
 
         panel_data = detect_panels_from_reference(
-            first_gray, reference_panels
+            first_gray, reference_panels, frame_bgr=first_frame
         )
 
         filename = save_panel_data(
