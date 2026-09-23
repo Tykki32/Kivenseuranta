@@ -253,22 +253,33 @@ def main():
     segments = load_segments(csv_path)
     chains = merge_segments(segments)
 
-    full_chains = []
-    partial_chains = []
+    # --------------------------------------------------------------
+    # LUOKITTELU (Testi_02_01, korjattu oikean Testivideo-julkaisun
+    # analyysissa): AIEMPI versio vaati ketjun ylittavan MOLEMMAT
+    # hoglinet ("taysi heitto") - havaittiin oikealla datalla etta tama
+    # hylkasi vaarin AIDOT, oikein ajoitetut heitot jotka joko (a)
+    # menettivat SEURANNAN kesken matkan (esim. peitto) ennen lahempaa
+    # hoglinea, tai (b) olivat viela kesken kun VIDEO LOPPUI (esim.
+    # aivan klipin lopussa oleva heitto). Oikea kriteeri kayttajan
+    # pyynnolle (verrata KAUKAISEN hoglinen ylitysaikoja itse
+    # katsottuun listaan) on YKSINKERTAISESTI: ylittaako ketju kaukaisen
+    # hoglinen oikeaan suuntaan (katso hogline_crossing_timestamp) -
+    # EI valita lahemman pesan saavuttamista.
+    # --------------------------------------------------------------
+    crossed = []
+    other_chains = []
     for chain in chains:
-        ys = [p[3] for p in chain["pts"]]
-        y_min, y_max = min(ys), max(ys)
-        if (y_min <= NEAR_HOGLINE_Y_CM + HOGLINE_MARGIN_CM and
-                y_max >= FAR_HOGLINE_Y_CM - HOGLINE_MARGIN_CM):
-            full_chains.append(chain)
+        ts, exact = hogline_crossing_timestamp(chain, FAR_HOGLINE_Y_CM)
+        if ts is not None:
+            crossed.append((ts, exact, chain))
         else:
-            partial_chains.append(chain)
+            other_chains.append(chain)
 
-    full_chains.sort(key=lambda c: c["pts"][0][0])
+    crossed.sort(key=lambda c: c[0])
 
     print(f"Loytyi {len(chains)} liikeketjua (yhdistettyna), "
-          f"joista {len(full_chains)} ylittaa molemmat hoglinet "
-          f"(taysi heitto).")
+          f"joista {len(crossed)} ylittaa kaukaisen hoglinen "
+          "(tulkitaan aidoksi heitoksi).")
 
     # --------------------------------------------------------------
     # KAUKAISEN HOGLINEN YLITYSAJAT (kayttajan pyynnosta): suoraan
@@ -278,36 +289,35 @@ def main():
     # puuttuuko/kaksoiskirjautuiko jokin.
     # --------------------------------------------------------------
     print()
-    print("Kaukaisen hoglinen ylitysajat (taydet heitot, aikajarjestyksessa):")
-    crossings = []
-    for chain in full_chains:
-        ts, exact = hogline_crossing_timestamp(chain, FAR_HOGLINE_Y_CM)
-        if ts is not None:
-            crossings.append((ts, exact, chain))
-    crossings.sort(key=lambda c: c[0])
-    for ts, exact, chain in crossings:
+    print("Kaukaisen hoglinen ylitysajat (aikajarjestyksessa):")
+    for ts, exact, chain in crossed:
         ids_str = "+".join(str(i) for i in chain["ids"])
         marker = "" if exact else " (~, ketju alkoi jo hoglinen alapuolelta)"
-        print(f"  {format_mmss(ts)}{marker}  (id{ids_str}, n={len(chain['pts'])})")
+        y_min = min(p[3] for p in chain["pts"])
+        incomplete = (
+            "" if y_min <= NEAR_HOGLINE_Y_CM + HOGLINE_MARGIN_CM
+            else " [seuranta paattyi ennen lahempaa pesaa]"
+        )
+        print(f"  {format_mmss(ts)}{marker}  (id{ids_str}, n={len(chain['pts'])}){incomplete}")
 
     # --------------------------------------------------------------
-    # VAJAAT/EPAILYTTAVAT KETJUT: eivat ylita molempia hoglineja -
-    # joko kesken katkennut aito heitto (esim. kadotettu seuranta) tai
-    # virhehavainto (esim. pelaaja/harja) joka ei koskaan ollut aito
-    # kivi. Tulostetaan EROTTAMAAN nama taysista heitoista, jotta
-    # kayttaja nakee suoraan onko YLIMAARAISIA/PUUTTUVIA havaintoja.
+    # EI YLITA KAUKAISTA HOGLINEA: joko kesken katkennut aito heitto
+    # (ennen hoglinen ylitysta) tai virhehavainto (esim. pelaaja/harja/
+    # paikallaan oleva kohde) joka ei koskaan ollut aito kivi.
+    # Tulostetaan EROTTAMAAN nama aidoista heitoista, jotta kayttaja
+    # nakee suoraan onko YLIMAARAISIA havaintoja.
     # --------------------------------------------------------------
-    if partial_chains:
+    if other_chains:
         print()
-        print(f"Vajaita/epailyttavia ketjuja (eivat ylita molempia hoglineja): "
-              f"{len(partial_chains)}")
-        for chain in sorted(partial_chains, key=lambda c: c["pts"][0][0])[:20]:
+        print(f"Ei ylita kaukaista hoglinea (todennakoisesti EI aitoja "
+              f"heittoja): {len(other_chains)}")
+        for chain in sorted(other_chains, key=lambda c: c["pts"][0][0])[:20]:
             ids_str = "+".join(str(i) for i in chain["ids"])
             t0, t1 = chain["pts"][0][1], chain["pts"][-1][1]
             print(f"  id{ids_str}: {format_mmss(t0)}-{format_mmss(t1)} "
                   f"n={len(chain['pts'])}")
 
-    build_grid(topdown_path, full_chains, output_path)
+    build_grid(topdown_path, [c for _, _, c in crossed], output_path)
     print()
     print(f"Tallennettu: {output_path}")
 
