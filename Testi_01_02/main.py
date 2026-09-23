@@ -171,43 +171,78 @@ def find_far_house_row_scan_estimate(topdown_extended, extended_y_max_cm):
     return found_row, found_col
 
 
-def _refine_far_center_local_hue(frame_undistorted, target_px, window_px=260.0):
+def _fit_circle_algebraic(points):
+    """Yksinkertainen algebrallinen ympyrasovitus (Kasa) pistejoukkoon.
+    Palauttaa (cx, cy, r) tai None jos pisteita on liian vahan."""
+    if len(points) < 5:
+        return None
+    x, y = points[:, 0], points[:, 1]
+    A = np.column_stack([x, y, np.ones_like(x)])
+    b = x ** 2 + y ** 2
+    sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    cx, cy = sol[0] / 2.0, sol[1] / 2.0
+    r = math.sqrt(max(sol[2] + cx ** 2 + cy ** 2, 0.0))
+    return cx, cy, r
+
+
+def _refine_far_center_three_ellipse_fit(frame_undistorted, target_px, window_px=260.0):
     """Tarkentaa karkean (rivi-skannauksesta takaisinprojisoidun) arvion
-    kaukaisen pesan keskipisteesta: rakentaa PAIKALLISEN suorakaide-ROI:n
-    arvion ymparille, laskee sen sisalta sinisen Hue-mediaanin (sama
-    periaate kuin kamera8_01.py:n create_far_house_hue_masks, mutta ROI
-    tama arviosta - EI kameramallin ekstrapoloinnista), ja sovittaa
-    ulko+sisaellipsit puhdistettuun hue-maskiin - korjaa sen etta raa'at
-    HSV-maskit ovat kaukana pirstoutuneita pieniksi tahriksi. Palauttaa
-    sovitetun ulkoellipsin ((cx,cy),(w,h),angle) tai None jos mitaan ei
-    loydy."""
+    kaukaisen pesan keskipisteesta KOLMEN ELLIPSIN SOVITUKSELLA (sama
+    menetelma jolla kaukainen pesa alunperin loydettiin luotettavasti
+    talla kamerakulmalla - katso taman tiedoston alkupaan kommentti):
+    rakentaa PAIKALLISEN ROI:n arvion ymparille, saataa sinisen/punaisen
+    HSV-kynnyksen pinta-alaosuuteen (FAR_HOUSE_ROI_TARGET_*_FRACTION),
+    ja sovittaa ympyran KOLMELLE renkaalle (sininen ulko/sisa, punainen
+    ulko) SATEITTAISELLA reunanhaulla (_radial_ring_edges - kerää
+    pisteita molemmista nakyvista kaarista symmetrisesti, toisin kuin
+    yksittainen find_house_pair-kontuuri joka voi tarttua vain YHTEEN
+    pirstoutuneeseen renkaan palaan ja antaa vinon keskipisteen -
+    havaittu kehitysvaiheessa). Palauttaa kolmen sovituksen keskipisteiden
+    KESKIARVON, tai alkuperaisen karkean arvion jos yhtaan ei loydy."""
 
     h, w = frame_undistorted.shape[:2]
-    cx, cy = target_px
-    x0, x1 = int(max(0, cx - window_px)), int(min(w, cx + window_px))
-    y0, y1 = int(max(0, cy - window_px)), int(min(h, cy + window_px))
+    cx0, cy0 = target_px
+    x0, x1 = int(max(0, cx0 - window_px)), int(min(w, cx0 + window_px))
+    y0, y1 = int(max(0, cy0 - window_px)), int(min(h, cy0 + window_px))
+    crop = frame_undistorted[y0:y1, x0:x1]
 
-    roi_mask = np.zeros((h, w), dtype=np.uint8)
-    roi_mask[y0:y1, x0:x1] = 255
+    blue_raw = k8.create_blue_mask(crop)
+    ys, xs = np.where(blue_raw > 0)
+    if len(xs) < 5:
+        return np.asarray(target_px, dtype=np.float64)
+    pts_all = np.column_stack([xs, ys]).astype(np.float32)
+    (ecx, ecy), erad = cv2.minEnclosingCircle(pts_all)
 
-    hsv = cv2.cvtColor(frame_undistorted, cv2.COLOR_BGR2HSV)
-    blue_hsv_mask = k8.create_blue_mask(frame_undistorted)
-    blue_sampling_mask = cv2.bitwise_and(blue_hsv_mask, roi_mask)
-    blue_hue_median = k8.calculate_hue_median_from_mask(hsv, blue_sampling_mask)
-    blue_hue_mask = k8.create_hue_tolerance_mask(hsv, blue_hue_median, k8.FAR_HUE_TOLERANCE)
-    blue_hue_mask = cv2.bitwise_and(blue_hue_mask, roi_mask)
+    roi_mask = np.zeros(crop.shape[:2], dtype=np.uint8)
+    cv2.circle(roi_mask, (int(ecx), int(ecy)), int(erad), 255, -1)
+    roi_area = np.count_nonzero(roi_mask)
+    if roi_area == 0:
+        return np.asarray(target_px, dtype=np.float64)
 
-    kernel = np.ones((3, 3), np.uint8)
-    blue_hue_mask = cv2.morphologyEx(blue_hue_mask, cv2.MORPH_CLOSE, kernel)
-
-    blue_outer, _ = k8.find_house_pair(
-        blue_hue_mask, k8.FAR_BLUE_MIN_AREA, k8.FAR_BLUE_MIN_RATIO, k8.FAR_BLUE_MIN_SIZE_RATIO,
-        min_contour_len=k8.FAR_BLUE_MIN_CONTOUR_LEN
+    s_blue = _search_s_low_for_area_fraction(
+        _hsv_blue_mask_s_low, crop, roi_mask, roi_area, FAR_HOUSE_ROI_TARGET_BLUE_FRACTION
     )
-    if blue_outer is None:
-        return None
+    s_red = _search_s_low_for_area_fraction(
+        _hsv_red_mask_s_low, crop, roi_mask, roi_area, FAR_HOUSE_ROI_TARGET_RED_FRACTION
+    )
+    blue_final = cv2.bitwise_and(_hsv_blue_mask_s_low(crop, s_blue), roi_mask)
+    red_final = cv2.bitwise_and(_hsv_red_mask_s_low(crop, s_red), roi_mask)
 
-    return blue_outer
+    center_local = (ecx, ecy)
+    blue_inner_pts, blue_outer_pts = _radial_ring_edges(blue_final, center_local, erad + 40)
+    _, red_outer_pts = _radial_ring_edges(red_final, center_local, erad + 40)
+
+    centers = []
+    for pts in (blue_inner_pts, blue_outer_pts, red_outer_pts):
+        fit = _fit_circle_algebraic(pts)
+        if fit is not None:
+            centers.append((fit[0], fit[1]))
+
+    if not centers:
+        return np.asarray(target_px, dtype=np.float64)
+
+    mean_local = np.mean(np.array(centers), axis=0)
+    return np.array([mean_local[0] + x0, mean_local[1] + y0], dtype=np.float64)
 
 
 def build_far_house_center_seed(frame_undistorted, near_pts_frame, near_phys_pts):
@@ -253,24 +288,19 @@ def build_far_house_center_seed(frame_undistorted, near_pts_frame, near_phys_pts
     # H_near_only:n ekstrapolointi on tallakin korjatulla asteikolla
     # yha epatarkka (~satojen pikselien luokkaa) - karkea takaisin-
     # projisoitu piste EI viela osu tarkalleen renkaan keskelle (havaittu
-    # kehitysvaiheessa). Tarkennetaan se paikallisella Hue-mediaani-
-    # maskilla (sama menetelma jolla kaukainen rengas aiemmin loydettiin
-    # luotettavasti tallä kamerakulmalla) ennen H_v1:n rakentamista -
-    # muuten geometrinen tarkennussilmukka (refine_geometric_homography_
-    # color) ei valttamatta loyda rengasta lainkaan ensimmaisella
-    # kierroksella (sen oma haku rajautuu HOUSE_CROP_HALF_HEIGHT_CM:n
-    # ymparille FAR_HOUSE_Y_CM:sta, mika ei riita korjaamaan suurta
-    # alkuvirhetta). HUOM (kehitysvaiheessa todettu): vasen/oikea-pisteen
-    # LISAAMINEN ellipsin vaaka-akselia pitkin osoittautui VAARAKSI -
-    # T-linjan suunta kuvatasossa EI ole talla etaisyydella vaakasuora
-    # (perspektiivi), joten tallainen oletus vaaristi koko H_v1:n
-    # rajusti (RMS >200cm). Kaytetaan siis VAIN keskipistetta - loppu
-    # skaala/kierto tulee geometrisesta tarkennussilmukasta.
-    far_ellipse = _refine_far_center_local_hue(frame_undistorted, far_center_frame_crude)
-    far_center_frame = (
-        np.array(far_ellipse[0], dtype=np.float64) if far_ellipse is not None
-        else far_center_frame_crude
-    )
+    # kehitysvaiheessa). Tarkennetaan se KOLMEN ELLIPSIN SOVITUKSELLA
+    # (_refine_far_center_three_ellipse_fit - sama menetelma jolla
+    # kaukainen rengas alunperin loydettiin luotettavasti tallä kamera-
+    # kulmalla) ennen H_v1:n rakentamista - yksittainen find_house_pair
+    # (suurin kontuuri) tarttuu helposti vain yhteen pirstoutuneeseen
+    # renkaan palaan ja antaa vinon keskipisteen (todettu ja korjattu
+    # kehitysvaiheessa). HUOM (myos kehitysvaiheessa todettu): vasen/
+    # oikea-pisteen LISAAMINEN ellipsin vaaka-akselia pitkin osoittautui
+    # VAARAKSI - T-linjan suunta kuvatasossa EI ole talla etaisyydella
+    # vaakasuora (perspektiivi), joten tallainen oletus vaaristi koko
+    # H_v1:n rajusti (RMS >200cm). Kaytetaan siis VAIN keskipistetta -
+    # loppu skaala/kierto tulee geometrisesta tarkennussilmukasta.
+    far_center_frame = _refine_far_center_three_ellipse_fit(frame_undistorted, far_center_frame_crude)
 
     output_w = int(round((k8.OUTPUT_X_MAX_CM - k8.OUTPUT_X_MIN_CM) * k8.PIXELS_PER_CM))
     output_h = int(round(k8.OUTPUT_Y_MAX_CM * k8.PIXELS_PER_CM))
