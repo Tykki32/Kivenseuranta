@@ -116,6 +116,43 @@ def _physical_to_output_px_extended(physical_pts, extended_y_max_cm):
     return np.column_stack([ox, oy])
 
 
+def _to_output_px_extended(x_cm, y_cm, extended_y_max_cm):
+    px = (x_cm - k8.OUTPUT_X_MIN_CM) * k8.PIXELS_PER_CM
+    py = (extended_y_max_cm - y_cm) * k8.PIXELS_PER_CM
+    return px, py
+
+
+def _compute_crop_row_range_extended(full_height_px, center_y_cm, half_height_cm, extended_y_max_cm):
+    """KRIITTINEN BUGIKORJAUS (kayttajan pyynnosta - katso keskustelu-
+    historia): k8.compute_crop_row_range/crop_house_view/expected_house_
+    center_in_crop kayttavat SISAISESTI k8:n omaa to_output_px:aa, joka
+    on kiinteasti sidottu STANDARDIIN k8.OUTPUT_Y_MAX_CM:aan (4000cm) -
+    EI kelpaa taman tiedoston LAAJENNETULLE (10m takarajan yli
+    ulottuvalle, eri korkuiselle) kanvaasille. Naiden suora kayttö
+    laajennetulla kuvalla antoi VAARAN rivialueen (havaittu: koko
+    kolmen ellipsin sovitus epaonnistui systemaattisesti koska crop
+    osui aivan vaarille riveille, nakyi mustana kuvana). Tama on sama
+    laskukaava mutta parametrisoituna oikealla Y-max:lla."""
+    _, row_a = _to_output_px_extended(0.0, center_y_cm + half_height_cm, extended_y_max_cm)
+    _, row_b = _to_output_px_extended(0.0, center_y_cm - half_height_cm, extended_y_max_cm)
+    row_top = int(max(0, math.floor(min(row_a, row_b))))
+    row_bottom = int(min(full_height_px - 1, math.ceil(max(row_a, row_b))))
+    return row_top, row_bottom
+
+
+def _crop_house_view_extended(topdown, center_y_cm, half_height_cm, extended_y_max_cm):
+    row_top, row_bottom = _compute_crop_row_range_extended(
+        topdown.shape[0], center_y_cm, half_height_cm, extended_y_max_cm
+    )
+    return topdown[row_top:row_bottom + 1, :].copy()
+
+
+def _expected_house_center_in_crop_extended(full_height_px, center_y_cm, half_height_cm, extended_y_max_cm):
+    row_top, _ = _compute_crop_row_range_extended(full_height_px, center_y_cm, half_height_cm, extended_y_max_cm)
+    cx, cy_full = _to_output_px_extended(0.0, center_y_cm, extended_y_max_cm)
+    return (cx, cy_full - row_top)
+
+
 def _find_blue_red_blue_pattern(blue_mask, red_mask, center_col, row_range=None,
                                  margin_px=FAR_HOUSE_ROW_SCAN_CENTER_MARGIN_PX,
                                  max_gap_px=FAR_HOUSE_ROW_SCAN_MAX_GAP_PX):
@@ -320,15 +357,23 @@ def build_far_house_center_seed(frame_undistorted, near_pts_frame, near_phys_pts
 
     # Rivi<->Y-suhde on nyt (affiinin rakentamistavan ansiosta) sama
     # VAKIOKAAVA koko kuvan matkalta kuin standardikanvaasilla - katso
-    # keskusteluhistorian perustelu - joten voidaan kayttaa tavallista
-    # k8.crop_house_view:ta suoraan FAR_HOUSE_Y_CM:n ymparille, kunhan
-    # kuva ensin tulkitaan "EXTENDED_Y_MAX_CM asti ulottuvana standardi-
-    # kanvaasina" (sama PIXELS_PER_CM, vain korkeampi).
-    far_row_top_ext, _ = k8.compute_crop_row_range(
-        ext_h, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM
+    # keskusteluhistorian perustelu. HUOM (loydetty ja korjattu kayttajan
+    # pyynnosta nayttaessa jokaisen vaiheen kuvat): k8.compute_crop_row_
+    # range/crop_house_view/expected_house_center_in_crop kayttavat
+    # SISAISESTI k8:n OMAA to_output_px:aa, joka on kiinteasti sidottu
+    # STANDARDIIN k8.OUTPUT_Y_MAX_CM:aan (4000cm) - EIVAT kelpaa tälle
+    # LAAJENNETULLE (eri korkuiselle) kanvaasille sellaisenaan. Kaytetaan
+    # siis omia extended-versioita (_compute_crop_row_range_extended jne,
+    # parametrisoitu oikealla extended_y_max_cm:lla).
+    far_row_top_ext, _ = _compute_crop_row_range_extended(
+        ext_h, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM, extended_y_max_cm
     )
-    far_crop_rescaled = k8.crop_house_view(topdown_rescaled_ext, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM)
-    expected_center_local = k8.expected_house_center_in_crop(ext_h, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM)
+    far_crop_rescaled = _crop_house_view_extended(
+        topdown_rescaled_ext, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM, extended_y_max_cm
+    )
+    expected_center_local = _expected_house_center_in_crop_extended(
+        ext_h, k8.FAR_HOUSE_Y_CM, k8.HOUSE_CROP_HALF_HEIGHT_CM, extended_y_max_cm
+    )
 
     fit_local = _three_ellipse_fit_center_in_crop(far_crop_rescaled, expected_center_local[0])
 
