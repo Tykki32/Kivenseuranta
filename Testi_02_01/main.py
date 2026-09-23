@@ -862,7 +862,36 @@ ROI_HALF_HEIGHT = 120
 MODE_DURATION_SECONDS = 120.0
 MODE_FRAME_INTERVAL = 4
 
-FILTER_DISTANCE_THRESHOLD = 20.0
+# ============================================================
+# GRANIITTIMASKIN TAUSTANVAIMENNUKSEN KYNNYSARVO (Testi_02_01, havaittu
+# oikean Testivideo-julkaisun analyysissa - katso keskusteluhistoria):
+# stone_tracker.cpp:n search_new_stone/track_stones_batch ottavat
+# diff_threshold-parametrin, mutta main.py EI KOSKAAN antanut sita
+# eksplisiittisesti ennen tata - kaytossa oli siis hiljaa C++:n oma
+# OLETUSARVO 30.0 (katso PYBIND11-RAJAPINTA). Tama havaittiin LIIAN
+# LOYHAKSI juuri lahemman pesan rengaskuvion (vaalea/tumma sinisten
+# kolmioiden mosaiikki) kohdalla: diagnoosissa (kaksi oikeaa, koko
+# matkan onnistuneesti seurattua kivea, molemmat menettivat SEURANNAN
+# tasan pesan reunalla) graniittimaski oli arvolla 30 JOKO pirstoutunut
+# ohuiksi viivoiksi TAI TAYSIN TYHJA (0 pikselia!) juuri niissa
+# kohdissa missa kivi lepasi tumman kolmion paalla - koska diff_
+# threshold=30 valkaisi (tulkitsi taustaksi) MYOS osan itse kivesta,
+# ei vain oikeaa taustaa. Tiukempi (PIENEMPI) kynnys saattaa vain
+# LAHELLA moodikuva-arvoa olevat pikselit taustaksi - kayttajan
+# ehdottama korjaussuunta, vahvistettu vertailulla (+-3/+-6/+-10/+-20/
+# +-30): arvolla 10 maski pysyi yhtenaisena molemmissa aidon kiven
+# pysahdyskohdissa (725->1852px ja 0->809px), ilman etta+-3/+-6:n
+# ylimaarainen kohina (94 vs 22 yhtenaista aluetta koko framessa) tulisi
+# mukaan. HUOM: tama vaikuttaa SEKA HAKUun etta SEURANTAAN (molemmat
+# saavat saman arvon alla) - HAKU on tasta herkempi (skannaa koko
+# vyohykkeen joka sekunti, ei vain pientä paikallishakua kuten SEURANTA),
+# joten jos vaarat HAKU-loydot lisaantyvat jatkossa, tata voi eriyttaa
+# HAKU:lle omaksi (loyhemmaksi) arvokseen - MIN_CONFIRMED_THROW_
+# DISPLACEMENT_CM (myohemmin tassa tiedostossa) antaa jo suojan naita
+# vastaan.
+# ============================================================
+GRANITE_DIFF_THRESHOLD = 10.0
+
 STABILIZATION_MEDIAN_FRAMES = 20
 
 # Moodikuvan laskenta tehdään paloissa
@@ -3438,7 +3467,8 @@ def run_pipeline(
                         k92.SEARCH_COARSE_STEP_CM, k92.SEARCH_FINE_STEP_CM,
                         k92.SEARCH_SCORE_THRESHOLD,
                         live_state["R_max"], live_state["H_total"],
-                        live_state["ring_r_frac_guess"]
+                        live_state["ring_r_frac_guess"],
+                        GRANITE_DIFF_THRESHOLD
                     )
 
                 # --------------------------------------------
@@ -3501,7 +3531,8 @@ def run_pipeline(
                         k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
                         k92.TRACK_SCORE_THRESHOLD,
                         live_state["R_max"], live_state["H_total"],
-                        live_state["ring_r_frac_guess"]
+                        live_state["ring_r_frac_guess"],
+                        GRANITE_DIFF_THRESHOLD
                     )
                     total_seuranta_time += time.time() - t_seuranta0
                     n_seuranta_calls += 1
