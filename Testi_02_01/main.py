@@ -1159,6 +1159,41 @@ MAX_CONCURRENT_STONES = 4
 TRACK_LOST_GRACE_SECONDS = 3.0
 
 # ============================================================
+# NOPEUSRAJOITETTU SEURANTA-HAKUALUE + "EI TAAKSEPAIN" (kayttajan
+# pyynnosta, katso keskusteluhistoria): SEURANTA:n ristikkohaku etsi
+# aiemmin AINA kiintealta, isotrooppiselta alueelta (kamera9_02.py:n
+# TRACK_HALF_RANGE_CM=35cm joka suuntaan) riippumatta siita kuinka
+# kauan kivesta on todellisuudessa aikaa edellisesta havainnosta.
+# Koska oikea curling-kivi EI VOI liikkua nopeammin kuin fysikaalinen
+# yla­raja (arvioitu turvamarginaalilla: Y-suunnassa, radan pituus-
+# suunnassa, TRACK_MAX_SPEED_Y_CM_S=4.5m/s - reilusti yli tyypillisen
+# heittonopeuden ~2.5-3m/s; X-suunnassa, sivuttaisliike/curl, paljon
+# hitaampaa, TRACK_MAX_SPEED_X_CM_S=0.6m/s), hakualue voidaan laskea
+# SUORAAN nopeusrajasta JOKA framella JOKAISELLE kivelle erikseen:
+#   half_range = max_speed_cm_s * (misses+1) / fps
+# ("misses+1" framea sitten oli viimeisin VAHVISTETTU sijainti, koska
+# s["last_xy"] EI paivity misseilla - katso TRACK_LOST_GRACE_SECONDS:in
+# kommentti ylla) - haku ei siis KOSKAAN tarvitse etsia kauempaa, ja
+# pitkan peiton (misses>0) jalkeen hakualue kasvaa automaattisesti
+# oikeassa suhteessa. Katso kaytto SEURANTA-kutsun valmistelussa
+# (build_track_half_ranges alempana) ja stone_tracker.cpp:n
+# trackStoneUpdateOne (track_half_range_x_cm/track_half_range_y_cm,
+# EI enaa yhta isotrooppista kamera9_02.py:n TRACK_HALF_RANGE_CM:ia).
+#
+# MAX_BACKWARD_CM: kivi liikkuu tassa videossa AINA Y:n pienetessa
+# (katso Y-suunnan kommentti main.py:n alkupaassa) - aito liikkuva
+# kivi hidastuu mutta EI KOSKAAN peruuta. Jos yhden SEURANTA-paivityksen
+# tulos siirtaisi kiven yli metrin "taaksepain" (Y kasvaisi), kyseessa
+# on lahes aina ristikkohaun ajautuminen vaaraan kohteeseen (esim.
+# viereinen kivi/pelaaja) - hylataan (kuten oversized_reject, katso
+# stone_tracker.cpp) sen sijaan etta hyvaksytaan virheellinen hyppy.
+# ============================================================
+
+TRACK_MAX_SPEED_Y_CM_S = 450.0
+TRACK_MAX_SPEED_X_CM_S = 60.0
+TRACK_MAX_BACKWARD_CM = 100.0
+
+# ============================================================
 # "UUSI KIVI" -REKISTEROINNIN VAHVISTUS LIIKKEELLA (Testi_02_01,
 # havaittu oikean 5min Testivideo-julkaisun analyysissa): kivien
 # Y-koordinaatti PIENENEE ajassa taman videon suunnistuksessa (heitto-
@@ -3710,17 +3745,34 @@ def run_pipeline(
                         dtype=np.float64
                     )
 
+                    # TRACK_MAX_SPEED_Y/X_CM_S:in kommentti (taman
+                    # tiedoston alkupaassa): hakualue lasketaan JOKA
+                    # framella JOKAISELLE kivelle erikseen suoraan
+                    # fysikaalisesta nopeusrajasta ja siita kuinka monta
+                    # frameä on todellisuudessa kulunut viimeisimmasta
+                    # VAHVISTETUSTA sijainnista (misses+1, koska last_xy
+                    # ei paivity misseilla) - EI enaa kamera9_02.py:n
+                    # kiinteaa, isotrooppista TRACK_HALF_RANGE_CM:ia.
+                    elapsed_frames_arr = np.array(
+                        [s["misses"] + 1 for s in seuranta_stones],
+                        dtype=np.float64
+                    )
+                    elapsed_seconds_arr = elapsed_frames_arr / fps
+                    half_range_y_arr = TRACK_MAX_SPEED_Y_CM_S * elapsed_seconds_arr
+                    half_range_x_arr = TRACK_MAX_SPEED_X_CM_S * elapsed_seconds_arr
+
                     t_seuranta0 = time.time()
                     batch_results = stone_tracker.track_stones_batch(
                         frame_u_for_tracking, ref_undist_live,
                         X0_arr, Y0_arr,
+                        half_range_x_arr, half_range_y_arr,
                         local_pts_body, local_pts_search,
                         pose["K"], pose["R"], pose["t"],
-                        k92.TRACK_HALF_RANGE_CM,
                         k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
                         k92.TRACK_SCORE_THRESHOLD,
                         live_state["R_max"], live_state["H_total"],
                         live_state["ring_r_frac_guess"],
+                        TRACK_MAX_BACKWARD_CM,
                         haku_seuranta_diff_threshold
                     )
                     total_seuranta_time += time.time() - t_seuranta0

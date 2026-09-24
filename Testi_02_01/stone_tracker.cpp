@@ -2044,13 +2044,21 @@ static StoneUpdateResult trackStoneUpdateOne(
     const std::vector<cv::Point3d>& local_pts_search,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     double X0, double Y0,
-    double track_half_range_cm, double coarse_step_cm, double fine_step_cm,
+    double track_half_range_x_cm, double track_half_range_y_cm,
+    double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double max_backward_cm)
 {
     int frame_w = frame_mat.cols, frame_h = frame_mat.rows;
 
-    double roi_half_range = track_half_range_cm + BOUNDARY_MAX_SHIFT_FROM_APPROX_CM;
+    // ROI-rajaus kayttaa YHTA (konservatiivista, isompaa) half_rangea -
+    // se vain mitoittaa kuvaleikkeen (mask/saturaatio) koon, EI itse
+    // hakuristikkoa (katso locateByGridSearchTrackingFast alla, joka SAA
+    // eri arvot X:lle ja Y:lle) - liian pieni leike olisi virhe, liian
+    // iso vain hieman hitaampi.
+    double roi_half_range = std::max(track_half_range_x_cm, track_half_range_y_cm)
+        + BOUNDARY_MAX_SHIFT_FROM_APPROX_CM;
     cv::Rect roi = trackRoiBounds(X0, Y0, roi_half_range, R_max_cm, H_total_cm, frame_w, frame_h, K, R, t);
 
     StoneUpdateResult out;
@@ -2089,9 +2097,16 @@ static StoneUpdateResult trackStoneUpdateOne(
     auto ts1 = std::chrono::steady_clock::now();
 #endif
 
+    // Kayttajan pyynnosta (katso keskusteluhistoria): kivi ei voi
+    // liikkua nopeammin kuin TRACK_MAX_SPEED_Y/X_CM_S (main.py) sallii,
+    // joten hakuristikkoa EI TARVITSE koskaan laajentaa sita kauemmas -
+    // main.py laskee track_half_range_x/y_cm:n suoraan nopeusrajasta
+    // (huomioiden mahdolliset peräkkäiset missit) jokaiselle kivelle
+    // erikseen JOKA framella, eika tassa kaytita enaa kiinteaa
+    // kamera9_02.py:n TRACK_HALF_RANGE_CM:ia.
     auto best = locateByGridSearchTrackingFast(
         local_pts_search, mask_crop, roi.x, roi.y,
-        X0, track_half_range_cm, Y0, track_half_range_cm,
+        X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
         coarse_step_cm, fine_step_cm, K, R, t
     );
 
@@ -2122,6 +2137,17 @@ static StoneUpdateResult trackStoneUpdateOne(
     // pelaaja) - hylataan koko havainto (has_position=false) sen sijaan
     // etta palautetaan hilahaun (vaara) sijainti "epatarkkana" tuloksena.
     out.has_position = !out.refined.oversized_reject;
+
+    // Kayttajan pyynnosta (katso keskusteluhistoria): kivi EI VOI
+    // koskaan liikkua "taaksepain" (kohti heittopaata, eli Y KASVAA -
+    // katso taman tiedoston Y-suunnan kommentti main.py:ssa) enempaa
+    // kuin max_backward_cm yhden SEURANTA-paivityksen aikana - aito
+    // liikkuva kivi hidastuu mutta EI KOSKAAN peruuta, joten tallainen
+    // tulos on lahes aina vaara kandidaatti (esim. ristikkohaku
+    // ajautunut viereiseen kiveen/pelaajaan) eika oikea sijainti.
+    if (out.has_position && (out.refined.Y_cm - Y0) > max_backward_cm) {
+        out.has_position = false;
+    }
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts3 = std::chrono::steady_clock::now();
@@ -2162,9 +2188,11 @@ static py::dict track_stone_update(
     py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
     double X0, double Y0,
-    double track_half_range_cm, double coarse_step_cm, double fine_step_cm,
+    double track_half_range_x_cm, double track_half_range_y_cm,
+    double coarse_step_cm, double fine_step_cm,
     double score_threshold,
     double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double max_backward_cm,
     double diff_threshold = 30.0)
 {
     auto buf = frame_u.request();
@@ -2189,8 +2217,8 @@ static py::dict track_stone_update(
         py::gil_scoped_release release;
         result = trackStoneUpdateOne(
             frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
-            X0, Y0, track_half_range_cm, coarse_step_cm, fine_step_cm,
-            score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess
+            X0, Y0, track_half_range_x_cm, track_half_range_y_cm, coarse_step_cm, fine_step_cm,
+            score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, max_backward_cm
         );
     }
 
@@ -2203,14 +2231,17 @@ static py::list track_stones_batch(
     py::array_t<uint8_t, py::array::c_style | py::array::forcecast> background_reference,
     py::array_t<double, py::array::c_style | py::array::forcecast> X0_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> Y0_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> half_range_x_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> half_range_y_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_search_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
-    double track_half_range_cm, double coarse_step_cm, double fine_step_cm,
+    double coarse_step_cm, double fine_step_cm,
     double score_threshold,
     double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double max_backward_cm,
     double diff_threshold = 30.0)
 {
     auto buf = frame_u.request();
@@ -2232,6 +2263,8 @@ static py::list track_stones_batch(
 
     auto X0b = X0_arr.unchecked<1>();
     auto Y0b = Y0_arr.unchecked<1>();
+    auto HXb = half_range_x_arr.unchecked<1>();
+    auto HYb = half_range_y_arr.unchecked<1>();
     int n_stones = (int)X0b.shape(0);
 
     std::vector<StoneUpdateResult> results((size_t)n_stones);
@@ -2267,8 +2300,8 @@ static py::list track_stones_batch(
                     break;
                 results[(size_t)i] = trackStoneUpdateOne(
                     frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
-                    X0b(i), Y0b(i), track_half_range_cm, coarse_step_cm, fine_step_cm,
-                    score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess
+                    X0b(i), Y0b(i), HXb(i), HYb(i), coarse_step_cm, fine_step_cm,
+                    score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, max_backward_cm
                 );
             }
         };
@@ -2664,20 +2697,24 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("local_pts_body"), py::arg("local_pts_search"),
           py::arg("K"), py::arg("R"), py::arg("t"),
           py::arg("X0"), py::arg("Y0"),
-          py::arg("track_half_range_cm"), py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
+          py::arg("track_half_range_x_cm"), py::arg("track_half_range_y_cm"),
+          py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
           py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("max_backward_cm"),
           py::arg("diff_threshold") = 30.0);
 
     m.def("track_stones_batch", &track_stones_batch,
           "Usean kiven ristikkohaku+yhteissovitus rinnakkain std::thread:eilla",
           py::arg("frame_u"), py::arg("background_reference"),
           py::arg("X0_arr"), py::arg("Y0_arr"),
+          py::arg("half_range_x_arr"), py::arg("half_range_y_arr"),
           py::arg("local_pts_body"), py::arg("local_pts_search"),
           py::arg("K"), py::arg("R"), py::arg("t"),
-          py::arg("track_half_range_cm"), py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
+          py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
           py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("max_backward_cm"),
           py::arg("diff_threshold") = 30.0);
 
     m.def("search_new_stone", &search_new_stone,
