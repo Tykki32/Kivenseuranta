@@ -177,9 +177,10 @@ static const double BODY_CONTOUR_MIN_AREA_PX = 15.0;
 // pelaajan vaatetukseen ja findContourNear nappaa TAYSIN ERILLISEN,
 // vain sattumalta lahella olevan tumman kontuurinpalan (esim. toinen
 // pelaaja tai vaatteen poimu) sen sijaan etta hylkaisi liian isona.
-// EI muutettu BODY_CONTOUR_MAX_AREA_MULTIPLIER:ia (alla) - se on eri
-// suoja (varmistaa etta LOYDETTY kontuuri ei ole liian iso) joka
-// pitaa saada pysya loyhana, koska juuri heitetyn/lakaistavan kiven
+// HUOM: refinePositionJoint:issa (alempana) ollut ERI suoja (LOYDETYN
+// kontuurin maksimikoko, BODY_CONTOUR_MAX_AREA_MULTIPLIER) on sittemmin
+// POISTETTU kokonaan (kayttajan pyynnosta, katso sen oma kommentti) -
+// katso talta samalta periaatteelta: juuri heitetyn/lakaistavan kiven
 // oma maskikontuuri voi olla YHTENAINEN heittajan/lakaisijan kanssa
 // (kayttaja: "heittäjä näkyy kiven yli alussa") - EI haluta hylata
 // oikeaa kivea vain siksi etta jotain muutakin nakyy sen vieressa/
@@ -1819,18 +1820,25 @@ static RefineResult refinePositionJoint(
     auto approx_proj = project3d(K, R, t, approx3d);
     cv::Point2d approx_px_crop(approx_proj[0].x - off_x, approx_proj[0].y - off_y);
 
-    // Odotettu kontuurin pinta-ala TASSA kandidaattipaikassa (huomioi
-    // automaattisesti etaisyyden kamerasta, koska tama on sama pro-
-    // jisointi jota ristikkohaku/sovitus jo kayttavat) - katso
-    // findContourNear:in oma kommentti taman motivaatiosta.
-    static const double BODY_CONTOUR_MAX_AREA_MULTIPLIER = 4.0;
+    // POISTETTU (kayttajan pyynnosta, katso keskusteluhistoria - empiiri-
+    // sesti A/B-testattu koko Testivideo-julkaisua vasten): kokoraja
+    // esti aiemmin findContourNear:ia hyvaksymasta kontuuria joka oli
+    // yli BODY_CONTOUR_MAX_AREA_MULTIPLIER=4.0x odotettua kiven kokoa -
+    // tama esti KIVI+PELAAJA-yhdistyneen kontuurin hyvaksymisen (turval-
+    // linen), mutta sivuvaikutuksena myos AIDON kiven havainnon jos se
+    // sattui olemaan hetkellisesti kosketuksissa/lahella pelaajaa (esim.
+    // heittajaa) HAKU/SEURANTA-hetkella - havaittu oikealla datalla:
+    // yksi aito heitto sai tasta VAARAN sijainnin/ajoituksen (7s virhe
+    // ylitysajassa) koska koko havainto hylattiin puoliksi kesken.
+    //
+    // KAYTTAJAN PAATOS (kokoraja pois): "olisi tarkeinta loytaa KAIKKI
+    // heitot" - hyvaksytaan tietoisesti riski etta joskus TAYSIN VAARA,
+    // pelaajan siluettiin lukkiutuva havainto voi paasta lapi (havaittu
+    // A/B-testissa: yksi ~17s "haamuheitto" jonka RMS oli 13-42px, ei
+    // koskaan 1-3px:n tasolla kuin aidot kivet) - PIENEMPI RISKI kuin
+    // aitojen heittojen menettaminen, kayttajan prioriteetin mukaan.
     auto approx_hull = predictedHull(local_pts_body, X0_approx, Y0_approx, K, R, t);
     double max_contour_area = -1.0;
-    if (!approx_hull.empty()) {
-        double expected_area = cv::contourArea(approx_hull);
-        if (expected_area > 0.0)
-            max_contour_area = BODY_CONTOUR_MAX_AREA_MULTIPLIER * expected_area;
-    }
 
     std::vector<cv::Point> raw_contour;
     bool oversized_reject = false;
