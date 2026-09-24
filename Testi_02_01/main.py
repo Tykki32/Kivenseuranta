@@ -908,22 +908,45 @@ GRANITE_DIFF_THRESHOLD = 10.0
 # ajan seurattiin oikeaa kivea.
 #
 # HELPPO POISTAA KAYTOSTA: aseta ENABLE_SHADOW_TOLERANT_STABILIZATION
-# = False - talloin seuranta palaa TASMALLEEN aiempaan kayttay-
-# tymiseen (raaka stabiloitu+oikaistu frame_u, GRANITE_DIFF_THRESHOLD,
-# ei varjosaantoa, ei sub-pikseli-kohdistusta) - katso kayttokohdat
-# suppress_static_background():ssa ja elavan seurannan paasilmukassa.
+# = False - talloin varjonsietoinen taustanvaimennus palaa TASMALLEEN
+# aiempaan kayttaytymiseen (raaka diff_threshold, ei varjosaantoa) -
+# katso kayttokohta suppress_static_background():ssa.
 #
-# REHELLINEN VARAUS: tama YHDISTELMA on toistaiseksi validoitu vain
-# YHDEN erittain hankalan (voimakkaasti okkludoidun) heiton osalta
-# tarkalla, kasin ohjatulla diagnoosilla - EI VIELA koko videon
-# lapikaynnilla A/B-vertailuna (kuten esim. GRANITE_DIFF_THRESHOLD/
-# BODY_CONTOUR-poisto tassa samassa tiedostossa). Suositus: aja koko
-# video lapi seka paalla etta pois paalta (tools/review_tracks.py)
-# ennen kuin luotat tahan oikeassa ottelussa.
+# REHELLINEN VARAUS: tama on toistaiseksi validoitu vain YHDEN erittain
+# hankalan (voimakkaasti okkludoidun) heiton osalta tarkalla, kasin
+# ohjatulla diagnoosilla - EI VIELA koko videon lapikaynnilla A/B-
+# vertailuna (kuten esim. GRANITE_DIFF_THRESHOLD/BODY_CONTOUR-poisto
+# tassa samassa tiedostossa). Suositus: aja koko video lapi seka
+# paalla etta pois paalta (tools/review_tracks.py) ennen kuin luotat
+# tahan oikeassa ottelussa.
 # ============================================================
 ENABLE_SHADOW_TOLERANT_STABILIZATION = True
 
 SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita taustaksi/varjoksi
+
+# ============================================================
+# JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
+# ENABLE_SHADOW_TOLERANT_STABILIZATION:ista, kayttajan pyynnosta: katso
+# keskusteluhistoria). Koko videon lapikaynti paljasti etta tama
+# HUONONTAA seurannan vakautta, EI paranna: kohdistus mitataan VAIN
+# yhdesta kiintesta ankkuripisteesta (kaukaisen pesan takana), ja koko
+# kuva kaannetaan sen mukaan JAYKKANA muunnoksena (myos kierto, kuvan
+# KESKIPISTEEN ympari). Jos todellinen jaljella oleva epatarkkuus EI
+# ole taysin jaykka koko kuvan yli (esim. objektiivin/paneiliseurannan
+# jaannosvirhe vaihtelee paikan mukaan), kaukaiselle paalle sopiva
+# pieni korjaus (esim. +0.25px/+0.15°) voi olla VAARA lahella pesaa -
+# ja koska kierto on kuvan keskipisteen ympari, pieni kulmavirhe
+# VAHVISTUU sita enemman mita kauempana ankkurista/keskipisteesta
+# ollaan (havaittu kaytannossa: levossa ollut kivi lahella pesaa alkoi
+# ajautua vasta taman ominaisuuden kanssa). SHADOW_V_DROP_MAX/varjo-
+# saanto EI ole implikoitu tassa loydoksessa - se pysyy paalla.
+#
+# OLETUS: False (pois paalta) - toisin kuin ENABLE_SHADOW_TOLERANT_
+# STABILIZATION, tata EI suositella paalle ennen kuin joku luotettava
+# tapa kohdistaa PAIKALLISESTI (esim. per-alue tai puhdas translaatio
+# ilman kiertoa) on validoitu koko videon lapikaynnilla.
+# ============================================================
+ENABLE_SUBPIXEL_ALIGNMENT = False
 
 SUBPIXEL_ALIGN_RANGE_PX = 1.0
 SUBPIXEL_ALIGN_STEP_PX = 0.25
@@ -3604,19 +3627,17 @@ def run_pipeline(
                 local_pts_search = live_state["local_pts_search"]
 
                 # --------------------------------------------
-                # ENABLE_SHADOW_TOLERANT_STABILIZATION (katso sen
-                # kommentti taman tiedoston alkupaassa) - HELPPO
-                # POISTAA: aseta se muuttuja False:ksi, niin tama
-                # haara ohitetaan taysin ja frame_u_for_tracking ==
-                # frame_u seka diff_threshold == GRANITE_DIFF_THRESHOLD
-                # kuten ennenkin. HUOM: frame_u ITSE (varitarkistus,
-                # debug-video) EI koskaan taustanvaimenneta tassa -
-                # vain erillinen frame_u_for_tracking-kopio, jota
-                # kaytetaan VAIN HAKU/SEURANTA-kutsuissa alla.
+                # ENABLE_SUBPIXEL_ALIGNMENT / ENABLE_SHADOW_TOLERANT_
+                # STABILIZATION (katso niiden kommentit taman tiedoston
+                # alkupaassa) - kaksi ERILLISTA lippua, HELPPO POISTAA
+                # KUMPIKIN itsenaisesti. HUOM: frame_u ITSE (varitarkistus,
+                # debug-video) EI koskaan taustanvaimenneta tassa - vain
+                # erillinen frame_u_for_tracking-kopio, jota kaytetaan
+                # VAIN HAKU/SEURANTA-kutsuissa alla.
                 # --------------------------------------------
                 ref_undist_live = calib_result["calib"]["frame_undistorted"]
 
-                if ENABLE_SHADOW_TOLERANT_STABILIZATION:
+                if ENABLE_SUBPIXEL_ALIGNMENT:
 
                     if "subpixel_anchor_px" not in live_state:
                         anchor_cam = pose["R"] @ np.array([
@@ -3644,6 +3665,7 @@ def run_pipeline(
                         flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
                     )
 
+                if ENABLE_SHADOW_TOLERANT_STABILIZATION:
                     frame_u_for_tracking = suppress_static_background(
                         frame_u, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
                     )
