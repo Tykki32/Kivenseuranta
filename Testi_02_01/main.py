@@ -1192,9 +1192,10 @@ TRACK_LOST_GRACE_SECONDS = 3.0
 # kauan kivesta on todellisuudessa aikaa edellisesta havainnosta.
 # Koska oikea curling-kivi EI VOI liikkua nopeammin kuin fysikaalinen
 # yla­raja (arvioitu turvamarginaalilla: Y-suunnassa, radan pituus-
-# suunnassa, TRACK_MAX_SPEED_Y_CM_S=4.5m/s - reilusti yli tyypillisen
-# heittonopeuden ~2.5-3m/s; X-suunnassa, sivuttaisliike/curl, paljon
-# hitaampaa, TRACK_MAX_SPEED_X_CM_S=0.6m/s), hakualue voidaan laskea
+# suunnassa, TRACK_MAX_SPEED_Y_CM_S - kayttajan helposti muutettavissa
+# alla; X-suunnassa, sivuttaisliike/curl, paljon hitaampaa - JOHDETTU
+# suoraan Y-nopeudesta, TRACK_MAX_SPEED_X_FRACTION_OF_Y=10%:na siita,
+# EI oma erillinen vakionsa), hakualue voidaan laskea
 # SUORAAN nopeusrajasta JOKA framella JOKAISELLE kivelle erikseen:
 #   half_range = max_speed_cm_s * (misses+1) / fps
 # ("misses+1" framea sitten oli viimeisin VAHVISTETTU sijainti, koska
@@ -1215,8 +1216,14 @@ TRACK_LOST_GRACE_SECONDS = 3.0
 # stone_tracker.cpp) sen sijaan etta hyvaksytaan virheellinen hyppy.
 # ============================================================
 
-TRACK_MAX_SPEED_Y_CM_S = 450.0
-TRACK_MAX_SPEED_X_CM_S = 60.0
+TRACK_MAX_SPEED_Y_CM_S = 300.0  # kayttajan helposti muutettava arvo (3 m/s)
+
+# X-suunnan nopeusraja JOHDETAAN Y-nopeudesta (kayttajan pyynnosta) - EI
+# oma erillinen vakionsa - aina TRACK_MAX_SPEED_X_FRACTION_OF_Y verran
+# TRACK_MAX_SPEED_Y_CM_S:sta, joten X paivittyy automaattisesti kun
+# Y-arvoa muutetaan yllä.
+TRACK_MAX_SPEED_X_FRACTION_OF_Y = 0.10
+TRACK_MAX_SPEED_X_CM_S = TRACK_MAX_SPEED_Y_CM_S * TRACK_MAX_SPEED_X_FRACTION_OF_Y
 TRACK_MAX_BACKWARD_CM = 100.0
 
 # YLARAJA nopeuspohjaiselle hakualueelle (havaittu VALTTAMATTOMAKSI
