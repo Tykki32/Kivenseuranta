@@ -839,6 +839,12 @@ ENABLE_MODE_FILTER = False
 # ajoissa, aseta True vain debugatessa. Voidaan myos kytkea paalle
 # dynaamisesti komentorivilta TATA VAKIOTA muokkaamatta: aja
 # "python main.py --debug" (tai "-d") - katso if __name__=="__main__".
+#
+# Kayttajan pyynnosta: debug-videoon piirretaan moodikuvalla suodatettu
+# frame_u_for_tracking (se mita HAKU/SEURANTA oikeasti kayttaa
+# tunnistukseen - katso ENABLE_SHADOW_TOLERANT_STABILIZATION), EI
+# alkuperaista frame_u:ta - nain nakee suoraan mita tunnistus itse
+# asiassa "nakee".
 DEBUG_SAVE_TRACKING_VIDEO = False
 
 WALL_OFFSET = 40
@@ -4256,7 +4262,12 @@ def run_pipeline(
 
                 if debug_video_writer is not None:
 
-                    debug_frame = frame_u.copy()
+                    # Kayttajan pyynnosta: debug-videoon tallennetaan
+                    # moodikuvalla suodatettu frame_u_for_tracking (se
+                    # mita HAKU/SEURANTA oikeasti NAKEE), EI alkuperaista
+                    # frame_u:ta - nain debug-videosta voi suoraan
+                    # tarkistaa mita tunnistus itse asiassa kaytti.
+                    debug_frame = frame_u_for_tracking.copy()
 
                     for bx, by, s_id, color, label in debug_draw_items:
 
