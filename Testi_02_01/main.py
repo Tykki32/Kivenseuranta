@@ -2999,6 +2999,14 @@ def run_pipeline(
     total_stabilize_compute_time = 0.0
     total_warp_remap_time = 0.0
 
+    # ENABLE_SUBPIXEL_ALIGNMENT / ENABLE_SHADOW_TOLERANT_STABILIZATION
+    # (kayttajan huomio: nama EIVAT olleet mukana "Yhteensa mitattu"
+    # -summassa aiemmin, vaikka molemmat ajetaan joka elavan seurannan
+    # framella - raportti siis ALIARVIOI kokonaisajan kun jompikumpi on
+    # paalla).
+    total_subpixel_align_time = 0.0
+    total_shadow_suppress_time = 0.0
+
     executor = ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     )
@@ -3631,6 +3639,8 @@ def run_pipeline(
 
                 if ENABLE_SUBPIXEL_ALIGNMENT:
 
+                    t_align0 = time.perf_counter()
+
                     align_dx, align_dy, _align_angle = estimate_subpixel_alignment(
                         frame_u, ref_undist_live
                     )
@@ -3644,10 +3654,14 @@ def run_pipeline(
                         flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
                     )
 
+                    total_subpixel_align_time += time.perf_counter() - t_align0
+
                 if ENABLE_SHADOW_TOLERANT_STABILIZATION:
+                    t_shadow0 = time.perf_counter()
                     frame_u_for_tracking = suppress_static_background(
                         frame_u, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
                     )
+                    total_shadow_suppress_time += time.perf_counter() - t_shadow0
                     # frame_u_for_tracking on jo taustanvaimennettu (myos
                     # varjonsietoisesti) - C++:n OMA sisainen vaimennus
                     # HAKU/SEURANTA-kutsuissa ohitetaan antamalla sille 0.0,
@@ -4273,7 +4287,9 @@ def run_pipeline(
                     f"  muu (ei viela optimoitu): "
                     f"read(video) {(total_read_time / processed) * 1000:.2f} ms/ruutu | "
                     f"stabilointi-RANSAC {(total_stabilize_compute_time / processed) * 1000:.2f} ms/ruutu | "
-                    f"warpAffine+remap(koko frame) {(total_warp_remap_time / processed) * 1000:.2f} ms/ruutu"
+                    f"warpAffine+remap(koko frame) {(total_warp_remap_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"sub-pikseli-kohdistus {(total_subpixel_align_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"varjosuodatus {(total_shadow_suppress_time / processed) * 1000:.2f} ms/ruutu"
                 )
 
     finally:
@@ -4331,10 +4347,17 @@ def run_pipeline(
     print(f"warpAffine+remap (KOKO frame, joka elavan seurannan ruutu): "
           f"{total_warp_remap_time:.2f}s yhteensa, "
           f"{(total_warp_remap_time / processed_frames) * 1000:.2f} ms/ruutu")
+    print(f"sub-pikseli-kohdistus (ENABLE_SUBPIXEL_ALIGNMENT): "
+          f"{total_subpixel_align_time:.2f}s yhteensa, "
+          f"{(total_subpixel_align_time / processed_frames) * 1000:.2f} ms/ruutu")
+    print(f"varjonsietoinen taustanvaimennus (ENABLE_SHADOW_TOLERANT_STABILIZATION): "
+          f"{total_shadow_suppress_time:.2f}s yhteensa, "
+          f"{(total_shadow_suppress_time / processed_frames) * 1000:.2f} ms/ruutu")
     muu_yhteensa = (
         total_read_time + total_stabilize_compute_time
         + total_warp_remap_time + total_gray_time
         + total_tracking_time + total_transform_time
+        + total_subpixel_align_time + total_shadow_suppress_time
     )
     print(f"Yhteensa HAKU+SEURANTA+muu mitattu: "
           f"{((total_haku_time + total_seuranta_time + muu_yhteensa) / processed_frames) * 1000:.2f} "
