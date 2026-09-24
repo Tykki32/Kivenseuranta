@@ -943,10 +943,12 @@ SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 # ei enaa ristikkohakua eika kiertoa (katso estimate_subpixel_alignment).
 #
 # PAALLA (kayttajan pyynnosta): validoitu koko videon lapikaynnilla
-# taman korjatun version kanssa - ei enaa karkaavia haamuja, kaikki
-# viisi tunnistettavissa olevaa oikeaa heittoa loytyivat. HUOM: lisaa
-# merkittavasti laskenta-aikaa (mitattu ~38ms/ruutu tassa Linux-
-# diagnoosiymparistossa) - katso NOPEUSSEURANTA-raportin oma rivi.
+# (SUBPIXEL_ALIGN_CROP_FRACTION=0.67:lla) - ei enaa karkaavia haamuja,
+# kaikki viisi tunnistettavissa olevaa oikeaa heittoa loytyivat. HUOM:
+# lisaa merkittavasti laskenta-aikaa - katso NOPEUSSEURANTA-raportin
+# oma rivi. Kayttajan pyynnosta SUBPIXEL_ALIGN_CROP_FRACTION nostettu
+# takaisin 1.0:aan (koko rata) taman validoinnin jalkeen - EI VIELA
+# uudelleenvalidoitu koko videon lapikaynnilla taysikokoisena.
 # ============================================================
 ENABLE_SUBPIXEL_ALIGNMENT = True
 
@@ -954,8 +956,13 @@ SUBPIXEL_ALIGN_RANGE_PX = 1.0  # turvaraja - katso estimate_subpixel_alignment
 
 # Kuinka suuri, kuvan keskelle keskitetty osuus (leveys JA korkeus)
 # kaytetaan vaihekorrelaatioon - EI pienennys, vain RAJAUS (resoluutio
-# sailyy taysimittaisena) - katso estimate_subpixel_alignment.
-SUBPIXEL_ALIGN_CROP_FRACTION = 0.67
+# sailyy taysimittaisena) - katso estimate_subpixel_alignment. Kayttajan
+# pyynnosta 1.0 (koko rata/koko kuva, EI vain keskustaa) - nopeuden
+# hillitsemiseksi aiemmin kokeiltu 0.67 (~38ms/ruutu) hylattiin, koska
+# stabiloinnin pitaa kattaa koko radan, ei vain kuvan keskiosaa. Koko
+# kuvan kaytto maksaa enemman (mitattu taysikokoisena ~130-140ms/ruutu
+# tassa Linux-diagnoosiymparistossa).
+SUBPIXEL_ALIGN_CROP_FRACTION = 1.0
 
 STABILIZATION_MEDIAN_FRAMES = 20
 
