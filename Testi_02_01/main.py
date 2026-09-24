@@ -1051,8 +1051,8 @@ PROFILE_R_MAX_MAX_CM = 20.0
 # alempana "ELAVA MONI-KIVEN SEURANTA") jo hakee UUDET kivet paljon
 # tehokkaammin JA luotettavammin: mallipohjaisella ristikkohaulla
 # VAIN kaukaisen paan kiinnealta vyohykkeelta (k92.SEARCH_Y_MIN/MAX_CM
-# = kaukainen hogline...pesan ulkoreuna, k92.SEARCH_X_HALF_WIDTH_CM=
-# +-50cm keskiviivasta) - ei enaa tarvitse luottaa hitaaseen, harjasta
+# = kaukainen hogline...hogline+3m, k92.SEARCH_X_HALF_WIDTH_CM=
+# +-70cm keskiviivasta) - ei enaa tarvitse luottaa hitaaseen, harjasta
 # helposti hairiintyvaan vapaamuotoiseen liikkeentunnistukseen koko
 # radalla. Siksi PROFILE_MIN_ACCEPTED_STONES=1: skannaus pysahtyy heti
 # ensimmaisen riittavan profiilin loydyttya, ja loput heitot jaavat
@@ -1146,7 +1146,7 @@ MAX_CONCURRENT_STONES = 4
 # tapauksesta "kivi todella poissa/vaara kandidaatti".
 #
 # PAIKALLINEN ylikirjoitus (EI muuteta kamera9_02.py:n omaa arvoa -
-# sama periaate kuin HAKU_SEARCH_INTERVAL_SECONDS alla): nostetaan
+# sama periaate kuin HAKU_SEARCH_INTERVAL_FRAMES alla): nostetaan
 # sallittu peraikkainen peitto TRACK_LOST_GRACE_SECONDS:iin asti,
 # reilusti yli tuon dokumentoidun 1.2s+ havainnon ylapuolelle, jotta
 # tavanomainen "pelaaja/harja kokonaan kiven edessa hetken" -tilanne ei
@@ -1196,13 +1196,16 @@ MIN_CONFIRMED_THROW_DISPLACEMENT_CM = 25.0
 # HAKU-valin PAIKALLINEN ylikirjoitus (kayttajan pyynnosta) - EI
 # muuteta kamera9_02.py:n omaa SEARCH_EVERY_N_FRAMES:ia (se tiedosto
 # on koskematon referenssi, katso taman tiedoston alkupaan kommentti).
-# kamera9_02.py:n oma arvo (10 framea=0.4s 25fps:lla) vaihdettu
-# harvempaan, sekuntipohjaiseen valiin - vahemman HAKU-kutsuja
-# (jokainen n. 150-220ms taydella kuormalla) maksaa vahemman CPU-
-# aikaa, hintana etta uuden kiven havaitsemisessa voi kestaa taman
-# verran pidempaan (radalle tulevan kiven ensimmaiset havainnot
-# puuttuvat CSV:sta talta ajalta).
-HAKU_SEARCH_INTERVAL_SECONDS = 1.0
+#
+# HUOM (kayttajan uusin pyynto, katso keskusteluhistoria): palautettu
+# takaisin kamera9_02.py:n alkuperaiseen, framepohjaiseen tahtiin (10
+# framea=0.4s 25fps:lla) - aiempi, tata harvempi sekuntipohjainen vali
+# (1.0s, CPU-saastosta) korvattu, koska kavennettu HAKU-vyohyke
+# (kamera9_02.py:n SEARCH_Y_MIN/MAX_CM, nyt vain hogline...hogline+3m
+# eika enaa asti pesan takareunalle) tekee jokaisesta HAKU-kutsusta jo
+# halvemman, joten tihempi tarkistus ei enaa maksa yhta paljon - ja
+# uuden kiven ensimmaiset havainnot loytyvat aiempaa nopeammin.
+HAKU_SEARCH_INTERVAL_FRAMES = 10
 
 # Jos uusi HAKU-loytö on tata lahempana jotain jo AKTIIVISTA kiveä,
 # tulkitaan samaksi kiveksi (ei uutta ID:ta) - estaa saman kiven
@@ -2779,10 +2782,10 @@ def run_pipeline(
     fps = engine.fps()
     total_frames = engine.total_frames()
 
-    # katso HAKU_SEARCH_INTERVAL_SECONDS:in kommentti - korvaa
+    # katso HAKU_SEARCH_INTERVAL_FRAMES:in kommentti - korvaa
     # kamera9_02.py:n SEARCH_EVERY_N_FRAMES:in elavan seurannan
     # HAKU-ajastuksessa (koskematon kamera9_02.py itse ennallaan).
-    haku_interval_frames = max(1, int(round(HAKU_SEARCH_INTERVAL_SECONDS * fps)))
+    haku_interval_frames = max(1, HAKU_SEARCH_INTERVAL_FRAMES)
 
     print()
     print(
