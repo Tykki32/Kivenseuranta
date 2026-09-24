@@ -3305,6 +3305,11 @@ def run_pipeline(
     total_subpixel_align_time = 0.0
     total_shadow_suppress_time = 0.0
 
+    # ks. t_iter_start:in kommentti ylla (silmukan alussa) -
+    # kokonaisseinakelloaika koko silmukan rungolle, "mittaamattoman"
+    # ajan laskemiseksi.
+    total_loop_time = 0.0
+
     executor = ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     )
@@ -3330,6 +3335,14 @@ def run_pipeline(
     try:
 
         while True:
+
+            # AGGRESSIIVISEMMAN OPTIMOINNIN DIAGNOSTIIKKA (Testi_03_01,
+            # kayttajan pyynnosta): koko silmukan seinakello-aika verrattuna
+            # kaikkien NIMETTYJEN mittarien summaan - erotus ("mittaamaton")
+            # paljastaa onko putkessa viela ISO ajastamaton kustannus (esim.
+            # CSV-kirjoitus, uuden kiven rekisterointi, DEBUG_SAVE_TRACKING_
+            # VIDEO-piirto/enkoodaus) jota GPU/UMat-optimointi EI koskettaisi.
+            t_iter_start = time.perf_counter()
 
             t_read0 = time.perf_counter()
             frame = engine.read()
@@ -4518,6 +4531,8 @@ def run_pipeline(
 
             frame_index += 1
 
+            total_loop_time += time.perf_counter() - t_iter_start
+
             # ------------------------------------------------
             # ETA
             # ------------------------------------------------
@@ -4622,6 +4637,31 @@ def run_pipeline(
                     f"HW_VIDEO_DECODE={ENABLE_HW_VIDEO_DECODE}"
                 )
 
+                accounted = (
+                    total_read_time + total_gray_time + total_tracking_time
+                    + total_transform_time + total_sample_time
+                    + total_stabilize_compute_time + total_warp_remap_time
+                    + total_subpixel_align_time + total_shadow_suppress_time
+                    + total_seuranta_time
+                    # HAKU EI mukana - se ajetaan taustasaikeessa
+                    # SAMANAIKAISESTI SEURANNAN kanssa (ks. haku_executor
+                    # ylla), joten sen aika EI ole lisaa seinakelloaikaa
+                    # normaalisti (paitsi jos SEURANTA on jo nopeampi kuin
+                    # HAKU - silloinkin vain odotus HAKU:n tulokselle
+                    # nakyy tassa "mittaamattomana", ei koko HAKU-aikana).
+                )
+                unaccounted = (total_loop_time / processed) - (accounted / processed)
+
+                print(
+                    f"  [seinakello] koko silmukka ka "
+                    f"{(total_loop_time / processed) * 1000:.2f} ms/ruutu "
+                    f"(-> {processed / max(1e-9, total_loop_time):.1f} r/s teoreettinen) | "
+                    f"nimettyjen mittarien summa (pl. HAKU, rinnakkainen) "
+                    f"{(accounted / processed) * 1000:.2f} ms/ruutu | "
+                    f"MITTAAMATON (CSV/rekisterointi/debug-video/muu) "
+                    f"{unaccounted * 1000:.2f} ms/ruutu"
+                )
+
     finally:
 
         executor.shutdown(
@@ -4693,6 +4733,24 @@ def run_pipeline(
           f"{((total_haku_time + total_seuranta_time + muu_yhteensa) / processed_frames) * 1000:.2f} "
           "ms/ruutu keskimaarin (25fps-reaaliaikatavoite = 40.0 ms/ruutu, "
           "tiukempi tavoite hyvalla marginaalilla = 20.0 ms/ruutu)")
+
+    # AGGRESSIIVISEMMAN OPTIMOINNIN DIAGNOSTIIKKA (Testi_03_01, kayttajan
+    # pyynnosta): total_elapsed on OIKEA seinakelloaika (time.time():lla
+    # mitattu koko ajolle, ML mukaan lukien Python-tulkin/saikeiden
+    # skedulointiylikuorma, jota mikaan yksittainen mittari ei nae) -
+    # jos taman ja nimettyjen mittarien summan (HAKU pois lukien, koska
+    # se ajetaan SAMANAIKAISESTI SEURANNAN kanssa taustasaikeessa) valilla
+    # on iso ero, GPU/UMat-optimointi EI auta siihen - jotain muuta
+    # (CSV-kirjoitus, kiven rekisterointi, DEBUG_SAVE_TRACKING_VIDEO,
+    # saieskedulointi) vie sen ajan.
+    accounted_wall_clock = muu_yhteensa + total_seuranta_time
+    print(f"OIKEA seinakelloaika (time.time()): {total_elapsed:.2f}s yhteensa, "
+          f"{(total_elapsed / processed_frames) * 1000:.2f} ms/ruutu")
+    print(f"MITTAAMATON (seinakello - nimetyt mittarit, pl. rinnakkainen HAKU): "
+          f"{(total_elapsed - accounted_wall_clock):.2f}s yhteensa, "
+          f"{((total_elapsed - accounted_wall_clock) / processed_frames) * 1000:.2f} ms/ruutu "
+          "- jos tama on suuri, se on TODENNAKOISESTI seuraava optimointikohde, "
+          "EI GPU/UMat (ks. DEBUG_SAVE_TRACKING_VIDEO/CSV/rekisterointi)")
     print("===========================================================")
 
     if calib_result is None:
