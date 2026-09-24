@@ -3853,10 +3853,40 @@ def run_pipeline(
                                         f"diff={median_diff:.3f}"
                                     )
 
+                        # --------------------------------
+                        # KUMULATIIVINEN "EI TAAKSEPAIN" -TARKISTUS
+                        # (kayttajan pyynnosta, katso keskusteluhistoria):
+                        # stone_tracker.cpp:n trackStoneUpdateOne hylkaa jo
+                        # YHDEN paivityksen joka siirtaisi kiven >100cm
+                        # taaksepain EDELLISESTA framesta - mutta tama EI
+                        # estä montaa PIENTA (<100cm) taaksepain-askelta
+                        # kasautumasta suureksi ajautumaksi usean sekunnin/
+                        # minuutin aikana (havaittu koko videon lapikaynnissa:
+                        # levossa ollut kivi "liukui" pikkuhiljaa kohti
+                        # heittopaata, todennakoisesti SEURANNAN tarttuessa
+                        # kiven vierella kavelevaan pelaajaan/lakaisijaan -
+                        # tama tayttaa lopulta KAIKKI MAX_CONCURRENT_STONES-
+                        # paikat haamuilla, estaen uusien aitojen heittojen
+                        # rekisteroinnin). Verrataan siis KOKO elinkaaren
+                        # PIENIMPAAN havaittuun Y-arvoon (s["min_y_seen"],
+                        # ei vain edelliseen frameen) - kumulatiivinen
+                        # ajautuma yli TRACK_MAX_BACKWARD_CM:n hylataan
+                        # samoin kuin yksittainen liian iso hyppy.
+                        # --------------------------------
+
+                        if refined["found"] and (
+                            refined["Y_cm"] - s["min_y_seen"] > TRACK_MAX_BACKWARD_CM
+                        ):
+                            refined = dict(refined)
+                            refined["found"] = False
+
                         if refined["found"]:
 
                             s["last_xy"] = (
                                 refined["X_cm"], refined["Y_cm"]
+                            )
+                            s["min_y_seen"] = min(
+                                s["min_y_seen"], refined["Y_cm"]
                             )
                             s["misses"] = 0
 
@@ -4068,6 +4098,7 @@ def run_pipeline(
                                 "last_xy": (
                                     refined["X_cm"], refined["Y_cm"]
                                 ),
+                                "min_y_seen": refined["Y_cm"],
                                 "misses": 0,
                                 "color_diff_history": [],
                                 "position_history": [(
