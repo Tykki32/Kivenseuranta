@@ -974,7 +974,7 @@ SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 # Windows-kaannosymparistoa kontissa) - testaa ne omalla koneellasi.
 # ============================================================
 
-ENABLE_SHADOW_REF_CACHE = False
+ENABLE_SHADOW_REF_CACHE = True
 # _shadow_tolerant_background_mask laski Testi_02_01:ssa referenssikuvan
 # (reference_bgr - elavassa seurannassa calib["frame_undistorted"], joka
 # on VAKIO koko sen vaiheen ajan) HSV:n UUDESTAAN joka ruudulla, vaikka
@@ -984,7 +984,7 @@ ENABLE_SHADOW_REF_CACHE = False
 # cache lasketaan automaattisesti uudestaan). ODOTETTU TULOS:
 # PIKSELINTARKASTI SAMA kuin False - vain harvemmin laskettu.
 
-ENABLE_SHADOW_CV_MASK_OPS = False
+ENABLE_SHADOW_CV_MASK_OPS = True
 # Testi_02_01:n maskilogiikka kayttaa NumPy:n boolean-fancy-index-
 # sijoitusta ("out[mask] = 255") ja ".astype(np.int16)"-muunnoksia koko
 # framelle - KUMMALLAKAAN ei ole cv2:n UMat/OpenCL-vastinetta (eivat siis
@@ -997,7 +997,7 @@ ENABLE_SHADOW_CV_MASK_OPS = False
 # out[mask]=255). ODOTETTU TULOS: PIKSELINTARKASTI SAMA - todennettu 200
 # satunnaisella testikuvalla ennen kayttoonottoa (ks. ylla).
 
-ENABLE_SHADOW_UMAT = False
+ENABLE_SHADOW_UMAT = True
 # Ajaa (ENABLE_SHADOW_CV_MASK_OPS:in cv2-only) varjosuodatusputken
 # cv2.UMat-olioina Mat:in sijaan - OpenCV:n T-API ohjaa taman automaattisesti
 # Intel-ajurin OpenCL-toteutukseen, jos sellainen loytyy. VAATII
@@ -1009,7 +1009,7 @@ ENABLE_SHADOW_UMAT = False
 # operaatiot ovat kokonaislukuvertailuja/bittioperaatioita - GPU:n
 # liukulukupyoristys ei paase vaikuttamaan tahan logiikkaan).
 
-ENABLE_WARP_REMAP_UMAT = False
+ENABLE_WARP_REMAP_UMAT = True
 # Sama T-API/UMat-periaate elavan seurannan warpAffine+remap-ketjulle
 # (koko framelle, joka elavan seurannan ruutu - profiloinnissa 7.14
 # ms/ruutu) - cv2.warpAffine ja cv2.remap tukevat T-API:a natiivisti.
@@ -1017,7 +1017,7 @@ ENABLE_WARP_REMAP_UMAT = False
 # SAMA (sama interpolointikaava; GPU:n liukulukutoteutus voi poiketa
 # viimeisessa desimaalissa, mika ei ole merkityksellista pikselikoordinaateille).
 
-ENABLE_HW_VIDEO_DECODE = False
+ENABLE_HW_VIDEO_DECODE = True
 # Videon dekoodaus C++-puolella (mode_engine.cpp/ModeEngine) - lisaa
 # cv::CAP_PROP_HW_ACCELERATION=D3D11-vihjeen MSMF-taustajarjestelmalle
 # (profiloinnissa read(video) 11.65 ms/ruutu - tama on ERI ASIA kuin
@@ -1031,6 +1031,59 @@ ENABLE_HW_VIDEO_DECODE = False
 # epaonnistuu, ModeEngine palaa AUTOMAATTISESTI tavalliseen avaukseen
 # (ei kaadu). ODOTETTU TULOS: SAMA KUVASISALTO (H.264/H.265-dekoodaus on
 # haviotonta pikselintasolla riippumatta dekooderista), vain nopeampi.
+
+ENABLE_HAKU_PARALLEL_GRID = True
+# HAKU (stone_tracker.cpp:n search_new_stone) profiloitiin 102.9-167.3
+# ms/kutsu - TAYSIN exhaustiivinen ristikkohaku (kayttajan pyynnosta EI
+# early-stop/pienennetty ikkuna - "vasta viimeinen keino", ks. TRACK_
+# COARSE/FINE_STEP_CM:n kommentti), n. 465+121=586 riippumatonta (X,Y)-
+# pistetta HAKU:n oletusasetuksilla (SEARCH_X_HALF_WIDTH_CM=70,
+# SEARCH_Y-vali 300cm), aiemmin TAYSIN sarjallisena. Kun True, stone_
+# tracker.cpp:n gridSearchBest rinnakkaistaa nama pisteet TASMALLEEN
+# samalla, jo validoidulla kaavalla (atominen tyonvarastus-indeksi per
+# saie) kuin track_stones_batch (SEURANTA) jo kayttaa per-kivi - katso
+# stone_tracker.cpp:n oma kommentti. ODOTETTU TULOS: PARAS LOYDETTY
+# PISTEMAARA aina sama (haku on exhaustiivinen, ei early-stop) - VAIN
+# harvinaisessa TASAPELISSA (kaksi pistetta tasan sama pistemaara)
+# voittaja voi vaihtua, TASMALLEEN sama, jo hyvaksytty poikkeamaluokka
+# kuin SEURANNAN oma ring-search-tasapeliero. EI VOITU KAANTAA/TESTATA
+# TASSA (ei Windows/MSVC/vcpkg-ymparistoa) - VARMISTA ETTA KAANTYY.
+
+ENABLE_SEURANTA_HAKU_THREAD_SPLIT = True
+# Kun HAKU (search_new_stone) kaynnistetaan taustasaikeelle SAMALLA
+# ruudulla jolla SEURANTA (track_stones_batch) myos ajetaan (yleista -
+# molemmat voivat pyytaa TAYDEN hardware_concurrency()-ydinmaaran
+# YHTAAIKAA, koska kumpikaan ei tienny toisesta) - jakaa ydinmaaran
+# karkeasti PUOLIKSI niiden kesken sen sijaan etta molemmat riippu-
+# mattomasti ylikuormittaisivat kaikki ytimet samaan aikaan (main.py:n
+# _thread_split_budgets()). TAMA ON PUHDAS RESURSSIENJAKO-optimointi -
+# EI VAIKUTA MIHINKAAN LASKENTAAN, vain siihen KUINKA MONTA SAIETTA
+# kumpikin kutsu saa kayttoonsa. Kun False, HAKU ja SEURANTA pyytavat
+# molemmat oletusarvoisesti tayden ydinmaaran itsenaisesti (voi
+# ylikuormittaa, mutta EI ole vaarin - vain mahdollisesti hitaampi).
+# Kaytettavissa oleva ydinmaara (os.cpu_count()) on TARKEA tietaa taman
+# lipun kanssa - katso konsolin alkutulostus.
+
+_cpu_count = os.cpu_count() or 4
+
+
+def _thread_split_budgets():
+    """ENABLE_SEURANTA_HAKU_THREAD_SPLIT: HAKU (search_new_stone,
+    ENABLE_HAKU_PARALLEL_GRID) ja SEURANTA (track_stones_batch) jakavat
+    _cpu_count:in karkeasti puoliksi kun molemmat ajetaan samanaikaisesti
+    (HAKU omalla taustasaikeellaan, SEURANTA paasaikeessa) - palauttaa
+    (haku_max_grid_workers, seuranta_reserved_threads). KARKEA nyrkki-
+    saanto (tasan puolet, ei dynaamista kuormanmittausta) - jos toinen
+    puoli on selvasti kevyempi (esim. vain 1 kivi SEURANNASSA), tama
+    EI ole taydellinen, mutta on aina VAHINTAAN yhta hyva kuin ilman
+    jakoa (molemmat riippumattomasti koko ydinmaaraa pyytamassa)."""
+
+    half = max(1, _cpu_count // 2)
+    haku_max_grid_workers = half
+    seuranta_reserved_threads = half
+
+    return haku_max_grid_workers, seuranta_reserved_threads
+
 
 # ============================================================
 # JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
@@ -3114,8 +3167,11 @@ def run_pipeline(
         f"ENABLE_SHADOW_CV_MASK_OPS={ENABLE_SHADOW_CV_MASK_OPS} "
         f"ENABLE_SHADOW_UMAT={ENABLE_SHADOW_UMAT} "
         f"ENABLE_WARP_REMAP_UMAT={ENABLE_WARP_REMAP_UMAT} "
-        f"ENABLE_HW_VIDEO_DECODE={ENABLE_HW_VIDEO_DECODE}"
+        f"ENABLE_HW_VIDEO_DECODE={ENABLE_HW_VIDEO_DECODE} "
+        f"ENABLE_HAKU_PARALLEL_GRID={ENABLE_HAKU_PARALLEL_GRID} "
+        f"ENABLE_SEURANTA_HAKU_THREAD_SPLIT={ENABLE_SEURANTA_HAKU_THREAD_SPLIT}"
     )
+    print(f"[Testi_03_01] os.cpu_count() = {_cpu_count}")
 
     if ENABLE_SHADOW_UMAT or ENABLE_WARP_REMAP_UMAT:
 
@@ -4037,10 +4093,24 @@ def run_pipeline(
 
                 haku_future = None
 
+                # ENABLE_SEURANTA_HAKU_THREAD_SPLIT: kumpikin nollaksi
+                # (=kaytä oletusta, tayden hardware_concurrency() per
+                # kutsu) jollei taman ruudun tiedeta kaynnistavan MOLEMPIA
+                # HAKUa JA SEURANTAa samanaikaisesti (ks. _thread_split_
+                # budgets:in kommentti). seuranta_reserved_threads valitetaan
+                # alempana SEURANTA-kutsulle.
+                haku_max_grid_workers = 0
+                seuranta_reserved_threads = 0
+
                 if (
                     len(active_stones) < MAX_CONCURRENT_STONES
                     and frame_index % haku_interval_frames == 0
                 ):
+
+                    if ENABLE_SEURANTA_HAKU_THREAD_SPLIT and active_stones:
+                        haku_max_grid_workers, seuranta_reserved_threads = (
+                            _thread_split_budgets()
+                        )
 
                     x_center = 0.0
                     y_center = (
@@ -4060,7 +4130,9 @@ def run_pipeline(
                         k92.SEARCH_SCORE_THRESHOLD,
                         live_state["R_max"], live_state["H_total"],
                         live_state["ring_r_frac_guess"],
-                        haku_seuranta_diff_threshold
+                        haku_seuranta_diff_threshold,
+                        ENABLE_HAKU_PARALLEL_GRID,
+                        haku_max_grid_workers
                     )
 
                 # --------------------------------------------
@@ -4145,7 +4217,8 @@ def run_pipeline(
                         live_state["R_max"], live_state["H_total"],
                         live_state["ring_r_frac_guess"],
                         TRACK_MAX_BACKWARD_CM,
-                        haku_seuranta_diff_threshold
+                        haku_seuranta_diff_threshold,
+                        seuranta_reserved_threads
                     )
                     total_seuranta_time += time.time() - t_seuranta0
                     n_seuranta_calls += 1
@@ -4634,7 +4707,9 @@ def run_pipeline(
                     f"({'aktiivinen' if _shadow_umat_requested() else 'ei aktiivinen - ks. HUOM yllä'}) "
                     f"WARP_REMAP_UMAT={ENABLE_WARP_REMAP_UMAT}"
                     f"({'aktiivinen' if _warp_umat_requested() else 'ei aktiivinen'}) "
-                    f"HW_VIDEO_DECODE={ENABLE_HW_VIDEO_DECODE}"
+                    f"HW_VIDEO_DECODE={ENABLE_HW_VIDEO_DECODE} "
+                    f"HAKU_PARALLEL_GRID={ENABLE_HAKU_PARALLEL_GRID} "
+                    f"SEURANTA_HAKU_THREAD_SPLIT={ENABLE_SEURANTA_HAKU_THREAD_SPLIT}"
                 )
 
                 accounted = (

@@ -53,11 +53,21 @@ target_include_directories(
 )
 
 if(MSVC)
+    # /arch:AVX2 (Testi_03_01, kayttajan pyynnosta "aggressiivisempi"
+    # optimointi): koskee VAIN taman .cpp-tiedoston OMAA, kasin
+    # kirjoitettua koodia (ei OpenCV:n omia, jo valmiiksi SIMD-
+    # dispatchattuja kirjastofunktioita) - kaikki Intel UHD Graphics
+    # -sarjan kannettavat (7. sukupolvi/Kaby Lake, 2016+) tukevat
+    # AVX2:ta, joten tama on turvallinen oletus talle laitteistoluokalle.
+    # EI /arch:AVX512 - moni uudempikaan Intel-mobiilisuoritin ei tue
+    # sita (BIOS/mikroarkkitehtuurikohtaista), liian iso riski
+    # "illegal instruction" -kaatumiselle oletuksena.
     target_compile_options(
         mode_engine
         PRIVATE
         /O2
         /EHsc
+        /arch:AVX2
     )
 endif()
 
@@ -82,11 +92,16 @@ target_include_directories(
 )
 
 if(MSVC)
+    # /arch:AVX2 - ks. mode_engine:n vastaavan kohdan kommentti ylla
+    # (sama perustelu - erityisen relevantti TASSA, koska stone_tracker.
+    # cpp:n LM-sovitus/ristikkohaku on juuri sita liukulukuraskasta
+    # silmukkakoodia jota kaantaja voi auto-vektoroida AVX2:lla).
     target_compile_options(
         stone_tracker
         PRIVATE
         /O2
         /EHsc
+        /arch:AVX2
     )
 endif()
 
