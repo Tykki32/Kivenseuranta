@@ -66,18 +66,24 @@ k8 = k9.k8
 
 
 # ============================================================
-# HAKUALUE ("kauempi paa, keskiviivasta +-50cm, hogline-takaraja")
+# HAKUALUE ("kauempi paa, keskiviivasta +-70cm, hogline...hogline+3m")
 #
-# "Takaraja" = pesan takareuna (back line) - tangentti 12-jalkaisen
-# renkaan taakse, HOUSE_RADIUS_CM paan pesan keskipisteesta poispain
-# hoglinesta. Kaukainen paa (FAR_*) koska talla videolla kivi heitetaan
-# lahempaa hoglinea kohti sita - katso kamera9_01.py:n
-# track_stone_in_video-kommentti samasta videosta.
+# Kayttajan pyynnosta kavennettu/kohdennettu (katso keskusteluhistoria):
+# AIEMMIN hogline...pesan takareuna (tangentti 12-jalkaisen renkaan
+# taakse, HOUSE_RADIUS_CM paan pesan keskipisteesta poispain hoglinesta),
+# NYT hogline...hogline+3m - koska kivi ylittaa hoglinen aina heiton
+# alkupaassa, 3m riittaa kattamaan sen EIKA alue enaa ulotu asti pesan
+# kohdalle (jossa pelaajat/pyyhkijat useimmin seisovat/kavelevat, katso
+# ENABLE_SHADOW_TOLERANT_STABILIZATION-tyon empiirinen havainto). X-
+# leveys kasvatettu 50->70cm HAKU:n omaksi turvamarginaaliksi. Kaukainen
+# paa (FAR_*) koska talla videolla kivi heitetaan lahempaa hoglinea
+# kohti sita - katso kamera9_01.py:n track_stone_in_video-kommentti
+# samasta videosta.
 # ============================================================
 
-SEARCH_X_HALF_WIDTH_CM = 50.0
+SEARCH_X_HALF_WIDTH_CM = 70.0
 SEARCH_Y_MIN_CM = k8.FAR_HOGLINE_Y_CM
-SEARCH_Y_MAX_CM = k8.FAR_HOUSE_Y_CM + k8.HOUSE_RADIUS_CM
+SEARCH_Y_MAX_CM = k8.FAR_HOGLINE_Y_CM + 300.0
 
 # Karkea->hieno ristikkohaku (sama periaate kuin kamera8_01.py:n
 # search_far_house) - kaksi tasoa riittaa, koska kolmas (ultra-hieno)
