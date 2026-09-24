@@ -1076,10 +1076,15 @@ PROFILE_R_MAX_MAX_CM = 20.0
 # = kaukainen hogline...hogline+3m, k92.SEARCH_X_HALF_WIDTH_CM=
 # +-70cm keskiviivasta) - ei enaa tarvitse luottaa hitaaseen, harjasta
 # helposti hairiintyvaan vapaamuotoiseen liikkeentunnistukseen koko
-# radalla. Siksi PROFILE_MIN_ACCEPTED_STONES=1: skannaus pysahtyy heti
-# ensimmaisen riittavan profiilin loydyttya, ja loput heitot jaavat
-# ELAVAN SEURANNAN (nopeamman, tarkemman) vastuulle.
-PROFILE_MIN_ACCEPTED_STONES = 1
+# radalla.
+#
+# PROFILE_MIN_ACCEPTED_STONES=2 (kayttajan pyynnosta, nostettu 1:sta):
+# profiili sovitetaan YHTEISESTI kaikkien hyvaksyttyjen kivien havain-
+# noista (katso fit_stone_profile) - kahdella kivella yhdella sijasta
+# profiili ei ylisovitu yhden kiven omiin (esim. kulman/valaistuksen
+# aiheuttamiin) satunnaisvirheisiin, joten se yleistyy paremmin MUIHIN
+# kiviin joita ELAVA SEURANTA sen jalkeen kayttaa.
+PROFILE_MIN_ACCEPTED_STONES = 2
 
 # Testatessa oikealla videolla loytyi KAKSI ongelmaa jotka nama
 # kynnysarvot/mekanismit korjaavat:
