@@ -2188,6 +2188,39 @@ _hann_window_cache = {}
 _ref_gray_cache = {}
 
 
+def _phase_correlate_full_frame(gray_a_full, gray_b_full):
+    """Yhteinen vaihekorrelaatio-ydin (kayttaa SUBPIXEL_ALIGN_CROP_
+    FRACTION-rajausta + valimuistitettua Hanning-ikkunaa) - kaytetaan
+    seka estimate_subpixel_alignment:issa (frame vs. moodikuva) etta
+    elavan seurannan KETJUTETYSSA framesta-frameen -stabiloinnissa
+    (katso PIKSELITARKKA STABILOINTI -kommentti run_pipeline:ssa).
+    gray_a_full/gray_b_full: TAYSRESOLUUTIOISET harmaasavykuvat (uint8
+    tai float32). Palauttaa (dx,dy): siirto joka pitaa lisata jotta
+    gray_b linjautuisi gray_a:n kanssa, SUBPIXEL_ALIGN_RANGE_PX:aan
+    rajattuna."""
+
+    h, w = gray_a_full.shape[:2]
+    cw = int(round(w * SUBPIXEL_ALIGN_CROP_FRACTION))
+    ch = int(round(h * SUBPIXEL_ALIGN_CROP_FRACTION))
+    x0 = (w - cw) // 2
+    y0 = (h - ch) // 2
+
+    key = (x0, y0, cw, ch)
+    hann = _hann_window_cache.get(key)
+    if hann is None:
+        hann = cv2.createHanningWindow((cw, ch), cv2.CV_32F)
+        _hann_window_cache[key] = hann
+
+    a_crop = gray_a_full[y0:y0 + ch, x0:x0 + cw].astype(np.float32)
+    b_crop = gray_b_full[y0:y0 + ch, x0:x0 + cw].astype(np.float32)
+
+    (dx, dy), _response = cv2.phaseCorrelate(a_crop, b_crop, hann)
+
+    dx = float(np.clip(dx, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
+    dy = float(np.clip(dy, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
+    return dx, dy
+
+
 def estimate_subpixel_alignment(frame_u, reference_u):
     """ENABLE_SUBPIXEL_ALIGNMENT:in kohdistushaku - katso sen kommentti
     taman tiedoston alkupaassa. TOINEN VERSIO (kayttajan pyynnosta,
@@ -2200,49 +2233,29 @@ def estimate_subpixel_alignment(frame_u, reference_u):
     Ratkaisu: cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio) laskee
     TAYSRESOLUUTIOISEN kuvan sub-pikseli-tarkan KAANNON yhdella
     kutsulla - ei tarvitse testata erikseen satoja ehdokkaita eika
-    pienentaa kuvaa. Rajattu SUBPIXEL_ALIGN_CROP_FRACTION-kokoiseen
-    keskitettyyn alueeseen (EI pienennetty, vain rajattu - resoluutio
-    sailyy) laskenta-ajan hillitsemiseksi (mitattu: taysi 1920x1080
-    ~130ms/frame olisi liikaa) - reunat (katsomo/mainostaulut, eivat
-    osa jaata) eivat muutenkaan auta kohdistuksessa, joten rajaus ei
-    heikenna tarkkuutta. EI enaa kiertoa (angle) - alkuperainen kierto-
+    pienentaa kuvaa. EI enaa kiertoa (angle) - alkuperainen kierto-
     korjaus oli juuri se osa joka VAHVISTI virheen etaisyyden mukana
     (katso ENABLE_SUBPIXEL_ALIGNMENT:in kommentti); paneiliseurannan
     RANSAC-affiinimuunnos jo korjaa suurimman osan kierrosta, joten
     jaljella oleva sub-pikseli-virhe on kaytannossa lahes pelkkaa
     translaatiota."""
 
-    h, w = frame_u.shape[:2]
-    cw = int(round(w * SUBPIXEL_ALIGN_CROP_FRACTION))
-    ch = int(round(h * SUBPIXEL_ALIGN_CROP_FRACTION))
-    x0 = (w - cw) // 2
-    y0 = (h - ch) // 2
-
-    key = (x0, y0, cw, ch)
-    hann = _hann_window_cache.get(key)
-    if hann is None:
-        hann = cv2.createHanningWindow((cw, ch), cv2.CV_32F)
-        _hann_window_cache[key] = hann
-
+    key = reference_u.shape[:2]
     ref_gray = _ref_gray_cache.get(key)
     if ref_gray is None:
-        ref_crop = reference_u[y0:y0 + ch, x0:x0 + cw]
-        ref_gray = cv2.cvtColor(ref_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        ref_gray = cv2.cvtColor(reference_u, cv2.COLOR_BGR2GRAY)
         _ref_gray_cache[key] = ref_gray
 
-    frame_crop = frame_u[y0:y0 + ch, x0:x0 + cw]
-    frame_gray = cv2.cvtColor(frame_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
-
-    (dx, dy), _response = cv2.phaseCorrelate(ref_gray, frame_gray, hann)
+    frame_gray = cv2.cvtColor(frame_u, cv2.COLOR_BGR2GRAY)
 
     # Turvaraja (kayttajan alkuperaisen SUBPIXEL_ALIGN_RANGE_PX:n
-    # hengessa): tama on tarkoitettu VAIN pieneksi jaljella olevaksi
-    # sub-pikseli-korjaukseksi, ei yleiseksi liikkeentunnistukseksi -
-    # jos koko kuvan vaihekorrelaatio jostain syysta antaisi ison
-    # arvon (esim. pelaaja peittaa suuren osan framesta), rajataan
-    # se pois sen sijaan etta sovelletaan virheellisen suurta kaantoa.
-    dx = float(np.clip(dx, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
-    dy = float(np.clip(dy, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
+    # hengessa - katso _phase_correlate_full_frame): tama on tarkoitettu
+    # VAIN pieneksi jaljella olevaksi sub-pikseli-korjaukseksi, ei
+    # yleiseksi liikkeentunnistukseksi - jos koko kuvan vaihekorrelaatio
+    # jostain syysta antaisi ison arvon (esim. pelaaja peittaa suuren
+    # osan framesta), se rajataan pois sen sijaan etta sovelletaan
+    # virheellisen suurta kaantoa.
+    dx, dy = _phase_correlate_full_frame(ref_gray, frame_gray)
 
     return (dx, dy, 0.0)
 
@@ -2994,6 +3007,12 @@ def run_pipeline(
         maxlen=STABILIZATION_MEDIAN_FRAMES
     )
 
+    # PIKSELITARKKA KETJUTETTU STABILOINTI (kayttajan pyynnosta, katso
+    # kommentti alempana kaytonkohdalla) - None kunnes "loppuvideo"-
+    # vaihe (calib_result valmis) alkaa.
+    pixel_align_matrix = None
+    pixel_align_prev_gray = None
+
     start_time = time.time()
 
     total_gray_time = 0.0
@@ -3201,7 +3220,7 @@ def run_pipeline(
                         current_centers[i]
                     )
 
-            stabilization_matrix = (
+            panel_stabilization_matrix = (
                 previous_stabilization_matrix.copy()
             )
 
@@ -3230,7 +3249,7 @@ def run_pipeline(
 
                 if M is not None:
 
-                    stabilization_matrix = (
+                    panel_stabilization_matrix = (
                         cv2.invertAffineTransform(
                             M
                         )
@@ -3245,10 +3264,10 @@ def run_pipeline(
             # ------------------------------------------------
 
             stabilization_history.append(
-                stabilization_matrix.copy()
+                panel_stabilization_matrix.copy()
             )
 
-            stabilization_matrix = np.median(
+            panel_stabilization_matrix = np.median(
                 np.stack(
                     stabilization_history,
                     axis=0
@@ -3256,15 +3275,69 @@ def run_pipeline(
                 axis=0
             )
 
-            stabilization_matrix = np.asarray(
-                stabilization_matrix,
+            panel_stabilization_matrix = np.asarray(
+                panel_stabilization_matrix,
                 dtype=np.float64
             )
 
 
             previous_stabilization_matrix = (
-                stabilization_matrix.copy()
+                panel_stabilization_matrix.copy()
             )
+
+            # ------------------------------------------------
+            # PIKSELITARKKA KETJUTETTU STABILOINTI "LOPPUVIDEOLLE"
+            # (kayttajan pyynnosta, katso keskusteluhistoria): kayttaja
+            # havaitsi TOISELLA videolla etta paneiliseuranta itse voi
+            # hyppia (paneelit vaikeasti seurattavissa juuri sina
+            # videona), mika nakyi koko lopun seurannan tarinana.
+            # Paneiliseurantaa/panel_stabilization_matrix:ia kaytetaan
+            # siis enaa VAIN moodikuvan rakentamiseen (calib_result is
+            # None) - sen jalkeen (profiiliskannaus + elava seuranta)
+            # KOKO frame vaihekorrelaatiolla (_phase_correlate_full_
+            # frame, sama ydin kuin estimate_subpixel_alignment:issa)
+            # KETJUTETTUNA: joka frame lisaa PIENEN deltan edellisen
+            # framen jo-vahvistettuun sijaintiin sen sijaan etta
+            # vertaisi suoraan moodikuvaan joka frame - "siina lahtee
+            # aina edeltavasta sijainnista" (kayttajan sanoin). Koska
+            # koko frame (tuhansia staattisia pikseleita, ei vain
+            # muutama paneelin kulmapiste) kaytetaan, oletetaan ettei
+            # tama voi enaa karata (kayttajan oma arvio) - EI periodista
+            # uudelleenankkurointia moodikuvaan.
+            #
+            # SIIRTYMA: "loppuvideon" ENSIMMAINEN frame (pixel_align_
+            # matrix viela None) ankkuroidaan VIIMEISEEN paneilipohjaiseen
+            # matriisiin (jatkuvuus, ei hyppya) - sen jalkeen paneilia
+            # ei enaa kaytata stabilointiin (vain sen OMA laskenta jatkuu
+            # yllä, harmiton mutta turha CPU-kulu - ei poistettu tasta
+            # muutoksesta, jotta muutos pysyy suppeana).
+            # ------------------------------------------------
+
+            if calib_result is None:
+
+                stabilization_matrix = panel_stabilization_matrix
+
+            else:
+
+                if pixel_align_matrix is None:
+
+                    pixel_align_matrix = (
+                        panel_stabilization_matrix.copy()
+                    )
+
+                else:
+
+                    ddx, ddy = _phase_correlate_full_frame(
+                        pixel_align_prev_gray, gray
+                    )
+
+                    pixel_align_matrix = pixel_align_matrix.copy()
+                    pixel_align_matrix[0, 2] += ddx
+                    pixel_align_matrix[1, 2] += ddy
+
+                pixel_align_prev_gray = gray
+
+                stabilization_matrix = pixel_align_matrix
 
             total_stabilize_compute_time += time.perf_counter() - t_stab0
 
