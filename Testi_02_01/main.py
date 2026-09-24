@@ -892,6 +892,56 @@ MODE_FRAME_INTERVAL = 4
 # ============================================================
 GRANITE_DIFF_THRESHOLD = 10.0
 
+# ============================================================
+# VARJONSIETOINEN TAUSTANVAIMENNUS + JOKA-FRAME SUB-PIKSELI-
+# KOHDISTUS (kayttajan pyynnosta, katso keskusteluhistoria):
+# empiirisesti havaittu etta paneiliseurantaan perustuva stabilointi
+# EI ole taysin sub-pikseli-tarkka, ja etta myos VARJOSTUNEET (ei
+# vain suoraan moodikuvaa vastaavat) pikselit kannattaa tulkita
+# taustaksi - yhdessa nama auttoivat loytamaan JA pitamaan kiinni
+# testivideon (0001.mp4, "Testivideo"-julkaisu) ENSIMMAISESTA
+# heitosta, joka aluksi nakyy vain muutamana irrallisena pikselina
+# pelaajan vierella (suurin osa kivesta pelaajan peitossa). Ilman
+# tata HAKU ei loytanyt kyseista heittoa LAINKAAN; taman kanssa
+# SEURANTA piti kiinni siita KOKO matkan (n. 22.7s) levolle asti -
+# lopuksi jopa kiven kahva erottui selvasti, vahvistaen etta koko
+# ajan seurattiin oikeaa kivea.
+#
+# HELPPO POISTAA KAYTOSTA: aseta ENABLE_SHADOW_TOLERANT_STABILIZATION
+# = False - talloin seuranta palaa TASMALLEEN aiempaan kayttay-
+# tymiseen (raaka stabiloitu+oikaistu frame_u, GRANITE_DIFF_THRESHOLD,
+# ei varjosaantoa, ei sub-pikseli-kohdistusta) - katso kayttokohdat
+# suppress_static_background():ssa ja elavan seurannan paasilmukassa.
+#
+# REHELLINEN VARAUS: tama YHDISTELMA on toistaiseksi validoitu vain
+# YHDEN erittain hankalan (voimakkaasti okkludoidun) heiton osalta
+# tarkalla, kasin ohjatulla diagnoosilla - EI VIELA koko videon
+# lapikaynnilla A/B-vertailuna (kuten esim. GRANITE_DIFF_THRESHOLD/
+# BODY_CONTOUR-poisto tassa samassa tiedostossa). Suositus: aja koko
+# video lapi seka paalla etta pois paalta (tools/review_tracks.py)
+# ennen kuin luotat tahan oikeassa ottelussa.
+# ============================================================
+ENABLE_SHADOW_TOLERANT_STABILIZATION = True
+
+SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita taustaksi/varjoksi
+
+SUBPIXEL_ALIGN_RANGE_PX = 1.0
+SUBPIXEL_ALIGN_STEP_PX = 0.25
+SUBPIXEL_ALIGN_RANGE_DEG = 0.3
+SUBPIXEL_ALIGN_STEP_DEG = 0.15
+SUBPIXEL_ALIGN_PATCH_HALF_PX = 35
+SUBPIXEL_ALIGN_PATCH_MARGIN_PX = 10
+
+# Kiintea fyysinen ankkuripiste (jaatasossa, Z=0) sub-pikseli-
+# kohdistuksen mittaukselle - kaukaisen pesan takana, keskilinjalta
+# sivussa (X=-140cm) jotta piste on YLEENSA poissa kivien/pelaajien
+# tyypillisen reitin tielta mutta silti selvasti tekstuurinen (pesan
+# rengaskuvio/hogline nakyvissa). HUOM: EI taysin turvassa okkluusiolta
+# (pyyhkijat voivat kayda talla alueella) - katso yllaoleva "rehellinen
+# varaus".
+SUBPIXEL_ALIGN_ANCHOR_X_CM = -140.0
+SUBPIXEL_ALIGN_ANCHOR_Y_CM = k8.FAR_HOUSE_Y_CM
+
 STABILIZATION_MEDIAN_FRAMES = 20
 
 # Moodikuvan laskenta tehdään paloissa
@@ -2003,19 +2053,102 @@ def detect_panels_from_reference(gray, reference_panels, frame_bgr=None,
 # enaa tulla virhetunnistetuksi kiveksi tassa vaiheessa.
 # ============================================================
 
-def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
-
-    if reference_bgr is None or frame_bgr.shape != reference_bgr.shape:
-        return frame_bgr
+def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
+                                      shadow_v_drop_max):
+    """ENABLE_SHADOW_TOLERANT_STABILIZATION:in ydinsaanto (katso sen
+    kommentti): tausta = (tavallinen pieni erotus) TAI (saturaatio
+    lahes sama mutta V pudonnut korkeintaan shadow_v_drop_max - eli
+    varjo, ei aito objekti)."""
 
     diff = cv2.absdiff(frame_bgr, reference_bgr)
     diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
     background_mask = diff_gray < diff_threshold
 
+    frame_hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV).astype(np.int16)
+    ref_hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV).astype(np.int16)
+    v_drop = ref_hsv[..., 2] - frame_hsv[..., 2]
+    shadow_mask = (v_drop > 0) & (v_drop <= shadow_v_drop_max)
+
+    return background_mask | shadow_mask
+
+
+def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
+
+    if reference_bgr is None or frame_bgr.shape != reference_bgr.shape:
+        return frame_bgr
+
+    if ENABLE_SHADOW_TOLERANT_STABILIZATION:
+        background_mask = _shadow_tolerant_background_mask(
+            frame_bgr, reference_bgr, diff_threshold, SHADOW_V_DROP_MAX
+        )
+    else:
+        diff = cv2.absdiff(frame_bgr, reference_bgr)
+        diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        background_mask = diff_gray < diff_threshold
+
     out = frame_bgr.copy()
     out[background_mask] = (255, 255, 255)
 
     return out
+
+
+def estimate_subpixel_alignment(frame_u, reference_u, anchor_px, anchor_py):
+    """ENABLE_SHADOW_TOLERANT_STABILIZATION:in sub-pikseli-kohdistus-
+    haku - katso sen kommentti. Hakee JOKA FRAME pienen (dx,dy,kierto)-
+    korjauksen olemassaolevan paneiliseurannan PAALLE, AINA kiintealta
+    pienelta alueelta nollan ymparilta (EI lammitella edellisen framen
+    tuloksesta) - lammittely kokeiltiin ja havaittiin ajautuvan jaan
+    toistuvien kuvioiden (viivat, rengaskuviot) takia virheellisesti
+    kauas useiden framejen yli (havaittu empiirisesti: dx kasvoi
+    0.25px:sta yli 20 pikseliin muutamassa sekunnissa), joten haku
+    tehdaan aina tuoreena kiintealta pieneltä alueelta."""
+
+    h, w = frame_u.shape[:2]
+    half = SUBPIXEL_ALIGN_PATCH_HALF_PX
+    margin = SUBPIXEL_ALIGN_PATCH_MARGIN_PX
+
+    px0 = max(0, anchor_px - half - margin)
+    px1 = min(w, anchor_px + half + margin)
+    py0 = max(0, anchor_py - half - margin)
+    py1 = min(h, anchor_py + half + margin)
+
+    frame_patch = frame_u[py0:py1, px0:px1].astype(np.float32)
+    ref_patch = reference_u[py0:py1, px0:px1].astype(np.float32)
+    ph, pw = frame_patch.shape[:2]
+
+    inner_h = ph - 2 * margin
+    inner_w = pw - 2 * margin
+    if inner_h <= 0 or inner_w <= 0:
+        return (0.0, 0.0, 0.0)
+
+    center = (pw / 2.0, ph / 2.0)
+
+    dx_range = np.arange(-SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX + 1e-9, SUBPIXEL_ALIGN_STEP_PX)
+    dy_range = np.arange(-SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX + 1e-9, SUBPIXEL_ALIGN_STEP_PX)
+    angle_range = np.arange(-SUBPIXEL_ALIGN_RANGE_DEG, SUBPIXEL_ALIGN_RANGE_DEG + 1e-9, SUBPIXEL_ALIGN_STEP_DEG)
+
+    best = None
+    for angle in angle_range:
+        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+        for dx in dx_range:
+            for dy in dy_range:
+                MM = M.copy()
+                MM[0, 2] += dx
+                MM[1, 2] += dy
+                warped = cv2.warpAffine(
+                    frame_patch, MM, (pw, ph),
+                    flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+                )
+                iw = warped[margin:margin + inner_h, margin:margin + inner_w].astype(np.uint8)
+                ir = ref_patch[margin:margin + inner_h, margin:margin + inner_w].astype(np.uint8)
+                mask = _shadow_tolerant_background_mask(
+                    iw, ir, GRANITE_DIFF_THRESHOLD, SHADOW_V_DROP_MAX
+                )
+                cnt = int(mask.sum())
+                if best is None or cnt > best[0]:
+                    best = (cnt, dx, dy, angle)
+
+    return (best[1], best[2], best[3])
 
 def _scan_stone_candidates(frame_bgr, calib, pose, background_reference=None):
 
@@ -3418,6 +3551,59 @@ def run_pipeline(
                 local_pts_search = live_state["local_pts_search"]
 
                 # --------------------------------------------
+                # ENABLE_SHADOW_TOLERANT_STABILIZATION (katso sen
+                # kommentti taman tiedoston alkupaassa) - HELPPO
+                # POISTAA: aseta se muuttuja False:ksi, niin tama
+                # haara ohitetaan taysin ja frame_u_for_tracking ==
+                # frame_u seka diff_threshold == GRANITE_DIFF_THRESHOLD
+                # kuten ennenkin. HUOM: frame_u ITSE (varitarkistus,
+                # debug-video) EI koskaan taustanvaimenneta tassa -
+                # vain erillinen frame_u_for_tracking-kopio, jota
+                # kaytetaan VAIN HAKU/SEURANTA-kutsuissa alla.
+                # --------------------------------------------
+                ref_undist_live = calib_result["calib"]["frame_undistorted"]
+
+                if ENABLE_SHADOW_TOLERANT_STABILIZATION:
+
+                    if "subpixel_anchor_px" not in live_state:
+                        anchor_cam = pose["R"] @ np.array([
+                            SUBPIXEL_ALIGN_ANCHOR_X_CM,
+                            SUBPIXEL_ALIGN_ANCHOR_Y_CM,
+                            0.0
+                        ]) + pose["t"]
+                        anchor_img = pose["K"] @ anchor_cam
+                        live_state["subpixel_anchor_px"] = (
+                            int(round(anchor_img[0] / anchor_img[2])),
+                            int(round(anchor_img[1] / anchor_img[2])),
+                        )
+
+                    anchor_px, anchor_py = live_state["subpixel_anchor_px"]
+                    align_dx, align_dy, align_angle = estimate_subpixel_alignment(
+                        frame_u, ref_undist_live, anchor_px, anchor_py
+                    )
+
+                    align_center = (width / 2.0, height / 2.0)
+                    M_align = cv2.getRotationMatrix2D(align_center, align_angle, 1.0)
+                    M_align[0, 2] += align_dx
+                    M_align[1, 2] += align_dy
+                    frame_u = cv2.warpAffine(
+                        frame_u, M_align, (width, height),
+                        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+                    )
+
+                    frame_u_for_tracking = suppress_static_background(
+                        frame_u, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
+                    )
+                    # frame_u_for_tracking on jo taustanvaimennettu (myos
+                    # varjonsietoisesti) - C++:n OMA sisainen vaimennus
+                    # HAKU/SEURANTA-kutsuissa ohitetaan antamalla sille 0.0,
+                    # jotta frame_u_for_tracking:ia ei vaimenneta uudelleen.
+                    haku_seuranta_diff_threshold = 0.0
+                else:
+                    frame_u_for_tracking = frame_u
+                    haku_seuranta_diff_threshold = GRANITE_DIFF_THRESHOLD
+
+                # --------------------------------------------
                 # HAKU: uusia kiviä kiinteältä paata-rajatulta
                 # vyohykkeelta (kamera9_02.py:n SEARCH_*), vain
                 # jos tilaa (< MAX_CONCURRENT_STONES) ja tama on
@@ -3460,7 +3646,7 @@ def run_pipeline(
 
                     haku_future = haku_executor.submit(
                         _run_haku_timed,
-                        frame_u, calib_result["calib"]["frame_undistorted"],
+                        frame_u_for_tracking, ref_undist_live,
                         local_pts_body, local_pts_search,
                         pose["K"], pose["R"], pose["t"],
                         x_center, k92.SEARCH_X_HALF_WIDTH_CM, y_center, y_half,
@@ -3468,7 +3654,7 @@ def run_pipeline(
                         k92.SEARCH_SCORE_THRESHOLD,
                         live_state["R_max"], live_state["H_total"],
                         live_state["ring_r_frac_guess"],
-                        GRANITE_DIFF_THRESHOLD
+                        haku_seuranta_diff_threshold
                     )
 
                 # --------------------------------------------
@@ -3523,7 +3709,7 @@ def run_pipeline(
 
                     t_seuranta0 = time.time()
                     batch_results = stone_tracker.track_stones_batch(
-                        frame_u, calib_result["calib"]["frame_undistorted"],
+                        frame_u_for_tracking, ref_undist_live,
                         X0_arr, Y0_arr,
                         local_pts_body, local_pts_search,
                         pose["K"], pose["R"], pose["t"],
@@ -3532,7 +3718,7 @@ def run_pipeline(
                         k92.TRACK_SCORE_THRESHOLD,
                         live_state["R_max"], live_state["H_total"],
                         live_state["ring_r_frac_guess"],
-                        GRANITE_DIFF_THRESHOLD
+                        haku_seuranta_diff_threshold
                     )
                     total_seuranta_time += time.time() - t_seuranta0
                     n_seuranta_calls += 1
