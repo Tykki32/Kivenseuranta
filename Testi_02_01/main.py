@@ -952,7 +952,7 @@ SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 # ============================================================
 ENABLE_SUBPIXEL_ALIGNMENT = True
 
-SUBPIXEL_ALIGN_RANGE_PX = 1.0  # turvaraja - katso estimate_subpixel_alignment
+SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso estimate_subpixel_alignment (kayttajan pyynnosta 10x, oli 1.0)
 
 # Kuinka suuri, kuvan keskelle keskitetty osuus (leveys JA korkeus)
 # kaytetaan vaihekorrelaatioon - EI pienennys, vain RAJAUS (resoluutio
