@@ -1325,26 +1325,25 @@ STOP_TRACKING_DISPLACEMENT_CM = 20.0
 # ei erottele niita luotettavasti - vain KESTO eroaa (peitto loppuu,
 # hyppy ei koskaan "korjaannu").
 #
-# Sen sijaan varitarkistus vaikuttaa VAIN "pysahtynyt"-ilmoitukseen
-# (alempana SEURANTA-silmukassa): liukuvan ikkunan (color_diff_history,
-# sama aikaikkuna kuin position_history) KESKIARVO on oltava aidosti
-# graniittimainen ennen kuin pysahtyminen hyvaksytaan LOPULLISENA - jos
-# ei, ilmoitus vain LYKKAANTYY (kivi pysyy normaalisti aktiivisena/
-# seurattuna, ei koskaan "kadotettu" varin takia). Tama kohdistuu
-# suoraan alkuperaiseen ongelmaan (vaaran kohteen virheellinen
-# kirjaaminen "pysahtyneeksi kiveksi") ilman etta se voi koskaan
-# aiheuttaa oikean, vain hetkellisesti/pitkaan peitetyn kiven katoamista.
-#
-# Kynnysarvot kalibroitu oikealla videolla (stone0:n omat, itse
-# vahvistetut lahelta-pesaa -havainnot dbg_full_v3.csv:sta) - katso
-# kommentti color_match_median_diff:in MEDIAANI-aggregoinnin kohdalla
-# (miksi ei keskiarvo per piste). Saman kiven oma mitattu keskimaarainen
-# poikkeama itsestaan: min=0.085, max=0.204, ka=0.141 (30 nayteruutua) -
-# COLOR_STOP_MAX_AVG_DIFF pidetty reilusti taman ylapuolella.
+# Varitarkistus vaikutti aiemmin (Testi_02_01, alkuperainen versio)
+# "pysahtynyt"-ilmoitukseen: liukuvan ikkunan (color_diff_history)
+# KESKIARVON piti olla aidosti graniittimainen (alle COLOR_STOP_MAX_
+# AVG_DIFF) ennen kuin pysahtyminen hyvaksyttiin. TARKOITUS oli etta
+# tama EI voisi koskaan aiheuttaa oikean kiven katoamista (ilmoitus
+# vain "lykkaantyisi") - mutta koko videon lapikaynti (kayttajan
+# pyynnosta, katso keskusteluhistoria) osoitti etta oletus oli VAARIN:
+# aidosti paikallaan olevia kivia EI koskaan tulostettu pysahtyneeksi
+# (avg_diff pysyi kynnyksen ylapuolella), jolloin ne jaivat pysyvasti
+# aktiivisiksi ja tukkivat MAX_CONCURRENT_STONES-paikat - estaen uusien
+# aitojen heittojen rekisteroinnin (havaittu konkreettisesti: viimeinen
+# heitto jai kokonaan puuttumaan CSV:sta). Varitarkistus on siis
+# POISTETTU "pysahtynyt"-paatoksesta - katso SEURANTA-silmukan oma
+# kommentti (STOP_TRACKING_DISPLACEMENT_CM/SECONDS RIITTAA yksinaan).
+# color_match_median_diff/color_diff_history sailyvat silti (COLOR_DEBUG-
+# diagnostiikkaa varten), vain paatoksentekoon ei enaa vaikuta.
 COLOR_REF_MIN_RING_SPACING_PX = 2.5
 COLOR_REF_MIN_OBSERVATIONS = 3
 COLOR_MATCH_MIN_VALID_POINTS = 20
-COLOR_STOP_MAX_AVG_DIFF = 0.22
 
 CSV_HEADER = [
     "frame", "timestamp_s", "stone_id", "x_m", "y_m", "tarkka",
@@ -3819,9 +3818,10 @@ def run_pipeline(
                     for s, refined in zip(seuranta_stones, batch_results):
 
                         # --------------------------------
-                        # VARITARKISTUS: katso kommentti COLOR_REF_*/
-                        # COLOR_STOP_MAX_AVG_DIFF:in kohdalla taman
-                        # tiedoston alkupaassa. HUOM (kayttajan pyynnosta
+                        # VARIHISTORIAN KERAYS (COLOR_DEBUG-diagnostiikkaa
+                        # varten - EI enaa vaikuta "pysahtynyt"-paatokseen,
+                        # katso kommentti COLOR_REF_*-vakioiden kohdalla
+                        # taman tiedoston alkupaassa). HUOM (kayttajan pyynnosta
                         # tehty uudelleensuunnittelu): tama EI vaikuta
                         # MITENKAAN normaaliin SEURANTAan (haku-ankkuri,
                         # s["misses"], "kadotettu") - position-/miss-
@@ -3990,56 +3990,50 @@ def run_pipeline(
                                 if displacement < STOP_TRACKING_DISPLACEMENT_CM:
 
                                     # --------------------------------
-                                    # VARIVAHVISTUS: katso kommentti
-                                    # COLOR_STOP_MAX_AVG_DIFF:in kohdalla.
-                                    # Viimeisen sekunnin KESKIMAARAINEN
-                                    # vari (EI yksittainen ruutu - kestaa
-                                    # siis kohinan/hetkelliset poikkeamat)
-                                    # on oltava aidosti graniittimainen
-                                    # ennen kuin "pysahtynyt" hyvaksytaan
-                                    # lopullisena - estaa vaaran kohteen
-                                    # (esim. pelaaja) virheellisen
-                                    # kirjaamisen kiveksi.
+                                    # PYSAHTYMINEN pelkasta GEOMETRIASTA
+                                    # (kayttajan pyynnosta, katso keskus-
+                                    # teluhistoria): aiemmin vaadittiin
+                                    # TAMAN LISAKSI varivahvistus (viimeisen
+                                    # sekunnin ka. vari COLOR_STOP_MAX_AVG_
+                                    # DIFF:in alle) - havaittiin koko videon
+                                    # lapikaynnissa etta tama esti "pysah-
+                                    # tynyt"-ilmoituksen aidoilla, selvasti
+                                    # paikallaan olevilla kivilla (esim.
+                                    # kivi joka ei liikkunut yli minuuttiin
+                                    # ei koskaan tulostanut "pysahtynyt" -
+                                    # jaljelle jaaneet MAX_CONCURRENT_STONES-
+                                    # paikat tukkeutuivat, estaen uusien
+                                    # aitojen heittojen rekisteroinnin).
+                                    # Nyt: 3D-mallin/maskin sijainti (EI
+                                    # liikkunut yli STOP_TRACKING_DISPLACE-
+                                    # MENT_CM:aa STOP_TRACKING_SECONDS:in
+                                    # aikana) RIITTAA yksinaan.
                                     # --------------------------------
 
-                                    color_confirms = True
-
-                                    if color_ref is not None and s["color_diff_history"]:
-                                        recent_diffs = [
-                                            d for _, d in s["color_diff_history"]
-                                        ]
-                                        avg_diff = (
-                                            sum(recent_diffs) / len(recent_diffs)
+                                    stopped = True
+                                    if s["confirmed"]:
+                                        print(
+                                            f"[frame {frame_index}] Kivi "
+                                            f"{s['stone_id']} pysahtynyt "
+                                            f"(liikkunut {displacement:.1f}cm "
+                                            f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
+                                            "aikana) - lopetetaan seuranta."
                                         )
-                                        color_confirms = (
-                                            avg_diff <= COLOR_STOP_MAX_AVG_DIFF
+                                    else:
+                                        # Ei koskaan liikkunut riittavasti
+                                        # (katso MIN_CONFIRMED_THROW_
+                                        # DISPLACEMENT_CM) - todennakoisesti
+                                        # jo paikallaan ollut kohde, ei aito
+                                        # heitto. Puskuroidut havainnot
+                                        # hylataan hiljaisesti (EI CSV-riviä).
+                                        s["pending_rows"] = []
+                                        print(
+                                            f"[frame {frame_index}] Ehdokas "
+                                            f"{s['stone_id']} hylatty "
+                                            "(ei liikkunut riittavasti - "
+                                            "todennakoisesti jo paikallaan "
+                                            "ollut kohde, ei aito heitto)."
                                         )
-
-                                    if color_confirms:
-                                        stopped = True
-                                        if s["confirmed"]:
-                                            print(
-                                                f"[frame {frame_index}] Kivi "
-                                                f"{s['stone_id']} pysahtynyt "
-                                                f"(liikkunut {displacement:.1f}cm "
-                                                f"viimeisen {STOP_TRACKING_SECONDS:.0f}s "
-                                                "aikana) - lopetetaan seuranta."
-                                            )
-                                        else:
-                                            # Ei koskaan liikkunut riittavasti
-                                            # (katso MIN_CONFIRMED_THROW_
-                                            # DISPLACEMENT_CM) - todennakoisesti
-                                            # jo paikallaan ollut kohde, ei aito
-                                            # heitto. Puskuroidut havainnot
-                                            # hylataan hiljaisesti (EI CSV-riviä).
-                                            s["pending_rows"] = []
-                                            print(
-                                                f"[frame {frame_index}] Ehdokas "
-                                                f"{s['stone_id']} hylatty "
-                                                "(ei liikkunut riittavasti - "
-                                                "todennakoisesti jo paikallaan "
-                                                "ollut kohde, ei aito heitto)."
-                                            )
 
                             if not stopped:
                                 still_active.append(s)
