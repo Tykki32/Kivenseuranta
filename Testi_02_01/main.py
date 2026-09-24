@@ -941,8 +941,14 @@ SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 # jota haetaan). cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio)
 # laskee koko framen sub-pikseli-tarkan TRANSLAATION yhdella kutsulla -
 # ei enaa ristikkohakua eika kiertoa (katso estimate_subpixel_alignment).
+#
+# PAALLA (kayttajan pyynnosta): validoitu koko videon lapikaynnilla
+# taman korjatun version kanssa - ei enaa karkaavia haamuja, kaikki
+# viisi tunnistettavissa olevaa oikeaa heittoa loytyivat. HUOM: lisaa
+# merkittavasti laskenta-aikaa (mitattu ~38ms/ruutu tassa Linux-
+# diagnoosiymparistossa) - katso NOPEUSSEURANTA-raportin oma rivi.
 # ============================================================
-ENABLE_SUBPIXEL_ALIGNMENT = False
+ENABLE_SUBPIXEL_ALIGNMENT = True
 
 SUBPIXEL_ALIGN_RANGE_PX = 1.0  # turvaraja - katso estimate_subpixel_alignment
 
@@ -1125,16 +1131,20 @@ STONE_SCAN_COOLDOWN_FRAMES = 150   # 6s 25fps:lla
 # ============================================================
 # ELAVA MONI-KIVEN SEURANTA + CSV
 #
-# Kayttajan pyynnosta: max 4 kiveä samanaikaisesti, yksinkertainen
-# lahin-ehdokas-per-kivi -logiikka riittaa (kivet lahekkain vasta
-# pysahtymisen jalkeen, jolloin ID:lla ei ole enaa merkitysta).
-# Uusien kivien HAKU kaytta kamera9_02.py:n kiinteaa paata-rajattua
-# vyohyketta (SEARCH_X/Y_*, k92-moduulista) - TOISIN kuin 3D-profiilin
-# koko-radan-skannaus (Task 3): kivet HEITETAAN aina samaan suuntaan/
-# paahan, joten kiinteä HAKU-vyohyke on jarkeva/tehokas tassa.
+# Kayttajan pyynnosta (katso keskusteluhistoria - alunperin 4, nostettu
+# 8:aan): riittavasti tilaa samanaikaisesti aktiivisille kiville, myos
+# silloin kun jokin (esim. paikallaan pysyva/hoglinen tuntumassa oleva)
+# kohde tukkii yhden paikan pitkaksi aikaa - ei enaa estä uusien aitojen
+# heittojen rekisteroitymista yhtä helposti. Yksinkertainen lahin-
+# ehdokas-per-kivi -logiikka riittaa (kivet lahekkain vasta pysahtymisen
+# jalkeen, jolloin ID:lla ei ole enaa merkitysta). Uusien kivien HAKU
+# kaytta kamera9_02.py:n kiinteaa paata-rajattua vyohyketta (SEARCH_X/
+# Y_*, k92-moduulista) - TOISIN kuin 3D-profiilin koko-radan-skannaus
+# (Task 3): kivet HEITETAAN aina samaan suuntaan/paahan, joten kiinteä
+# HAKU-vyohyke on jarkeva/tehokas tassa.
 # ============================================================
 
-MAX_CONCURRENT_STONES = 4
+MAX_CONCURRENT_STONES = 8
 
 # ============================================================
 # SEURANNAN SIETOKYKY HETKELLISELLE TAYDELLE PEITOLLE (Testi_02_01,
