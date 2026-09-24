@@ -3366,6 +3366,24 @@ def run_pipeline(
     # ajan laskemiseksi.
     total_loop_time = 0.0
 
+    # LISAMITTARIT (kayttajan mittaaman "MITTAAMATON 106.06 ms/ruutu"
+    # -aukon jaljittamiseksi, ks. keskusteluhistoria) - KOKO RADAN
+    # SKANNAUS -vaiheen (3D-kiviprofiilin haku, "elif profile_result is
+    # None") omat kustannukset EIVAT olleet ollenkaan ajastettuja
+    # aiemmin: _scan_stone_candidates (kevyt, ajetaan joka stone_scan_
+    # interval_frames) JA erityisesti track_stone_in_video_windowed
+    # (RASKAS - avaa OMAN cv2.VideoCapturen JA dekoodaa+skannaa jopa
+    # +-30s ikkunan, STONE_TRACK_SAMPLE_STRIDE=1:lla JOKA framen siina
+    # ikkunassa - kutsutaan JOKAISELLE liikkuvalta nayttavalle
+    # kandidaatille, myos vaarille kuten pelaajille/lakaisijoille ennen
+    # kuin ne hylataan) - kayttajan pyynnosta epailty ISOIN yksittainen
+    # selittaja mittaamattomalle ajalle.
+    total_scan_candidates_time = 0.0
+    n_scan_candidates_calls = 0
+    total_windowed_track_time = 0.0
+    n_windowed_track_calls = 0
+    total_wait_mode_time = 0.0
+
     executor = ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     )
@@ -3676,7 +3694,9 @@ def run_pipeline(
                         calib_mode_output
                     )
 
+                    t_wait_mode0 = time.perf_counter()
                     engine.wait_for_mode()
+                    total_wait_mode_time += time.perf_counter() - t_wait_mode0
 
                     print(
                         f"Moodikuva valmis: {calib_mode_output}"
@@ -3743,11 +3763,14 @@ def run_pipeline(
                         frame, stabilization_matrix, (width, height)
                     )
 
+                    t_scan0 = time.perf_counter()
                     curr_candidates = _scan_stone_candidates(
                         stabilized_scan_frame, calib_result["calib"],
                         calib_result["pose"],
                         background_reference=calib_result["calib"]["frame"]
                     )
+                    total_scan_candidates_time += time.perf_counter() - t_scan0
+                    n_scan_candidates_calls += 1
 
                     seed_pos = find_moving_candidate(
                         prev_scan_candidates, curr_candidates
@@ -3773,6 +3796,7 @@ def run_pipeline(
                             f"liu'un ajan..."
                         )
 
+                        t_windowed0 = time.perf_counter()
                         track = track_stone_in_video_windowed(
                             video_file, calib_result["calib"],
                             calib_result["pose"],
@@ -3782,9 +3806,13 @@ def run_pipeline(
                                 calib_result["calib"]["frame_undistorted"]
                             )
                         )
+                        t_windowed_dt = time.perf_counter() - t_windowed0
+                        total_windowed_track_time += t_windowed_dt
+                        n_windowed_track_calls += 1
 
                         print(
-                            f"  seuranta valmis: {len(track)} havaintoa."
+                            f"  seuranta valmis: {len(track)} havaintoa "
+                            f"({t_windowed_dt:.2f}s taman kutsun kesto)."
                         )
 
                         next_allowed_scan_track_frame = (
@@ -4718,6 +4746,8 @@ def run_pipeline(
                     + total_stabilize_compute_time + total_warp_remap_time
                     + total_subpixel_align_time + total_shadow_suppress_time
                     + total_seuranta_time
+                    + total_scan_candidates_time + total_windowed_track_time
+                    + total_wait_mode_time
                     # HAKU EI mukana - se ajetaan taustasaikeessa
                     # SAMANAIKAISESTI SEURANNAN kanssa (ks. haku_executor
                     # ylla), joten sen aika EI ole lisaa seinakelloaikaa
@@ -4735,6 +4765,16 @@ def run_pipeline(
                     f"{(accounted / processed) * 1000:.2f} ms/ruutu | "
                     f"MITTAAMATON (CSV/rekisterointi/debug-video/muu) "
                     f"{unaccounted * 1000:.2f} ms/ruutu"
+                )
+                print(
+                    f"  [skannausvaihe] _scan_stone_candidates "
+                    f"{n_scan_candidates_calls} kutsua, "
+                    f"{total_scan_candidates_time:.2f}s yht | "
+                    f"track_stone_in_video_windowed "
+                    f"{n_windowed_track_calls} kutsua, "
+                    f"{total_windowed_track_time:.2f}s yht "
+                    f"(ka {total_windowed_track_time / max(1, n_windowed_track_calls):.2f} s/kutsu) | "
+                    f"wait_for_mode {total_wait_mode_time:.2f}s"
                 )
 
     finally:
@@ -4809,6 +4849,28 @@ def run_pipeline(
           "ms/ruutu keskimaarin (25fps-reaaliaikatavoite = 40.0 ms/ruutu, "
           "tiukempi tavoite hyvalla marginaalilla = 20.0 ms/ruutu)")
 
+    # KOKO RADAN SKANNAUS -vaiheen (3D-kiviprofiilin haku) omat, aiemmin
+    # TAYSIN ajastamattomat kustannukset - ks. total_windowed_track_time:in
+    # kommentti ylla. track_stone_in_video_windowed avaa OMAN cv2.
+    # VideoCapturen ja dekoodaa+skannaa jopa +-30s ikkunan JOKAISELLE
+    # liikkuvalta nayttavalle kandidaatille (myos vaarille, esim.
+    # pelaajat/lakaisijat, ennen kuin ne hylataan) - epailty ISOIN
+    # yksittainen selittaja "MITTAAMATON"-luvulle.
+    print(f"_scan_stone_candidates (KOKO RADAN SKANNAUS -vaihe): "
+          f"{n_scan_candidates_calls} kutsua, yhteensa "
+          f"{total_scan_candidates_time:.2f}s, "
+          f"{(total_scan_candidates_time / processed_frames) * 1000:.2f} ms/ruutu "
+          "(koko videon yli keskiarvoistettuna)")
+    print(f"track_stone_in_video_windowed (OMA cv2.VideoCapture, +-30s "
+          f"ikkuna JOKA liikkuvalta nayttavalle kandidaatille): "
+          f"{n_windowed_track_calls} kutsua, yhteensa "
+          f"{total_windowed_track_time:.2f}s, "
+          f"ka {(total_windowed_track_time / max(1, n_windowed_track_calls)):.2f} s/kutsu, "
+          f"{(total_windowed_track_time / processed_frames) * 1000:.2f} ms/ruutu "
+          "(koko videon yli keskiarvoistettuna)")
+    print(f"engine.wait_for_mode() (kertaluontoinen moodikuvan odotus): "
+          f"{total_wait_mode_time:.2f}s")
+
     # AGGRESSIIVISEMMAN OPTIMOINNIN DIAGNOSTIIKKA (Testi_03_01, kayttajan
     # pyynnosta): total_elapsed on OIKEA seinakelloaika (time.time():lla
     # mitattu koko ajolle, ML mukaan lukien Python-tulkin/saikeiden
@@ -4818,7 +4880,11 @@ def run_pipeline(
     # on iso ero, GPU/UMat-optimointi EI auta siihen - jotain muuta
     # (CSV-kirjoitus, kiven rekisterointi, DEBUG_SAVE_TRACKING_VIDEO,
     # saieskedulointi) vie sen ajan.
-    accounted_wall_clock = muu_yhteensa + total_seuranta_time
+    accounted_wall_clock = (
+        muu_yhteensa + total_seuranta_time
+        + total_scan_candidates_time + total_windowed_track_time
+        + total_wait_mode_time
+    )
     print(f"OIKEA seinakelloaika (time.time()): {total_elapsed:.2f}s yhteensa, "
           f"{(total_elapsed / processed_frames) * 1000:.2f} ms/ruutu")
     print(f"MITTAAMATON (seinakello - nimetyt mittarit, pl. rinnakkainen HAKU): "
