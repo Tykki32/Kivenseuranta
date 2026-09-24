@@ -926,44 +926,30 @@ SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 
 # ============================================================
 # JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
-# ENABLE_SHADOW_TOLERANT_STABILIZATION:ista, kayttajan pyynnosta: katso
-# keskusteluhistoria). Koko videon lapikaynti paljasti etta tama
-# HUONONTAA seurannan vakautta, EI paranna: kohdistus mitataan VAIN
-# yhdesta kiintesta ankkuripisteesta (kaukaisen pesan takana), ja koko
-# kuva kaannetaan sen mukaan JAYKKANA muunnoksena (myos kierto, kuvan
-# KESKIPISTEEN ympari). Jos todellinen jaljella oleva epatarkkuus EI
-# ole taysin jaykka koko kuvan yli (esim. objektiivin/paneiliseurannan
-# jaannosvirhe vaihtelee paikan mukaan), kaukaiselle paalle sopiva
-# pieni korjaus (esim. +0.25px/+0.15°) voi olla VAARA lahella pesaa -
-# ja koska kierto on kuvan keskipisteen ympari, pieni kulmavirhe
-# VAHVISTUU sita enemman mita kauempana ankkurista/keskipisteesta
-# ollaan (havaittu kaytannossa: levossa ollut kivi lahella pesaa alkoi
-# ajautua vasta taman ominaisuuden kanssa). SHADOW_V_DROP_MAX/varjo-
-# saanto EI ole implikoitu tassa loydoksessa - se pysyy paalla.
+# ENABLE_SHADOW_TOLERANT_STABILIZATIONista, kayttajan pyynnosta: katso
+# keskusteluhistoria). ENSIMMAINEN versio mittasi korjauksen VAIN
+# yhdesta kiintesta pienesta ankkuripisteesta (kaukaisen pesan takana)
+# ja sovelsi sen koko kuvaan jaykkana muunnoksena - koko videon
+# lapikaynti paljasti etta tama HUONONSI seurannan vakautta muualla
+# kuvassa (erityisesti lahella pesaa, kaukana ankkurista): pieni
+# paikallinen korjaus ei ollut edustava koko kuvalle, ja kiertovirhe
+# (kuvan keskipisteen ympari) vahvistui etaisyyden mukana.
 #
-# OLETUS: False (pois paalta) - toisin kuin ENABLE_SHADOW_TOLERANT_
-# STABILIZATION, tata EI suositella paalle ennen kuin joku luotettava
-# tapa kohdistaa PAIKALLISESTI (esim. per-alue tai puhdas translaatio
-# ilman kiertoa) on validoitu koko videon lapikaynnilla.
+# KORJATTU (kayttajan ehdotuksesta): kohdistus haetaan nyt KOKO NAYTON
+# pikseleita vasten moodikuvaa vasten, taysresoluutioisena (kayttajan
+# huomio: kuvan pienentaminen tuhoaisi juuri sub-pikseli-tarkkuuden
+# jota haetaan). cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio)
+# laskee koko framen sub-pikseli-tarkan TRANSLAATION yhdella kutsulla -
+# ei enaa ristikkohakua eika kiertoa (katso estimate_subpixel_alignment).
 # ============================================================
 ENABLE_SUBPIXEL_ALIGNMENT = False
 
-SUBPIXEL_ALIGN_RANGE_PX = 1.0
-SUBPIXEL_ALIGN_STEP_PX = 0.25
-SUBPIXEL_ALIGN_RANGE_DEG = 0.3
-SUBPIXEL_ALIGN_STEP_DEG = 0.15
-SUBPIXEL_ALIGN_PATCH_HALF_PX = 35
-SUBPIXEL_ALIGN_PATCH_MARGIN_PX = 10
+SUBPIXEL_ALIGN_RANGE_PX = 1.0  # turvaraja - katso estimate_subpixel_alignment
 
-# Kiintea fyysinen ankkuripiste (jaatasossa, Z=0) sub-pikseli-
-# kohdistuksen mittaukselle - kaukaisen pesan takana, keskilinjalta
-# sivussa (X=-140cm) jotta piste on YLEENSA poissa kivien/pelaajien
-# tyypillisen reitin tielta mutta silti selvasti tekstuurinen (pesan
-# rengaskuvio/hogline nakyvissa). HUOM: EI taysin turvassa okkluusiolta
-# (pyyhkijat voivat kayda talla alueella) - katso yllaoleva "rehellinen
-# varaus".
-SUBPIXEL_ALIGN_ANCHOR_X_CM = -140.0
-SUBPIXEL_ALIGN_ANCHOR_Y_CM = k8.FAR_HOUSE_Y_CM
+# Kuinka suuri, kuvan keskelle keskitetty osuus (leveys JA korkeus)
+# kaytetaan vaihekorrelaatioon - EI pienennys, vain RAJAUS (resoluutio
+# sailyy taysimittaisena) - katso estimate_subpixel_alignment.
+SUBPIXEL_ALIGN_CROP_FRACTION = 0.67
 
 STABILIZATION_MEDIAN_FRAMES = 20
 
@@ -2168,63 +2154,69 @@ def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
     return out
 
 
-def estimate_subpixel_alignment(frame_u, reference_u, anchor_px, anchor_py):
-    """ENABLE_SHADOW_TOLERANT_STABILIZATION:in sub-pikseli-kohdistus-
-    haku - katso sen kommentti. Hakee JOKA FRAME pienen (dx,dy,kierto)-
-    korjauksen olemassaolevan paneiliseurannan PAALLE, AINA kiintealta
-    pienelta alueelta nollan ymparilta (EI lammitella edellisen framen
-    tuloksesta) - lammittely kokeiltiin ja havaittiin ajautuvan jaan
-    toistuvien kuvioiden (viivat, rengaskuviot) takia virheellisesti
-    kauas useiden framejen yli (havaittu empiirisesti: dx kasvoi
-    0.25px:sta yli 20 pikseliin muutamassa sekunnissa), joten haku
-    tehdaan aina tuoreena kiintealta pieneltä alueelta."""
+_hann_window_cache = {}
+
+
+_ref_gray_cache = {}
+
+
+def estimate_subpixel_alignment(frame_u, reference_u):
+    """ENABLE_SUBPIXEL_ALIGNMENT:in kohdistushaku - katso sen kommentti
+    taman tiedoston alkupaassa. TOINEN VERSIO (kayttajan pyynnosta,
+    katso keskusteluhistoria): ENSIMMAINEN versio hyodynsi vain pienta
+    paikallista aluetta, mika osoittautui EPAEDUSTAVAKSI koko kuvalle.
+    Kayttaja ehdotti koko naytön pikseleiden vertaamista moodikuvaan -
+    mutta ristikkohaku (satoja warpAffine-kutsuja) koko taysresoluutio-
+    kuvalle olisi liian hidas, ja kuvan PIENENTAMINEN tuhoaisi juuri
+    sen sub-pikseli-tarkkuuden jota haetaan (kayttajan huomio).
+    Ratkaisu: cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio) laskee
+    TAYSRESOLUUTIOISEN kuvan sub-pikseli-tarkan KAANNON yhdella
+    kutsulla - ei tarvitse testata erikseen satoja ehdokkaita eika
+    pienentaa kuvaa. Rajattu SUBPIXEL_ALIGN_CROP_FRACTION-kokoiseen
+    keskitettyyn alueeseen (EI pienennetty, vain rajattu - resoluutio
+    sailyy) laskenta-ajan hillitsemiseksi (mitattu: taysi 1920x1080
+    ~130ms/frame olisi liikaa) - reunat (katsomo/mainostaulut, eivat
+    osa jaata) eivat muutenkaan auta kohdistuksessa, joten rajaus ei
+    heikenna tarkkuutta. EI enaa kiertoa (angle) - alkuperainen kierto-
+    korjaus oli juuri se osa joka VAHVISTI virheen etaisyyden mukana
+    (katso ENABLE_SUBPIXEL_ALIGNMENT:in kommentti); paneiliseurannan
+    RANSAC-affiinimuunnos jo korjaa suurimman osan kierrosta, joten
+    jaljella oleva sub-pikseli-virhe on kaytannossa lahes pelkkaa
+    translaatiota."""
 
     h, w = frame_u.shape[:2]
-    half = SUBPIXEL_ALIGN_PATCH_HALF_PX
-    margin = SUBPIXEL_ALIGN_PATCH_MARGIN_PX
+    cw = int(round(w * SUBPIXEL_ALIGN_CROP_FRACTION))
+    ch = int(round(h * SUBPIXEL_ALIGN_CROP_FRACTION))
+    x0 = (w - cw) // 2
+    y0 = (h - ch) // 2
 
-    px0 = max(0, anchor_px - half - margin)
-    px1 = min(w, anchor_px + half + margin)
-    py0 = max(0, anchor_py - half - margin)
-    py1 = min(h, anchor_py + half + margin)
+    key = (x0, y0, cw, ch)
+    hann = _hann_window_cache.get(key)
+    if hann is None:
+        hann = cv2.createHanningWindow((cw, ch), cv2.CV_32F)
+        _hann_window_cache[key] = hann
 
-    frame_patch = frame_u[py0:py1, px0:px1].astype(np.float32)
-    ref_patch = reference_u[py0:py1, px0:px1].astype(np.float32)
-    ph, pw = frame_patch.shape[:2]
+    ref_gray = _ref_gray_cache.get(key)
+    if ref_gray is None:
+        ref_crop = reference_u[y0:y0 + ch, x0:x0 + cw]
+        ref_gray = cv2.cvtColor(ref_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        _ref_gray_cache[key] = ref_gray
 
-    inner_h = ph - 2 * margin
-    inner_w = pw - 2 * margin
-    if inner_h <= 0 or inner_w <= 0:
-        return (0.0, 0.0, 0.0)
+    frame_crop = frame_u[y0:y0 + ch, x0:x0 + cw]
+    frame_gray = cv2.cvtColor(frame_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
 
-    center = (pw / 2.0, ph / 2.0)
+    (dx, dy), _response = cv2.phaseCorrelate(ref_gray, frame_gray, hann)
 
-    dx_range = np.arange(-SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX + 1e-9, SUBPIXEL_ALIGN_STEP_PX)
-    dy_range = np.arange(-SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX + 1e-9, SUBPIXEL_ALIGN_STEP_PX)
-    angle_range = np.arange(-SUBPIXEL_ALIGN_RANGE_DEG, SUBPIXEL_ALIGN_RANGE_DEG + 1e-9, SUBPIXEL_ALIGN_STEP_DEG)
+    # Turvaraja (kayttajan alkuperaisen SUBPIXEL_ALIGN_RANGE_PX:n
+    # hengessa): tama on tarkoitettu VAIN pieneksi jaljella olevaksi
+    # sub-pikseli-korjaukseksi, ei yleiseksi liikkeentunnistukseksi -
+    # jos koko kuvan vaihekorrelaatio jostain syysta antaisi ison
+    # arvon (esim. pelaaja peittaa suuren osan framesta), rajataan
+    # se pois sen sijaan etta sovelletaan virheellisen suurta kaantoa.
+    dx = float(np.clip(dx, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
+    dy = float(np.clip(dy, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
 
-    best = None
-    for angle in angle_range:
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        for dx in dx_range:
-            for dy in dy_range:
-                MM = M.copy()
-                MM[0, 2] += dx
-                MM[1, 2] += dy
-                warped = cv2.warpAffine(
-                    frame_patch, MM, (pw, ph),
-                    flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
-                )
-                iw = warped[margin:margin + inner_h, margin:margin + inner_w].astype(np.uint8)
-                ir = ref_patch[margin:margin + inner_h, margin:margin + inner_w].astype(np.uint8)
-                mask = _shadow_tolerant_background_mask(
-                    iw, ir, GRANITE_DIFF_THRESHOLD, SHADOW_V_DROP_MAX
-                )
-                cnt = int(mask.sum())
-                if best is None or cnt > best[0]:
-                    best = (cnt, dx, dy, angle)
-
-    return (best[1], best[2], best[3])
+    return (dx, dy, 0.0)
 
 def _scan_stone_candidates(frame_bgr, calib, pose, background_reference=None):
 
@@ -3639,27 +3631,14 @@ def run_pipeline(
 
                 if ENABLE_SUBPIXEL_ALIGNMENT:
 
-                    if "subpixel_anchor_px" not in live_state:
-                        anchor_cam = pose["R"] @ np.array([
-                            SUBPIXEL_ALIGN_ANCHOR_X_CM,
-                            SUBPIXEL_ALIGN_ANCHOR_Y_CM,
-                            0.0
-                        ]) + pose["t"]
-                        anchor_img = pose["K"] @ anchor_cam
-                        live_state["subpixel_anchor_px"] = (
-                            int(round(anchor_img[0] / anchor_img[2])),
-                            int(round(anchor_img[1] / anchor_img[2])),
-                        )
-
-                    anchor_px, anchor_py = live_state["subpixel_anchor_px"]
-                    align_dx, align_dy, align_angle = estimate_subpixel_alignment(
-                        frame_u, ref_undist_live, anchor_px, anchor_py
+                    align_dx, align_dy, _align_angle = estimate_subpixel_alignment(
+                        frame_u, ref_undist_live
                     )
 
-                    align_center = (width / 2.0, height / 2.0)
-                    M_align = cv2.getRotationMatrix2D(align_center, align_angle, 1.0)
-                    M_align[0, 2] += align_dx
-                    M_align[1, 2] += align_dy
+                    M_align = np.array(
+                        [[1.0, 0.0, align_dx], [0.0, 1.0, align_dy]],
+                        dtype=np.float64
+                    )
                     frame_u = cv2.warpAffine(
                         frame_u, M_align, (width, height),
                         flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
