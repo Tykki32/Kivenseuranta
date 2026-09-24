@@ -1193,6 +1193,21 @@ TRACK_MAX_SPEED_Y_CM_S = 450.0
 TRACK_MAX_SPEED_X_CM_S = 60.0
 TRACK_MAX_BACKWARD_CM = 100.0
 
+# YLARAJA nopeuspohjaiselle hakualueelle (havaittu VALTTAMATTOMAKSI
+# koko videon lapikaynnilla, katso keskusteluhistoria): half_range =
+# max_speed_cm_s * elapsed_s KASVAA RAJATTA pitkien miss-sarjojen
+# aikana (TRACK_LOST_GRACE_SECONDS=3.0s asti) - esim. 3s peitolla
+# half_range_y = 450*3 = 1350cm, mika teki ristikkohausta (ja sen ROI-
+# leikkeesta) valtavan hitaan (mitattu: SEURANTA-kutsu keskimaarin yli
+# 1s/kutsu koko videon lapikaynnissa, n. 15-20x hitaampi kuin ennen
+# tata ominaisuutta - videon lapikaynti olisi kestanyt yli 2h 5min
+# videolle). Katakkaa hakualue tahan, jotta pahin tapaus pysyy
+# hallittavana - jos kivi ei loydy edes tallä alueella pitkan peiton
+# jalkeen, se joka tapauksessa kadotetaan (TRACK_LOST_MAX_MISSES/
+# TRACK_LOST_GRACE_SECONDS) ja loytyy tarvittaessa uudelleen HAKU:n
+# kautta, joten rajaus ei heikenna luotettavuutta merkittavasti.
+TRACK_HALF_RANGE_MAX_CM = 100.0
+
 # ============================================================
 # "UUSI KIVI" -REKISTEROINNIN VAHVISTUS LIIKKEELLA (Testi_02_01,
 # havaittu oikean 5min Testivideo-julkaisun analyysissa): kivien
@@ -3758,8 +3773,12 @@ def run_pipeline(
                         dtype=np.float64
                     )
                     elapsed_seconds_arr = elapsed_frames_arr / fps
-                    half_range_y_arr = TRACK_MAX_SPEED_Y_CM_S * elapsed_seconds_arr
-                    half_range_x_arr = TRACK_MAX_SPEED_X_CM_S * elapsed_seconds_arr
+                    half_range_y_arr = np.minimum(
+                        TRACK_MAX_SPEED_Y_CM_S * elapsed_seconds_arr, TRACK_HALF_RANGE_MAX_CM
+                    )
+                    half_range_x_arr = np.minimum(
+                        TRACK_MAX_SPEED_X_CM_S * elapsed_seconds_arr, TRACK_HALF_RANGE_MAX_CM
+                    )
 
                     t_seuranta0 = time.time()
                     batch_results = stone_tracker.track_stones_batch(
