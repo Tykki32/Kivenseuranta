@@ -363,7 +363,46 @@ static std::vector<double> arangeVec(double start, double stop, double step)
 }
 
 
-static std::pair<cv::Point2d, double> gridSearchBest(
+// ============================================================
+// ENABLE_HAKU_PARALLEL_GRID (Testi_03_01, kayttajan pyynnosta -
+// profiloinnissa HAKU n. 103-167 ms/kutsu, YKSI kutsu joka
+// haku_interval_frames:s ruutu, EI mitaan sisaista rinnakkaistusta
+// aiemmin - ainoa rinnakkaisuus oli etta koko HAKU-kutsu ajettiin
+// omalla Python-taustasaikeellaan SEURANNAN kanssa samanaikaisesti).
+//
+// TAMA ristikkohaku (locateByGridSearchFast, kayttajan pyynnosta
+// tehtava TAYSIN EXHAUSTIIVISENA - EI early-stop-optimointia, EI
+// pienennetty hakuikkuna/askel - "vasta viimeinen keino") kay lapi
+// karkean vaiheen n. 15x31=465 (X,Y)-pistetta HAKU:n oletusasetuksilla
+// (SEARCH_X_HALF_WIDTH_CM=70, SEARCH_Y-vali 300cm, askel 10cm) + hienon
+// vaiheen n. 11x11=121 pistetta - JOKAINEN piste on TAYSIN RIIPPUMATON
+// (predictedHull+hullOverlapScore lukevat vain omat parametrinsa ja
+// muuttumattoman mask_crop:in, eivat mitaan jaettua muuttuvaa tilaa) -
+// siis TASMALLEEN samanlainen embarrassingly-parallel-tilanne kuin
+// track_stones_batch:in (SEURANTA) jo olemassaoleva per-kivi-
+// saiejako, tassa vain per-ruudukkopiste. Kaytetaan TASMALLEEN samaa,
+// jo validoitua kaavaa (atominen tyonvarastus-indeksi + per-saie oma
+// paras-tulos + lopuksi reduktio) - EI uutta, testaamatonta
+// synkronointimekanismia.
+//
+// NUMEERINEN VAIKUTUS: haku on TAYSIN exhaustiivinen (ei early-stop),
+// joten PARAS LOYDETTY PISTEMAARA (best_score) on AINA tasan sama kuin
+// sarjallisessa versiossa. AINOA mahdollinen ero: jos KAKSI (tai
+// useampi) pistetta saavat TASAN saman parhaan pistemaaran, se KUMPI
+// niista palautetaan voi erota sarjallisen (rivi kerrallaan) ja
+// rinnakkaisen (saiejako+reduktio-jarjestys) valilla - TASMALLEEN sama,
+// jo hyvaksytty tasapeli-poikkeama kuin locateByGridSearchTrackingFast:
+// issa (katso sen oma kommentti ylla) ja tiedoston alun kommentti
+// yleisesta liukulukuherkkyydesta. EI ole regressio - vain SEN kahden
+// yhta hyvan ehdokkaan valilla tehty valinta voi vaihtua.
+//
+// KAYTOSSA VAIN jos parallel=true JA ruudukossa on tarpeeksi pisteita
+// (n_total >= 8) etta saikeiden luonti/liittaminen kannattaa - pienella
+// ruudukolla (esim. hyvin kapea hienosaatovaihe) sarjallinen polku on
+// nopeampi eika maksa mitaan saieylikuormaa.
+// ============================================================
+
+static std::pair<cv::Point2d, double> gridSearchBestSerial(
     const std::vector<cv::Point3d>& local_pts_search,
     const cv::Mat& mask_crop, int off_x, int off_y,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
@@ -387,20 +426,90 @@ static std::pair<cv::Point2d, double> gridSearchBest(
 }
 
 
+static std::pair<cv::Point2d, double> gridSearchBest(
+    const std::vector<cv::Point3d>& local_pts_search,
+    const cv::Mat& mask_crop, int off_x, int off_y,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    const std::vector<double>& x_vals, const std::vector<double>& y_vals,
+    bool parallel = false, int max_workers = 0)
+{
+    size_t n_x = x_vals.size();
+    size_t n_y = y_vals.size();
+    size_t n_total = n_x * n_y;
+
+    if (!parallel || n_total < 8 || n_x == 0 || n_y == 0) {
+        return gridSearchBestSerial(
+            local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals
+        );
+    }
+
+    unsigned hw = std::thread::hardware_concurrency();
+    int worker_count = std::max(
+        1,
+        std::min(
+            (int)n_total,
+            max_workers > 0 ? max_workers : (int)(hw == 0 ? 4u : hw)
+        )
+    );
+
+    std::atomic<size_t> next_idx(0);
+    std::vector<double> thread_best_score((size_t)worker_count, -1.0);
+    std::vector<cv::Point2d> thread_best_xy(
+        (size_t)worker_count, cv::Point2d(x_vals[0], y_vals[0])
+    );
+
+    auto worker = [&](int wi) {
+        while (true) {
+            size_t idx = next_idx.fetch_add(1);
+            if (idx >= n_total)
+                break;
+            double X = x_vals[idx / n_y];
+            double Y = y_vals[idx % n_y];
+            auto hull = predictedHull(local_pts_search, X, Y, K, R, t);
+            double score = hullOverlapScore(mask_crop, hull, off_x, off_y);
+            if (score > thread_best_score[(size_t)wi]) {
+                thread_best_score[(size_t)wi] = score;
+                thread_best_xy[(size_t)wi] = cv::Point2d(X, Y);
+            }
+        }
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve((size_t)(worker_count - 1));
+    for (int i = 1; i < worker_count; ++i)
+        workers.emplace_back(worker, i);
+    worker(0); // kutsuva saie osallistuu itsekin tyohon - ei jouten odota
+    for (auto& w : workers)
+        w.join();
+
+    double best_score = -1.0;
+    cv::Point2d best_xy(x_vals[0], y_vals[0]);
+    for (int wi = 0; wi < worker_count; ++wi) {
+        if (thread_best_score[(size_t)wi] > best_score) {
+            best_score = thread_best_score[(size_t)wi];
+            best_xy = thread_best_xy[(size_t)wi];
+        }
+    }
+
+    return {best_xy, best_score};
+}
+
+
 static std::pair<cv::Point2d, double> locateByGridSearchFast(
     const std::vector<cv::Point3d>& local_pts_search,
     const cv::Mat& mask_crop, int off_x, int off_y,
     double x_center, double x_half_range, double y_center, double y_half_range,
     double coarse_step, double fine_step,
-    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t)
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    bool parallel = false, int max_workers = 0)
 {
     auto x_vals = arangeVec(x_center - x_half_range, x_center + x_half_range + 1e-6, coarse_step);
     auto y_vals = arangeVec(y_center - y_half_range, y_center + y_half_range + 1e-6, coarse_step);
-    auto best1 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals);
+    auto best1 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals, parallel, max_workers);
 
     auto x_vals2 = arangeVec(best1.first.x - coarse_step, best1.first.x + coarse_step + 1e-6, fine_step);
     auto y_vals2 = arangeVec(best1.first.y - coarse_step, best1.first.y + coarse_step + 1e-6, fine_step);
-    auto best2 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2);
+    auto best2 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2, parallel, max_workers);
 
     return best2;
 }
@@ -2242,7 +2351,8 @@ static py::list track_stones_batch(
     double score_threshold,
     double R_max_cm, double H_total_cm, double ring_r_frac_guess,
     double max_backward_cm,
-    double diff_threshold = 30.0)
+    double diff_threshold = 30.0,
+    int reserved_threads = 0)
 {
     auto buf = frame_u.request();
     if (buf.ndim != 3 || buf.shape[2] != 3)
@@ -2291,7 +2401,15 @@ static py::list track_stones_batch(
 
         std::atomic<int> next_idx(0);
         unsigned hw = std::thread::hardware_concurrency();
-        int worker_count = std::max(1, std::min(n_stones, (int)(hw == 0 ? 4u : hw)));
+        int hw_budget = (int)(hw == 0 ? 4u : hw) - std::max(0, reserved_threads);
+        // ENABLE_SEURANTA_HAKU_THREAD_SPLIT (Testi_03_01, ks. main.py:n
+        // lipun kommentti): reserved_threads > 0 kun main.py TIETAA tama
+        // ruutu kaynnistaa myos HAKU:n (search_new_stone) SAMANAIKAISESTI
+        // taustasaikeella - jattaa sille sovitun maaran ytimia sen sijaan
+        // etta molemmat riippumattomasti yrittaisivat varata KAIKKI
+        // hardware_concurrency():n ytimet samaan aikaan (ylikuormitus,
+        // EI vaaraa/turvallisuusongelmaa, vain hukattua nopeutta).
+        int worker_count = std::max(1, std::min(n_stones, std::max(1, hw_budget)));
 
         auto worker = [&]() {
             while (true) {
@@ -2307,9 +2425,10 @@ static py::list track_stones_batch(
         };
 
         std::vector<std::thread> workers;
-        workers.reserve((size_t)worker_count);
-        for (int i = 0; i < worker_count; ++i)
+        workers.reserve((size_t)(worker_count - 1));
+        for (int i = 1; i < worker_count; ++i)
             workers.emplace_back(worker);
+        worker(); // kutsuva saie osallistuu itsekin tyohon - ei jouten odota join():ssa
         for (auto& w : workers)
             w.join();
 
@@ -2351,7 +2470,8 @@ static StoneUpdateResult searchNewStoneOne(
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     double x_center, double x_half_width, double y_center, double y_half_range,
     double coarse_step_cm, double fine_step_cm, double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    bool parallel_grid_search, int max_grid_workers)
 {
     int frame_w = frame_mat.cols, frame_h = frame_mat.rows;
 
@@ -2376,7 +2496,8 @@ static StoneUpdateResult searchNewStoneOne(
     auto best = locateByGridSearchFast(
         local_pts_search, mask_search, 0, 0,
         x_center, x_half_width, y_center, y_half_range,
-        coarse_step_cm, fine_step_cm, K, R, t
+        coarse_step_cm, fine_step_cm, K, R, t,
+        parallel_grid_search, max_grid_workers
     );
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
@@ -2441,7 +2562,9 @@ static py::dict search_new_stone(
     double x_center, double x_half_width, double y_center, double y_half_range,
     double coarse_step_cm, double fine_step_cm, double score_threshold,
     double R_max_cm, double H_total_cm, double ring_r_frac_guess,
-    double diff_threshold = 30.0)
+    double diff_threshold = 30.0,
+    bool parallel_grid_search = true,
+    int max_grid_workers = 0)
 {
     auto buf = frame_u.request();
     if (buf.ndim != 3 || buf.shape[2] != 3)
@@ -2480,11 +2603,21 @@ static py::dict search_new_stone(
         // remap - katso git-historia).
         ScopedSingleThreadedOpenCV single_threaded_opencv_guard;
 
+        // ENABLE_HAKU_PARALLEL_GRID / max_grid_workers (Testi_03_01, ks.
+        // gridSearchBest:in yla puolen kommentti): main.py paattaa
+        // max_grid_workers:in (0 = kayta koko hardware_concurrency()) -
+        // main.py TIETAA jo talla framella ajetaanko SEURANTA (track_
+        // stones_batch) SAMANAIKAISESTI, joten se voi jakaa ydinmaaran
+        // jarkevasti naiden kahden rinnakkaisen C++-kutsun kesken (ks.
+        // ENABLE_SEURANTA_HAKU_THREAD_SPLIT main.py:ssa) sen sijaan etta
+        // molemmat riippumattomasti yrittaisivat varata KAIKKI ytimet
+        // samaan aikaan.
         result = searchNewStoneOne(
             frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
             x_center, x_half_width, y_center, y_half_range,
             coarse_step_cm, fine_step_cm, score_threshold,
-            R_max_cm, H_total_cm, ring_r_frac_guess
+            R_max_cm, H_total_cm, ring_r_frac_guess,
+            parallel_grid_search, max_grid_workers
         );
     }
 
@@ -2715,7 +2848,8 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("score_threshold"),
           py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
           py::arg("max_backward_cm"),
-          py::arg("diff_threshold") = 30.0);
+          py::arg("diff_threshold") = 30.0,
+          py::arg("reserved_threads") = 0);
 
     m.def("search_new_stone", &search_new_stone,
           "Uuden kiven haku kiinteältä vyohykkeelta (HAKU), koko frame",
@@ -2727,7 +2861,9 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
           py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
-          py::arg("diff_threshold") = 30.0);
+          py::arg("diff_threshold") = 30.0,
+          py::arg("parallel_grid_search") = true,
+          py::arg("max_grid_workers") = 0);
 
     m.def("scan_stone_candidates", &scan_stone_candidates,
           "Kivikandidaattien skannaus yhdesta framesta (3D-kiviprofiilin "
