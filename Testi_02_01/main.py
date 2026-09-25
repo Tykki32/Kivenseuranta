@@ -4370,6 +4370,32 @@ def run_pipeline(
                             for s in active_stones
                         )
 
+                        # --------------------------------------------
+                        # DIAGNOSTIIKKA (kayttajan raportoima bugi, katso
+                        # keskusteluhistoria): HAKU tunnisti PELAAJAN/
+                        # LAKAISIJAN kiveksi (pelkkaan muotoon/kokoon
+                        # perustuva C++-yhteissovitus ei tunne varia).
+                        # Tulostetaan TASSA vain diagnostiikkana (ei viela
+                        # hylkaa mitaan) uuden ehdokkaan varipoikkeama
+                        # kivivarireferenssiin - kaytetaan naiden lukujen
+                        # keraamiseen sopivan hylkayskynnyksen maarittamiseksi
+                        # (katso HAKU_COLOR_MAX_DIFF alempana taman
+                        # validoinnin jalkeen).
+                        # --------------------------------------------
+
+                        if os.environ.get("HAKU_COLOR_DEBUG") and live_state.get("color_reference") is not None:
+                            haku_frame_u_f64 = frame_u.astype(np.float64)
+                            haku_median_diff = color_match_median_diff(
+                                haku_frame_u_f64, local_pts_body, pose,
+                                bx, by, live_state["color_reference"],
+                                width, height
+                            )
+                            print(
+                                f"[HAKU_COLOR_DEBUG] frame={frame_index} "
+                                f"ehdokas ({bx:.1f},{by:.1f}) "
+                                f"varidiff={haku_median_diff}"
+                            )
+
                         if not already_tracked:
 
                             stone_id = next_stone_id
