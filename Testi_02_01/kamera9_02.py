@@ -66,12 +66,12 @@ k8 = k9.k8
 
 
 # ============================================================
-# HAKUALUE ("kauempi paa, keskiviivasta +-70cm, hogline...hogline+3m")
+# HAKUALUE ("kauempi paa, keskiviivasta +-70cm, hogline-1m...hogline+3m")
 #
 # Kayttajan pyynnosta kavennettu/kohdennettu (katso keskusteluhistoria):
 # AIEMMIN hogline...pesan takareuna (tangentti 12-jalkaisen renkaan
 # taakse, HOUSE_RADIUS_CM paan pesan keskipisteesta poispain hoglinesta),
-# NYT hogline...hogline+3m - koska kivi ylittaa hoglinen aina heiton
+# SITTEN hogline...hogline+3m - koska kivi ylittaa hoglinen aina heiton
 # alkupaassa, 3m riittaa kattamaan sen EIKA alue enaa ulotu asti pesan
 # kohdalle (jossa pelaajat/pyyhkijat useimmin seisovat/kavelevat, katso
 # ENABLE_SHADOW_TOLERANT_STABILIZATION-tyon empiirinen havainto). X-
@@ -79,10 +79,15 @@ k8 = k9.k8
 # paa (FAR_*) koska talla videolla kivi heitetaan lahempaa hoglinea
 # kohti sita - katso kamera9_01.py:n track_stone_in_video-kommentti
 # samasta videosta.
+#
+# NYT (kayttajan pyynnosta) kasvatettu hieman TAAKSEPAIN: hogline-1m...
+# hogline+3m - alaraja ulottuu 100cm hoglinen TAAKSE (kohti kaukaista
+# pesaa) kattaakseen myos kiven joka on juuri ja juuri ylittanyt
+# hoglinen jo ennen ensimmaista hakutarkistusframea.
 # ============================================================
 
 SEARCH_X_HALF_WIDTH_CM = 70.0
-SEARCH_Y_MIN_CM = k8.FAR_HOGLINE_Y_CM
+SEARCH_Y_MIN_CM = k8.FAR_HOGLINE_Y_CM - 100.0
 SEARCH_Y_MAX_CM = k8.FAR_HOGLINE_Y_CM + 300.0
 
 # Karkea->hieno ristikkohaku (sama periaate kuin kamera8_01.py:n
