@@ -928,7 +928,12 @@ GRANITE_DIFF_THRESHOLD = 10.0
 # ============================================================
 ENABLE_SHADOW_TOLERANT_STABILIZATION = True
 
-SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita taustaksi/varjoksi
+# Kayttajan kanssa kasin lasin 4:15/4:57-frameilla (MAH00014) testatut
+# raja-arvot - katso keskusteluhistoria: -3<v_drop<50 antoi hieman
+# paremman (pienemman fg-vuodon) tuloksen kuin alkuperainen 0<v_drop<=30
+# SAMALLA color_diff<10-arvolla molemmissa testatuissa frameissa.
+SHADOW_V_DROP_MIN = -3.0  # kuinka paljon V saa NOUSTA (negatiivinen pudotus) ja silti tulkita taustaksi
+SHADOW_V_DROP_MAX = 50.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita taustaksi/varjoksi
 
 # ============================================================
 # JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
@@ -2161,11 +2166,14 @@ def detect_panels_from_reference(gray, reference_panels, frame_bgr=None,
 # ============================================================
 
 def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
-                                      shadow_v_drop_max):
+                                      shadow_v_drop_max, shadow_v_drop_min=0.0):
     """ENABLE_SHADOW_TOLERANT_STABILIZATION:in ydinsaanto (katso sen
     kommentti): tausta = (tavallinen pieni erotus) TAI (saturaatio
-    lahes sama mutta V pudonnut korkeintaan shadow_v_drop_max - eli
-    varjo, ei aito objekti)."""
+    lahes sama mutta V-pudotus valilla (shadow_v_drop_min,
+    shadow_v_drop_max) - eli varjo, ei aito objekti). shadow_v_drop_min
+    voi olla negatiivinen (sallii pienen V:n NOUSUN silti taustaksi -
+    kayttajan kanssa kasin testattu, katso SHADOW_V_DROP_MIN:in
+    kommentti)."""
 
     diff = cv2.absdiff(frame_bgr, reference_bgr)
     diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
@@ -2174,7 +2182,7 @@ def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
     frame_hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV).astype(np.int16)
     ref_hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV).astype(np.int16)
     v_drop = ref_hsv[..., 2] - frame_hsv[..., 2]
-    shadow_mask = (v_drop > 0) & (v_drop <= shadow_v_drop_max)
+    shadow_mask = (v_drop > shadow_v_drop_min) & (v_drop < shadow_v_drop_max)
 
     return background_mask | shadow_mask
 
@@ -2186,7 +2194,8 @@ def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
 
     if ENABLE_SHADOW_TOLERANT_STABILIZATION:
         background_mask = _shadow_tolerant_background_mask(
-            frame_bgr, reference_bgr, diff_threshold, SHADOW_V_DROP_MAX
+            frame_bgr, reference_bgr, diff_threshold, SHADOW_V_DROP_MAX,
+            SHADOW_V_DROP_MIN
         )
     else:
         diff = cv2.absdiff(frame_bgr, reference_bgr)
