@@ -946,7 +946,7 @@ SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 # huomio: kuvan pienentaminen tuhoaisi juuri sub-pikseli-tarkkuuden
 # jota haetaan). cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio)
 # laskee koko framen sub-pikseli-tarkan TRANSLAATION yhdella kutsulla -
-# ei enaa ristikkohakua eika kiertoa (katso estimate_subpixel_alignment).
+# ei enaa ristikkohakua eika kiertoa (katso _phase_correlate_full_frame).
 #
 # PAALLA (kayttajan pyynnosta): validoitu koko videon lapikaynnilla
 # (SUBPIXEL_ALIGN_CROP_FRACTION=0.67:lla) - ei enaa karkaavia haamuja,
@@ -955,14 +955,25 @@ SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 # oma rivi. Kayttajan pyynnosta SUBPIXEL_ALIGN_CROP_FRACTION nostettu
 # takaisin 1.0:aan (koko rata) taman validoinnin jalkeen - EI VIELA
 # uudelleenvalidoitu koko videon lapikaynnilla taysikokoisena.
+#
+# ENABLE_SUBPIXEL_ALIGNMENT-LIPPU POISTETTU (kayttajan havainto + oma
+# empiirinen vahvistus, katso keskusteluhistoria "loppuvideon" PIKSELI-
+# TARKKA SUORA STABILOINTI -kommentin kohdalla): talla lipulla ohjattu
+# jalkikorjaus (estimate_subpixel_alignment alla) mittasi ALKUPERAISESTI
+# pienen residuaalin epatarkan paneilipohjaisen stabiloinnin PAALLE -
+# nyt kun paastabilointi TEKEE JO TASMALLEEN saman suoran moodikuva-
+# vertailun, jalkikorjaus vain toisti saman mittauksen ja kasvatti
+# virhetta (havaittu: taustanvaimennuksen reunavuoto +54% jalkikorjauksen
+# kanssa vs. ilman). estimate_subpixel_alignment/_phase_correlate_full_
+# frame jataan silti talteen - JALKIMMAINEN on edelleen KAYTOSSA "loppu-
+# videon" paastabiloinnin OMANA ytimena (katso sen kaytto alempana).
 # ============================================================
-ENABLE_SUBPIXEL_ALIGNMENT = True
 
-SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso estimate_subpixel_alignment (kayttajan pyynnosta 10x, oli 1.0)
+SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso _phase_correlate_full_frame (kayttajan pyynnosta 10x, oli 1.0)
 
 # Kuinka suuri, kuvan keskelle keskitetty osuus (leveys JA korkeus)
 # kaytetaan vaihekorrelaatioon - EI pienennys, vain RAJAUS (resoluutio
-# sailyy taysimittaisena) - katso estimate_subpixel_alignment. Kayttajan
+# sailyy taysimittaisena) - katso _phase_correlate_full_frame. Kayttajan
 # pyynnosta 1.0 (koko rata/koko kuva, EI vain keskustaa) - nopeuden
 # hillitsemiseksi aiemmin kokeiltu 0.67 (~38ms/ruutu) hylattiin, koska
 # stabiloinnin pitaa kattaa koko radan, ei vain kuvan keskiosaa. Koko
@@ -2191,15 +2202,13 @@ def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
 _hann_window_cache = {}
 
 
-_ref_gray_cache = {}
-
-
 def _phase_correlate_full_frame(gray_a_full, gray_b_full):
     """Yhteinen vaihekorrelaatio-ydin (kayttaa SUBPIXEL_ALIGN_CROP_
     FRACTION-rajausta + valimuistitettua Hanning-ikkunaa) - kaytetaan
-    seka estimate_subpixel_alignment:issa (frame vs. moodikuva) etta
-    elavan seurannan KETJUTETYSSA framesta-frameen -stabiloinnissa
-    (katso PIKSELITARKKA STABILOINTI -kommentti run_pipeline:ssa).
+    "loppuvideon" (profiiliskannaus + elava seuranta) PIKSELITARKASSA
+    SUORASSA STABILOINNISSA (katso sen kommentti run_pipeline:ssa):
+    jokainen frame verrataan suoraan moodikuvareferenssiin taman
+    funktion kautta.
     gray_a_full/gray_b_full: TAYSRESOLUUTIOISET harmaasavykuvat (uint8
     tai float32). Palauttaa (dx,dy): siirto joka pitaa lisata jotta
     gray_b linjautuisi gray_a:n kanssa, SUBPIXEL_ALIGN_RANGE_PX:aan
@@ -2226,44 +2235,6 @@ def _phase_correlate_full_frame(gray_a_full, gray_b_full):
     dy = float(np.clip(dy, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
     return dx, dy
 
-
-def estimate_subpixel_alignment(frame_u, reference_u):
-    """ENABLE_SUBPIXEL_ALIGNMENT:in kohdistushaku - katso sen kommentti
-    taman tiedoston alkupaassa. TOINEN VERSIO (kayttajan pyynnosta,
-    katso keskusteluhistoria): ENSIMMAINEN versio hyodynsi vain pienta
-    paikallista aluetta, mika osoittautui EPAEDUSTAVAKSI koko kuvalle.
-    Kayttaja ehdotti koko naytön pikseleiden vertaamista moodikuvaan -
-    mutta ristikkohaku (satoja warpAffine-kutsuja) koko taysresoluutio-
-    kuvalle olisi liian hidas, ja kuvan PIENENTAMINEN tuhoaisi juuri
-    sen sub-pikseli-tarkkuuden jota haetaan (kayttajan huomio).
-    Ratkaisu: cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio) laskee
-    TAYSRESOLUUTIOISEN kuvan sub-pikseli-tarkan KAANNON yhdella
-    kutsulla - ei tarvitse testata erikseen satoja ehdokkaita eika
-    pienentaa kuvaa. EI enaa kiertoa (angle) - alkuperainen kierto-
-    korjaus oli juuri se osa joka VAHVISTI virheen etaisyyden mukana
-    (katso ENABLE_SUBPIXEL_ALIGNMENT:in kommentti); paneiliseurannan
-    RANSAC-affiinimuunnos jo korjaa suurimman osan kierrosta, joten
-    jaljella oleva sub-pikseli-virhe on kaytannossa lahes pelkkaa
-    translaatiota."""
-
-    key = reference_u.shape[:2]
-    ref_gray = _ref_gray_cache.get(key)
-    if ref_gray is None:
-        ref_gray = cv2.cvtColor(reference_u, cv2.COLOR_BGR2GRAY)
-        _ref_gray_cache[key] = ref_gray
-
-    frame_gray = cv2.cvtColor(frame_u, cv2.COLOR_BGR2GRAY)
-
-    # Turvaraja (kayttajan alkuperaisen SUBPIXEL_ALIGN_RANGE_PX:n
-    # hengessa - katso _phase_correlate_full_frame): tama on tarkoitettu
-    # VAIN pieneksi jaljella olevaksi sub-pikseli-korjaukseksi, ei
-    # yleiseksi liikkeentunnistukseksi - jos koko kuvan vaihekorrelaatio
-    # jostain syysta antaisi ison arvon (esim. pelaaja peittaa suuren
-    # osan framesta), se rajataan pois sen sijaan etta sovelletaan
-    # virheellisen suurta kaantoa.
-    dx, dy = _phase_correlate_full_frame(ref_gray, frame_gray)
-
-    return (dx, dy, 0.0)
 
 def _scan_stone_candidates(frame_bgr, calib, pose, background_reference=None):
 
@@ -3053,12 +3024,10 @@ def run_pipeline(
     total_stabilize_compute_time = 0.0
     total_warp_remap_time = 0.0
 
-    # ENABLE_SUBPIXEL_ALIGNMENT / ENABLE_SHADOW_TOLERANT_STABILIZATION
-    # (kayttajan huomio: nama EIVAT olleet mukana "Yhteensa mitattu"
-    # -summassa aiemmin, vaikka molemmat ajetaan joka elavan seurannan
-    # framella - raportti siis ALIARVIOI kokonaisajan kun jompikumpi on
-    # paalla).
-    total_subpixel_align_time = 0.0
+    # ENABLE_SHADOW_TOLERANT_STABILIZATION (kayttajan huomio: tama EI
+    # ollut mukana "Yhteensa mitattu" -summassa aiemmin, vaikka se
+    # ajetaan joka elavan seurannan framella - raportti siis ALIARVIOI
+    # kokonaisajan kun se on paalla).
     total_shadow_suppress_time = 0.0
 
     executor = ThreadPoolExecutor(
@@ -3773,34 +3742,30 @@ def run_pipeline(
                 local_pts_search = live_state["local_pts_search"]
 
                 # --------------------------------------------
-                # ENABLE_SUBPIXEL_ALIGNMENT / ENABLE_SHADOW_TOLERANT_
-                # STABILIZATION (katso niiden kommentit taman tiedoston
-                # alkupaassa) - kaksi ERILLISTA lippua, HELPPO POISTAA
-                # KUMPIKIN itsenaisesti. HUOM: frame_u ITSE (varitarkistus,
-                # debug-video) EI koskaan taustanvaimenneta tassa - vain
-                # erillinen frame_u_for_tracking-kopio, jota kaytetaan
+                # ENABLE_SHADOW_TOLERANT_STABILIZATION (katso sen kommentti
+                # taman tiedoston alkupaassa). HUOM: frame_u ITSE (vari-
+                # tarkistus, debug-video) EI koskaan taustanvaimenneta tassa
+                # - vain erillinen frame_u_for_tracking-kopio, jota kaytetaan
                 # VAIN HAKU/SEURANTA-kutsuissa alla.
+                #
+                # ENABLE_SUBPIXEL_ALIGNMENT:in erillinen jalkikorjaus (tama
+                # kommenttiblokki oli aiemmin tassa) POISTETTU (kayttajan
+                # havainto + oma empiirinen vahvistus, katso keskustelu-
+                # historia): kayttaja huomasi etta jaa/katto/seinat eivat
+                # olleet kaytannossa taysin valkoisia debug-videossa - oma
+                # testi paljasti etta tama jalkikorjaus (alunperin suunni-
+                # teltu PIENEKSI hienosaadoksi epatarkan paneilipohjaisen
+                # stabiloinnin paalle) on NYT TARPEETON JA HAITALLINEN, koska
+                # PAASTABILOINTI (stabilization_matrix, katso PIKSELITARKKA
+                # SUORA STABILOINTI ylempana) tekee jo TASMALLEEN saman
+                # suoran moodikuvavertailun - jalkikorjaus vain mittasi
+                # lahes saman asian UUDELLEEN ja lisasi sen PAALLE (havaittu:
+                # jalkikorjaus -1.7px samaan suuntaan kuin paastabiloinnin jo
+                # tekema -0.89px korjaus), mika KASVATTI reunapikselien
+                # vuotoa taustanvaimennuksessa 115599:sta 178113:een (+54%)
+                # samalla testiframella, ei pienentanyt sita.
                 # --------------------------------------------
                 ref_undist_live = calib_result["calib"]["frame_undistorted"]
-
-                if ENABLE_SUBPIXEL_ALIGNMENT:
-
-                    t_align0 = time.perf_counter()
-
-                    align_dx, align_dy, _align_angle = estimate_subpixel_alignment(
-                        frame_u, ref_undist_live
-                    )
-
-                    M_align = np.array(
-                        [[1.0, 0.0, align_dx], [0.0, 1.0, align_dy]],
-                        dtype=np.float64
-                    )
-                    frame_u = cv2.warpAffine(
-                        frame_u, M_align, (width, height),
-                        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
-                    )
-
-                    total_subpixel_align_time += time.perf_counter() - t_align0
 
                 if ENABLE_SHADOW_TOLERANT_STABILIZATION:
                     t_shadow0 = time.perf_counter()
@@ -4432,9 +4397,8 @@ def run_pipeline(
                 print(
                     f"  muu (ei viela optimoitu): "
                     f"read(video) {(total_read_time / processed) * 1000:.2f} ms/ruutu | "
-                    f"stabilointi-RANSAC {(total_stabilize_compute_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"stabilointimatriisi {(total_stabilize_compute_time / processed) * 1000:.2f} ms/ruutu | "
                     f"warpAffine+remap(koko frame) {(total_warp_remap_time / processed) * 1000:.2f} ms/ruutu | "
-                    f"sub-pikseli-kohdistus {(total_subpixel_align_time / processed) * 1000:.2f} ms/ruutu | "
                     f"varjosuodatus {(total_shadow_suppress_time / processed) * 1000:.2f} ms/ruutu"
                 )
 
@@ -4487,15 +4451,13 @@ def run_pipeline(
           "(koko videon yli keskiarvoistettuna)")
     print(f"read(video): {total_read_time:.2f}s yhteensa, "
           f"{(total_read_time / processed_frames) * 1000:.2f} ms/ruutu")
-    print(f"stabilointi-RANSAC (cv2.estimateAffinePartial2D+mediaani): "
+    print(f"stabilointimatriisin laskenta (paneili-RANSAC moodikuvavaiheessa, "
+          f"suora vaihekorrelaatio moodikuvaan loppuvideolla): "
           f"{total_stabilize_compute_time:.2f}s yhteensa, "
           f"{(total_stabilize_compute_time / processed_frames) * 1000:.2f} ms/ruutu")
     print(f"warpAffine+remap (KOKO frame, joka elavan seurannan ruutu): "
           f"{total_warp_remap_time:.2f}s yhteensa, "
           f"{(total_warp_remap_time / processed_frames) * 1000:.2f} ms/ruutu")
-    print(f"sub-pikseli-kohdistus (ENABLE_SUBPIXEL_ALIGNMENT): "
-          f"{total_subpixel_align_time:.2f}s yhteensa, "
-          f"{(total_subpixel_align_time / processed_frames) * 1000:.2f} ms/ruutu")
     print(f"varjonsietoinen taustanvaimennus (ENABLE_SHADOW_TOLERANT_STABILIZATION): "
           f"{total_shadow_suppress_time:.2f}s yhteensa, "
           f"{(total_shadow_suppress_time / processed_frames) * 1000:.2f} ms/ruutu")
@@ -4503,7 +4465,7 @@ def run_pipeline(
         total_read_time + total_stabilize_compute_time
         + total_warp_remap_time + total_gray_time
         + total_tracking_time + total_transform_time
-        + total_subpixel_align_time + total_shadow_suppress_time
+        + total_shadow_suppress_time
     )
     print(f"Yhteensa HAKU+SEURANTA+muu mitattu: "
           f"{((total_haku_time + total_seuranta_time + muu_yhteensa) / processed_frames) * 1000:.2f} "
