@@ -839,6 +839,12 @@ ENABLE_MODE_FILTER = False
 # ajoissa, aseta True vain debugatessa. Voidaan myos kytkea paalle
 # dynaamisesti komentorivilta TATA VAKIOTA muokkaamatta: aja
 # "python main.py --debug" (tai "-d") - katso if __name__=="__main__".
+#
+# Kayttajan pyynnosta: debug-videoon piirretaan moodikuvalla suodatettu
+# frame_u_for_tracking (se mita HAKU/SEURANTA oikeasti kayttaa
+# tunnistukseen - katso ENABLE_SHADOW_TOLERANT_STABILIZATION), EI
+# alkuperaista frame_u:ta - nain nakee suoraan mita tunnistus itse
+# asiassa "nakee".
 DEBUG_SAVE_TRACKING_VIDEO = False
 
 WALL_OFFSET = 40
@@ -1102,15 +1108,28 @@ def _thread_split_budgets():
 # jota haetaan). cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio)
 # laskee koko framen sub-pikseli-tarkan TRANSLAATION yhdella kutsulla -
 # ei enaa ristikkohakua eika kiertoa (katso estimate_subpixel_alignment).
+#
+# PAALLA (kayttajan pyynnosta): validoitu koko videon lapikaynnilla
+# (SUBPIXEL_ALIGN_CROP_FRACTION=0.67:lla) - ei enaa karkaavia haamuja,
+# kaikki viisi tunnistettavissa olevaa oikeaa heittoa loytyivat. HUOM:
+# lisaa merkittavasti laskenta-aikaa - katso NOPEUSSEURANTA-raportin
+# oma rivi. Kayttajan pyynnosta SUBPIXEL_ALIGN_CROP_FRACTION nostettu
+# takaisin 1.0:aan (koko rata) taman validoinnin jalkeen - EI VIELA
+# uudelleenvalidoitu koko videon lapikaynnilla taysikokoisena.
 # ============================================================
-ENABLE_SUBPIXEL_ALIGNMENT = False
+ENABLE_SUBPIXEL_ALIGNMENT = True
 
-SUBPIXEL_ALIGN_RANGE_PX = 1.0  # turvaraja - katso estimate_subpixel_alignment
+SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso estimate_subpixel_alignment (kayttajan pyynnosta 10x, oli 1.0)
 
 # Kuinka suuri, kuvan keskelle keskitetty osuus (leveys JA korkeus)
 # kaytetaan vaihekorrelaatioon - EI pienennys, vain RAJAUS (resoluutio
-# sailyy taysimittaisena) - katso estimate_subpixel_alignment.
-SUBPIXEL_ALIGN_CROP_FRACTION = 0.67
+# sailyy taysimittaisena) - katso estimate_subpixel_alignment. Kayttajan
+# pyynnosta 1.0 (koko rata/koko kuva, EI vain keskustaa) - nopeuden
+# hillitsemiseksi aiemmin kokeiltu 0.67 (~38ms/ruutu) hylattiin, koska
+# stabiloinnin pitaa kattaa koko radan, ei vain kuvan keskiosaa. Koko
+# kuvan kaytto maksaa enemman (mitattu taysikokoisena ~130-140ms/ruutu
+# tassa Linux-diagnoosiymparistossa).
+SUBPIXEL_ALIGN_CROP_FRACTION = 1.0
 
 STABILIZATION_MEDIAN_FRAMES = 20
 
@@ -1224,10 +1243,15 @@ PROFILE_R_MAX_MAX_CM = 20.0
 # = kaukainen hogline...hogline+3m, k92.SEARCH_X_HALF_WIDTH_CM=
 # +-70cm keskiviivasta) - ei enaa tarvitse luottaa hitaaseen, harjasta
 # helposti hairiintyvaan vapaamuotoiseen liikkeentunnistukseen koko
-# radalla. Siksi PROFILE_MIN_ACCEPTED_STONES=1: skannaus pysahtyy heti
-# ensimmaisen riittavan profiilin loydyttya, ja loput heitot jaavat
-# ELAVAN SEURANNAN (nopeamman, tarkemman) vastuulle.
-PROFILE_MIN_ACCEPTED_STONES = 1
+# radalla.
+#
+# PROFILE_MIN_ACCEPTED_STONES=2 (kayttajan pyynnosta, nostettu 1:sta):
+# profiili sovitetaan YHTEISESTI kaikkien hyvaksyttyjen kivien havain-
+# noista (katso fit_stone_profile) - kahdella kivella yhdella sijasta
+# profiili ei ylisovitu yhden kiven omiin (esim. kulman/valaistuksen
+# aiheuttamiin) satunnaisvirheisiin, joten se yleistyy paremmin MUIHIN
+# kiviin joita ELAVA SEURANTA sen jalkeen kayttaa.
+PROFILE_MIN_ACCEPTED_STONES = 2
 
 # Testatessa oikealla videolla loytyi KAKSI ongelmaa jotka nama
 # kynnysarvot/mekanismit korjaavat:
@@ -1286,16 +1310,20 @@ STONE_SCAN_COOLDOWN_FRAMES = 150   # 6s 25fps:lla
 # ============================================================
 # ELAVA MONI-KIVEN SEURANTA + CSV
 #
-# Kayttajan pyynnosta: max 4 kiveä samanaikaisesti, yksinkertainen
-# lahin-ehdokas-per-kivi -logiikka riittaa (kivet lahekkain vasta
-# pysahtymisen jalkeen, jolloin ID:lla ei ole enaa merkitysta).
-# Uusien kivien HAKU kaytta kamera9_02.py:n kiinteaa paata-rajattua
-# vyohyketta (SEARCH_X/Y_*, k92-moduulista) - TOISIN kuin 3D-profiilin
-# koko-radan-skannaus (Task 3): kivet HEITETAAN aina samaan suuntaan/
-# paahan, joten kiinteä HAKU-vyohyke on jarkeva/tehokas tassa.
+# Kayttajan pyynnosta (katso keskusteluhistoria - alunperin 4, nostettu
+# 8:aan): riittavasti tilaa samanaikaisesti aktiivisille kiville, myos
+# silloin kun jokin (esim. paikallaan pysyva/hoglinen tuntumassa oleva)
+# kohde tukkii yhden paikan pitkaksi aikaa - ei enaa estä uusien aitojen
+# heittojen rekisteroitymista yhtä helposti. Yksinkertainen lahin-
+# ehdokas-per-kivi -logiikka riittaa (kivet lahekkain vasta pysahtymisen
+# jalkeen, jolloin ID:lla ei ole enaa merkitysta). Uusien kivien HAKU
+# kaytta kamera9_02.py:n kiinteaa paata-rajattua vyohyketta (SEARCH_X/
+# Y_*, k92-moduulista) - TOISIN kuin 3D-profiilin koko-radan-skannaus
+# (Task 3): kivet HEITETAAN aina samaan suuntaan/paahan, joten kiinteä
+# HAKU-vyohyke on jarkeva/tehokas tassa.
 # ============================================================
 
-MAX_CONCURRENT_STONES = 4
+MAX_CONCURRENT_STONES = 8
 
 # ============================================================
 # SEURANNAN SIETOKYKY HETKELLISELLE TAYDELLE PEITOLLE (Testi_02_01,
@@ -1336,9 +1364,10 @@ TRACK_LOST_GRACE_SECONDS = 3.0
 # kauan kivesta on todellisuudessa aikaa edellisesta havainnosta.
 # Koska oikea curling-kivi EI VOI liikkua nopeammin kuin fysikaalinen
 # yla­raja (arvioitu turvamarginaalilla: Y-suunnassa, radan pituus-
-# suunnassa, TRACK_MAX_SPEED_Y_CM_S=4.5m/s - reilusti yli tyypillisen
-# heittonopeuden ~2.5-3m/s; X-suunnassa, sivuttaisliike/curl, paljon
-# hitaampaa, TRACK_MAX_SPEED_X_CM_S=0.6m/s), hakualue voidaan laskea
+# suunnassa, TRACK_MAX_SPEED_Y_CM_S - kayttajan helposti muutettavissa
+# alla; X-suunnassa, sivuttaisliike/curl, paljon hitaampaa - JOHDETTU
+# suoraan Y-nopeudesta, TRACK_MAX_SPEED_X_FRACTION_OF_Y=10%:na siita,
+# EI oma erillinen vakionsa), hakualue voidaan laskea
 # SUORAAN nopeusrajasta JOKA framella JOKAISELLE kivelle erikseen:
 #   half_range = max_speed_cm_s * (misses+1) / fps
 # ("misses+1" framea sitten oli viimeisin VAHVISTETTU sijainti, koska
@@ -1359,8 +1388,14 @@ TRACK_LOST_GRACE_SECONDS = 3.0
 # stone_tracker.cpp) sen sijaan etta hyvaksytaan virheellinen hyppy.
 # ============================================================
 
-TRACK_MAX_SPEED_Y_CM_S = 450.0
-TRACK_MAX_SPEED_X_CM_S = 60.0
+TRACK_MAX_SPEED_Y_CM_S = 300.0  # kayttajan helposti muutettava arvo (3 m/s)
+
+# X-suunnan nopeusraja JOHDETAAN Y-nopeudesta (kayttajan pyynnosta) - EI
+# oma erillinen vakionsa - aina TRACK_MAX_SPEED_X_FRACTION_OF_Y verran
+# TRACK_MAX_SPEED_Y_CM_S:sta, joten X paivittyy automaattisesti kun
+# Y-arvoa muutetaan yllä.
+TRACK_MAX_SPEED_X_FRACTION_OF_Y = 0.10
+TRACK_MAX_SPEED_X_CM_S = TRACK_MAX_SPEED_Y_CM_S * TRACK_MAX_SPEED_X_FRACTION_OF_Y
 TRACK_MAX_BACKWARD_CM = 100.0
 
 # YLARAJA nopeuspohjaiselle hakualueelle (havaittu VALTTAMATTOMAKSI
@@ -2484,6 +2519,39 @@ _hann_window_cache = {}
 _ref_gray_cache = {}
 
 
+def _phase_correlate_full_frame(gray_a_full, gray_b_full):
+    """Yhteinen vaihekorrelaatio-ydin (kayttaa SUBPIXEL_ALIGN_CROP_
+    FRACTION-rajausta + valimuistitettua Hanning-ikkunaa) - kaytetaan
+    seka estimate_subpixel_alignment:issa (frame vs. moodikuva) etta
+    elavan seurannan KETJUTETYSSA framesta-frameen -stabiloinnissa
+    (katso PIKSELITARKKA STABILOINTI -kommentti run_pipeline:ssa).
+    gray_a_full/gray_b_full: TAYSRESOLUUTIOISET harmaasavykuvat (uint8
+    tai float32). Palauttaa (dx,dy): siirto joka pitaa lisata jotta
+    gray_b linjautuisi gray_a:n kanssa, SUBPIXEL_ALIGN_RANGE_PX:aan
+    rajattuna."""
+
+    h, w = gray_a_full.shape[:2]
+    cw = int(round(w * SUBPIXEL_ALIGN_CROP_FRACTION))
+    ch = int(round(h * SUBPIXEL_ALIGN_CROP_FRACTION))
+    x0 = (w - cw) // 2
+    y0 = (h - ch) // 2
+
+    key = (x0, y0, cw, ch)
+    hann = _hann_window_cache.get(key)
+    if hann is None:
+        hann = cv2.createHanningWindow((cw, ch), cv2.CV_32F)
+        _hann_window_cache[key] = hann
+
+    a_crop = gray_a_full[y0:y0 + ch, x0:x0 + cw].astype(np.float32)
+    b_crop = gray_b_full[y0:y0 + ch, x0:x0 + cw].astype(np.float32)
+
+    (dx, dy), _response = cv2.phaseCorrelate(a_crop, b_crop, hann)
+
+    dx = float(np.clip(dx, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
+    dy = float(np.clip(dy, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
+    return dx, dy
+
+
 def estimate_subpixel_alignment(frame_u, reference_u):
     """ENABLE_SUBPIXEL_ALIGNMENT:in kohdistushaku - katso sen kommentti
     taman tiedoston alkupaassa. TOINEN VERSIO (kayttajan pyynnosta,
@@ -2496,49 +2564,29 @@ def estimate_subpixel_alignment(frame_u, reference_u):
     Ratkaisu: cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio) laskee
     TAYSRESOLUUTIOISEN kuvan sub-pikseli-tarkan KAANNON yhdella
     kutsulla - ei tarvitse testata erikseen satoja ehdokkaita eika
-    pienentaa kuvaa. Rajattu SUBPIXEL_ALIGN_CROP_FRACTION-kokoiseen
-    keskitettyyn alueeseen (EI pienennetty, vain rajattu - resoluutio
-    sailyy) laskenta-ajan hillitsemiseksi (mitattu: taysi 1920x1080
-    ~130ms/frame olisi liikaa) - reunat (katsomo/mainostaulut, eivat
-    osa jaata) eivat muutenkaan auta kohdistuksessa, joten rajaus ei
-    heikenna tarkkuutta. EI enaa kiertoa (angle) - alkuperainen kierto-
+    pienentaa kuvaa. EI enaa kiertoa (angle) - alkuperainen kierto-
     korjaus oli juuri se osa joka VAHVISTI virheen etaisyyden mukana
     (katso ENABLE_SUBPIXEL_ALIGNMENT:in kommentti); paneiliseurannan
     RANSAC-affiinimuunnos jo korjaa suurimman osan kierrosta, joten
     jaljella oleva sub-pikseli-virhe on kaytannossa lahes pelkkaa
     translaatiota."""
 
-    h, w = frame_u.shape[:2]
-    cw = int(round(w * SUBPIXEL_ALIGN_CROP_FRACTION))
-    ch = int(round(h * SUBPIXEL_ALIGN_CROP_FRACTION))
-    x0 = (w - cw) // 2
-    y0 = (h - ch) // 2
-
-    key = (x0, y0, cw, ch)
-    hann = _hann_window_cache.get(key)
-    if hann is None:
-        hann = cv2.createHanningWindow((cw, ch), cv2.CV_32F)
-        _hann_window_cache[key] = hann
-
+    key = reference_u.shape[:2]
     ref_gray = _ref_gray_cache.get(key)
     if ref_gray is None:
-        ref_crop = reference_u[y0:y0 + ch, x0:x0 + cw]
-        ref_gray = cv2.cvtColor(ref_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        ref_gray = cv2.cvtColor(reference_u, cv2.COLOR_BGR2GRAY)
         _ref_gray_cache[key] = ref_gray
 
-    frame_crop = frame_u[y0:y0 + ch, x0:x0 + cw]
-    frame_gray = cv2.cvtColor(frame_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
-
-    (dx, dy), _response = cv2.phaseCorrelate(ref_gray, frame_gray, hann)
+    frame_gray = cv2.cvtColor(frame_u, cv2.COLOR_BGR2GRAY)
 
     # Turvaraja (kayttajan alkuperaisen SUBPIXEL_ALIGN_RANGE_PX:n
-    # hengessa): tama on tarkoitettu VAIN pieneksi jaljella olevaksi
-    # sub-pikseli-korjaukseksi, ei yleiseksi liikkeentunnistukseksi -
-    # jos koko kuvan vaihekorrelaatio jostain syysta antaisi ison
-    # arvon (esim. pelaaja peittaa suuren osan framesta), rajataan
-    # se pois sen sijaan etta sovelletaan virheellisen suurta kaantoa.
-    dx = float(np.clip(dx, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
-    dy = float(np.clip(dy, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
+    # hengessa - katso _phase_correlate_full_frame): tama on tarkoitettu
+    # VAIN pieneksi jaljella olevaksi sub-pikseli-korjaukseksi, ei
+    # yleiseksi liikkeentunnistukseksi - jos koko kuvan vaihekorrelaatio
+    # jostain syysta antaisi ison arvon (esim. pelaaja peittaa suuren
+    # osan framesta), se rajataan pois sen sijaan etta sovelletaan
+    # virheellisen suurta kaantoa.
+    dx, dy = _phase_correlate_full_frame(ref_gray, frame_gray)
 
     return (dx, dy, 0.0)
 
@@ -3320,6 +3368,12 @@ def run_pipeline(
         maxlen=STABILIZATION_MEDIAN_FRAMES
     )
 
+    # PIKSELITARKKA KETJUTETTU STABILOINTI (kayttajan pyynnosta, katso
+    # kommentti alempana kaytonkohdalla) - None kunnes "loppuvideo"-
+    # vaihe (calib_result valmis) alkaa.
+    pixel_align_matrix = None
+    pixel_align_prev_gray = None
+
     start_time = time.time()
 
     total_gray_time = 0.0
@@ -3383,6 +3437,18 @@ def run_pipeline(
     total_windowed_track_time = 0.0
     n_windowed_track_calls = 0
     total_wait_mode_time = 0.0
+
+    # UUSI (Testi_02_01:sta yhdistetty "PIKSELITARKKA KETJUTETTU
+    # STABILOINTI" + "paneilistabiloinnin laatuskannaus + uudelleen-
+    # ankkurointi" -ominaisuus): kelaa videon ALUSTA ASTI uudestaan
+    # (OMA cv2.VideoCapture, EI ENABLE_HW_VIDEO_DECODEn piirissa) ja
+    # skannaa jopa calib_mode_max_frames (~CALIB_MODE_DURATION_SECONDS
+    # sekuntia) framea parhaan ankkuriframen loytamiseksi, KERTA-
+    # LUONTOISESTI heti kun moodikuva/kalibrointi valmistuu - EI ollut
+    # ajastettu ollenkaan. Toinen mahdollinen selittaja "MITTAAMATON"-
+    # ajalle taman lisayksen jalkeen.
+    total_reanchor_scan_time = 0.0
+    n_reanchor_scans = 0
 
     executor = ThreadPoolExecutor(
         max_workers=MAX_WORKERS
@@ -3558,7 +3624,7 @@ def run_pipeline(
                         current_centers[i]
                     )
 
-            stabilization_matrix = (
+            panel_stabilization_matrix = (
                 previous_stabilization_matrix.copy()
             )
 
@@ -3587,7 +3653,7 @@ def run_pipeline(
 
                 if M is not None:
 
-                    stabilization_matrix = (
+                    panel_stabilization_matrix = (
                         cv2.invertAffineTransform(
                             M
                         )
@@ -3602,10 +3668,10 @@ def run_pipeline(
             # ------------------------------------------------
 
             stabilization_history.append(
-                stabilization_matrix.copy()
+                panel_stabilization_matrix.copy()
             )
 
-            stabilization_matrix = np.median(
+            panel_stabilization_matrix = np.median(
                 np.stack(
                     stabilization_history,
                     axis=0
@@ -3613,15 +3679,69 @@ def run_pipeline(
                 axis=0
             )
 
-            stabilization_matrix = np.asarray(
-                stabilization_matrix,
+            panel_stabilization_matrix = np.asarray(
+                panel_stabilization_matrix,
                 dtype=np.float64
             )
 
 
             previous_stabilization_matrix = (
-                stabilization_matrix.copy()
+                panel_stabilization_matrix.copy()
             )
+
+            # ------------------------------------------------
+            # PIKSELITARKKA KETJUTETTU STABILOINTI "LOPPUVIDEOLLE"
+            # (kayttajan pyynnosta, katso keskusteluhistoria): kayttaja
+            # havaitsi TOISELLA videolla etta paneiliseuranta itse voi
+            # hyppia (paneelit vaikeasti seurattavissa juuri sina
+            # videona), mika nakyi koko lopun seurannan tarinana.
+            # Paneiliseurantaa/panel_stabilization_matrix:ia kaytetaan
+            # siis enaa VAIN moodikuvan rakentamiseen (calib_result is
+            # None) - sen jalkeen (profiiliskannaus + elava seuranta)
+            # KOKO frame vaihekorrelaatiolla (_phase_correlate_full_
+            # frame, sama ydin kuin estimate_subpixel_alignment:issa)
+            # KETJUTETTUNA: joka frame lisaa PIENEN deltan edellisen
+            # framen jo-vahvistettuun sijaintiin sen sijaan etta
+            # vertaisi suoraan moodikuvaan joka frame - "siina lahtee
+            # aina edeltavasta sijainnista" (kayttajan sanoin). Koska
+            # koko frame (tuhansia staattisia pikseleita, ei vain
+            # muutama paneelin kulmapiste) kaytetaan, oletetaan ettei
+            # tama voi enaa karata (kayttajan oma arvio) - EI periodista
+            # uudelleenankkurointia moodikuvaan.
+            #
+            # SIIRTYMA: "loppuvideon" ENSIMMAINEN frame (pixel_align_
+            # matrix viela None) ankkuroidaan VIIMEISEEN paneilipohjaiseen
+            # matriisiin (jatkuvuus, ei hyppya) - sen jalkeen paneilia
+            # ei enaa kaytata stabilointiin (vain sen OMA laskenta jatkuu
+            # yllä, harmiton mutta turha CPU-kulu - ei poistettu tasta
+            # muutoksesta, jotta muutos pysyy suppeana).
+            # ------------------------------------------------
+
+            if calib_result is None:
+
+                stabilization_matrix = panel_stabilization_matrix
+
+            else:
+
+                if pixel_align_matrix is None:
+
+                    pixel_align_matrix = (
+                        panel_stabilization_matrix.copy()
+                    )
+
+                else:
+
+                    ddx, ddy = _phase_correlate_full_frame(
+                        pixel_align_prev_gray, gray
+                    )
+
+                    pixel_align_matrix = pixel_align_matrix.copy()
+                    pixel_align_matrix[0, 2] += ddx
+                    pixel_align_matrix[1, 2] += ddy
+
+                pixel_align_prev_gray = gray
+
+                stabilization_matrix = pixel_align_matrix
 
             total_stabilize_compute_time += time.perf_counter() - t_stab0
 
@@ -3741,6 +3861,298 @@ def run_pipeline(
                     )
 
                     calib_result = {"calib": calib, "pose": pose}
+
+                    # ------------------------------------------------
+                    # PANEELISTABILOINNIN LAATUSKANNAUS + UUDELLEEN-
+                    # ANKKUROINTI (kayttajan pyynnosta, katso keskustelu-
+                    # historia): "loppuvideon" pikselitarkan KETJUTETUN
+                    # stabiloinnin (katso PIKSELITARKKA KETJUTETTU
+                    # STABILOINTI -kommentti ylempana) ENSIMMAINEN
+                    # ankkuripiste oli aiemmin "mika tahansa frame joka
+                    # sattuu olemaan kesken juuri kun moodikuva/
+                    # kalibrointi valmistuu" - kayttaja havaitsi TOISELLA
+                    # videolla etta paneiliseuranta voi juuri silloin
+                    # sattua olemaan huonossa tilassa (paneelit hetkelli-
+                    # sesti vaikeasti seurattavissa), mika periytyy koko
+                    # lopun ketjutettuun stabilointiin virheena.
+                    #
+                    # Siksi: heti kun moodikuva on valmis, KELATAAN video
+                    # TAKAISIN ALKUUN ja TOISTETAAN paneiliseuranta
+                    # UUDELLEEN (oma tuore historia/RANSAC-tila - ei
+                    # kosketa paaajon tilaa) SAMALTA aikavalilta kuin
+                    # moodikuvan naytteenotto (0..calib_mode_max_frames).
+                    # JOKA 10. FRAMELLA mitataan kuinka monta pikselia
+                    # jaisi taustanvaimennuksen (suppress_static_
+                    # background:in ydin, _shadow_tolerant_background_
+                    # mask) LAPI (= EI tulkittu taustaksi) jos TAMAN
+                    # framen paneilistabilointia kaytettaisiin - mita
+                    # pienempi maara, sita paremmin frame osuu yhteen
+                    # juuri valmistuneen moodikuvan kanssa. Pienimman
+                    # arvon antava frame otetaan UUDEKSI ankkuriksi:
+                    # elavaa/profiiliskannausvaihetta jatketaan SIITA
+                    # (uusi mode_engine-instanssi kelataan tahan kohtaan
+                    # koska ModeEngine:lla ei ole seek-metodia), ja
+                    # pikselitarkka ketjutettu stabilointi ankkuroidaan
+                    # TAMAN framen paneilistabilointimatriisiin.
+                    # ------------------------------------------------
+
+                    print()
+                    print(
+                        "Etsitaan parasta ankkuriframea 'loppuvideon' "
+                        "pikselitarkalle stabiloinnille (paneilistabiloinnin "
+                        "laatuskannaus, joka 10. frame 0.."
+                        f"{calib_mode_max_frames})..."
+                    )
+
+                    t_reanchor0 = time.perf_counter()
+
+                    scan_cap = cv2.VideoCapture(video_file)
+
+                    scan_histories = [
+                        [center.copy()] for center in reference_centers
+                    ]
+                    scan_previous_matrix = np.array(
+                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64
+                    )
+                    scan_stabilization_history = deque(
+                        maxlen=STABILIZATION_MEDIAN_FRAMES
+                    )
+
+                    scan_camera_matrix = calib["camera_matrix"]
+                    scan_dist_coeffs = np.array(
+                        [calib["best_k1"], 0.0, 0.0, 0.0, 0.0],
+                        dtype=np.float64
+                    )
+                    scan_map1, scan_map2 = k94._build_undistort_maps(
+                        scan_camera_matrix, scan_dist_coeffs, (width, height)
+                    )
+                    scan_ref_undist = calib["frame_undistorted"]
+
+                    best_scan_frame_index = None
+                    best_scan_matrix = None
+                    best_scan_gray = None
+                    best_scan_count = None
+
+                    scan_frame_index = 0
+
+                    while scan_frame_index < calib_mode_max_frames:
+
+                        scan_ok, scan_frame = scan_cap.read()
+
+                        if not scan_ok or scan_frame is None:
+                            break
+
+                        scan_gray = cv2.cvtColor(
+                            scan_frame, cv2.COLOR_BGR2GRAY
+                        )
+
+                        scan_futures = []
+
+                        for panel_index in range(len(panel_data)):
+
+                            previous_center = (
+                                scan_histories[panel_index][-1]
+                                if scan_histories[panel_index]
+                                else reference_centers[panel_index]
+                            )
+
+                            scan_futures.append(
+                                executor.submit(
+                                    track_panel, scan_gray, previous_center
+                                )
+                            )
+
+                        scan_current_centers = []
+
+                        for panel_index, future in enumerate(scan_futures):
+
+                            result = future.result()
+
+                            if result is None:
+                                scan_current_centers.append(None)
+                                continue
+
+                            center = np.asarray(
+                                result["center"], dtype=np.float32
+                            )
+
+                            previous_center = (
+                                scan_histories[panel_index][-1]
+                                if scan_histories[panel_index]
+                                else reference_centers[panel_index]
+                            )
+
+                            error = np.linalg.norm(center - previous_center)
+
+                            if error <= MAX_POSITION_ERROR:
+
+                                scan_histories[panel_index].append(
+                                    center.copy()
+                                )
+
+                                if (
+                                    len(scan_histories[panel_index])
+                                    > HISTORY_LENGTH
+                                ):
+                                    scan_histories[panel_index].pop(0)
+
+                                scan_current_centers.append(center)
+
+                            else:
+                                scan_current_centers.append(None)
+
+                        scan_valid_reference = []
+                        scan_valid_current = []
+
+                        for i in range(len(reference_centers)):
+                            if scan_current_centers[i] is not None:
+                                scan_valid_reference.append(
+                                    reference_centers[i]
+                                )
+                                scan_valid_current.append(
+                                    scan_current_centers[i]
+                                )
+
+                        scan_panel_matrix = scan_previous_matrix.copy()
+
+                        if len(scan_valid_reference) >= 2:
+
+                            scan_M, _scan_inliers = (
+                                cv2.estimateAffinePartial2D(
+                                    np.asarray(
+                                        scan_valid_reference, dtype=np.float32
+                                    ),
+                                    np.asarray(
+                                        scan_valid_current, dtype=np.float32
+                                    ),
+                                    method=cv2.RANSAC,
+                                    ransacReprojThreshold=3.0,
+                                    maxIters=2000,
+                                    confidence=0.99
+                                )
+                            )
+
+                            if scan_M is not None:
+                                scan_panel_matrix = cv2.invertAffineTransform(
+                                    scan_M
+                                )
+
+                        scan_stabilization_history.append(
+                            scan_panel_matrix.copy()
+                        )
+
+                        scan_panel_matrix = np.asarray(
+                            np.median(
+                                np.stack(
+                                    scan_stabilization_history, axis=0
+                                ),
+                                axis=0
+                            ),
+                            dtype=np.float64
+                        )
+
+                        scan_previous_matrix = scan_panel_matrix.copy()
+
+                        if scan_frame_index % 10 == 0:
+
+                            scan_stabilized = cv2.warpAffine(
+                                scan_frame, scan_panel_matrix, (width, height)
+                            )
+                            scan_frame_u = cv2.remap(
+                                scan_stabilized, scan_map1, scan_map2,
+                                interpolation=cv2.INTER_LINEAR
+                            )
+
+                            if ENABLE_SHADOW_TOLERANT_STABILIZATION:
+                                scan_bg_mask = (
+                                    _shadow_tolerant_background_mask(
+                                        scan_frame_u, scan_ref_undist,
+                                        GRANITE_DIFF_THRESHOLD,
+                                        SHADOW_V_DROP_MAX
+                                    )
+                                )
+                            else:
+                                scan_diff = cv2.absdiff(
+                                    scan_frame_u, scan_ref_undist
+                                )
+                                scan_diff_gray = cv2.cvtColor(
+                                    scan_diff, cv2.COLOR_BGR2GRAY
+                                )
+                                scan_bg_mask = (
+                                    scan_diff_gray < GRANITE_DIFF_THRESHOLD
+                                )
+
+                            scan_fg_count = int(
+                                np.count_nonzero(~scan_bg_mask)
+                            )
+
+                            if (
+                                best_scan_count is None
+                                or scan_fg_count < best_scan_count
+                            ):
+                                best_scan_count = scan_fg_count
+                                best_scan_frame_index = scan_frame_index
+                                best_scan_matrix = scan_panel_matrix.copy()
+                                best_scan_gray = scan_gray.copy()
+
+                        scan_frame_index += 1
+
+                    scan_cap.release()
+
+                    if best_scan_frame_index is not None:
+
+                        print(
+                            f"Paras ankkuriframe: {best_scan_frame_index} "
+                            f"(lapaisi suodatuksen {best_scan_count} "
+                            f"pikselia, aikaleima "
+                            f"{best_scan_frame_index / fps:.2f}s)."
+                        )
+
+                        engine = mode_engine.ModeEngine(
+                            video_file, TILE_SIZE, ENABLE_HW_VIDEO_DECODE
+                        )
+
+                        for _ in range(best_scan_frame_index):
+                            engine.read()
+
+                        frame_index = best_scan_frame_index
+                        pixel_align_matrix = best_scan_matrix.copy()
+                        pixel_align_prev_gray = best_scan_gray
+
+                        previous_stabilization_matrix = (
+                            best_scan_matrix.copy()
+                        )
+                        histories = [
+                            [center.copy()] for center in reference_centers
+                        ]
+                        stabilization_history.clear()
+                        stabilization_history.append(
+                            best_scan_matrix.copy()
+                        )
+
+                        total_reanchor_scan_time += (
+                            time.perf_counter() - t_reanchor0
+                        )
+                        n_reanchor_scans += 1
+
+                        # "continue" ohittaa silmukan lopun total_loop_
+                        # time-kertyman (ks. t_iter_start:in kommentti) -
+                        # lisataan se tassa ETUKATEEN jotta seinakello-
+                        # diagnostiikka pysyy oikeana myos taman (harvinaisen,
+                        # kertaluontoisen) haaran kohdalla.
+                        total_loop_time += time.perf_counter() - t_iter_start
+
+                        continue
+
+                    else:
+                        print(
+                            "Laatuskannaus ei loytanyt yhtaan kelvollista "
+                            "framea - jatketaan ilman uudelleenankkurointia."
+                        )
+                        total_reanchor_scan_time += (
+                            time.perf_counter() - t_reanchor0
+                        )
+                        n_reanchor_scans += 1
 
             # ------------------------------------------------
             # KOKO RADAN SKANNAUS LIIKKUVAN KIVEN LOYTAMISEKSI
@@ -4594,7 +5006,12 @@ def run_pipeline(
 
                 if debug_video_writer is not None:
 
-                    debug_frame = frame_u.copy()
+                    # Kayttajan pyynnosta: debug-videoon tallennetaan
+                    # moodikuvalla suodatettu frame_u_for_tracking (se
+                    # mita HAKU/SEURANTA oikeasti NAKEE), EI alkuperaista
+                    # frame_u:ta - nain debug-videosta voi suoraan
+                    # tarkistaa mita tunnistus itse asiassa kaytti.
+                    debug_frame = frame_u_for_tracking.copy()
 
                     for bx, by, s_id, color, label in debug_draw_items:
 
@@ -4747,7 +5164,7 @@ def run_pipeline(
                     + total_subpixel_align_time + total_shadow_suppress_time
                     + total_seuranta_time
                     + total_scan_candidates_time + total_windowed_track_time
-                    + total_wait_mode_time
+                    + total_wait_mode_time + total_reanchor_scan_time
                     # HAKU EI mukana - se ajetaan taustasaikeessa
                     # SAMANAIKAISESTI SEURANNAN kanssa (ks. haku_executor
                     # ylla), joten sen aika EI ole lisaa seinakelloaikaa
@@ -4774,7 +5191,9 @@ def run_pipeline(
                     f"{n_windowed_track_calls} kutsua, "
                     f"{total_windowed_track_time:.2f}s yht "
                     f"(ka {total_windowed_track_time / max(1, n_windowed_track_calls):.2f} s/kutsu) | "
-                    f"wait_for_mode {total_wait_mode_time:.2f}s"
+                    f"wait_for_mode {total_wait_mode_time:.2f}s | "
+                    f"uudelleenankkurointi {n_reanchor_scans} kertaa, "
+                    f"{total_reanchor_scan_time:.2f}s yht"
                 )
 
     finally:
@@ -4870,6 +5289,10 @@ def run_pipeline(
           "(koko videon yli keskiarvoistettuna)")
     print(f"engine.wait_for_mode() (kertaluontoinen moodikuvan odotus): "
           f"{total_wait_mode_time:.2f}s")
+    print(f"paneilistabiloinnin laatuskannaus + uudelleenankkurointi "
+          f"(kertaluontoinen, OMA cv2.VideoCapture, video alusta asti): "
+          f"{n_reanchor_scans} kertaa, yhteensa "
+          f"{total_reanchor_scan_time:.2f}s")
 
     # AGGRESSIIVISEMMAN OPTIMOINNIN DIAGNOSTIIKKA (Testi_03_01, kayttajan
     # pyynnosta): total_elapsed on OIKEA seinakelloaika (time.time():lla
@@ -4883,7 +5306,7 @@ def run_pipeline(
     accounted_wall_clock = (
         muu_yhteensa + total_seuranta_time
         + total_scan_candidates_time + total_windowed_track_time
-        + total_wait_mode_time
+        + total_wait_mode_time + total_reanchor_scan_time
     )
     print(f"OIKEA seinakelloaika (time.time()): {total_elapsed:.2f}s yhteensa, "
           f"{(total_elapsed / processed_frames) * 1000:.2f} ms/ruutu")
