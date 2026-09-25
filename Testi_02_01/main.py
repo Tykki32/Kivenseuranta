@@ -2199,6 +2199,109 @@ def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
     return out
 
 
+# ============================================================
+# VALOTASAPAINO/KIRKKAUS-KORJAUS "LOPPUVIDEOLLE" (kayttajan pyynnosta,
+# katso keskusteluhistoria): pikselitarkka geometrinen stabilointi (katso
+# PIKSELITARKKA SUORA STABILOINTI) EI korjaa valon/kameran auto-
+# valotuksen/valkotasapainon HIDASTA ajautumista pitkan (>10 min) videon
+# aikana - kayttaja huomasi etta debug-videossa jaa/katto/seinat eivat
+# olleet TAYSIN valkoisia myohemmin videolla, vaikka geometrinen
+# kohdistus oli kunnossa (vahvistettu diff-heatmapilla: HAJA, ei terava,
+# ero - viittaa valotasapainoon/kirkkauteen, ei sijaintivirheeseen).
+#
+# ENSIMMAINEN yritys (histogrammin persentiilikohdistus koko framelle)
+# HUONONSI tulosta kaikilla testatuilla frameilla (+7% - +107% vuotoa) -
+# jaan lahes saturoitunut valkoisuus + etualan (pelaajien) poikkeavat
+# varit vaaristivat globaalin persentiilipohjaisen arvion.
+#
+# TOIMIVA ratkaisu (kayttajan ehdotuksesta): kayttaa SAMAA periaatetta
+# kuin stabiloinnin siirtymahaku - EI kiintea/analyyttinen kaava koko
+# kuvalle, vaan ROBUSTI ITEROITU pienimman neliosumman sovitus (per
+# BGR-kanava): sovitetaan lineaarinen gain+bias frame->referenssi,
+# poistetaan sovituksen JALKEEN suurimman jaannoksen pikselit (etuala:
+# pelaajat, kivet - niiden varit eivat mitenkaan liity valotasapainoon)
+# ja toistetaan - lahentyy nopeasti (3 kierrosta riittaa) taustan
+# TODELLISEEN foto­metriseen suhteeseen. Validoitu: n. sama parannus
+# kuin raaka ristikkohaku fg-pikselien maaralla mitattuna (esim. 194114
+# -> 92657 vs. haun 90738), mutta ~15x nopeampi (~250-750ms/kutsu vs.
+# 5-7s/kutsu) - silti liian hidas JOKA framelle (25fps-budjetti 40ms),
+# joten kaytetaan vain KERRAN SEKUNNISSA (katso kaytto run_pipeline:ssa)
+# - valotasapainon ajautuminen on hidasta, ei tarvitse paivittaa joka
+# framella kuten geometrinen siirtyma.
+# ============================================================
+
+def _robust_gain_bias_single_channel(frame_values, reference_values, n_iter=3):
+    """Palauttaa (gain,bias) joka minimoi (gain*frame_values+bias -
+    reference_values)**2:n, ROBUSTISTI - jokaisen kierroksen jalkeen
+    suurimman jaannoksen (80. persentiili ylittavat, tyypillisesti
+    etualan/pelaajien/kivien pikselit) pikselit poistetaan seuraavasta
+    kierroksesta."""
+
+    mask = np.ones(frame_values.shape, dtype=bool)
+    gain, bias = 1.0, 0.0
+
+    for _ in range(n_iter):
+
+        x = frame_values[mask]
+        y = reference_values[mask]
+
+        mean_x = x.mean()
+        mean_y = y.mean()
+        centered_x = x - mean_x
+
+        denom = np.dot(centered_x, centered_x)
+
+        if denom > 1e-6:
+            gain = float(np.dot(centered_x, y - mean_y) / denom)
+        else:
+            gain = 1.0
+
+        bias = float(mean_y - gain * mean_x)
+
+        residual = np.abs(
+            reference_values - (gain * frame_values + bias)
+        )
+        threshold = np.percentile(residual, 80)
+        mask = residual < threshold
+
+    return gain, bias
+
+
+def estimate_photometric_correction(frame_bgr, reference_bgr):
+    """Ajaa _robust_gain_bias_single_channel:in erikseen jokaiselle BGR-
+    kanavalle - palauttaa (gains,biases), molemmat 3-alkioisia listoja.
+    Kanavakohtaisuus kattaa seka yleisen KIRKKAUDEN (kaikki kanavat
+    samansuuntaisesti) etta VALKOTASAPAINON/varisavyn ajautumisen (kanavat
+    eri suuntiin) yhdella samalla mekanismilla."""
+
+    gains = []
+    biases = []
+
+    for channel in range(3):
+
+        gain, bias = _robust_gain_bias_single_channel(
+            frame_bgr[:, :, channel].astype(np.float64).ravel(),
+            reference_bgr[:, :, channel].astype(np.float64).ravel()
+        )
+
+        gains.append(gain)
+        biases.append(bias)
+
+    return gains, biases
+
+
+def apply_photometric_correction(frame_bgr, gains, biases):
+
+    out = frame_bgr.astype(np.float32).copy()
+
+    for channel in range(3):
+        out[:, :, channel] = (
+            out[:, :, channel] * gains[channel] + biases[channel]
+        )
+
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 _hann_window_cache = {}
 
 
@@ -2990,6 +3093,17 @@ def run_pipeline(
     # frame vaihekorrelaatiolla verrataan. Asetetaan heti kun calib_
     # result tulee valmiiksi (katso alempana).
     loppuvideo_ref_gray = None
+
+    # VALOTASAPAINO/KIRKKAUS-KORJAUS (kayttajan pyynnosta, katso
+    # estimate_photometric_correction:in kommentti): xy-siirtyma haetaan
+    # JOKA framella, mutta valotasapaino/kirkkaus vain KERRAN SEKUNNISSA
+    # (hidas ajautuminen, liian hidas laskea joka framelle). photo_gain/
+    # photo_bias pysyvat viimeisimpana laskettuina arvoina niiden
+    # valissa olevilla frameilla.
+    photo_gain = None
+    photo_bias = None
+    next_photo_update_frame = 0
+    total_photometric_time = 0.0
 
     start_time = time.time()
 
@@ -3784,10 +3898,31 @@ def run_pipeline(
                 # --------------------------------------------
                 ref_undist_live = calib_result["calib"]["frame_undistorted"]
 
+                # VALOTASAPAINO/KIRKKAUS - vain kerran sekunnissa (katso
+                # estimate_photometric_correction:in kommentti) - ei
+                # kosketa frame_u:ta itsea (varitarkistus/debug-video),
+                # vain erillinen frame_u_photo-kopio taustanvaimennukselle.
+                if (
+                    photo_gain is None
+                    or frame_index >= next_photo_update_frame
+                ):
+                    t_photo0 = time.perf_counter()
+                    photo_gain, photo_bias = estimate_photometric_correction(
+                        frame_u, ref_undist_live
+                    )
+                    total_photometric_time += time.perf_counter() - t_photo0
+                    next_photo_update_frame = frame_index + max(
+                        1, int(round(fps))
+                    )
+
+                frame_u_photo = apply_photometric_correction(
+                    frame_u, photo_gain, photo_bias
+                )
+
                 if ENABLE_SHADOW_TOLERANT_STABILIZATION:
                     t_shadow0 = time.perf_counter()
                     frame_u_for_tracking = suppress_static_background(
-                        frame_u, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
+                        frame_u_photo, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
                     )
                     total_shadow_suppress_time += time.perf_counter() - t_shadow0
                     # frame_u_for_tracking on jo taustanvaimennettu (myos
@@ -3796,7 +3931,7 @@ def run_pipeline(
                     # jotta frame_u_for_tracking:ia ei vaimenneta uudelleen.
                     haku_seuranta_diff_threshold = 0.0
                 else:
-                    frame_u_for_tracking = frame_u
+                    frame_u_for_tracking = frame_u_photo
                     haku_seuranta_diff_threshold = GRANITE_DIFF_THRESHOLD
 
                 # --------------------------------------------
@@ -4416,6 +4551,7 @@ def run_pipeline(
                     f"read(video) {(total_read_time / processed) * 1000:.2f} ms/ruutu | "
                     f"stabilointimatriisi {(total_stabilize_compute_time / processed) * 1000:.2f} ms/ruutu | "
                     f"warpAffine+remap(koko frame) {(total_warp_remap_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"valotasapaino {(total_photometric_time / processed) * 1000:.2f} ms/ruutu | "
                     f"varjosuodatus {(total_shadow_suppress_time / processed) * 1000:.2f} ms/ruutu"
                 )
 
@@ -4475,6 +4611,9 @@ def run_pipeline(
     print(f"warpAffine+remap (KOKO frame, joka elavan seurannan ruutu): "
           f"{total_warp_remap_time:.2f}s yhteensa, "
           f"{(total_warp_remap_time / processed_frames) * 1000:.2f} ms/ruutu")
+    print(f"valotasapaino/kirkkaus-korjaus (kerran sekunnissa): "
+          f"{total_photometric_time:.2f}s yhteensa, "
+          f"{(total_photometric_time / processed_frames) * 1000:.2f} ms/ruutu")
     print(f"varjonsietoinen taustanvaimennus (ENABLE_SHADOW_TOLERANT_STABILIZATION): "
           f"{total_shadow_suppress_time:.2f}s yhteensa, "
           f"{(total_shadow_suppress_time / processed_frames) * 1000:.2f} ms/ruutu")
@@ -4482,7 +4621,7 @@ def run_pipeline(
         total_read_time + total_stabilize_compute_time
         + total_warp_remap_time + total_gray_time
         + total_tracking_time + total_transform_time
-        + total_shadow_suppress_time
+        + total_photometric_time + total_shadow_suppress_time
     )
     print(f"Yhteensa HAKU+SEURANTA+muu mitattu: "
           f"{((total_haku_time + total_seuranta_time + muu_yhteensa) / processed_frames) * 1000:.2f} "
