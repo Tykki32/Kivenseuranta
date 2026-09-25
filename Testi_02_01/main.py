@@ -3112,7 +3112,17 @@ def run_pipeline(
             # RANSAC-laskenta (mitattu 37 ms/ruutu - lahes koko 25fps-
             # reaaliaikabudjetti) ohitetaan silloin kokonaan sen sijaan
             # etta laskettaisiin turhaan joka framella.
+            #
+            # HUOM (korjattu bugi): t_stab0 on asetettava TASSA, ENNEN
+            # if calib_result is None -haaraa, koska total_stabilize_
+            # compute_time += time.perf_counter() - t_stab0 lasketaan
+            # AINA (myos "loppuvideon" suoran stabiloinnin ajaksi) -
+            # jos t_stab0 asetettaisiin vain haaran SISALLA, se jaisi
+            # jaatyneeksi vanhaan arvoon heti kun calib_result valmistuu,
+            # ja mittari kasvaisi rajattomasti (havaittu: 50000 ms/ruutu).
             # ------------------------------------------------
+
+            t_stab0 = time.perf_counter()
 
             if calib_result is None:
 
