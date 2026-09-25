@@ -3100,8 +3100,18 @@ def run_pipeline(
     # kommentti alempana kaytonkohdalla) - moodikuvan RAAKA (ei viela
     # undistorted) harmaasavyreferenssi, jota vasten "loppuvideon" joka
     # frame vaihekorrelaatiolla verrataan. Asetetaan heti kun calib_
-    # result tulee valmiiksi (katso alempana).
+    # result tulee valmiiksi (katso alempana) - TAI HETI TASSA jos
+    # calib_result annettiin jo valmiiksi laskettuna (precomputed_calib_
+    # result, esim. testeissa): korjattu bugi, jossa loppuvideo_ref_gray
+    # jai koskaan asettamatta talla polulla ja _phase_correlate_full_
+    # frame kaatui "NoneType has no attribute shape" heti loppuvideo-
+    # vaiheen ensimmaisella framella.
     loppuvideo_ref_gray = None
+
+    if calib_result is not None:
+        loppuvideo_ref_gray = cv2.cvtColor(
+            calib_result["calib"]["frame"], cv2.COLOR_BGR2GRAY
+        )
 
     # VALOTASAPAINO/KIRKKAUS-KORJAUS (kayttajan pyynnosta, katso
     # estimate_photometric_correction:in kommentti): xy-siirtyma haetaan
