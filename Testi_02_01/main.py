@@ -3100,8 +3100,18 @@ def run_pipeline(
     # kommentti alempana kaytonkohdalla) - moodikuvan RAAKA (ei viela
     # undistorted) harmaasavyreferenssi, jota vasten "loppuvideon" joka
     # frame vaihekorrelaatiolla verrataan. Asetetaan heti kun calib_
-    # result tulee valmiiksi (katso alempana).
+    # result tulee valmiiksi (katso alempana) - TAI HETI TASSA jos
+    # calib_result annettiin jo valmiiksi laskettuna (precomputed_calib_
+    # result, esim. testeissa): korjattu bugi, jossa loppuvideo_ref_gray
+    # jai koskaan asettamatta talla polulla ja _phase_correlate_full_
+    # frame kaatui "NoneType has no attribute shape" heti loppuvideo-
+    # vaiheen ensimmaisella framella.
     loppuvideo_ref_gray = None
+
+    if calib_result is not None:
+        loppuvideo_ref_gray = cv2.cvtColor(
+            calib_result["calib"]["frame"], cv2.COLOR_BGR2GRAY
+        )
 
     # VALOTASAPAINO/KIRKKAUS-KORJAUS (kayttajan pyynnosta, katso
     # estimate_photometric_correction:in kommentti): xy-siirtyma haetaan
@@ -4369,6 +4379,32 @@ def run_pipeline(
                             ) < NEW_STONE_DEDUP_CM
                             for s in active_stones
                         )
+
+                        # --------------------------------------------
+                        # DIAGNOSTIIKKA (kayttajan raportoima bugi, katso
+                        # keskusteluhistoria): HAKU tunnisti PELAAJAN/
+                        # LAKAISIJAN kiveksi (pelkkaan muotoon/kokoon
+                        # perustuva C++-yhteissovitus ei tunne varia).
+                        # Tulostetaan TASSA vain diagnostiikkana (ei viela
+                        # hylkaa mitaan) uuden ehdokkaan varipoikkeama
+                        # kivivarireferenssiin - kaytetaan naiden lukujen
+                        # keraamiseen sopivan hylkayskynnyksen maarittamiseksi
+                        # (katso HAKU_COLOR_MAX_DIFF alempana taman
+                        # validoinnin jalkeen).
+                        # --------------------------------------------
+
+                        if os.environ.get("HAKU_COLOR_DEBUG") and live_state.get("color_reference") is not None:
+                            haku_frame_u_f64 = frame_u.astype(np.float64)
+                            haku_median_diff = color_match_median_diff(
+                                haku_frame_u_f64, local_pts_body, pose,
+                                bx, by, live_state["color_reference"],
+                                width, height
+                            )
+                            print(
+                                f"[HAKU_COLOR_DEBUG] frame={frame_index} "
+                                f"ehdokas ({bx:.1f},{by:.1f}) "
+                                f"varidiff={haku_median_diff}"
+                            )
 
                         if not already_tracked:
 
