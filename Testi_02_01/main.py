@@ -1281,6 +1281,22 @@ TRACK_MAX_SPEED_X_FRACTION_OF_Y = 0.10
 TRACK_MAX_SPEED_X_CM_S = TRACK_MAX_SPEED_Y_CM_S * TRACK_MAX_SPEED_X_FRACTION_OF_Y
 TRACK_MAX_BACKWARD_CM = 100.0
 
+# ============================================================
+# ABSOLUUTTINEN KESKIVIIVAETAISYYSRAJA (kayttajan pyynnosta, katso
+# keskusteluhistoria): kayttajan omaan kokemukseen perustuva havainto
+# tasta radasta/pelityylista - kivi joka on koskaan yli 1.2m
+# keskiviivasta (X=0) on hyvin todennakoisesti EI kivi (SEURANTA on
+# ajautunut pelaajaan/lakaisijaan tms.), koska aidot heitot pysyvat
+# tallä radalla kaytannossa aina tata lahempana keskiviivaa - HAKU:n
+# oma hakuvyohyke (kamera9_02.py:n SEARCH_X_HALF_WIDTH_CM=70cm) on jo
+# tatakin tiukempi UUDEN kiven loytohetkella, mutta SEURANNAN paikal-
+# linen haku (TRACK_HALF_RANGE_CM=35cm/frame) voi ajan mittaan ajautua
+# hakuvyohykkeen ulkopuolelle jos se tarttuu jatkuvasti sivuttain
+# liikkuvaan kohteeseen (esim. pyyhkija) - sama periaate kuin TRACK_
+# MAX_BACKWARD_CM:ssa ylla, mutta X-suunnassa ja molempiin suuntiin.
+# ============================================================
+MAX_ABS_X_FROM_CENTERLINE_CM = 120.0
+
 # YLARAJA nopeuspohjaiselle hakualueelle (havaittu VALTTAMATTOMAKSI
 # koko videon lapikaynnilla, katso keskusteluhistoria): half_range =
 # max_speed_cm_s * elapsed_s KASVAA RAJATTA pitkien miss-sarjojen
@@ -4239,6 +4255,21 @@ def run_pipeline(
 
                         if refined["found"] and (
                             refined["Y_cm"] - s["min_y_seen"] > TRACK_MAX_BACKWARD_CM
+                        ):
+                            refined = dict(refined)
+                            refined["found"] = False
+
+                        # --------------------------------
+                        # KESKIVIIVAETAISYYSTARKISTUS: katso ASETUKSET-
+                        # kommentti MAX_ABS_X_FROM_CENTERLINE_CM:in
+                        # kohdalla - hylataan (kuten TAAKSEPAIN-tarkistus
+                        # ylla) havainto joka veisi kiven liian kauas
+                        # keskiviivasta, todennakoisesti SEURANNAN
+                        # ajauduttua sivuttain liikkuvaan kohteeseen.
+                        # --------------------------------
+
+                        if refined["found"] and (
+                            abs(refined["X_cm"]) > MAX_ABS_X_FROM_CENTERLINE_CM
                         ):
                             refined = dict(refined)
                             refined["found"] = False
