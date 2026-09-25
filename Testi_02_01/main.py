@@ -1303,6 +1303,37 @@ TRACK_HALF_RANGE_MAX_CM = 100.0
 # kallaan lepäävä kohde ei koskaan.
 MIN_CONFIRMED_THROW_DISPLACEMENT_CM = 25.0
 
+# HAVAITTU ONGELMA (kayttajan raportoima, katso keskusteluhistoria):
+# pelaaja/lakaisija HAKU-alueella (katso kamera9_02.py:n SEARCH_Y_MIN/
+# MAX_CM) voi silloin talloin TAYTTAA HAKU:n omankin tiukan hyvaksynta-
+# kriteerin (search_new_stone vaatii refined.tarkka:n - OIKEAN pyorean
+# reunan/rengasrakenteen LM-sovituksen, EI pelkkaa peitto-osuutta, katso
+# stone_tracker.cpp:n search_new_stone-kommentti) YHDELLA framella
+# esim. vaatteen/harjan reunan sattuessa hetkeksi ympyramaiseksi. Kun
+# tama tapahtuu, SEURANTA jatkaa sen jalkeen kandidaattia LOYSEMMALLA
+# per-frame-kynnyksella (TRACK_SCORE_THRESHOLD, katso kamera9_02.py -
+# EI vaadi tarkka:a joka framella, koska "jatkuvuus on jo vahva prior"
+# - jarkeva oletus AIDOLLE, jo vahvistetulle kivelle, joka voi hetkeksi
+# olla osittain peitossa). Tama sallii kandidaatin, joka EI OIKEASTI ole
+# kivi, "ajautua" pelaajan mukana useita sekunteja ja YLITTAA yllaolevan
+# siirtymakynnyksen, tullen vahvistetuksi VIRHEELLISESTI.
+#
+# Todellisella datalla (katso keskusteluhistoria, fullrun_positions.csv,
+# frame 4530 -> 4716, ihmiseksi silmamaarin vahvistettu): tama kandi-
+# daatti saavutti tarkka=1:n vain 3/8 (38%) ensimmaisesta 8 havain-
+# nostaan (ennen 25cm-vahvistuskynnysta), kun taas kaikki pitkaan
+# seuratut, selvasti aidot kivet (>=500 rivia koko elinajalta) olivat
+# 100% tarkka=1 samassa ikkunassa. Siksi: vaaditaan MYOS etta riittavan
+# pitkan (>=MIN_PRECONFIRM_TARKKA_OBSERVATIONS havaintoa - lyhyemmalla
+# otoksella tarkka-osuus on liian kohinainen yksittaisten aitojenkin
+# heittojen alkumetreilla hylattavaksi, katso keskusteluhistorian
+# tilastot) puskuroidun ikkunan tarkka-osuus ylittaa MIN_PRECONFIRM_
+# TARKKA_FRACTION:in ENNEN vahvistusta - muuten koko puskuroitu
+# havaintosarja hylataan (kuten "ei liikkunut riittavasti" -tapauksessa)
+# eika kandidaattia enaa seurata.
+MIN_PRECONFIRM_TARKKA_OBSERVATIONS = 8
+MIN_PRECONFIRM_TARKKA_FRACTION = 0.4
+
 # HAKU-valin PAIKALLINEN ylikirjoitus (kayttajan pyynnosta) - EI
 # muuteta kamera9_02.py:n omaa SEARCH_EVERY_N_FRAMES:ia (se tiedosto
 # on koskematon referenssi, katso taman tiedoston alkupaan kommentti).
@@ -4208,6 +4239,8 @@ def run_pipeline(
                             # sia, aitoja havaintoja.
                             # --------------------------------
 
+                            reject_low_tarkka = False
+
                             if not s["confirmed"]:
 
                                 s["pending_rows"].append(
@@ -4219,16 +4252,56 @@ def run_pipeline(
                                     >= MIN_CONFIRMED_THROW_DISPLACEMENT_CM
                                 ):
 
-                                    s["confirmed"] = True
-                                    n_confirmed_stones += 1
+                                    # --------------------------------
+                                    # TARKKA-OSUUSTARKISTUS: katso
+                                    # ASETUKSET-kommentti MIN_PRECONFIRM_
+                                    # TARKKA_OBSERVATIONS/FRACTION:in
+                                    # kohdalla - torjuu pelaajan/
+                                    # lakaisijan SEURANNAN loysemman
+                                    # per-frame-kynnyksen kautta
+                                    # "ajautumisen" virheellisesti
+                                    # vahvistetuksi kiveksi.
+                                    # --------------------------------
 
-                                    for pf, pt, prow in s["pending_rows"]:
-                                        _write_stone_csv_row(
-                                            csv_writer, pf, pt,
-                                            s["stone_id"], prow
+                                    n_pending = len(s["pending_rows"])
+                                    n_tarkka = sum(
+                                        1 for _, _, prow in s["pending_rows"]
+                                        if prow.get("tarkka")
+                                    )
+                                    tarkka_frac = (
+                                        n_tarkka / n_pending
+                                        if n_pending > 0 else 1.0
+                                    )
+
+                                    if (
+                                        n_pending >= MIN_PRECONFIRM_TARKKA_OBSERVATIONS
+                                        and tarkka_frac < MIN_PRECONFIRM_TARKKA_FRACTION
+                                    ):
+
+                                        reject_low_tarkka = True
+                                        s["pending_rows"] = []
+                                        print(
+                                            f"[frame {frame_index}] Ehdokas "
+                                            f"{s['stone_id']} hylatty (tarkka-"
+                                            f"osuus {n_tarkka}/{n_pending} "
+                                            f"({tarkka_frac:.0%}) liian "
+                                            "matala ennen liikevahvistusta "
+                                            "- todennakoisesti pelaaja/"
+                                            "lakaisija, ei aito kivi)."
                                         )
 
-                                    s["pending_rows"] = []
+                                    else:
+
+                                        s["confirmed"] = True
+                                        n_confirmed_stones += 1
+
+                                        for pf, pt, prow in s["pending_rows"]:
+                                            _write_stone_csv_row(
+                                                csv_writer, pf, pt,
+                                                s["stone_id"], prow
+                                            )
+
+                                        s["pending_rows"] = []
 
                             else:
 
@@ -4318,7 +4391,7 @@ def run_pipeline(
                                             "ollut kohde, ei aito heitto)."
                                         )
 
-                            if not stopped:
+                            if not stopped and not reject_low_tarkka:
                                 still_active.append(s)
 
                         else:
