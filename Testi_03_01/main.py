@@ -5419,7 +5419,11 @@ def main(debug=None, start_time=None, end_time=None):
         f"Video: {input_file}"
     )
 
-    command = ["ffmpeg"]
+    # -y: ylikirjoita video_file aina kysymatta - ilman tata ffmpeg
+    # pysahtyy odottamaan kayttajan y/n-vastausta stdin:ista jos
+    # samanniminen "_leikattu.mp4" on jo olemassa (kayttajan pyynnosta,
+    # tama on AINA haluttu kaytos taalla).
+    command = ["ffmpeg", "-y"]
 
     if start_time is not None:
         command += ["-ss", start_time]
