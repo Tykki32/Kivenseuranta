@@ -3450,6 +3450,16 @@ def run_pipeline(
     total_reanchor_scan_time = 0.0
     n_reanchor_scans = 0
 
+    # UUSI (kayttajan MITTAAMATON-jaljityksen jatko - 33.80 ms/ruutu jai
+    # jaljelle senkin jalkeen kun skannaus-/uudelleenankkurointivaiheet
+    # lisattiin ajastukseen): varitarkistus (color_match_median_diff,
+    # ks. sen kommentti) tekee JOKA elavan seurannan ruudulla, JOKAISELLE
+    # loytyneelle kivelle (nyt jopa MAX_CONCURRENT_STONES=8 asti) koko
+    # framen uint8->float64-muunnoksen (KERRAN per ruutu) + 3 vektoroitua
+    # bilineaarinaytteistysta (b/g/r) koko framen kokoisesta taulukosta -
+    # EI ollut ajastettu ollenkaan, epailty seuraava selittaja.
+    total_color_match_time = 0.0
+
     executor = ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     )
@@ -4692,6 +4702,8 @@ def run_pipeline(
 
                         if refined["found"] and color_ref is not None:
 
+                            t_color0 = time.perf_counter()
+
                             if frame_u_f64 is None:
                                 frame_u_f64 = frame_u.astype(np.float64)
 
@@ -4699,6 +4711,10 @@ def run_pipeline(
                                 frame_u_f64, local_pts_body, pose,
                                 refined["X_cm"], refined["Y_cm"],
                                 color_ref, width, height
+                            )
+
+                            total_color_match_time += (
+                                time.perf_counter() - t_color0
                             )
 
                             if median_diff is not None:
@@ -5165,6 +5181,7 @@ def run_pipeline(
                     + total_seuranta_time
                     + total_scan_candidates_time + total_windowed_track_time
                     + total_wait_mode_time + total_reanchor_scan_time
+                    + total_color_match_time
                     # HAKU EI mukana - se ajetaan taustasaikeessa
                     # SAMANAIKAISESTI SEURANNAN kanssa (ks. haku_executor
                     # ylla), joten sen aika EI ole lisaa seinakelloaikaa
@@ -5193,7 +5210,8 @@ def run_pipeline(
                     f"(ka {total_windowed_track_time / max(1, n_windowed_track_calls):.2f} s/kutsu) | "
                     f"wait_for_mode {total_wait_mode_time:.2f}s | "
                     f"uudelleenankkurointi {n_reanchor_scans} kertaa, "
-                    f"{total_reanchor_scan_time:.2f}s yht"
+                    f"{total_reanchor_scan_time:.2f}s yht | "
+                    f"varitarkistus {(total_color_match_time / processed) * 1000:.2f} ms/ruutu"
                 )
 
     finally:
@@ -5293,6 +5311,9 @@ def run_pipeline(
           f"(kertaluontoinen, OMA cv2.VideoCapture, video alusta asti): "
           f"{n_reanchor_scans} kertaa, yhteensa "
           f"{total_reanchor_scan_time:.2f}s")
+    print(f"varitarkistus (color_match_median_diff, JOKA loytynyt kivi "
+          f"JOKA ruudulla): {total_color_match_time:.2f}s yhteensa, "
+          f"{(total_color_match_time / processed_frames) * 1000:.2f} ms/ruutu")
 
     # AGGRESSIIVISEMMAN OPTIMOINNIN DIAGNOSTIIKKA (Testi_03_01, kayttajan
     # pyynnosta): total_elapsed on OIKEA seinakelloaika (time.time():lla
@@ -5307,6 +5328,7 @@ def run_pipeline(
         muu_yhteensa + total_seuranta_time
         + total_scan_candidates_time + total_windowed_track_time
         + total_wait_mode_time + total_reanchor_scan_time
+        + total_color_match_time
     )
     print(f"OIKEA seinakelloaika (time.time()): {total_elapsed:.2f}s yhteensa, "
           f"{(total_elapsed / processed_frames) * 1000:.2f} ms/ruutu")
