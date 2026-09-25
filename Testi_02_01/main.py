@@ -936,6 +936,34 @@ SHADOW_V_DROP_MIN = -3.0  # kuinka paljon V saa NOUSTA (negatiivinen pudotus) ja
 SHADOW_V_DROP_MAX = 50.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita taustaksi/varjoksi
 
 # ============================================================
+# ABSOLUUTTINEN JAA-SUODATUS (S/V) - kayttajan pyynnosta, katso
+# keskusteluhistoria: moodikuvasta (VAIN rata-alueen pikselit, rajattu
+# sadetasoleikkauksella fyysisiin rajoihin k8.OUTPUT_X/Y_MIN/MAX_CM:aan,
+# EI koko kameranakymaa - laidat/katto/pesamainokset olisivat vaaris-
+# taneet jakaumaa) laskettu S/V-2D-histogrammi paljasti etta selva
+# enemmisto (~68%) radan omista jaapikseleista tayttaa S<22 & V>128:n.
+#
+# TARKISTETTU (kayttajan pyynnosta) etta tama EI syo kivea merkittavasti:
+# alkuperainen epailys (kiven kirkkaat pikselit osuisivat samaan
+# alueeseen) osoittautui SUURELTA OSIN oman rajausvirheen (liian valjan
+# kivimaskin, joka sisalsi kiven ymparilla olevaa sumeaa jaa/kiiltohaloa)
+# aiheuttamaksi - Canny-reunantunnistus vahvisti ettei kiven ja jaan
+# valilla ollut edes oikeaa gradienttia siina kohtaa, ja pikseliarvot
+# (~V170-186) vastasivat suoraan jaata (~V163), eivat kiven omaa tummaa
+# ydinta (~V50). Tiukalla, todelliseen reunaan sovitetulla kivimaskilla
+# haviota oli VAIN n. 0.1% kiven pikseleista (molemmat testikivet,
+# stone_check_frame.png) - tama on positio-RIIPPUMATON suodatus (ei
+# vertaa samaan pikseliin moodikuvassa kuten ylla olevat kaksi), joten
+# se auttaa NIMENOMAAN tapauksissa joissa valotasapaino/kirkkaus on jo
+# korjattu mutta yksittainen pikseli silti eroaa referenssista (esim.
+# heijastus/kiilto joka liikkuu framen mukana) - katso myos ylla oleva
+# valotasapainokorjaus, joka jo hoitaa suurimman osan hitaasta ajautu-
+# masta ETUKATEEN, joten tama on lisasuoja sen PAALLE, ei korvaa sita.
+# ============================================================
+ICE_S_MAX = 22
+ICE_V_MIN = 128
+
+# ============================================================
 # JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
 # ENABLE_SHADOW_TOLERANT_STABILIZATIONista, kayttajan pyynnosta: katso
 # keskusteluhistoria). ENSIMMAINEN versio mittasi korjauksen VAIN
@@ -2201,10 +2229,12 @@ def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
     """ENABLE_SHADOW_TOLERANT_STABILIZATION:in ydinsaanto (katso sen
     kommentti): tausta = (tavallinen pieni erotus) TAI (saturaatio
     lahes sama mutta V-pudotus valilla (shadow_v_drop_min,
-    shadow_v_drop_max) - eli varjo, ei aito objekti). shadow_v_drop_min
-    voi olla negatiivinen (sallii pienen V:n NOUSUN silti taustaksi -
-    kayttajan kanssa kasin testattu, katso SHADOW_V_DROP_MIN:in
-    kommentti)."""
+    shadow_v_drop_max) - eli varjo, ei aito objekti) TAI (absoluuttinen
+    jaa-suodatus, katso ICE_S_MAX/ICE_V_MIN:in kommentti - positio-
+    riippumaton, toimii vaikka pikseli poikkeaisi referenssista).
+    shadow_v_drop_min voi olla negatiivinen (sallii pienen V:n NOUSUN
+    silti taustaksi - kayttajan kanssa kasin testattu, katso
+    SHADOW_V_DROP_MIN:in kommentti)."""
 
     diff = cv2.absdiff(frame_bgr, reference_bgr)
     diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
@@ -2215,7 +2245,11 @@ def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
     v_drop = ref_hsv[..., 2] - frame_hsv[..., 2]
     shadow_mask = (v_drop > shadow_v_drop_min) & (v_drop < shadow_v_drop_max)
 
-    return background_mask | shadow_mask
+    ice_mask = (
+        (frame_hsv[..., 1] < ICE_S_MAX) & (frame_hsv[..., 2] > ICE_V_MIN)
+    )
+
+    return background_mask | shadow_mask | ice_mask
 
 
 def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
