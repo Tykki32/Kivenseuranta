@@ -3328,12 +3328,29 @@ def run_pipeline(
 
             else:
 
+                # HUOM (korjattu merkkivirhe, kayttajan "miksi viivat eivat
+                # haviaisi/miksi huononee" -kysymysten paljastama, katso
+                # keskusteluhistoria): _phase_correlate_full_frame(A,B)
+                # palauttaa siirtyman JOLLA A (referenssi) piti siirtaa
+                # jotta saadaan B (nykyinen frame) - EI siirtyma jolla B
+                # pitaa siirtaa jotta saadaan A. Nama ovat VASTAKKAISET
+                # (kaanteiset toisiinsa nahden) puhtaalle translaatiolle.
+                # Koska frame pitaa siirtaa PAIN referenssia (ei referenssi
+                # pain framea), oikea korjaus on -dx,-dy, EI dx,dy suoraan.
+                # Vahvistettu oikealla videodatalla (MAH00014, t=659s):
+                # vanha (suora dx,dy) merkki antoi taustanvaimennuksessa
+                # 266403 vuotanutta pikselia - HUONOMMIN kuin EI MITAAN
+                # korjausta (234413) - kun taas -dx,-dy antoi 194114
+                # (selvasti paras). Tama selittaa miksi reunaviivat eivat
+                # havinneet kokonaan eivatka pysyneet tasaisina ajan
+                # mukana: vaara suunta kasvatti virhetta sita enemman mita
+                # suurempi todellinen siirtyma oli.
                 dx, dy = _phase_correlate_full_frame(
                     loppuvideo_ref_gray, gray
                 )
 
                 stabilization_matrix = np.array(
-                    [[1.0, 0.0, dx], [0.0, 1.0, dy]],
+                    [[1.0, 0.0, -dx], [0.0, 1.0, -dy]],
                     dtype=np.float64
                 )
 
