@@ -3102,195 +3102,210 @@ def run_pipeline(
             total_gray_time += t1 - t0
 
             # ------------------------------------------------
-            # PANEELIEN SEURANTA
+            # PANEELIEN SEURANTA + STABILOINTIMATRIISI - AJETAAN
+            # ENAA VAIN MOODIKUVAN RAKENTAMISEN AIKANA (kayttajan
+            # pyynnosta empiirisesti korjattu, katso PIKSELITARKKA
+            # SUORA STABILOINTI -kommentti alempana): panel_
+            # stabilization_matrix EI ENAA OLE KAYTOSSA "loppuvideon"
+            # stabilointiin kalibroinnin jalkeen (suora moodikuva-
+            # vertailu korvasi senkin), joten koko paneiliseuranta+
+            # RANSAC-laskenta (mitattu 37 ms/ruutu - lahes koko 25fps-
+            # reaaliaikabudjetti) ohitetaan silloin kokonaan sen sijaan
+            # etta laskettaisiin turhaan joka framella.
             # ------------------------------------------------
 
-            t2 = time.perf_counter()
-            futures = []
+            if calib_result is None:
 
-            for panel_index in range(
-                len(panel_data)
-            ):
+                # ------------------------------------------------
+                # PANEELIEN SEURANTA
+                # ------------------------------------------------
 
-                if histories[panel_index]:
+                t2 = time.perf_counter()
+                futures = []
+
+                for panel_index in range(
+                    len(panel_data)
+                ):
+
+                    if histories[panel_index]:
+
+                        previous_center = (
+                            histories[
+                                panel_index
+                            ][-1]
+                        )
+
+                    else:
+
+                        previous_center = (
+                            reference_centers[
+                                panel_index
+                            ]
+                        )
+
+                    futures.append(
+                        executor.submit(
+                            track_panel,
+                            gray,
+                            previous_center
+                        )
+                    )
+
+                current_centers = []
+
+                for panel_index, future in enumerate(
+                    futures
+                ):
+
+                    result = future.result()
+
+                    if result is None:
+
+                        current_centers.append(
+                            None
+                        )
+
+                        continue
+
+                    center = np.asarray(
+                        result["center"],
+                        dtype=np.float32
+                    )
 
                     previous_center = (
                         histories[
                             panel_index
                         ][-1]
-                    )
-
-                else:
-
-                    previous_center = (
-                        reference_centers[
+                        if histories[
+                            panel_index
+                        ]
+                        else reference_centers[
                             panel_index
                         ]
                     )
 
-                futures.append(
-                    executor.submit(
-                        track_panel,
-                        gray,
+                    error = np.linalg.norm(
+                        center -
                         previous_center
                     )
-                )
 
-            current_centers = []
-
-            for panel_index, future in enumerate(
-                futures
-            ):
-
-                result = future.result()
-
-                if result is None:
-
-                    current_centers.append(
-                        None
-                    )
-
-                    continue
-
-                center = np.asarray(
-                    result["center"],
-                    dtype=np.float32
-                )
-
-                previous_center = (
-                    histories[
-                        panel_index
-                    ][-1]
-                    if histories[
-                        panel_index
-                    ]
-                    else reference_centers[
-                        panel_index
-                    ]
-                )
-
-                error = np.linalg.norm(
-                    center -
-                    previous_center
-                )
-
-                if error <= MAX_POSITION_ERROR:
-
-                    histories[
-                        panel_index
-                    ].append(
-                        center.copy()
-                    )
-
-                    if len(
-                        histories[
-                            panel_index
-                        ]
-                    ) > HISTORY_LENGTH:
+                    if error <= MAX_POSITION_ERROR:
 
                         histories[
                             panel_index
-                        ].pop(0)
+                        ].append(
+                            center.copy()
+                        )
 
-                    current_centers.append(
-                        center
-                    )
+                        if len(
+                            histories[
+                                panel_index
+                            ]
+                        ) > HISTORY_LENGTH:
 
-                else:
+                            histories[
+                                panel_index
+                            ].pop(0)
 
-                    current_centers.append(
-                        None
-                    )
+                        current_centers.append(
+                            center
+                        )
 
-            t3 = time.perf_counter()
-            total_tracking_time += t3 - t2
-            # ------------------------------------------------
-            # STABILOINTIMATRIISI
-            # ------------------------------------------------
+                    else:
 
-            t_stab0 = time.perf_counter()
+                        current_centers.append(
+                            None
+                        )
 
-            valid_reference = []
-            valid_current = []
+                t3 = time.perf_counter()
+                total_tracking_time += t3 - t2
+                # ------------------------------------------------
+                # STABILOINTIMATRIISI
+                # ------------------------------------------------
 
-            for i in range(
-                len(reference_centers)
-            ):
+                t_stab0 = time.perf_counter()
 
-                if current_centers[i] is not None:
+                valid_reference = []
+                valid_current = []
 
-                    valid_reference.append(
-                        reference_centers[i]
-                    )
+                for i in range(
+                    len(reference_centers)
+                ):
 
-                    valid_current.append(
-                        current_centers[i]
-                    )
+                    if current_centers[i] is not None:
 
-            panel_stabilization_matrix = (
-                previous_stabilization_matrix.copy()
-            )
+                        valid_reference.append(
+                            reference_centers[i]
+                        )
 
-            if len(valid_reference) >= 2:
+                        valid_current.append(
+                            current_centers[i]
+                        )
 
-                reference = np.asarray(
-                    valid_reference,
-                    dtype=np.float32
+                panel_stabilization_matrix = (
+                    previous_stabilization_matrix.copy()
                 )
 
-                current = np.asarray(
-                    valid_current,
-                    dtype=np.float32
-                )
+                if len(valid_reference) >= 2:
 
-                M, inliers = (
-                    cv2.estimateAffinePartial2D(
-                        reference,
-                        current,
-                        method=cv2.RANSAC,
-                        ransacReprojThreshold=3.0,
-                        maxIters=2000,
-                        confidence=0.99
+                    reference = np.asarray(
+                        valid_reference,
+                        dtype=np.float32
                     )
-                )
 
-                if M is not None:
+                    current = np.asarray(
+                        valid_current,
+                        dtype=np.float32
+                    )
 
-                    panel_stabilization_matrix = (
-                        cv2.invertAffineTransform(
-                            M
+                    M, inliers = (
+                        cv2.estimateAffinePartial2D(
+                            reference,
+                            current,
+                            method=cv2.RANSAC,
+                            ransacReprojThreshold=3.0,
+                            maxIters=2000,
+                            confidence=0.99
                         )
                     )
 
-            # ------------------------------------------------
-            # STABILOINNIN MEDIAANISUODATUS
-            #
-            # Käytetään peräkkäisten ruutujen mediaania.
-            # Tämä poistaa pientä värinää, mutta seuraa
-            # edelleen hidasta driftia.
-            # ------------------------------------------------
+                    if M is not None:
 
-            stabilization_history.append(
-                panel_stabilization_matrix.copy()
-            )
+                        panel_stabilization_matrix = (
+                            cv2.invertAffineTransform(
+                                M
+                            )
+                        )
 
-            panel_stabilization_matrix = np.median(
-                np.stack(
-                    stabilization_history,
+                # ------------------------------------------------
+                # STABILOINNIN MEDIAANISUODATUS
+                #
+                # Käytetään peräkkäisten ruutujen mediaania.
+                # Tämä poistaa pientä värinää, mutta seuraa
+                # edelleen hidasta driftia.
+                # ------------------------------------------------
+
+                stabilization_history.append(
+                    panel_stabilization_matrix.copy()
+                )
+
+                panel_stabilization_matrix = np.median(
+                    np.stack(
+                        stabilization_history,
+                        axis=0
+                    ),
                     axis=0
-                ),
-                axis=0
-            )
+                )
 
-            panel_stabilization_matrix = np.asarray(
-                panel_stabilization_matrix,
-                dtype=np.float64
-            )
+                panel_stabilization_matrix = np.asarray(
+                    panel_stabilization_matrix,
+                    dtype=np.float64
+                )
 
 
-            previous_stabilization_matrix = (
-                panel_stabilization_matrix.copy()
-            )
+                previous_stabilization_matrix = (
+                    panel_stabilization_matrix.copy()
+                )
 
             # ------------------------------------------------
             # PIKSELITARKKA SUORA STABILOINTI "LOPPUVIDEOLLE" MOODIKUVAAN
