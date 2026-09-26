@@ -4373,9 +4373,9 @@ def run_pipeline(
                                                 csv_writer, pf, pt,
                                                 s["stone_id"], prow
                                             )
-                                            s["confirmed_n_obs"] += 1
-                                            if prow.get("tarkka"):
-                                                s["confirmed_n_tarkka"] += 1
+                                            s["confirmed_tarkka_window"].append(
+                                                bool(prow.get("tarkka"))
+                                            )
 
                                         s["pending_rows"] = []
 
@@ -4402,26 +4402,50 @@ def run_pipeline(
                                 # (marginaali), kaikki selvasti ongelmal-
                                 # liset kandidaatit alittivat 0.5:n heti
                                 # ensimmaisen 50 havainnon jalkeen (13-48%).
+                                #
+                                # LIUKUVA IKKUNA (ei enaa kumulatiivinen
+                                # koko elinkaarelta, kayttajan pyynnosta
+                                # tehdyn maskiyhdistelma-korjauksen
+                                # (stone_tracker.cpp, createForeground-
+                                # FromWhitened) jalkeen havaittu tarve):
+                                # aito kivi voi olla hetken (esim. juuri
+                                # heiton jalkeen, heittaja/lakaisija viela
+                                # vierella) kosketuksissa pelaajaan JA
+                                # SEN JALKEEN seurata puhtaasti pitkan
+                                # matkaa yksin - kumulatiivinen koko-
+                                # elinkaaren osuus jaisi talloin PYSYVASTI
+                                # alle kynnyksen tuon alkuhetken takia,
+                                # vaikka loppuosa olisi taydellinen (havait-
+                                # tiin: n_body 26-29/rms 0.5-0.9px koko
+                                # lopun ajan, mutta silti hylattiin 49
+                                # havainnon kohdalla). Ikkuna (deque,
+                                # maxlen=MIN_CONFIRMED_TARKKA_OBSERVATIONS)
+                                # "unohtaa" vanhan kontaminaation automaat-
+                                # tisesti kun tarpeeksi uusia havaintoja on
+                                # kertynyt, mutta havaitsee silti PYSYVAN
+                                # ajautumisen (jolloin koko ikkuna on jat-
+                                # kuvasti matala) - sama kynnys (0.5,
+                                # n>=50) sailyy, koska se on jo validoitu.
                                 # --------------------------------
 
-                                s["confirmed_n_obs"] += 1
-                                if refined.get("tarkka"):
-                                    s["confirmed_n_tarkka"] += 1
+                                s["confirmed_tarkka_window"].append(
+                                    bool(refined.get("tarkka"))
+                                )
+                                window = s["confirmed_tarkka_window"]
 
                                 if (
-                                    s["confirmed_n_obs"] >= MIN_CONFIRMED_TARKKA_OBSERVATIONS
-                                    and (
-                                        s["confirmed_n_tarkka"] / s["confirmed_n_obs"]
-                                    ) < MIN_CONFIRMED_TARKKA_FRACTION
+                                    len(window) >= MIN_CONFIRMED_TARKKA_OBSERVATIONS
+                                    and (sum(window) / len(window))
+                                    < MIN_CONFIRMED_TARKKA_FRACTION
                                 ):
 
                                     reject_low_tarkka = True
                                     print(
                                         f"[frame {frame_index}] Kivi "
                                         f"{s['stone_id']} lopetetaan "
-                                        f"(tarkka-osuus {s['confirmed_n_tarkka']}/"
-                                        f"{s['confirmed_n_obs']} "
-                                        f"({100*s['confirmed_n_tarkka']/s['confirmed_n_obs']:.0f}%) "
+                                        f"(tarkka-osuus (liukuva ikkuna) "
+                                        f"{sum(window)}/{len(window)} "
+                                        f"({100*sum(window)/len(window):.0f}%) "
                                         "pudonnut pysyvasti liian matalaksi "
                                         "- todennakoisesti SEURANTA ajautunut "
                                         "pelaajaan/lakaisijaan aidon kiven "
@@ -4632,8 +4656,9 @@ def run_pipeline(
                                 "pending_rows": [
                                     (frame_index, timestamp, dict(refined))
                                 ],
-                                "confirmed_n_obs": 0,
-                                "confirmed_n_tarkka": 0,
+                                "confirmed_tarkka_window": deque(
+                                    maxlen=MIN_CONFIRMED_TARKKA_OBSERVATIONS
+                                ),
                             })
 
                             debug_draw_items.append((
