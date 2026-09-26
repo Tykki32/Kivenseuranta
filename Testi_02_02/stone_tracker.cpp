@@ -669,6 +669,69 @@ static cv::Mat suppressStaticBackground(
 
 
 // ============================================================
+// ETUALAMASKI VALMIIKSI VAIMENNETUSTA KUVASTA (UUSI, EI Python-
+// porttaus - kayttajan pyynnosta, katso keskusteluhistoria):
+// suppressStaticBackground (ja Pythonin ENABLE_SHADOW_TOLERANT_
+// STABILIZATION-polun oma, varjonsietoisempi vastine main.py:ssa,
+// jonka tulos ANNETAAN TASSA jo valmiiksi crop_filtered:ina) VALKAISEE
+// (asettaa TASMALLEEN (255,255,255):ksi) kaikki taustaa vastaavat
+// pikselit - siis "ei-valkoinen" crop_filtered:issa ON JO taman
+// olemassaolevan, jo validoidun vaimennuslogiikan oma etuala-paatos,
+// riippumatta kumpi (Python-taso vai tama C++-taso, tai molemmat)
+// sen teki. Kaytetaan SEURANNASSA (trackStoneUpdateOne) YHDISTETTYNA
+// (OR) rakeisuusmaskiin (createGraniteMask) - juurisyyanalyysi (katso
+// keskusteluhistoria) osoitti etta pelkka rakeisuusmaski voi olla
+// HYVIN HARVA pitkalla etaisyydella (esim. ohuen sivultapain
+// nakyvan kiven reunalla, jossa paikallinen tummuuskontrasti
+// darkness-testille on heikko) - talloin refinePositionJoint:in
+// runkopisteiden (n_body) maara putoaa niin alas etta sen oma
+// MAD-pohjainen poikkeavien hylkays (katso taman tiedoston alun
+// kommentti - se ITSESSAAN on epajatkuva funktio pienella
+// pistemaaralla) alkaa hypahdella framesta toiseen VAIKKA kivi
+// liikkuisi tasaisesti - mitattu oikealla datalla: X-suunnan
+// sijainti hyppii jopa n. 5-6cm yhden framen valilla kiven kulkiessa
+// yksin, ilman mitaan naapurikohdetta lahella (varmistettu
+// vertaamalla molempia maskeja silmamaarin taman jakson framista).
+// Taustanvaimennus loytaa saman kiven riippumatta paikallisesta
+// varikontrastista, joten yhdistetty (rakeisuus OR etuala) maski
+// antaa TIHEAMMAN, siten VAKAAMMAN pistejoukon findContourNear:lle -
+// juurisyy (harva pistejoukko + jyrkka MAD-kynnys) korjataan siis
+// TIHENTAMALLA syotemaski, ei muuttamalla itse MAD-logiikkaa.
+//
+// HUOM (tarkeaa): TATA EI SAA laskea suoraan absdiff(crop, ref):sta
+// omalla erillisella kynnyksellaan, koska kutsuja saattaa antaa
+// diff_threshold=0.0 (main.py:n haku_seuranta_diff_threshold, kun
+// ENABLE_SHADOW_TOLERANT_STABILIZATION=True - katso trackStoneUpdate-
+// One:n omaa kutsua alla) TARKOITUKSELLA ohittaakseen taman C++:n
+// SISAISEN, YKSINKERTAISEMMAN vaimennuksen (koska Python on jo tehnyt
+// paremman, varjonsietoisen vaimennuksen FRAME:LLE ITSELLEEN ennen
+// kutsua) - jos tama funktio laskisi oman diff-testinsa uudelleen
+// diff_threshold:lla, 0.0 tekisi JOKAISESTA pikselista "etualaa"
+// (koska absdiff >= 0.0 patee aina), mika hajottaisi koko haun
+// (havaittu talla TASMALLEEN talla tavalla ensimmaisessa
+// A/B-testauksessa - katso keskusteluhistoria). Lukemalla etuala
+// SUORAAN jo-vaimennetun crop_filtered:in valkoisuudesta valtetaan
+// tama kokonaan, koska crop_filtered ITSE on jo oikein laskettu
+// (kummalla tahansa vaimennuspolulla) ENNEN taman funktion kutsua.
+// ============================================================
+
+static cv::Mat createForegroundFromWhitened(const cv::Mat& crop_filtered_bgr)
+{
+    cv::Mat mask(crop_filtered_bgr.size(), CV_8UC1);
+    for (int r = 0; r < mask.rows; ++r) {
+        const cv::Vec3b* pptr = crop_filtered_bgr.ptr<cv::Vec3b>(r);
+        uchar* mp = mask.ptr<uchar>(r);
+        for (int c = 0; c < mask.cols; ++c) {
+            const cv::Vec3b& px = pptr[c];
+            bool is_whitened = (px[0] == 255 && px[1] == 255 && px[2] == 255);
+            mp[c] = is_whitened ? 0 : 255;
+        }
+    }
+    return mask;
+}
+
+
+// ============================================================
 // ROI-RAJAUS (kamera9_04.py:n _track_roi_bounds)
 // ============================================================
 
@@ -2085,14 +2148,36 @@ static StoneUpdateResult trackStoneUpdateOne(
     // pikselit, mika loisi keinotekoisen terävän saturaatiorajan
     // kiven reunalle jos sita kaytettaisiin reunanhakuun).
     cv::Mat crop_filtered = crop;
+    bool have_bg_reference = false;
     if (!background_reference.empty() && background_reference.size() == frame_mat.size()
         && background_reference.type() == frame_mat.type()) {
         cv::Mat ref_crop = background_reference(roi);
         crop_filtered = suppressStaticBackground(crop, ref_crop, diff_threshold);
+        have_bg_reference = true;
     }
 
     cv::Mat sat_crop = computeSat(crop);
     cv::Mat mask_crop = createGraniteMask(crop_filtered);
+
+    // Kayttajan ehdottama korjaus (katso keskusteluhistoria ja
+    // createForegroundFromWhitened:in oma kommentti ylla): yhdistetaan
+    // rakeisuusmaski suoraan (jo laskettuun) taustanvaimennuksen
+    // etualamaskiin (OR) ENNEN ristikkohakua ja runkokontuurin
+    // (findContourNear) hakua - tama on SEURANNAN ainoa kaytto
+    // (HAKU/searchNewStoneOne EI koske tata, pysyy muuttumattomana).
+    // mask_crop (pelkka rakeisuus) sailyy omana muuttujanaan, koska
+    // sita EI muuteta - vain se MITA alempana valitetaan grid-haulle/
+    // refinePositionJoint:lle vaihtuu. have_bg_reference-tarkistus
+    // (sama ehto kuin crop_filtered:in laskennassa ylla) estaa taman
+    // tapahtumasta jos taustareferenssia ei ole lainkaan kaytettavissa
+    // - silloin crop_filtered==crop (ei valkaisua ollenkaan), jolloin
+    // "ei-valkoinen" kattaisi lahes koko kuvan eika olisi mielekas
+    // etuala-signaali.
+    cv::Mat mask_for_track = mask_crop;
+    if (have_bg_reference) {
+        cv::Mat fg_mask = createForegroundFromWhitened(crop_filtered);
+        mask_for_track = mask_crop | fg_mask;
+    }
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts1 = std::chrono::steady_clock::now();
 #endif
@@ -2105,7 +2190,7 @@ static StoneUpdateResult trackStoneUpdateOne(
     // erikseen JOKA framella, eika tassa kaytita enaa kiinteaa
     // kamera9_02.py:n TRACK_HALF_RANGE_CM:ia.
     auto best = locateByGridSearchTrackingFast(
-        local_pts_search, mask_crop, roi.x, roi.y,
+        local_pts_search, mask_for_track, roi.x, roi.y,
         X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
         coarse_step_cm, fine_step_cm, K, R, t
     );
@@ -2127,7 +2212,7 @@ static StoneUpdateResult trackStoneUpdateOne(
     }
 
     out.refined = refinePositionJoint(
-        mask_crop, sat_crop, roi.x, roi.y, frame_w, frame_h, local_pts_body, K, R, t,
+        mask_for_track, sat_crop, roi.x, roi.y, frame_w, frame_h, local_pts_body, K, R, t,
         R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
     );
 
