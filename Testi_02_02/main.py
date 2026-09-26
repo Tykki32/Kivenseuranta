@@ -1417,7 +1417,41 @@ MIN_PRECONFIRM_TARKKA_FRACTION = 0.4
 # ei yhtaan pitkaa puhdasta jaksoa) jaavat silti selvasti alle 0.5:n
 # kynnyksen N=150:n kohdallakin - vain n. 100 ylimaaraista (vaaraa)
 # CSV-riviä ehtii kertya ennen hylkaysta lyhyemman N:n sijaan.
-MIN_CONFIRMED_TARKKA_OBSERVATIONS = 150
+#
+# 150 -> 650 (kayttajan huomio: "yli 20 heittoa pitaisi pystya
+# seuraamaan", mutta HAKU-korjauksen jalkeenkin vain n. 16 heittoa
+# sai "luotettavan" (disp>15m, tarkka>75%) leiman - juurisyy loytyi
+# TASTA kynnyksesta): HAKU-korjauksen (createForegroundFromWhitened)
+# jalkeen SEURANTA yhdistaa rakeisuus- ja etualamaskit - tama tekee
+# findContourNear:ista herkemman havaitsemaan MYOS PITKAKESTOISEN,
+# ihan tavallisen curling-tilanteen: lakaisija joka kavelee/lakaisee
+# JATKUVASTI aidon, juuri heitetyn kiven VIERELLA/PAALLA KOKO heiton
+# ajan (ei vain hetken alussa, kuten N=150:n oma tapaus ylla) - tama
+# EI ole sama tapaus kuin "SEURANTA ajautui kokonaan pois oikealta
+# kivelta johonkin toiseen kohteeseen" (jota tama tarkistus alunperin
+# yritti torjua), koska X/Y-sijainti itsessaan pysyy koko ajan
+# sileana ja fysikaalisesti jarkevana (Y vahenee tasaisesti/hidastuen
+# kohti pesaa, X pysyy lahella keskiviivaa) - VAIN tarkka/n_body/rms
+# nayttavat huonolta, koska loydetty yhtenainen kontuuri sisaltaa
+# seka kiven etta lakaisijan. Mitattu oikealla datalla (00014_0202_
+# fp5_positions.csv): AINAKIN 14 todennakoisesti aitoa heittoa (esim.
+# id=134: X=0.1-0.7m koko ajan, Y vahenee sileasti 33.4m->19.1m,
+# n_body vaihtelee 12:sta yli 500:aan mutta sijainti ei koskaan
+# hyppaa) katkaistiin TASAN N=150:n (tai N:n lahella) kohdalla, vaikka
+# muut, kokonaan puhtaat heitot samalla videolla kestivat luonnol-
+# lisesti 472-613 havaintoa (19-24s) ennen omaa "pysahtynyt"-
+# paattymistaan - N=150 (6s) ei siis riittanyt EDES YHDEN normaalin
+# heiton luonnolliseen kestoon, joten se katkaisi tehokkaasti LAHES
+# JOKAISEN lakaisijan saattaman heiton keskelta. N=650 (26s) on
+# reilusti pidempi kuin pisin havaittu aito heitto (613 havaintoa) -
+# antaa siis KAIKILLE aidoille heitoille (myos
+# koko ajan lakaistuille) tilaa kestaa luonnolliseen loppuunsa
+# ("pysahtynyt"-tarkistus tai videon loppu) asti, samalla kun aidosti
+# ongelmalliset kandidaatit (nolla-lahella tarkka-osuus koko elin-
+# kaarensa, ei koskaan puhdasta/liikkuvaa jaksoa) jaavat silti
+# selvasti alle 0.5:n kynnyksen - vain hieman my­ohemmin (26s vs 6s)
+# kuin ennen.
+MIN_CONFIRMED_TARKKA_OBSERVATIONS = 650
 MIN_CONFIRMED_TARKKA_FRACTION = 0.5
 
 # HAKU-valin PAIKALLINEN ylikirjoitus (kayttajan pyynnosta) - EI
