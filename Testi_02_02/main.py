@@ -1383,7 +1383,31 @@ MIN_PRECONFIRM_TARKKA_FRACTION = 0.4
 # kynnys kuin MIN_PRECONFIRM_*: vahvistettu kivi on jo läpaissyt
 # tiukemman esitarkistuksen kerran, joten tama on lisasuoja PITKAAN
 # kestavaa ajautumaa vastaan, ei alkuperainen suodatin.
-MIN_CONFIRMED_TARKKA_OBSERVATIONS = 50
+#
+# 50 -> 150 (kayttajan pyynnosta tehdyn SEURANNAN maskiyhdistelma-
+# korjauksen - stone_tracker.cpp:n createForegroundFromWhitened -
+# jalkeen havaittu tarve, katso myos confirmed_tarkka_window:in oma
+# kommentti kayttokohdassa): korjaus tekee findContourNear:ista
+# herkemman todelliselle, mutta LYHYTAIKAISELLE kosketukselle naapuri-
+# kohteeseen (esim. heittaja/lakaisija VIELA kiven vieressa muutaman
+# sekunnin ajan HETI heiton jalkeen, ennen kuin kivi jaa yksin) - tama
+# nakyy matalana tarkka-osuutena vain ENSIMMAISTEN havaintojen ajan.
+# Ikkuna (deque) sailyttaa vain VIIMEISIMMAT N havaintoa, mutta koska
+# ensimmainen tarkistus tapahtuu heti kun ikkuna on TAYTTYNYT ENSI
+# KERRAN (havainto N), lyhyt N (50 = 2s) tarkistaa VIELA TASMALLEEN
+# saman (kontaminoituneen) jakson kuin kumulatiivinen laskuri olisi -
+# ikkuna ei ehdi "unohtaa" mitaan ennen ensimmaista tarkistusta.
+# Mitattu oikealla datalla: aito kivi hylattiin virheellisesti N=50:n
+# kohdalla (19/50=38%), vaikka sen viimeiset 13 havaintoa ennen tata
+# olivat jo taydellisia (n_body 26-29, rms 0.5-0.9px) - lyhyt n. 1.5s
+# kontaminaatio heti heiton jalkeen ei ollut viela ehtinyt "laimentua"
+# lyhyessa ikkunassa. N=150 (6s) antaa tallaiselle lyhyelle alku-
+# kontaminaatiolle tarpeeksi tilaa laimentua ENNEN ensimmaista tarkis-
+# tusta, samalla kun aidot ongelmalliset kandidaatit (havaittu samasta
+# ajosta: nolla-lahella tarkka-osuus JOKAISEN 49 ensimmaisen havainnon
+# ajan, ei yhtaan puhdasta jaksoa) jaavat silti selvasti alle 0.5:n
+# kynnyksen N=150:n kohdallakin.
+MIN_CONFIRMED_TARKKA_OBSERVATIONS = 150
 MIN_CONFIRMED_TARKKA_FRACTION = 0.5
 
 # HAKU-valin PAIKALLINEN ylikirjoitus (kayttajan pyynnosta) - EI
