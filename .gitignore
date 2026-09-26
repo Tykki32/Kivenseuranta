@@ -1,6 +1,14 @@
 __pycache__/
 *.pyc
 
+# Kaannetyt Python-laajennusmoduulit (esim. stone_tracker.cpp:sta
+# g++:lla kaannetty .so testausta varten Linux-hiekkalaatikossa) -
+# alustakohtaisia binaareja, ei lahdekoodia, projektin oma (Windows-
+# painotteinen) CMakeLists.txt kaantaa nama aina uudelleen tarvit-
+# taessa oikealle kohdealustalle.
+*.so
+*.pyd
+
 # kamera6_08.py:n generoimat debug-/tulostekuvat - ei lahdekoodia,
 # syntyvat aina uudelleen kun skripti ajetaan.
 curling_topdown.png
