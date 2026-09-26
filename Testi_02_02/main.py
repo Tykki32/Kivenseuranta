@@ -1398,15 +1398,25 @@ MIN_PRECONFIRM_TARKKA_FRACTION = 0.4
 # saman (kontaminoituneen) jakson kuin kumulatiivinen laskuri olisi -
 # ikkuna ei ehdi "unohtaa" mitaan ennen ensimmaista tarkistusta.
 # Mitattu oikealla datalla: aito kivi hylattiin virheellisesti N=50:n
-# kohdalla (19/50=38%), vaikka sen viimeiset 13 havaintoa ennen tata
+# kohdalla (19/50=38%), vaikka sen havainnot valilta t=622.68-623.12
+# (juuri se jakso jonka kayttaja alunperin liputti X-hyppimisongelmana)
 # olivat jo taydellisia (n_body 26-29, rms 0.5-0.9px) - lyhyt n. 1.5s
 # kontaminaatio heti heiton jalkeen ei ollut viela ehtinyt "laimentua"
-# lyhyessa ikkunassa. N=150 (6s) antaa tallaiselle lyhyelle alku-
-# kontaminaatiolle tarpeeksi tilaa laimentua ENNEN ensimmaista tarkis-
-# tusta, samalla kun aidot ongelmalliset kandidaatit (havaittu samasta
-# ajosta: nolla-lahella tarkka-osuus JOKAISEN 49 ensimmaisen havainnon
-# ajan, ei yhtaan puhdasta jaksoa) jaavat silti selvasti alle 0.5:n
-# kynnyksen N=150:n kohdallakin.
+# lyhyessa ikkunassa, ja N=50 katkaisi seurannan JUURI TAMAN puhtaan
+# jakson keskella. N=150 (6s) antaa tallaiselle lyhyelle alkukonta-
+# minaatiolle tarpeeksi tilaa laimentua ENNEN ensimmaista tarkistusta -
+# uudella koko radan ajolla sama kivi sailyi nyt seurattuna KOKO sen
+# kayttajan alunperin liputtaman puhtaan jakson ajan (t=622.68-623.12,
+# rms edelleen 0.5-0.9px) ja viela n. 6 sekuntia sen ohi, ennen kuin
+# SEURANTA ajautui my­ohemmin (t~624.2+) toiseen, jo ERIKSEEN tunnet-
+# tuun ja kayttajan tietoisesti rajaamaan ei-kriittiseen harjaan-
+# ajautumis-ongelmaan (katso keskusteluhistoria - tata TOISTA ongelmaa
+# EI korjata tassa, kayttajan nimenomaisesta pyynnosta). Aidot ongel-
+# malliset kandidaatit (havaittu samasta ajosta: n_body 260-280, rms
+# 25-33px koko elinkaarensa ajan yhden ainoan alkuhavainnon jalkeen,
+# ei yhtaan pitkaa puhdasta jaksoa) jaavat silti selvasti alle 0.5:n
+# kynnyksen N=150:n kohdallakin - vain n. 100 ylimaaraista (vaaraa)
+# CSV-riviä ehtii kertya ennen hylkaysta lyhyemman N:n sijaan.
 MIN_CONFIRMED_TARKKA_OBSERVATIONS = 150
 MIN_CONFIRMED_TARKKA_FRACTION = 0.5
 
