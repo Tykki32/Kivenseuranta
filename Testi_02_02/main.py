@@ -1378,6 +1378,14 @@ MIN_CONFIRMED_THROW_DISPLACEMENT_CM = 25.0
 MIN_PRECONFIRM_TARKKA_OBSERVATIONS = 8
 MIN_PRECONFIRM_TARKKA_FRACTION = 0.4
 
+# JATKUVA TARKKA-OSUUSTARKISTUS VAHVISTETUILLE KIVILLE (Testi_02_02,
+# kayttajan pyynnosta) - katso kayttokohdan kommentti. Eri (loyhempi)
+# kynnys kuin MIN_PRECONFIRM_*: vahvistettu kivi on jo läpaissyt
+# tiukemman esitarkistuksen kerran, joten tama on lisasuoja PITKAAN
+# kestavaa ajautumaa vastaan, ei alkuperainen suodatin.
+MIN_CONFIRMED_TARKKA_OBSERVATIONS = 50
+MIN_CONFIRMED_TARKKA_FRACTION = 0.5
+
 # HAKU-valin PAIKALLINEN ylikirjoitus (kayttajan pyynnosta) - EI
 # muuteta kamera9_02.py:n omaa SEARCH_EVERY_N_FRAMES:ia (se tiedosto
 # on koskematon referenssi, katso taman tiedoston alkupaan kommentti).
@@ -4365,15 +4373,67 @@ def run_pipeline(
                                                 csv_writer, pf, pt,
                                                 s["stone_id"], prow
                                             )
+                                            s["confirmed_n_obs"] += 1
+                                            if prow.get("tarkka"):
+                                                s["confirmed_n_tarkka"] += 1
 
                                         s["pending_rows"] = []
 
                             else:
 
-                                _write_stone_csv_row(
-                                    csv_writer, frame_index, timestamp,
-                                    s["stone_id"], refined
-                                )
+                                # --------------------------------
+                                # JATKUVA TARKKA-OSUUSTARKISTUS (Testi_
+                                # 02_02, kayttajan pyynnosta - katso
+                                # keskusteluhistoria): MIN_PRECONFIRM_
+                                # TARKKA_* tarkistaa tarkka-osuuden VAIN
+                                # kerran, liikevahvistushetkella. Havait-
+                                # tiin oikealla datalla (0001/MAH00014,
+                                # jaasuodatuksen jalkeen) etta muutama
+                                # kandidaatti (esim. pyyhkija joka kavelee
+                                # pitkan matkan aidon kiven vieressa)
+                                # lapaisee talla hetkella riittavan
+                                # tarkka-osuuden mutta putoaa sen jalkeen
+                                # pysyvasti matalaksi (esim. 9-28% n. 400
+                                # havainnon ajan) - vahentaa 400+ vaarin
+                                # CSV-riviä 50:aan. Kynnys (0.5, n>=50)
+                                # validoitu koko videoiden oikealla
+                                # datalla: kaikki selvasti aidot pitkaan
+                                # seuratut kivet pysyivat aina >=51.5%:ssa
+                                # (marginaali), kaikki selvasti ongelmal-
+                                # liset kandidaatit alittivat 0.5:n heti
+                                # ensimmaisen 50 havainnon jalkeen (13-48%).
+                                # --------------------------------
+
+                                s["confirmed_n_obs"] += 1
+                                if refined.get("tarkka"):
+                                    s["confirmed_n_tarkka"] += 1
+
+                                if (
+                                    s["confirmed_n_obs"] >= MIN_CONFIRMED_TARKKA_OBSERVATIONS
+                                    and (
+                                        s["confirmed_n_tarkka"] / s["confirmed_n_obs"]
+                                    ) < MIN_CONFIRMED_TARKKA_FRACTION
+                                ):
+
+                                    reject_low_tarkka = True
+                                    print(
+                                        f"[frame {frame_index}] Kivi "
+                                        f"{s['stone_id']} lopetetaan "
+                                        f"(tarkka-osuus {s['confirmed_n_tarkka']}/"
+                                        f"{s['confirmed_n_obs']} "
+                                        f"({100*s['confirmed_n_tarkka']/s['confirmed_n_obs']:.0f}%) "
+                                        "pudonnut pysyvasti liian matalaksi "
+                                        "- todennakoisesti SEURANTA ajautunut "
+                                        "pelaajaan/lakaisijaan aidon kiven "
+                                        "vierella)."
+                                    )
+
+                                else:
+
+                                    _write_stone_csv_row(
+                                        csv_writer, frame_index, timestamp,
+                                        s["stone_id"], refined
+                                    )
 
                             # --------------------------------
                             # PYSAHTYMISTARKISTUS: katso taman
@@ -4572,6 +4632,8 @@ def run_pipeline(
                                 "pending_rows": [
                                     (frame_index, timestamp, dict(refined))
                                 ],
+                                "confirmed_n_obs": 0,
+                                "confirmed_n_tarkka": 0,
                             })
 
                             debug_draw_items.append((
