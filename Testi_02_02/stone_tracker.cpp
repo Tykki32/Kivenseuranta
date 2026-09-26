@@ -2429,6 +2429,37 @@ static py::list track_stones_batch(
 //   position_joint_fast).
 // ============================================================
 
+// Kayttajan raportoima ongelma (katso keskusteluhistoria): kivia "ei
+// tunnisteta tai ne hukataan muutama metri hogin jalkeen" - juurisyy
+// loydetty tasta funktiosta: locateByGridSearchFast palauttaa VAIN
+// YHDEN, KOKO haku-vyohykkeen parhaiten pistetyn (hullOverlapScore)
+// ehdokkaan. hullOverlapScore ei tee eroa kiven ja esim. pelaajan/
+// lakaisijan tumman vaatetuksen valilla (katso alla oleva, jo
+// olemassaollut kommentti) - PELAAJA ON TYYPILLISESTI LAHEMPANA
+// KAMERAA JA ISOMPI kuin kaukainen, ohuena sivuprofiilina nakyva kivi,
+// joten pelaaja VOITTAA ristikkohaun LAHES AINA kun molemmat ovat
+// samaan aikaan hakuvyohykkeella (esim. lakaisija/skippi seisoo tai
+// kavelee hog-linjan tuntumassa, mika on aivan tavallista curlingissa
+// juuri talla vyohykkeella). Koska funktio aiemmin kokeili VAIN taman
+// YHDEN parhaan ehdokkaan (ja hylkasi sen oikein refined.tarkka:n
+// kautta koska pelaaja ei ole pyorea), koko HAKU-yritys palautti
+// TYHJAA - kivi EI KOSKAAN paassyt edes yritykseen asti, vaikka se
+// olisi ollut samaan aikaan nakyvissa samalla vyohykkeella.
+//
+// KORJAUS: jos parhaaksi loydetty ehdokas ei lapaise refined.tarkka-
+// tarkistusta (ts. ei ole oikeasti pyorea kivi), sen sijaan etta
+// luovutetaan valittomasti, POISTETAAN se hakumaskista (taytetaan
+// nolliksi koko sen SAMA yhtenainen maskialue, cv::floodFill, ei vain
+// kiven kokoinen laatikko - pelaaja on yleensa isompi kuin kivimalli,
+// joten pelkka kiven kokoinen alue ei riittaisi estamaan samaa
+// pelaajaa "voittamasta" uudelleen seuraavalla yrityksella) ja
+// YRITETAAN UUDELLEEN jaljella olevalla vyohykkeella - jolloin
+// SEURAAVAKSI paras ehdokas (mahdollisesti oikea, kauempana oleva
+// kivi) paasee vuoroon. Rajattu MAX_HAKU_ATTEMPTS_PER_SCAN kertaan
+// ettei yksi skannaus voi jaada ikuisesti silmukkaan (esim. useita
+// pelaajia vyohykkeella).
+static const int MAX_HAKU_ATTEMPTS_PER_SCAN = 5;
+
 static StoneUpdateResult searchNewStoneOne(
     const cv::Mat& frame_mat, const cv::Mat& background_reference, double diff_threshold,
     const std::vector<cv::Point3d>& local_pts_body,
@@ -2458,59 +2489,124 @@ static StoneUpdateResult searchNewStoneOne(
 
     StoneUpdateResult out;
 
-    auto best = locateByGridSearchFast(
-        local_pts_search, mask_search, 0, 0,
-        x_center, x_half_width, y_center, y_half_range,
-        coarse_step_cm, fine_step_cm, K, R, t
-    );
+    for (int attempt = 0; attempt < MAX_HAKU_ATTEMPTS_PER_SCAN; ++attempt) {
+
+        auto best = locateByGridSearchFast(
+            local_pts_search, mask_search, 0, 0,
+            x_center, x_half_width, y_center, y_half_range,
+            coarse_step_cm, fine_step_cm, K, R, t
+        );
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
-    auto t4 = std::chrono::steady_clock::now();
-    auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
-    fprintf(stderr, "[HAKU timing] suppress=%.2fms mask=%.2fms sat=%.2fms grid=%.2fms",
-            ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4));
+        auto t4 = std::chrono::steady_clock::now();
+        auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+        if (attempt == 0)
+            fprintf(stderr, "[HAKU timing] suppress=%.2fms mask=%.2fms sat=%.2fms grid=%.2fms",
+                    ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4));
 #endif
 
-    out.score = best.second;
+        out.score = best.second;
 
-    if (out.score < score_threshold) {
+        if (out.score < score_threshold) {
 #ifdef STONE_TRACKER_DEBUG_TIMING
-        fprintf(stderr, " (no refine, score=%.3f)\n", out.score);
+            fprintf(stderr, " (no refine, score=%.3f, attempt=%d)\n", out.score, attempt);
 #endif
-        return out;
+            return out;
+        }
+
+        RefineResult refined = refinePositionJoint(
+            mask_search, sat_search, 0, 0, frame_w, frame_h, local_pts_body, K, R, t,
+            R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
+        );
+
+        // Sama liian-ison-kontuurin hylkays kuin trackStoneUpdateOne:ssa -
+        // katso sen kommentti. LISAKSI (kayttajan pyynnosta, katso git-
+        // historia): UUDEN kiven hyvaksyminen (HAKU, VAIN tama funktio -
+        // EI trackStoneUpdateOne/SEURANTA, joka jatkaa jo VAKIINTUNUTTA
+        // kiveä ja sietaa satunnaisen epatarkan framen normaalisti) vaatii
+        // LISAKSI etta yhteissovitus oikeasti ONNISTUI (refined.tarkka) -
+        // ei riita etta ristikkohaun peittopisteytys (hullOverlapScore =
+        // pelkka peitto-osuus, ei ylarajaa ymparoivan tumman alueen
+        // koolle) ylitti kynnyksen, koska pelaajan tumma vaatetus peittaa
+        // aivan yhta hyvin (jopa paremmin) pienen kivimallin kuin oikea
+        // kivi - EROTTAVA tekija on ONKO siina OIKEASTI kiven pyorea
+        // reuna/rengasrakenne loydettavissa (detectBoundaryPoints+LM-
+        // sovitus, refined.tarkka), EI onko jotain tummaa lahella. Tama
+        // HYVAKSYY edelleen kiven joka on OSITTAIN heittajan/lakaisijan
+        // peitossa TAI liitoksissa heihin maskissa (esim. juuri heitetty
+        // kivi jonka yli heittaja nakyy) - riittaa etta kiven OMA reuna
+        // on paikoin nakyvissa niin etta sovitus konvergoi - EI hylkaa
+        // pelkastaan siksi etta jotain muutakin (esim. pelaaja) on
+        // samassa maskin yhtenaisessa alueessa/lahella.
+        bool accept = !refined.oversized_reject && refined.tarkka;
+
+#ifdef STONE_TRACKER_DEBUG_TIMING
+        fprintf(stderr, " refine=%.2fms attempt=%d%s%s\n", ms(t4, std::chrono::steady_clock::now()),
+                attempt, refined.oversized_reject ? " OVERSIZED_REJECT" : "",
+                accept ? " ACCEPTED" : " (ei pyorea, poistetaan alue ja yritetaan uudelleen)");
+#endif
+
+        if (accept) {
+            out.refined = refined;
+            out.has_position = true;
+            return out;
+        }
+
+        // Ei kelvannut - poistetaan TAMA yhtenainen maskialue (floodFill,
+        // ei vain kiven kokoinen laatikko - katso ylla oleva kommentti)
+        // jotta sama (esim. pelaaja) ei voi voittaa uudelleen, ja
+        // yritetaan seuraavaa parasta jaljella olevalla vyohykkeella.
+        std::vector<cv::Point3d> best_pos3d{
+            cv::Point3d(best.first.x, best.first.y, H_total_cm / 2.0)
+        };
+        auto best_proj = project3d(K, R, t, best_pos3d);
+        int px0 = (int)std::lround(best_proj[0].x);
+        int py0 = (int)std::lround(best_proj[0].y);
+
+        // Etsitaan LAHIN maskin ei-nolla-pikseli (px0,py0):n ymparilta -
+        // hullOverlapScore:n voittanut malliprojektio ei valttamatta osu
+        // TASAN oikean kohteen omalle pikselille (mallin keskipisteen
+        // projektio vs. kohteen todellinen muoto/paikka maskissa voivat
+        // poiketa hieman), mutta jokin ei-nolla pikseli on TAKUULLA
+        // lahella koska juuri tama alue voitti peitto-osuuspisteytyksen.
+        int seed_px = -1, seed_py = -1;
+        const int SEED_SEARCH_RADIUS_PX = 25;
+        for (int rad = 0; rad <= SEED_SEARCH_RADIUS_PX && seed_px < 0; ++rad) {
+            int x_lo = std::max(0, px0 - rad), x_hi = std::min(mask_search.cols - 1, px0 + rad);
+            int y_lo = std::max(0, py0 - rad), y_hi = std::min(mask_search.rows - 1, py0 + rad);
+            for (int yy = y_lo; yy <= y_hi && seed_px < 0; ++yy) {
+                bool on_border_row = (yy == py0 - rad || yy == py0 + rad);
+                int step = on_border_row ? 1 : std::max(1, x_hi - x_lo);
+                for (int xx = x_lo; xx <= x_hi; xx += step) {
+                    if (mask_search.at<uchar>(yy, xx) != 0) {
+                        seed_px = xx; seed_py = yy;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (seed_px < 0) {
+            // Ei loytynyt yhtaan ei-nolla pikselia edes lahialueelta -
+            // ei voida poistaa mitaan yhtenaista aluetta, luovutetaan
+            // ettei jaada ikuisesti samaan tulokseen.
+            out.has_position = false;
+            return out;
+        }
+
+        cv::Mat flood_mask = cv::Mat::zeros(mask_search.rows + 2, mask_search.cols + 2, CV_8UC1);
+        cv::floodFill(
+            mask_search, flood_mask, cv::Point(seed_px, seed_py), cv::Scalar(0),
+            nullptr, cv::Scalar(0), cv::Scalar(0), 4 | cv::FLOODFILL_MASK_ONLY | (255 << 8)
+        );
+        // FLOODFILL_MASK_ONLY jattaa mask_search:in itsensa koskematto-
+        // maksi (vain flood_mask taytetaan) - poistetaan loydetty alue
+        // eksplisiittisesti mask_search:ista flood_mask:in perusteella.
+        cv::Mat region = flood_mask(cv::Rect(1, 1, mask_search.cols, mask_search.rows));
+        mask_search.setTo(cv::Scalar(0), region);
     }
 
-    out.refined = refinePositionJoint(
-        mask_search, sat_search, 0, 0, frame_w, frame_h, local_pts_body, K, R, t,
-        R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
-    );
-
-    // Sama liian-ison-kontuurin hylkays kuin trackStoneUpdateOne:ssa -
-    // katso sen kommentti. LISAKSI (kayttajan pyynnosta, katso git-
-    // historia): UUDEN kiven hyvaksyminen (HAKU, VAIN tama funktio -
-    // EI trackStoneUpdateOne/SEURANTA, joka jatkaa jo VAKIINTUNUTTA
-    // kiveä ja sietaa satunnaisen epatarkan framen normaalisti) vaatii
-    // LISAKSI etta yhteissovitus oikeasti ONNISTUI (refined.tarkka) -
-    // ei riita etta ristikkohaun peittopisteytys (hullOverlapScore =
-    // pelkka peitto-osuus, ei ylarajaa ymparoivan tumman alueen
-    // koolle) ylitti kynnyksen, koska pelaajan tumma vaatetus peittaa
-    // aivan yhta hyvin (jopa paremmin) pienen kivimallin kuin oikea
-    // kivi - EROTTAVA tekija on ONKO siina OIKEASTI kiven pyorea
-    // reuna/rengasrakenne loydettavissa (detectBoundaryPoints+LM-
-    // sovitus, refined.tarkka), EI onko jotain tummaa lahella. Tama
-    // HYVAKSYY edelleen kiven joka on OSITTAIN heittajan/lakaisijan
-    // peitossa TAI liitoksissa heihin maskissa (esim. juuri heitetty
-    // kivi jonka yli heittaja nakyy) - riittaa etta kiven OMA reuna
-    // on paikoin nakyvissa niin etta sovitus konvergoi - EI hylkaa
-    // pelkastaan siksi etta jotain muutakin (esim. pelaaja) on
-    // samassa maskin yhtenaisessa alueessa/lahella.
-    out.has_position = !out.refined.oversized_reject && out.refined.tarkka;
-
-#ifdef STONE_TRACKER_DEBUG_TIMING
-    auto t5 = std::chrono::steady_clock::now();
-    fprintf(stderr, " refine=%.2fms%s\n", ms(t4, t5), out.refined.oversized_reject ? " OVERSIZED_REJECT" : "");
-#endif
-
+    out.has_position = false;
     return out;
 }
 
