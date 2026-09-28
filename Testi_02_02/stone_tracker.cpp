@@ -1029,6 +1029,69 @@ static std::vector<cv::Point2d> filterIceBoundaryPoints(
 // kamera9_03.py:n _ring_point_residuals)
 // ============================================================
 
+// Kahvan aiheuttaman kolon sade suhteessa R_max:iin - kolon SIJAINTI on
+// MAARITELTY (keskitetty kiven pystyakselille (X0,Y0) korkeudella
+// z=H_total), mutta SADE (handle_r_frac) on kayttajan pyynnosta
+// AJONAIKAINEN PARAMETRI, sovitettu Pythonin fit_stone_profile:ssa
+// (kamera9_01.py:n HANDLE_NOTCH_R_FRAC-kommentti) ja annettu tanne
+// jokaisen kutsun mukana (R_max_cm/H_total_cm:n tapaan) - EI enaa
+// kiintea C++-vakio.
+static std::vector<cv::Point2f> predictedNotchHull(
+    double X0, double Y0, double R_max_cm, double H_total_cm, double handle_r_frac,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    int n_theta = 28)
+{
+    double r_cm = handle_r_frac * R_max_cm;
+    std::vector<cv::Point2f> proj_f((size_t)n_theta);
+    bool all_finite = true;
+
+    for (int i = 0; i < n_theta; ++i) {
+        double theta = 2.0 * M_PI * (double)i / (double)n_theta;
+        cv::Vec3d p(X0 + r_cm * std::cos(theta), Y0 + r_cm * std::sin(theta), H_total_cm);
+        cv::Vec3d pc = R * p + t;
+        cv::Vec3d pi = K * pc;
+        double px = pi[0] / pi[2], py = pi[1] / pi[2];
+
+        if (!std::isfinite(px) || !std::isfinite(py))
+            all_finite = false;
+        proj_f[(size_t)i] = cv::Point2f((float)px, (float)py);
+    }
+
+    if (!all_finite)
+        return {};
+
+    std::vector<cv::Point2f> hull;
+    cv::convexHull(proj_f, hull);
+
+    if (hull.size() < 3)
+        return {};
+
+    return hull;
+}
+
+// kamera9_01.py:n _signed_dist_with_notch:in porttaus - etumerkillinen
+// etaisyys graniittirungon (hull) MIINUS kahvan kolon (notch_hull)
+// reunaan. Positiivinen SISALLA todellisessa (kolollisessa) muodossa,
+// negatiivinen ULKOPUOLELLA (joko kokonaan hullin ulkopuolella TAI
+// kolon SISALLA, koska kolo on POIS LEIKATTU alue).
+static double signedDistWithNotch(
+    const std::vector<cv::Point2f>& hull,
+    const std::vector<cv::Point2f>& notch_hull,
+    const cv::Point2f& pt)
+{
+    double d_outer = cv::pointPolygonTest(hull, pt, true);
+
+    if (notch_hull.empty() || d_outer <= 0.0)
+        return d_outer;
+
+    double d_notch = cv::pointPolygonTest(notch_hull, pt, true);
+
+    if (d_notch > 0.0)
+        return -d_notch;
+
+    return std::min(d_outer, -d_notch);
+}
+
 // OPTIMOINTI (EI numeerista eroa): pts otetaan nyt VALMIIKSI Point2f:
 // ksi kasteltuna (katso toPoint2fVec) - profileResiduals on jointResi
 // duals:in kautta LM:n Jacobian/damping-silmukan sisalla, kutsuttuna
@@ -1041,8 +1104,22 @@ static std::vector<cv::Point2d> filterIceBoundaryPoints(
 // on deterministinen - sama kutsu tuottaa AINA saman bittitarkan
 // tuloksen laskettiinpa se kerran tai monta kertaa, joten tama EI
 // muuta yhtaan lukua.
+//
+// HUOM (kayttajan pyynnosta lisatty kahvan kolo): TAMA on TARKKA
+// residuaalifunktio, ja on NYT kolotietoinen (predictedNotchHull +
+// signedDistWithNotch). levenbergMarquardt3Linearized:in OMA,
+// linearisoitu nopea polku (buildLinearizedHull/evalLinearizedHull)
+// EI ole paivitetty kolotietoiseksi - se mallintaa vain konveksin
+// ulkorungon, ei koloa. Tama on TIETOINEN rajaus: levenbergMarquardt3
+// LinearizedVerified vertaa linearisoidun tuloksen TARKKAA (tata
+// funktiota kayttavaa) kustannusta lahtopisteen tarkkaan kustannukseen
+// ja hylkaa linearisoidun tuloksen taydeksi tarkaksi LM:ksi jos se ei
+// ole vahintaan yhta hyva - kolon aiheuttama poikkeama nakyy siis AINA
+// oikein lopullisessa hyvaksytyssa tuloksessa, vaikka linearisoitu
+// nopea polku itse ei sita "nae" hakiessaan askeltaan.
 static std::vector<double> profileResiduals(
     const std::vector<cv::Point3d>& local_pts_body, double X0, double Y0,
+    double R_max_cm, double H_total_cm, double handle_r_frac,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     const std::vector<cv::Point2f>& pts_f)
 {
@@ -1055,8 +1132,10 @@ static std::vector<double> profileResiduals(
         return out;
     }
 
+    auto notch_hull = predictedNotchHull(X0, Y0, R_max_cm, H_total_cm, handle_r_frac, K, R, t);
+
     for (size_t i = 0; i < pts_f.size(); ++i)
-        out[i] = cv::pointPolygonTest(hull, pts_f[i], true);
+        out[i] = signedDistWithNotch(hull, notch_hull, pts_f[i]);
 
     return out;
 }
@@ -1146,6 +1225,8 @@ struct ResidualContext {
     const std::vector<cv::Point2f>* body_pts_f;
     const std::vector<cv::Point2f>* ring_pts_f;
     double ring_height_cm;
+    double R_max_cm;
+    double handle_r_frac;
     const cv::Matx33d* K;
     const cv::Matx33d* R;
     const cv::Vec3d* t;
@@ -1158,7 +1239,11 @@ static std::vector<double> jointResiduals(const ResidualContext& ctx, const cv::
     std::vector<double> out;
 
     if (!ctx.body_pts_f->empty()) {
-        auto r = profileResiduals(*ctx.local_pts_body, X, Y, *ctx.K, *ctx.R, *ctx.t, *ctx.body_pts_f);
+        // ring_height_cm == H_total_cm (katso refinePositionJoint:in
+        // "double ring_height_cm = H_total_cm;") - uudelleenkaytetty
+        // tassa H_total_cm:na, ei oma erillinen kenttansa.
+        auto r = profileResiduals(*ctx.local_pts_body, X, Y, ctx.R_max_cm, ctx.ring_height_cm,
+                                   ctx.handle_r_frac, *ctx.K, *ctx.R, *ctx.t, *ctx.body_pts_f);
         out.insert(out.end(), r.begin(), r.end());
     }
 
@@ -1849,7 +1934,7 @@ static RefineResult refinePositionJoint(
     int frame_w, int frame_h,
     const std::vector<cv::Point3d>& local_pts_body,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double X0_approx, double Y0_approx)
 {
     // Python: mask/sat ANNETAAN AINA koko-framen kokoisina taulukkoina
@@ -1969,14 +2054,14 @@ static RefineResult refinePositionJoint(
             return res;
         }
 
-        ResidualContext ctx{ &local_pts_body, &body_pts_f, &ring_pts_f, ring_height_cm, &K, &R, &t };
+        ResidualContext ctx{ &local_pts_body, &body_pts_f, &ring_pts_f, ring_height_cm, R_max_cm, handle_r_frac, &K, &R, &t };
         cv::Vec3d params_final = levenbergMarquardt3LinearizedVerified(ctx, cv::Vec3d(X_cur, Y_cur, R_cur), 30);
 
         std::vector<cv::Point2d> clean_body = body_pts;
         std::vector<cv::Point2d> clean_ring = ring_pts;
 
         if (n_body > 0) {
-            auto body_resid = profileResiduals(local_pts_body, params_final[0], params_final[1], K, R, t, body_pts_f);
+            auto body_resid = profileResiduals(local_pts_body, params_final[0], params_final[1], R_max_cm, H_total_cm, handle_r_frac, K, R, t, body_pts_f);
             double med = median(body_resid);
             std::vector<double> abs_dev(body_resid.size());
             for (size_t i = 0; i < body_resid.size(); ++i) abs_dev[i] = std::abs(body_resid[i] - med);
@@ -2015,11 +2100,11 @@ static RefineResult refinePositionJoint(
             (clean_ring.size() == ring_pts.size()) ? ring_pts_f : toPoint2fVec(clean_ring);
 
         if (clean_body.size() != body_pts.size() || clean_ring.size() != ring_pts.size()) {
-            ResidualContext ctx2{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, &K, &R, &t };
+            ResidualContext ctx2{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, R_max_cm, handle_r_frac, &K, &R, &t };
             params_final = levenbergMarquardt3LinearizedVerified(ctx2, params_final, 30);
         }
 
-        ResidualContext ctx_final{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, &K, &R, &t };
+        ResidualContext ctx_final{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, R_max_cm, handle_r_frac, &K, &R, &t };
         auto resid_final = jointResiduals(ctx_final, params_final);
 
         if (!resid_final.empty()) {
@@ -2110,7 +2195,7 @@ static StoneUpdateResult trackStoneUpdateOne(
     double track_half_range_x_cm, double track_half_range_y_cm,
     double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double max_backward_cm)
 {
     int frame_w = frame_mat.cols, frame_h = frame_mat.rows;
@@ -2213,7 +2298,7 @@ static StoneUpdateResult trackStoneUpdateOne(
 
     out.refined = refinePositionJoint(
         mask_for_track, sat_crop, roi.x, roi.y, frame_w, frame_h, local_pts_body, K, R, t,
-        R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
+        R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, best.first.x, best.first.y
     );
 
     // Jos lahin runkokontuuri hylattiin YKSINOMAAN liian suuren pinta-
@@ -2276,7 +2361,7 @@ static py::dict track_stone_update(
     double track_half_range_x_cm, double track_half_range_y_cm,
     double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double max_backward_cm,
     double diff_threshold = 30.0)
 {
@@ -2303,7 +2388,7 @@ static py::dict track_stone_update(
         result = trackStoneUpdateOne(
             frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
             X0, Y0, track_half_range_x_cm, track_half_range_y_cm, coarse_step_cm, fine_step_cm,
-            score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, max_backward_cm
+            score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, max_backward_cm
         );
     }
 
@@ -2325,7 +2410,7 @@ static py::list track_stones_batch(
     py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
     double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double max_backward_cm,
     double diff_threshold = 30.0)
 {
@@ -2386,7 +2471,7 @@ static py::list track_stones_batch(
                 results[(size_t)i] = trackStoneUpdateOne(
                     frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
                     X0b(i), Y0b(i), HXb(i), HYb(i), coarse_step_cm, fine_step_cm,
-                    score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, max_backward_cm
+                    score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, max_backward_cm
                 );
             }
         };
@@ -2467,7 +2552,7 @@ static StoneUpdateResult searchNewStoneOne(
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     double x_center, double x_half_width, double y_center, double y_half_range,
     double coarse_step_cm, double fine_step_cm, double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac)
 {
     int frame_w = frame_mat.cols, frame_h = frame_mat.rows;
 
@@ -2516,7 +2601,7 @@ static StoneUpdateResult searchNewStoneOne(
 
         RefineResult refined = refinePositionJoint(
             mask_search, sat_search, 0, 0, frame_w, frame_h, local_pts_body, K, R, t,
-            R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
+            R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, best.first.x, best.first.y
         );
 
         // Sama liian-ison-kontuurin hylkays kuin trackStoneUpdateOne:ssa -
@@ -2621,7 +2706,7 @@ static py::dict search_new_stone(
     py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
     double x_center, double x_half_width, double y_center, double y_half_range,
     double coarse_step_cm, double fine_step_cm, double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double diff_threshold = 30.0)
 {
     auto buf = frame_u.request();
@@ -2665,7 +2750,7 @@ static py::dict search_new_stone(
             frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
             x_center, x_half_width, y_center, y_half_range,
             coarse_step_cm, fine_step_cm, score_threshold,
-            R_max_cm, H_total_cm, ring_r_frac_guess
+            R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac
         );
     }
 
@@ -2881,7 +2966,7 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("track_half_range_x_cm"), py::arg("track_half_range_y_cm"),
           py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
-          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"), py::arg("handle_r_frac"),
           py::arg("max_backward_cm"),
           py::arg("diff_threshold") = 30.0);
 
@@ -2894,7 +2979,7 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("K"), py::arg("R"), py::arg("t"),
           py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
-          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"), py::arg("handle_r_frac"),
           py::arg("max_backward_cm"),
           py::arg("diff_threshold") = 30.0);
 
@@ -2907,7 +2992,7 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("y_center"), py::arg("y_half_range"),
           py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
-          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"), py::arg("handle_r_frac"),
           py::arg("diff_threshold") = 30.0);
 
     m.def("scan_stone_candidates", &scan_stone_candidates,
