@@ -3974,14 +3974,15 @@ def run_pipeline(
                     )
 
                     # stone_tracker.cpp:n refine_position_joint-portin
-                    # ring_r_frac_guess - katso kamera9_04.py:n refine_
-                    # position_joint_fast:in oma laskenta, riippuu vain
-                    # profiilin muodosta (shape_deltas), ei framesta,
-                    # joten lasketaan kerran tanne kuten muukin live_
-                    # state.
-                    ring_r_frac_guess = float(
-                        (k9._TEMPLATE_R_FRAC + shape_deltas)[-1]
-                    )
+                    # ring_r_frac_guess - kahvan kiinnityslevyn (EI
+                    # juoksurenkaan) NAKYVA sade R_max:iin nahden, katso
+                    # kamera9_01.py:n HANDLE_PLATE_R_FRAC_GUESS-kommentti.
+                    # Tama on OMA, graniitin (nyt symmetriseksi
+                    # pakotetun) runkoprofiilin muodosta RIIPPUMATON
+                    # vakio - profiilin viimeinen piste EI enaa vastaa
+                    # kahvan kiinnityslevya, koska ylapuolisko peilataan
+                    # alapuoliskosta.
+                    ring_r_frac_guess = k9.HANDLE_PLATE_R_FRAC_GUESS
 
                     print(
                         "Rakennetaan kiven pintavarireferenssia "
