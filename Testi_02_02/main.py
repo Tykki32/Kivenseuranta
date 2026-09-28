@@ -3974,14 +3974,22 @@ def run_pipeline(
                     )
 
                     # stone_tracker.cpp:n refine_position_joint-portin
-                    # ring_r_frac_guess - katso kamera9_04.py:n refine_
-                    # position_joint_fast:in oma laskenta, riippuu vain
-                    # profiilin muodosta (shape_deltas), ei framesta,
-                    # joten lasketaan kerran tanne kuten muukin live_
-                    # state.
-                    ring_r_frac_guess = float(
-                        (k9._TEMPLATE_R_FRAC + shape_deltas)[-1]
-                    )
+                    # ring_r_frac_guess - alkuarvaus ERILLISELLE saturaatio-
+                    # pohjaiselle "rengashaulle" (kahvan kiinnityslevyn reunan
+                    # etsintaan, katso stone_tracker.cpp:n oma kommentti) -
+                    # kaytetaan sovitettua handle_r_frac:ia myos taman haun
+                    # alkuarvauksena, koska se on parempi (datasta sovitettu)
+                    # lahtokohta kuin vanha kiintea HANDLE_NOTCH_R_FRAC-vakio.
+                    #
+                    # handle_r_frac - kahvan aiheuttaman kolon SADE, joka
+                    # VAHENNETAAN graniittirungon konveksista peitteesta
+                    # (predictedNotchHull/profileResiduals, katso kamera9_01.
+                    # py:n HANDLE_NOTCH_R_FRAC-kommentti). Kayttajan pyynnosta
+                    # fit_stone_profile SOVITTAA taman datasta, ja stone_
+                    # tracker.cpp:n elava seuranta kayttaa NYT samaa sovitettua
+                    # arvoa ajonaikaisena parametrina (EI enaa kiintea C++-vakio).
+                    ring_r_frac_guess = profile["handle_r_frac"]
+                    handle_r_frac = profile["handle_r_frac"]
 
                     print(
                         "Rakennetaan kiven pintavarireferenssia "
@@ -4018,6 +4026,7 @@ def run_pipeline(
                         "local_pts_search": local_pts_search,
                         "R_max": R_max, "H_total": H_total,
                         "ring_r_frac_guess": ring_r_frac_guess,
+                        "handle_r_frac": handle_r_frac,
                         "color_reference": stone_color_reference,
                     }
 
@@ -4160,7 +4169,7 @@ def run_pipeline(
                         k92.SEARCH_COARSE_STEP_CM, k92.SEARCH_FINE_STEP_CM,
                         k92.SEARCH_SCORE_THRESHOLD,
                         live_state["R_max"], live_state["H_total"],
-                        live_state["ring_r_frac_guess"],
+                        live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
                         haku_seuranta_diff_threshold
                     )
 
@@ -4244,7 +4253,7 @@ def run_pipeline(
                         k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
                         k92.TRACK_SCORE_THRESHOLD,
                         live_state["R_max"], live_state["H_total"],
-                        live_state["ring_r_frac_guess"],
+                        live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
                         TRACK_MAX_BACKWARD_CM,
                         haku_seuranta_diff_threshold
                     )
@@ -5222,6 +5231,8 @@ def main(debug=None, start_time=None, end_time=None):
         print(
             f"3D-kiviprofiili: R_max={profile['R_max_cm']:.2f} cm, "
             f"H_total={profile['H_total_cm']:.2f} cm, "
+            f"kahvan_r={profile['handle_r_frac']:.3f} "
+            f"({profile['handle_r_frac']*profile['R_max_cm']:.2f} cm), "
             f"RMS={profile['residual_rms_px']:.2f} px "
             f"({result['n_profile_observations']} havaintoa)"
         )
