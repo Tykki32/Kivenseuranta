@@ -1477,6 +1477,20 @@ HAKU_SEARCH_INTERVAL_FRAMES = 10
 # testivideolla havaittu poikkeama n. 66 cm yhden ja saman kiven
 # kahden eri hakumekanismin valilla, joten kynnys pidetaan reilusti
 # sen ylapuolella.
+#
+# HUOM (kayttajan loytama bugi MAH-videolla, katso keskusteluhistoria):
+# tama vertailu koski AIEMMIN KAIKKIA active_stones-listan kiviä, myos
+# viela VAHVISTAMATTOMIA (s["confirmed"]==False) ehdokkaita. Jos HAKU
+# tunnisti pelaajan/lakaisijan jalan viereltä kiveksi (aito ongelma -
+# pelkkaan muotoon/kokoon perustuva sovitus ei tunne varia), tama
+# vahvistamaton "kivi" esti TAYSIN HILJAA (ei lokiviestia) sen VIERESSA
+# olevan OIKEAN kiven rekisteroitymisen niin kauan kuin vaara ehdokas
+# pysyi aktiivisena (jopa useita sekunteja) - koska etaisyys mitattiin
+# myos siihen. Korjaus: dedup-vertailu tehdaan nyt vain jo VAHVISTETTUIHIN
+# kiviin (s["confirmed"]) - kaksi AITOA, jo vahvistettua kiveä eivat
+# edelleenkaan voi saada duplikaatti-ID:ta, mutta viela vahvistamaton
+# (mahdollisesti vaara) ehdokas ei enaa voi tukkia vieressa olevan
+# oikean kiven havaitsemista.
 NEW_STONE_DEDUP_CM = 100.0
 
 # Kayttajan pyynnosta: kun kivi on ollut lahes paikallaan (liikkunut
@@ -4677,6 +4691,7 @@ def run_pipeline(
                                 bx - s["last_xy"][0], by - s["last_xy"][1]
                             ) < NEW_STONE_DEDUP_CM
                             for s in active_stones
+                            if s["confirmed"]
                         )
 
                         # --------------------------------------------
