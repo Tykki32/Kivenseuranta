@@ -585,12 +585,12 @@ STONE_PROFILE_TEMPLATE_NORM = [
     (0.00, 0.75),   # pohja (arvioitu - kovera alusta, ei tarkkaan mitattavissa kuvasta)
     (0.18, 0.94),   # levenee nopeasti
     (0.30, 0.98),
-    (0.45, 1.00),   # "paiva" - leveimmillaan
-    (0.60, 1.00),   # pysyy leveimmillaan (loiva huippu, ei terava)
-    (0.75, 0.97),
-    (0.88, 0.90),
-    (0.96, 0.81),
-    (1.00, 0.37),   # kahvan kiinnityslevyn reuna - jyrkka rajaus
+    (0.40, 1.00),   # "paiva" - leveimmillaan
+    (0.50, 1.00),   # pysyy leveimmillaan (loiva huippu, ei terava)
+    (0.60, 1.00),
+    (0.70, 0.98),
+    (0.82, 0.94),
+    (1.00, 0.75),   # kahvan kiinnityslevyn reuna - jyrkka rajaus
 ]
 
 _TEMPLATE_Z_FRAC = np.array([p[0] for p in STONE_PROFILE_TEMPLATE_NORM])
