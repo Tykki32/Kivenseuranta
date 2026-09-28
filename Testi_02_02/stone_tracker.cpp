@@ -198,6 +198,24 @@ static const int MASK_ROI_MARGIN_PX = 150;
 // (95%) testihullon".
 static const double TRACK_EARLY_STOP_SCORE = 0.95;
 
+// HULLIN ULKOPUOLISTEN LOYDOSTEN MIINUSPISTEET (UUSI, EI Python-
+// porttaus - kayttajan pyynnosta): hullOverlapScore oli aiemmin
+// YKSISUUNTAINEN - se mittasi VAIN kuinka suuri osa ennustetun
+// hullin SISALLA olevista pikseleista loytyy maskista, muttei
+// mitenkaan rangaissut siita etta maski jatkuu reilusti hullin
+// ULKOPUOLELLE (esim. pelaaja/harja tai kaksi toisiinsa koskettavaa
+// kivea, jotka voisivat silti antaa taydellisen 1.0-pistemaaran
+// koska KAIKKI hullin pikselit sattuvat olemaan maskissa). Lisatty
+// "turvavyohyke" (hulli laajennettuna HULL_MARGIN_SCALE:lla omasta
+// painopisteestaan) - vyohykkeen SISALLA (mutta alkuperaisen hullin
+// ULKOPUOLELLA) loydetyt maskipikselit vahennetaan pistemaarasta
+// painotettuna HULL_OUTSIDE_PENALTY_WEIGHT:lla. Hullin skaalaus
+// 2D:ssa omasta painopisteestaan (ei 3D-sateen kautta) on tietoinen
+// yksinkertaistus - riittavan tarkka pienelle (10%) marginaalille,
+// eika vaadi K/R/t-projektiota tai 3D-pisteita tahan funktioon.
+static const double HULL_MARGIN_SCALE = 1.10;
+static const double HULL_OUTSIDE_PENALTY_WEIGHT = 1.0;
+
 
 // ============================================================
 // KAMERAPROJEKTIO (kamera9_01.py:n _project_3d)
@@ -300,7 +318,24 @@ static double hullOverlapScore(
         hull_int[i] = cv::Point((int)(hull[i].x), (int)(hull[i].y));
     for (auto& p : hull_int) { p.x -= off_x; p.y -= off_y; }
 
-    cv::Rect bbox = cv::boundingRect(hull_int);
+    // Turvavyohyke (UUSI, EI Python-porttaus): hulli skaalattuna
+    // HULL_MARGIN_SCALE:lla OMASTA PAINOPISTEESTAAN - suhteellinen
+    // (pikseleina hullin omaan kokoon nahden, EI kiintea cm-etaisyys),
+    // katso TAMAN FUNKTION ylla oleva HULL_MARGIN_SCALE-kommentti.
+    cv::Point2d centroid(0.0, 0.0);
+    for (auto& p : hull_int) { centroid.x += p.x; centroid.y += p.y; }
+    centroid.x /= (double)hull_int.size();
+    centroid.y /= (double)hull_int.size();
+
+    std::vector<cv::Point> margin_int(hull_int.size());
+    for (size_t i = 0; i < hull_int.size(); ++i) {
+        margin_int[i] = cv::Point(
+            (int)std::lround(centroid.x + (hull_int[i].x - centroid.x) * HULL_MARGIN_SCALE),
+            (int)std::lround(centroid.y + (hull_int[i].y - centroid.y) * HULL_MARGIN_SCALE)
+        );
+    }
+
+    cv::Rect bbox = cv::boundingRect(margin_int);
 
     int x0 = std::max(bbox.x, 0);
     int y0 = std::max(bbox.y, 0);
@@ -314,6 +349,10 @@ static double hullOverlapScore(
     for (size_t i = 0; i < hull_int.size(); ++i)
         shifted[i] = cv::Point(hull_int[i].x - x0, hull_int[i].y - y0);
 
+    std::vector<cv::Point> margin_shifted(margin_int.size());
+    for (size_t i = 0; i < margin_int.size(); ++i)
+        margin_shifted[i] = cv::Point(margin_int[i].x - x0, margin_int[i].y - y0);
+
     cv::Mat canvas = cv::Mat::zeros(y1 - y0, x1 - x0, CV_8UC1);
     std::vector<std::vector<cv::Point>> polys{shifted};
     cv::fillPoly(canvas, polys, cv::Scalar(255));
@@ -322,18 +361,40 @@ static double hullOverlapScore(
     if (hull_area == 0)
         return 0.0;
 
+    cv::Mat margin_canvas = cv::Mat::zeros(y1 - y0, x1 - x0, CV_8UC1);
+    std::vector<std::vector<cv::Point>> margin_polys{margin_shifted};
+    cv::fillPoly(margin_canvas, margin_polys, cv::Scalar(255));
+
     cv::Mat mask_sub = mask_crop(cv::Rect(x0, y0, x1 - x0, y1 - y0));
 
     int overlap = 0;
+    int outside_overlap = 0;
+    int band_area = 0;
+
     for (int r = 0; r < canvas.rows; ++r) {
         const uchar* cptr = canvas.ptr<uchar>(r);
         const uchar* mptr = mask_sub.ptr<uchar>(r);
-        for (int c = 0; c < canvas.cols; ++c)
-            if (cptr[c] > 0 && mptr[c] > 0)
+        const uchar* bptr = margin_canvas.ptr<uchar>(r);
+        for (int c = 0; c < canvas.cols; ++c) {
+            bool inside = cptr[c] > 0;
+            bool in_margin = bptr[c] > 0;
+            bool in_band = in_margin && !inside;
+
+            if (inside && mptr[c] > 0)
                 ++overlap;
+
+            if (in_band) {
+                ++band_area;
+                if (mptr[c] > 0)
+                    ++outside_overlap;
+            }
+        }
     }
 
-    return (double)overlap / (double)hull_area;
+    double inside_score = (double)overlap / (double)hull_area;
+    double outside_score = band_area > 0 ? (double)outside_overlap / (double)band_area : 0.0;
+
+    return inside_score - HULL_OUTSIDE_PENALTY_WEIGHT * outside_score;
 }
 
 
