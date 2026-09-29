@@ -3294,7 +3294,9 @@ static StoneUpdateResult searchNewStoneOne(
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     double x_center, double x_half_width, double y_center, double y_half_range,
     double coarse_step_cm, double fine_step_cm, double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
+    std::vector<StoneUpdateResult>* multi_out = nullptr, int max_results = 1,
+    int max_attempts = MAX_HAKU_ATTEMPTS_PER_SCAN)
 {
     int frame_w = frame_mat.cols, frame_h = frame_mat.rows;
 
@@ -3316,7 +3318,7 @@ static StoneUpdateResult searchNewStoneOne(
 
     StoneUpdateResult out;
 
-    for (int attempt = 0; attempt < MAX_HAKU_ATTEMPTS_PER_SCAN; ++attempt) {
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
 
         auto best = locateByGridSearchFast(
             local_pts_search, mask_search, 0, 0,
@@ -3372,7 +3374,12 @@ static StoneUpdateResult searchNewStoneOne(
         if (accept) {
             out.refined = refined;
             out.has_position = true;
-            return out;
+            if (!multi_out)
+                return out;
+            // Monituloshaku: talletetaan ja jatketaan (poistetaan tama alue alla, etsitaan seuraava).
+            multi_out->push_back(out);
+            if ((int)multi_out->size() >= max_results)
+                return out;
         }
 
         // Ei kelvannut - poistetaan TAMA yhtenainen maskialue (floodFill,
@@ -3493,6 +3500,56 @@ static py::dict search_new_stone(
     }
 
     return resultToDict(result);
+}
+
+
+// Testi_02_03: kuten search_new_stone, mutta palauttaa KAIKKI kelvolliset ehdokkaat (enintaan max_results)
+// - alkuperainen palauttaa vain ensimmaisen, jolloin pelaaja/lakaisija voi voittaa kilpailun ja kiven
+// rekisterointi jaa nain valiin (havaittu: 5 heittoa 26:sta jai kokonaan rekisteroimatta).
+static py::list search_new_stones(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame_u,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> background_reference,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_search_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+    double x_center, double x_half_width, double y_center, double y_half_range,
+    double coarse_step_cm, double fine_step_cm, double score_threshold,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
+    double diff_threshold = 30.0, int max_results = 4, int max_attempts = 8)
+{
+    auto buf = frame_u.request();
+    if (buf.ndim != 3 || buf.shape[2] != 3)
+        throw std::runtime_error("frame_u must be HxWx3 uint8 BGR");
+    cv::Mat frame_mat((int)buf.shape[0], (int)buf.shape[1], CV_8UC3, (void*)buf.ptr);
+    cv::Mat ref_mat;
+    auto ref_buf = background_reference.request();
+    if (ref_buf.ndim == 3 && ref_buf.shape[2] == 3)
+        ref_mat = cv::Mat((int)ref_buf.shape[0], (int)ref_buf.shape[1], CV_8UC3, (void*)ref_buf.ptr);
+
+    auto local_pts_body = parsePts3(local_pts_body_arr);
+    auto local_pts_search = parsePts3(local_pts_search_arr);
+    auto K = parseMat33(K_arr);
+    auto R = parseMat33(R_arr);
+    auto t = parseVec3(t_arr);
+
+    std::vector<StoneUpdateResult> results;
+    {
+        py::gil_scoped_release release;
+        ScopedSingleThreadedOpenCV single_threaded_opencv_guard;
+        searchNewStoneOne(
+            frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
+            x_center, x_half_width, y_center, y_half_range,
+            coarse_step_cm, fine_step_cm, score_threshold,
+            R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac,
+            &results, max_results, max_attempts
+        );
+    }
+    py::list out;
+    for (auto& r : results)
+        out.append(resultToDict(r));
+    return out;
 }
 
 
@@ -3823,6 +3880,17 @@ PYBIND11_MODULE(stone_tracker, m)
           },
           py::arg("inner_weight") = 2.0, py::arg("margin_scale") = HULL_MARGIN_SCALE, py::arg("tau") = 0.0,
           "Mean-shift-vastefunktion f(delta) taulukkona (dd, f[], imax)");
+
+    m.def("search_new_stones", &search_new_stones,
+          "Kuten search_new_stone, mutta palauttaa kaikki kelvolliset ehdokkaat (lista)",
+          py::arg("frame_u"), py::arg("background_reference"),
+          py::arg("local_pts_body"), py::arg("local_pts_search"),
+          py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("x_center"), py::arg("x_half_width"),
+          py::arg("y_center"), py::arg("y_half_range"),
+          py::arg("coarse_step_cm"), py::arg("fine_step_cm"), py::arg("score_threshold"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"), py::arg("handle_r_frac"),
+          py::arg("diff_threshold") = 30.0, py::arg("max_results") = 4, py::arg("max_attempts") = 8);
 
     m.def("search_new_stone", &search_new_stone,
           "Uuden kiven haku kiinteältä vyohykkeelta (HAKU), koko frame",

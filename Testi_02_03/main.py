@@ -1491,6 +1491,97 @@ HAKU_SEARCH_INTERVAL_FRAMES = 10
 # edelleenkaan voi saada duplikaatti-ID:ta, mutta viela vahvistamaton
 # (mahdollisesti vaara) ehdokas ei enaa voi tukkia vieressa olevan
 # oikean kiven havaitsemista.
+# Testi_02_03: HAKU palauttaa KAIKKI kelvolliset ehdokkaat (HAKU_MAX_RESULTS) eika vain ensimmaista -
+# muuten pelaaja/lakaisija voittaa kilpailun ja vieressa oleva oikea kivi jaa rekisteroimatta.
+# HAKU_MULTI=0 = alkuperainen (yksi ehdokas / kutsu).
+# HEITTOPORTTI (Testi_02_03): videon lopussa varsinaiseen CSV:hen kirjoitetaan vain radat jotka ovat
+# koko elinkaarensa perusteella HEITTOJA (ei pelaajia/lakaisijoita): matka eteenpain (Y pienenee)
+# >= GATE_TRAVEL_CM, >= GATE_MIN_ROWS riviä, rms-mediaani <= GATE_MAX_RMS, tarkka-osuus >= GATE_MIN_TARKKA;
+# duplikaattiradat yhdistetaan. RAAKA (portittamaton) CSV kirjoitetaan viereen tiedostoon *_raaka.csv.
+# THROW_GATE=0 = alkuperainen (vain yksi raaka CSV).
+THROW_GATE = os.environ.get("THROW_GATE", "1") == "1"
+GATE_TRAVEL_CM = float(os.environ.get("GATE_TRAVEL_CM", "1500"))
+GATE_MIN_ROWS = int(os.environ.get("GATE_MIN_ROWS", "300"))
+GATE_MAX_END_Y_CM = float(os.environ.get("GATE_MAX_END_Y_CM", "1100"))   # lahihogline 823 cm + marginaali
+GATE_MAX_SPEED_RATIO = float(os.environ.get("GATE_MAX_SPEED_RATIO", "0.6"))
+GATE_RESCUE_MAX_RMS = float(os.environ.get("GATE_RESCUE_MAX_RMS", "12.0"))
+GATE_RESCUE_MIN_TARKKA = float(os.environ.get("GATE_RESCUE_MIN_TARKKA", "0.1"))
+GATE_CROSS_DEDUP_FRAMES = float(os.environ.get("GATE_CROSS_DEDUP_FRAMES", "40"))
+GATE_MAX_RMS = float(os.environ.get("GATE_MAX_RMS", "3.0"))
+GATE_MIN_TARKKA = float(os.environ.get("GATE_MIN_TARKKA", "0.3"))
+
+
+def _track_kinematics(rows):
+    """(matka, loppu-Y, hidastuvuussuhde, hogline-ylitysframe) radan riveista. Hidastuvuus =
+    loppuvaiheen (viimeiset 20 % rivista) nopeus / alkuvaiheen (ensimmaiset 20 %) nopeus:
+    aito kivi hidastuu (0.2-0.4), pelaajan/lakaisijan paa liikkuu tasaisella nopeudella (~1)."""
+    ys = np.array([r["Y_cm"] for _, _, r in rows])
+    fr = np.array([f for f, _, _ in rows])
+    n = len(rows)
+    a = max(2, n // 5)
+    va = (ys[0] - ys[a]) / max(1, fr[a] - fr[0])
+    vb = (ys[-a - 1] - ys[-1]) / max(1, fr[-1] - fr[-a - 1])
+    ratio = vb / va if va > 0.5 else 9.9
+    cross = None
+    hog = k8.FAR_HOGLINE_Y_CM
+    for i in range(n - 1):
+        if ys[i] > hog >= ys[i + 1]:
+            cross = float(fr[i])
+            break
+    if cross is None and ys[0] <= hog:
+        cross = float(fr[0])
+    return float(ys[0] - ys.min()), float(ys[-1]), float(ratio), cross
+
+
+def _track_throw_class(rows):
+    """0 = ei heitto, 2 = heitto hyvalla sovituksella, 1 = heitto heikolla sovituksella (esim. lakaisija
+    peittaa osan kivesta): kaikilla tarvitaan heittomainen liike (matka >= GATE_TRAVEL_CM, loppu-Y <=
+    GATE_MAX_END_Y_CM, hidastuvuus <= GATE_MAX_SPEED_RATIO, >= GATE_MIN_ROWS riviä)."""
+    if len(rows) < GATE_MIN_ROWS:
+        return 0
+    travel, yend, ratio, _ = _track_kinematics(rows)
+    if travel < GATE_TRAVEL_CM or yend > GATE_MAX_END_Y_CM or ratio > GATE_MAX_SPEED_RATIO:
+        return 0
+    rms = [r["rms_px"] for _, _, r in rows if r.get("rms_px") is not None]
+    if not rms:
+        return 0
+    med = float(np.median(rms))
+    tk = sum(1 for _, _, r in rows if r.get("tarkka")) / len(rows)
+    if med <= GATE_MAX_RMS and tk >= GATE_MIN_TARKKA:
+        return 2
+    if med <= GATE_RESCUE_MAX_RMS and tk >= GATE_RESCUE_MIN_TARKKA:
+        return 1
+    return 0
+
+
+def _select_throws(tracks):
+    """tracks: [(stone_id, rows)] -> vain heittoportin lapaisseet, yksi rata / hogline-ylitys:
+    kahden radan ylitysajat < GATE_CROSS_DEDUP_FRAMES toisistaan = sama heitto (kayttajan tieto: joka
+    kerta vain YKSI kivi ylittaa hoglinen) -> sailyy parempi (hyva sovitus ensin, sitten pienin rms)."""
+    cands = []
+    for sid, rows in tracks:
+        cls = _track_throw_class(rows)
+        if cls == 0:
+            continue
+        rms = [r["rms_px"] for _, _, r in rows if r.get("rms_px") is not None]
+        cross = _track_kinematics(rows)[3]
+        cands.append((-cls, float(np.median(rms)), -len(rows), sid, rows, cross))
+    cands.sort(key=lambda c: c[:3])
+    kept = []
+    for c in cands:
+        cross = c[5]
+        if cross is not None and any(
+            k[5] is not None and abs(k[5] - cross) < GATE_CROSS_DEDUP_FRAMES for k in kept
+        ):
+            continue
+        kept.append(c)
+    return sorted(((k[3], k[4]) for k in kept), key=lambda t: t[1][0][0])
+
+
+HAKU_MULTI = os.environ.get("HAKU_MULTI", "1") == "1"
+HAKU_MAX_RESULTS = int(os.environ.get("HAKU_MAX_RESULTS", "4"))
+HAKU_MAX_ATTEMPTS = int(os.environ.get("HAKU_MAX_ATTEMPTS", "8"))
+NEW_STONE_SAME_SCAN_CM = float(os.environ.get("NEW_STONE_SAME_SCAN_CM", "30.0"))
 NEW_STONE_DEDUP_CM = float(os.environ.get("NEW_STONE_DEDUP_CM", "20.0"))
 
 # Testi_02_03: kaksi rataa jotka ovat DUP_MERGE_CM:n sisalla toisistaan SAMALLA
@@ -3498,6 +3589,7 @@ def run_pipeline(
         )
 
     active_stones = []
+    stone_registry = {}   # vahvistetut kivet (stone_id -> tila), portitus videon lopussa
     next_stone_id = 0
     # Lasketaan VAIN liikevahvistetut (katso MIN_CONFIRMED_THROW_
     # DISPLACEMENT_CM) kivet - EI raakoja HAKU-ehdokkaita, joista suurin
@@ -3606,7 +3698,12 @@ def run_pipeline(
 
     def _run_haku_timed(*args):
         t0 = time.time()
-        result = stone_tracker.search_new_stone(*args)
+        if HAKU_MULTI:
+            result = stone_tracker.search_new_stones(
+                *args, max_results=HAKU_MAX_RESULTS, max_attempts=HAKU_MAX_ATTEMPTS
+            )
+        else:
+            result = stone_tracker.search_new_stone(*args)
         return result, time.time() - t0
 
     try:
@@ -4269,7 +4366,11 @@ def run_pipeline(
                         accumulated_stones
                     )
 
-                    csv_file = open(csv_output, "w", newline="")
+                    raw_csv_path = (
+                        os.path.splitext(csv_output)[0] + "_raaka.csv"
+                        if THROW_GATE else csv_output
+                    )
+                    csv_file = open(raw_csv_path, "w", newline="")
                     csv_writer = csv.writer(csv_file)
                     csv_writer.writerow(CSV_HEADER)
 
@@ -4731,7 +4832,9 @@ def run_pipeline(
                                         s["confirmed"] = True
                                         n_confirmed_stones += 1
 
+                                        stone_registry[s["stone_id"]] = s
                                         for pf, pt, prow in s["pending_rows"]:
+                                            s.setdefault("all_rows", []).append((pf, pt, dict(prow)))
                                             _write_stone_csv_row(
                                                 csv_writer, pf, pt,
                                                 s["stone_id"], prow
@@ -4817,6 +4920,9 @@ def run_pipeline(
 
                                 else:
 
+                                    s.setdefault("all_rows", []).append(
+                                        (frame_index, timestamp, dict(refined))
+                                    )
                                     _write_stone_csv_row(
                                         csv_writer, frame_index, timestamp,
                                         s["stone_id"], refined
@@ -4991,113 +5097,130 @@ def run_pipeline(
 
                 if haku_future is not None:
 
-                    haku_result, haku_dt = haku_future.result()
+                    haku_result_raw, haku_dt = haku_future.result()
                     total_haku_time += haku_dt
                     n_haku_calls += 1
 
-                    if not haku_result["found"]:
+                    haku_result_list = (
+                        haku_result_raw if isinstance(haku_result_raw, list)
+                        else [haku_result_raw]
+                    )
+                    new_this_scan = []
+
+                    if not haku_result_list:
                         _haku_log(frame_index, len(active_stones), True, False,
-                                  None, None, haku_result.get("score"), False,
-                                  None, None, None)
+                                  None, None, None, False, None, None, None)
 
-                    if haku_result["found"]:
+                    for haku_result in haku_result_list:
 
-                        refined = haku_result
-                        bx, by = refined["X_cm"], refined["Y_cm"]
+                        if not haku_result["found"]:
+                            _haku_log(frame_index, len(active_stones), True, False,
+                                      None, None, haku_result.get("score"), False,
+                                      None, None, None)
 
-                        already_tracked = any(
-                            math.hypot(
-                                bx - s["last_xy"][0], by - s["last_xy"][1]
-                            ) < NEW_STONE_DEDUP_CM
-                            for s in active_stones
-                            if s["confirmed"]
-                        )
+                        if haku_result["found"]:
 
-                        if HAKU_LOG:
-                            near = min(
-                                ((math.hypot(bx - s["last_xy"][0], by - s["last_xy"][1]), s)
-                                 for s in active_stones),
-                                key=lambda x: x[0], default=(None, None)
-                            )
-                            _haku_log(frame_index, len(active_stones), True, True,
-                                      bx, by, haku_result.get("score"),
-                                      not already_tracked,
-                                      near[1]["stone_id"] if near[1] else None,
-                                      near[0],
-                                      near[1]["confirmed"] if near[1] else None)
+                            refined = haku_result
+                            bx, by = refined["X_cm"], refined["Y_cm"]
 
-                        # --------------------------------------------
-                        # DIAGNOSTIIKKA (kayttajan raportoima bugi, katso
-                        # keskusteluhistoria): HAKU tunnisti PELAAJAN/
-                        # LAKAISIJAN kiveksi (pelkkaan muotoon/kokoon
-                        # perustuva C++-yhteissovitus ei tunne varia).
-                        # Tulostetaan TASSA vain diagnostiikkana (ei viela
-                        # hylkaa mitaan) uuden ehdokkaan varipoikkeama
-                        # kivivarireferenssiin - kaytetaan naiden lukujen
-                        # keraamiseen sopivan hylkayskynnyksen maarittamiseksi
-                        # (katso HAKU_COLOR_MAX_DIFF alempana taman
-                        # validoinnin jalkeen).
-                        # --------------------------------------------
+                            already_tracked = any(
+                                math.hypot(
+                                    bx - s["last_xy"][0], by - s["last_xy"][1]
+                                ) < NEW_STONE_DEDUP_CM
+                                for s in active_stones
+                                if s["confirmed"]
+                            ) or any(
+                                math.hypot(bx - nx, by - ny) < NEW_STONE_SAME_SCAN_CM
+                                for nx, ny in new_this_scan
+                            ) or len(active_stones) >= MAX_CONCURRENT_STONES
 
-                        if os.environ.get("HAKU_COLOR_DEBUG") and live_state.get("color_reference") is not None:
-                            haku_frame_u_f64 = frame_u.astype(np.float64)
-                            haku_median_diff = color_match_median_diff(
-                                haku_frame_u_f64, local_pts_body, pose,
-                                bx, by, live_state["color_reference"],
-                                width, height
-                            )
-                            print(
-                                f"[HAKU_COLOR_DEBUG] frame={frame_index} "
-                                f"ehdokas ({bx:.1f},{by:.1f}) "
-                                f"varidiff={haku_median_diff}"
-                            )
+                            if HAKU_LOG:
+                                near = min(
+                                    ((math.hypot(bx - s["last_xy"][0], by - s["last_xy"][1]), s)
+                                     for s in active_stones),
+                                    key=lambda x: x[0], default=(None, None)
+                                )
+                                _haku_log(frame_index, len(active_stones), True, True,
+                                          bx, by, haku_result.get("score"),
+                                          not already_tracked,
+                                          near[1]["stone_id"] if near[1] else None,
+                                          near[0],
+                                          near[1]["confirmed"] if near[1] else None)
 
-                        if not already_tracked:
+                            # --------------------------------------------
+                            # DIAGNOSTIIKKA (kayttajan raportoima bugi, katso
+                            # keskusteluhistoria): HAKU tunnisti PELAAJAN/
+                            # LAKAISIJAN kiveksi (pelkkaan muotoon/kokoon
+                            # perustuva C++-yhteissovitus ei tunne varia).
+                            # Tulostetaan TASSA vain diagnostiikkana (ei viela
+                            # hylkaa mitaan) uuden ehdokkaan varipoikkeama
+                            # kivivarireferenssiin - kaytetaan naiden lukujen
+                            # keraamiseen sopivan hylkayskynnyksen maarittamiseksi
+                            # (katso HAKU_COLOR_MAX_DIFF alempana taman
+                            # validoinnin jalkeen).
+                            # --------------------------------------------
 
-                            stone_id = next_stone_id
-                            next_stone_id += 1
+                            if os.environ.get("HAKU_COLOR_DEBUG") and live_state.get("color_reference") is not None:
+                                haku_frame_u_f64 = frame_u.astype(np.float64)
+                                haku_median_diff = color_match_median_diff(
+                                    haku_frame_u_f64, local_pts_body, pose,
+                                    bx, by, live_state["color_reference"],
+                                    width, height
+                                )
+                                print(
+                                    f"[HAKU_COLOR_DEBUG] frame={frame_index} "
+                                    f"ehdokas ({bx:.1f},{by:.1f}) "
+                                    f"varidiff={haku_median_diff}"
+                                )
 
-                            active_stones.append({
-                                "stone_id": stone_id,
-                                "last_xy": (
-                                    refined["X_cm"], refined["Y_cm"]
-                                ),
-                                "min_y_seen": refined["Y_cm"],
-                                "misses": 0,
-                                "color_diff_history": [],
-                                "position_history": [(
-                                    frame_index,
-                                    refined["X_cm"], refined["Y_cm"]
-                                )],
-                                # katso ASETUKSET-kommentti MIN_CONFIRMED_
-                                # THROW_DISPLACEMENT_CM:in kohdalla - ei
-                                # kirjoiteta CSV:hen ennen kuin liike on
-                                # vahvistettu (torjuu paikallaan-jo-olevien
-                                # kohteiden toistuvan uudelleenrekisterointi-
-                                # ongelman).
-                                "y0_first_cm": refined["Y_cm"],
-                                "confirmed": False,
-                                "pending_rows": [
-                                    (frame_index, timestamp, dict(refined))
-                                ],
-                                "confirmed_tarkka_window": deque(
-                                    maxlen=MIN_CONFIRMED_TARKKA_OBSERVATIONS
-                                ),
-                            })
+                            if not already_tracked:
 
-                            debug_draw_items.append((
-                                refined["X_cm"], refined["Y_cm"],
-                                stone_id, (0, 255, 255),
-                                f"{stone_id} UUSI"
-                            ))
+                                stone_id = next_stone_id
+                                next_stone_id += 1
+                                new_this_scan.append((bx, by))
 
-                            print(
-                                f"[frame {frame_index}] Uusi kivi-ehdokas "
-                                f"{stone_id}: "
-                                f"({refined['X_cm']:.1f}, "
-                                f"{refined['Y_cm']:.1f}) cm "
-                                "(odottaa liikevahvistusta ennen CSV-kirjausta)"
-                            )
+                                active_stones.append({
+                                    "stone_id": stone_id,
+                                    "last_xy": (
+                                        refined["X_cm"], refined["Y_cm"]
+                                    ),
+                                    "min_y_seen": refined["Y_cm"],
+                                    "misses": 0,
+                                    "color_diff_history": [],
+                                    "position_history": [(
+                                        frame_index,
+                                        refined["X_cm"], refined["Y_cm"]
+                                    )],
+                                    # katso ASETUKSET-kommentti MIN_CONFIRMED_
+                                    # THROW_DISPLACEMENT_CM:in kohdalla - ei
+                                    # kirjoiteta CSV:hen ennen kuin liike on
+                                    # vahvistettu (torjuu paikallaan-jo-olevien
+                                    # kohteiden toistuvan uudelleenrekisterointi-
+                                    # ongelman).
+                                    "y0_first_cm": refined["Y_cm"],
+                                    "confirmed": False,
+                                    "pending_rows": [
+                                        (frame_index, timestamp, dict(refined))
+                                    ],
+                                    "confirmed_tarkka_window": deque(
+                                        maxlen=MIN_CONFIRMED_TARKKA_OBSERVATIONS
+                                    ),
+                                })
+
+                                debug_draw_items.append((
+                                    refined["X_cm"], refined["Y_cm"],
+                                    stone_id, (0, 255, 255),
+                                    f"{stone_id} UUSI"
+                                ))
+
+                                print(
+                                    f"[frame {frame_index}] Uusi kivi-ehdokas "
+                                    f"{stone_id}: "
+                                    f"({refined['X_cm']:.1f}, "
+                                    f"{refined['Y_cm']:.1f}) cm "
+                                    "(odottaa liikevahvistusta ennen CSV-kirjausta)"
+                                )
+
 
                 # --------------------------------------------
                 # DEBUG_SAVE_TRACKING_VIDEO: piirretaan taman framen
@@ -5261,6 +5384,25 @@ def run_pipeline(
 
         if csv_file is not None:
             csv_file.close()
+
+        if THROW_GATE and stone_registry:
+            all_tr = [
+                (sid, st_["all_rows"]) for sid, st_ in stone_registry.items()
+                if st_.get("all_rows")
+            ]
+            n_before = sum(1 for _, rw in all_tr if _track_throw_class(rw) > 0)
+            gated = _select_throws(all_tr)
+            with open(csv_output, "w", newline="") as gf:
+                gw = csv.writer(gf)
+                gw.writerow(CSV_HEADER)
+                for sid, rows in gated:
+                    for rf, rt, rr in rows:
+                        _write_stone_csv_row(gw, rf, rt, sid, rr)
+            print(
+                f"Heittoportti: {len(stone_registry)} vahvistettua rataa -> "
+                f"{n_before} heittomaista rataa -> {len(gated)} heittoa (yksi / hogline-ylitys) "
+                f"({csv_output})"
+            )
 
         if debug_video_writer is not None:
             debug_video_writer.release()
