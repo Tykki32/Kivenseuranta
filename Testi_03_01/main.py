@@ -5404,6 +5404,9 @@ def run_pipeline(
                                     f"({refined['X_cm']:.1f}, "
                                     f"{refined['Y_cm']:.1f}) cm "
                                     "(odottaa liikevahvistusta ennen CSV-kirjausta)"
+                                    f" [ehdokasominaisuudet score={refined.get('score')} "
+                                    f"rms={refined.get('rms_px')} n_body={refined.get('n_body')} "
+                                    f"n_ring={refined.get('n_ring')} tarkka={refined.get('tarkka')}]"
                                 )
 
 
