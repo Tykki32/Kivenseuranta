@@ -3,6 +3,7 @@ import sys
 import math
 import csv
 import time
+import threading
 import argparse
 import importlib.util
 import cv2
@@ -1002,6 +1003,7 @@ ICE_V_MIN = 128
 # videon" paastabiloinnin OMANA ytimena (katso sen kaytto alempana).
 # ============================================================
 
+VIDEO_PREFETCH = os.environ.get("VIDEO_PREFETCH", "1") == "1"  # videon luku omassa saikeessa elavassa vaiheessa
 PHOTO_SUBSAMPLE = int(os.environ.get("PHOTO_SUBSAMPLE", "4"))  # valotasapainon estimoinnin pikseliharvennus (1 = kaikki pikselit)
 SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso _phase_correlate_full_frame (kayttajan pyynnosta 10x, oli 1.0)
 
@@ -3603,6 +3605,53 @@ def _print_prof_report(n_frames, n_seuranta_updates):
     print("================================================")
 
 
+class _FramePrefetcher:
+    """Videon luku+dekoodaus omassa saikeessaan (Testi_03_01): engine.read() vapauttaa GIL:n, joten
+    dekoodaus ja paasaikeen tyo ajavat rinnan. Kaytetaan vain ELAVASSA vaiheessa (calib_result != None),
+    jolloin engine.add_mode_frame (joka lukee engine.current_frame_:ia) ei ole enaa kaytossa.
+    Framejarjestys ja -sisalto ovat identtiset suoran engine.read()-kutsun kanssa."""
+
+    def __init__(self, engine, depth=4):
+        import queue as _queue
+        self._engine = engine
+        self._q = _queue.Queue(maxsize=depth)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        import queue as _queue
+        while not self._stop.is_set():
+            try:
+                f = self._engine.read()
+            except Exception as e:      # valitetaan paasaikeelle
+                f = e
+            while not self._stop.is_set():
+                try:
+                    self._q.put(f, timeout=0.2)
+                    break
+                except _queue.Full:
+                    continue
+            if isinstance(f, Exception) or f is None or f.size == 0:
+                return
+
+    def read(self):
+        f = self._q.get()
+        if isinstance(f, Exception):
+            raise f
+        return f
+
+    def close(self):
+        import queue as _queue
+        self._stop.set()
+        try:
+            while True:
+                self._q.get_nowait()
+        except _queue.Empty:
+            pass
+        self._thread.join(timeout=5.0)
+
+
 def run_pipeline(
     video_file,
     panel_data,
@@ -3827,6 +3876,7 @@ def run_pipeline(
     # varmistaa etta edellinen on aina jo koottu ennen seuraavaa).
     haku_executor = ThreadPoolExecutor(max_workers=1)
     photo_executor = ThreadPoolExecutor(max_workers=1)
+    frame_prefetcher = None
     photo_future = None
 
     def _estimate_photo_timed(frame_bgr, ref_bgr):
@@ -3853,7 +3903,12 @@ def run_pipeline(
             t_frame_wall0 = time.perf_counter()
             _t_post0 = None
             t_read0 = time.perf_counter()
-            frame = engine.read()
+            if calib_result is not None and VIDEO_PREFETCH:
+                if frame_prefetcher is None:
+                    frame_prefetcher = _FramePrefetcher(engine)
+                frame = frame_prefetcher.read()
+            else:
+                frame = engine.read()
             total_read_time += time.perf_counter() - t_read0
             _PROF.setdefault("py: read(video)", [0.0, 0])[0] += time.perf_counter() - t_read0
             _PROF["py: read(video)"][1] += 1
@@ -4867,7 +4922,10 @@ def run_pipeline(
 
                             with _prof("py: SEURANTA jalkeen: varidiagnostiikka (astype+median)"):
                                 if frame_u_f64 is None:
-                                    frame_u_f64 = frame_u.astype(np.float64)
+                                    # Testi_03_01: bilineaarinen naytteistys toimii suoraan uint8-kuvalla
+                                    # (numpy nostaa painokertoimien kanssa float64:ksi) - koko framen
+                                    # astype(float64) (~22 MB) maksoi ~5 ms/ruutu.
+                                    frame_u_f64 = frame_u
 
                                 median_diff = color_match_median_diff(
                                     frame_u_f64, local_pts_body, pose,
@@ -5599,6 +5657,8 @@ def run_pipeline(
             wait=True
         )
         photo_executor.shutdown(wait=True)
+        if frame_prefetcher is not None:
+            frame_prefetcher.close()
 
         if csv_file is not None:
             csv_file.close()

@@ -38,17 +38,38 @@ public:
         : tile_size_(tile_size)
     {
 #ifdef _WIN32
-        cap_.open(
-            video_file,
-            cv::CAP_MSMF
-        );
+        const int video_backend = cv::CAP_MSMF;
 #else
         // Testi_02_03: Linux-kaannos (MSMF on vain Windowsissa).
-        cap_.open(
-            video_file,
-            cv::CAP_ANY
-        );
+        const int video_backend = cv::CAP_ANY;
 #endif
+
+        // Testi_03_01: valinnainen laitteistodekoodaus (ymparistomuuttuja VIDEO_HW=1, oletus pois):
+        // OpenCV 4.5+ tukee CAP_PROP_HW_ACCELERATION-avausparametria (Windowsissa MSMF/D3D11, esim.
+        // Intel UHD Graphics). Kehys kopioituu silti takaisin CPU-muistiin, joten hyoty riippuu
+        // koneesta - mittaa read(video) ms/ruutu paalle/pois.
+        bool hw_requested = false;
+#if (CV_VERSION_MAJOR > 4) || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 5)
+        {
+            const char* hw_env = std::getenv("VIDEO_HW");
+            if (hw_env && std::atoi(hw_env) != 0)
+            {
+                std::vector<int> hw_params{
+                    cv::CAP_PROP_HW_ACCELERATION,
+                    static_cast<int>(cv::VIDEO_ACCELERATION_ANY)
+                };
+                cap_.open(video_file, video_backend, hw_params);
+                hw_requested = cap_.isOpened();
+                std::cout << "[ModeEngine] VIDEO_HW=1: laitteistodekoodaus "
+                          << (hw_requested ? "pyydetty" : "ei kaytettavissa, palataan ohjelmistodekoodaukseen")
+                          << std::endl;
+            }
+        }
+#endif
+        if (!hw_requested)
+        {
+            cap_.open(video_file, video_backend);
+        }
 
         if (!cap_.isOpened())
         {
