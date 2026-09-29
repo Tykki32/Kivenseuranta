@@ -4175,6 +4175,96 @@ static py::array_t<uint8_t> suppress_shadow_background(
     return out;
 }
 
+
+// ============================================================
+// NOPEA VAIHEKORRELAATIO MOODIKUVAA VASTEN (Testi_03_01, nopeusoptimointi). cv::phaseCorrelate
+// laskee JOKA kutsulla molempien kuvien FFT:n uudelleen (~30 ms/ruutu 1280x720:lla). Referenssin
+// (moodikuvan) ikkunoitu FFT on sama joka ruudulla -> Python valimuistittaa sen. FFT:t ajetaan
+// Pythonin cv2:lla (IPP-kiihdytetty) ja tama moduuli hoitaa muistiliikennetta rasittavat
+// elementtikohtaiset vaiheet yhdella rinnakkaisella lapikaynnilla:
+//   phase_window   : uint8 -> float32 * Hanning-ikkuna
+//   phase_mulnorm  : P = ref * conj(F) / |ref * conj(F)| CCS-pakkauksessa (tasmalleen kuin OpenCV)
+//   phase_peak     : huippu + 5x5-painopiste kuten cv::phaseCorrelate (fftShift huomioiden)
+// Tarkistettu numeerisesti cv2.phaseCorrelatea vastaan (virhe < 1e-6 px).
+// ============================================================
+static py::array_t<float> phase_window(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> gray,
+    py::array_t<float, py::array::c_style | py::array::forcecast> window)
+{
+    auto gb = gray.request(); auto wb = window.request();
+    if (gb.ndim != 2 || wb.ndim != 2 || gb.shape[0] != wb.shape[0] || gb.shape[1] != wb.shape[1])
+        throw std::runtime_error("phase_window: size mismatch");
+    const int H = (int)gb.shape[0], W = (int)gb.shape[1];
+    py::array_t<float> out({ (py::ssize_t)H, (py::ssize_t)W });
+    float* o = (float*)out.request().ptr;
+    const uint8_t* g = (const uint8_t*)gb.ptr; const float* w = (const float*)wb.ptr;
+    {
+        py::gil_scoped_release release;
+        cv::parallel_for_(cv::Range(0, H), [&](const cv::Range& r) {
+            for (int y = r.start; y < r.end; ++y)
+                for (int x = 0; x < W; ++x) o[(size_t)y * W + x] = (float)g[(size_t)y * W + x] * w[(size_t)y * W + x];
+        });
+    }
+    return out;
+}
+
+static py::array_t<float> phase_mulnorm(
+    py::array_t<float, py::array::c_style | py::array::forcecast> ref_ccs,
+    py::array_t<float, py::array::c_style | py::array::forcecast> f_ccs)
+{
+    auto rb = ref_ccs.request(); auto fb = f_ccs.request();
+    if (rb.ndim != 2 || fb.ndim != 2 || rb.shape[0] != fb.shape[0] || rb.shape[1] != fb.shape[1])
+        throw std::runtime_error("phase_mulnorm: size mismatch");
+    const int M = (int)rb.shape[0], N = (int)rb.shape[1];
+    py::array_t<float> out({ (py::ssize_t)M, (py::ssize_t)N });
+    float* P = (float*)out.request().ptr;
+    const float* R = (const float*)rb.ptr; const float* F = (const float*)fb.ptr;
+    auto cmul = [](float ar, float ai, float br, float bi, float& re, float& im) {
+        float pr = ar * br + ai * bi, pi = ai * br - ar * bi;      // a * conj(b)
+        float m = std::sqrt(pr * pr + pi * pi);
+        if (m > 1e-30f) { re = pr / m; im = pi / m; } else { re = 0.f; im = 0.f; }
+    };
+    auto sgn = [](float a, float b) { float v = a * b; return v > 0.f ? 1.f : (v < 0.f ? -1.f : 0.f); };
+    {
+        py::gil_scoped_release release;
+        cv::parallel_for_(cv::Range(0, M), [&](const cv::Range& rr) {
+            for (int r = rr.start; r < rr.end; ++r) {
+                const float* a = R + (size_t)r * N; const float* b = F + (size_t)r * N; float* o = P + (size_t)r * N;
+                for (int j = 1; j + 1 < N; j += 2) cmul(a[j], a[j + 1], b[j], b[j + 1], o[j], o[j + 1]);
+            }
+        });
+        for (int col : { 0, N - 1 }) {
+            P[col] = sgn(R[col], F[col]);
+            for (int r = 1; r + 1 < M; r += 2)
+                cmul(R[(size_t)r * N + col], R[(size_t)(r + 1) * N + col], F[(size_t)r * N + col], F[(size_t)(r + 1) * N + col],
+                     P[(size_t)r * N + col], P[(size_t)(r + 1) * N + col]);
+            P[(size_t)(M - 1) * N + col] = sgn(R[(size_t)(M - 1) * N + col], F[(size_t)(M - 1) * N + col]);
+        }
+    }
+    return out;
+}
+
+// C = kaanteis-DFT (reaalinen, ei fftShiftattu). Palauttaa (dx, dy) kuten cv2.phaseCorrelate.
+static py::tuple phase_peak(py::array_t<float, py::array::c_style | py::array::forcecast> C_arr)
+{
+    auto cb = C_arr.request();
+    if (cb.ndim != 2) throw std::runtime_error("phase_peak: C must be 2-D");
+    const int M = (int)cb.shape[0], N = (int)cb.shape[1];
+    cv::Mat C(M, N, CV_32F, (void*)cb.ptr);
+    cv::Point maxLoc;
+    cv::minMaxLoc(C, nullptr, nullptr, nullptr, &maxLoc);
+    int px = (maxLoc.x + N / 2) % N, py_ = (maxLoc.y + M / 2) % M;
+    int minr = std::max(py_ - 2, 0), maxr = std::min(py_ + 2, M - 1);
+    int minc = std::max(px - 2, 0), maxc = std::min(px + 2, N - 1);
+    double sum_i = 0, cx = 0, cy = 0;
+    for (int y = minr; y <= maxr; ++y)
+        for (int x = minc; x <= maxc; ++x) {
+            double v = (double)C.at<float>((y + M / 2) % M, (x + N / 2) % N);
+            sum_i += v; cx += (double)x * v; cy += (double)y * v;
+        }
+    return py::make_tuple((double)(N / 2) - cx / sum_i, (double)(M / 2) - cy / sum_i);
+}
+
 static void prof_reset() { for (int i = 0; i < P_COUNT; ++i) { g_prof_ns[i] = 0; g_prof_n[i] = 0; } }
 static py::list prof_snapshot() {
     py::list L;
@@ -4188,6 +4278,9 @@ PYBIND11_MODULE(stone_tracker, m)
     m.def("suppress_shadow_background", &suppress_shadow_background,
           py::arg("frame"), py::arg("reference"), py::arg("gains"), py::arg("biases"),
           py::arg("diff_threshold"), py::arg("v_drop_min"), py::arg("v_drop_max"), py::arg("ice_s_max"), py::arg("ice_v_min"));
+    m.def("phase_window", &phase_window);
+    m.def("phase_mulnorm", &phase_mulnorm);
+    m.def("phase_peak", &phase_peak);
     m.def("prof_reset", &prof_reset);
     m.def("prof_snapshot", &prof_snapshot);
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";

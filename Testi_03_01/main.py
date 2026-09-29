@@ -2649,6 +2649,45 @@ def _phase_correlate_full_frame(gray_a_full, gray_b_full):
     return dx, dy
 
 
+_phase_ref_cache = {}
+
+
+def _phase_correlate_cached(ref_gray, gray):
+    """Nopea vaihekorrelaatio moodikuvaa (ref_gray) vasten (Testi_03_01): sama tulos kuin
+    _phase_correlate_full_frame (virhe < 1e-6 px), mutta referenssin ikkunoitu FFT
+    valimuistitetaan ja elementtikohtaiset vaiheet ajetaan C++:ssa (stone_tracker.phase_*).
+    Palaa tarvittaessa hitaaseen versioon (rajaus != koko frame tai puuttuva C++-tuki)."""
+    h, w = ref_gray.shape[:2]
+    if (
+        not hasattr(stone_tracker, "phase_mulnorm")
+        or SUBPIXEL_ALIGN_CROP_FRACTION != 1.0
+        or (h & 1) or (w & 1)
+        or cv2.getOptimalDFTSize(h) != h or cv2.getOptimalDFTSize(w) != w
+        or gray.shape[:2] != (h, w)
+    ):
+        return _phase_correlate_full_frame(ref_gray, gray)
+
+    key = (id(ref_gray), h, w)
+    ent = _phase_ref_cache.get(key)
+    if ent is None:
+        hann = cv2.createHanningWindow((w, h), cv2.CV_32F)
+        ref_f = np.ascontiguousarray(ref_gray, dtype=np.uint8)
+        ref_ccs = cv2.dft(stone_tracker.phase_window(ref_f, hann))
+        _phase_ref_cache.clear()
+        ent = (hann, ref_ccs, ref_gray)   # ref_gray talteen jotta id() pysyy voimassa
+        _phase_ref_cache[key] = ent
+    hann, ref_ccs, _ = ent
+
+    g8 = np.ascontiguousarray(gray, dtype=np.uint8)
+    f_ccs = cv2.dft(stone_tracker.phase_window(g8, hann))
+    p = stone_tracker.phase_mulnorm(ref_ccs, f_ccs)
+    c = cv2.dft(p, flags=cv2.DFT_INVERSE | cv2.DFT_SCALE)
+    dx, dy = stone_tracker.phase_peak(c)
+    dx = float(np.clip(dx, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
+    dy = float(np.clip(dy, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
+    return dx, dy
+
+
 def _scan_stone_candidates(frame_bgr, calib, pose, background_reference=None):
 
     frame_bgr = suppress_static_background(
@@ -4080,7 +4119,7 @@ def run_pipeline(
                 # havinneet kokonaan eivatka pysyneet tasaisina ajan
                 # mukana: vaara suunta kasvatti virhetta sita enemman mita
                 # suurempi todellinen siirtyma oli.
-                dx, dy = _phase_correlate_full_frame(
+                dx, dy = _phase_correlate_cached(
                     loppuvideo_ref_gray, gray
                 )
 
