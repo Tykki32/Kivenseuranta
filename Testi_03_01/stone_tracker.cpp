@@ -107,6 +107,7 @@ enum ProfId {
     P_REFINE_TOTAL, P_R_PAD, P_R_CONTOUR, P_R_BOUNDARY, P_R_LM1, P_R_MAD, P_R_LM2, P_R_FINAL, P_R_OUTER_ITER,
     P_HAKU_TOTAL, P_HAKU_SUPPRESS, P_HAKU_MASK, P_HAKU_SAT, P_HAKU_LOCATE, P_HAKU_REFINE, P_HAKU_FLOOD,
     P_BATCH_WALL, P_BATCH_SETUP, P_BATCH_RESULT,
+    P_GM_CVT, P_GM_BLUR, P_GM_LOOP, P_GM_MORPH, P_GS_HULL, P_GS_SCORE,
     P_LM_FALLBACK, P_LM_LIN, P_LM_VERIFY, P_LM_BUILD, P_LM_EVAL_ONLY,
     P_C_NBODY, P_C_NRING, P_C_NHULL, P_C_LMITER, P_C_LMEVAL,
     P_COUNT
@@ -120,6 +121,7 @@ static const char* PROF_NAMES[P_COUNT] = {
     "HAKU yhteensa", "  HAKU: taustanvaimennus (koko frame)", "  HAKU: graniittimaski (koko frame)", "  HAKU: saturaatio (koko frame)",
     "  HAKU: ristikkohaku", "  HAKU: LM-tarkennus", "  HAKU: floodFill-poisto",
     "SEURANTA-kutsu seinakello (track_stones_batch)", "  kutsun alustus (numpy->cv, GIL)", "  kutsun tulokset (dict)",
+    "    granite: cvtColor x2 + convert", "    granite: GaussianBlur", "    granite: kynnys-silmukka", "    granite: morfologia", "    ristikko: predictedHull", "    ristikko: hullOverlapScore",
     "    LM: TARKKA VARAKEINO-LM (linearisointi hylatty)", "    LM#1: lineaarinen LM", "    LM#1: tarkka varmistus", "    LM: linearisoinnin rakennus", "    LM: residuaali+jacobi evaluaatiot",
     "LASKURI keskiarvo: runkopisteita/LM", "LASKURI keskiarvo: rengaspisteita/LM", "LASKURI keskiarvo: hull-kulmia/LM", "LASKURI keskiarvo: LM-iteraatioita/LM", "LASKURI keskiarvo: residuaalievaluaatioita/LM"
 };
@@ -472,6 +474,62 @@ static std::vector<double> arangeVec(double start, double stop, double step)
 }
 
 
+
+// ------------------------------------------------------------------
+// NOPEA ennustettu hull (Testi_03_01): projektio pi = K*(R*(local+(X,Y,0))+t) on lineaarinen
+// (X,Y):n suhteen ENNEN jakoa, joten K*(R*local+t) lasketaan kerran pisteita kohti ja jokainen
+// (X,Y)-kokeilu on vain pi = A_i + X*kx + Y*ky + jako. Sama tulos kuin predictedHull
+// (liukulukuero ~1e-13), mutta ei 3x3-matriisikertolaskuja jokaiselle pisteelle/kokeilulle.
+// ------------------------------------------------------------------
+struct HullProjector {
+    std::vector<cv::Vec3d> A;
+    cv::Vec3d kx, ky;
+    std::vector<cv::Point2f> pts;   // uudelleenkaytettava puskuri
+    HullProjector(const std::vector<cv::Point3d>& local_pts, const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t)
+        : A(local_pts.size()), pts(local_pts.size())
+    {
+        for (size_t i = 0; i < local_pts.size(); ++i)
+            A[i] = K * (R * cv::Vec3d(local_pts[i].x, local_pts[i].y, local_pts[i].z) + t);
+        kx = K * cv::Vec3d(R(0, 0), R(1, 0), R(2, 0));
+        ky = K * cv::Vec3d(R(0, 1), R(1, 1), R(2, 1));
+    }
+    // Hullin karkijoukko (indeksit) lasketaan tayden convexHull:in avulla vain kun vertailupiste
+    // (X,Y) on yli HULL_REF_RANGE_CM paassa edellisesta - sen sisalla hull-karjet pysyvat
+    // kaytannossa samoina (perspektiivimuutos alle pikselin), joten pelkkien karkien projisointi
+    // riittaa eika convexHull:ia tarvita jokaiselle kokeilulle.
+    std::vector<int> ref_idx;
+    double ref_x = 0, ref_y = 0;
+    std::vector<cv::Point2f> hull(double X, double Y)
+    {
+        const double ox = X * kx[0] + Y * ky[0], oy = X * kx[1] + Y * ky[1], oz = X * kx[2] + Y * ky[2];
+        const bool fast = !ref_idx.empty() && std::abs(X - ref_x) < 15.0 && std::abs(Y - ref_y) < 15.0;
+        if (fast) {
+            std::vector<cv::Point2f> h(ref_idx.size());
+            for (size_t k = 0; k < ref_idx.size(); ++k) {
+                const cv::Vec3d& a = A[(size_t)ref_idx[k]];
+                const double z = a[2] + oz;
+                h[k] = cv::Point2f((float)((a[0] + ox) / z), (float)((a[1] + oy) / z));
+            }
+            return h;
+        }
+        bool all_finite = true;
+        for (size_t i = 0; i < A.size(); ++i) {
+            const double z = A[i][2] + oz;
+            const double px = (A[i][0] + ox) / z, py = (A[i][1] + oy) / z;
+            if (!std::isfinite(px) || !std::isfinite(py)) all_finite = false;
+            pts[i] = cv::Point2f((float)px, (float)py);
+        }
+        if (!all_finite) return {};
+        std::vector<int> idx;
+        cv::convexHull(pts, idx, false, false);
+        if (idx.size() < 3) return {};
+        std::vector<cv::Point2f> h(idx.size());
+        for (size_t k = 0; k < idx.size(); ++k) h[k] = pts[(size_t)idx[k]];
+        ref_idx = idx; ref_x = X; ref_y = Y;
+        return h;
+    }
+};
+
 static std::pair<cv::Point2d, double> gridSearchBest(
     const std::vector<cv::Point3d>& local_pts_search,
     const cv::Mat& mask_crop, int off_x, int off_y,
@@ -481,9 +539,10 @@ static std::pair<cv::Point2d, double> gridSearchBest(
     double best_score = -1.0;
     cv::Point2d best_xy(x_vals.empty() ? 0.0 : x_vals[0], y_vals.empty() ? 0.0 : y_vals[0]);
 
+    HullProjector proj_(local_pts_search, K, R, t);
     for (double X : x_vals) {
         for (double Y : y_vals) {
-            auto hull = predictedHull(local_pts_search, X, Y, K, R, t);
+            auto hull = proj_.hull(X, Y);
             double score = hullOverlapScore(mask_crop, hull, off_x, off_y);
             if (score > best_score) {
                 best_score = score;
@@ -651,11 +710,16 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
 
         std::vector<char> visited((size_t)nx * (size_t)ny, 0);
         auto idx = [ny](int i, int j) { return (size_t)i * (size_t)ny + (size_t)j; };
+        HullProjector hull_proj(local_pts_search, K, R, t);
 
         auto evalPoint = [&](int i, int j) -> double {
             visited[idx(i, j)] = 1;
-            auto hull = predictedHull(local_pts_search, x_vals[(size_t)i], y_vals[(size_t)j], K, R, t);
-            return hullOverlapScore(mask_crop, hull, off_x, off_y);
+            PT gpt2;
+            auto hull = hull_proj.hull(x_vals[(size_t)i], y_vals[(size_t)j]);
+            profAdd(P_GS_HULL, gpt2.lap());
+            double sc_ = hullOverlapScore(mask_crop, hull, off_x, off_y);
+            profAdd(P_GS_SCORE, gpt2.lap());
+            return sc_;
         };
 
         int ix0 = (int)std::lround((x_center - x_vals[0]) / coarse_step);
@@ -773,15 +837,29 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
 // vastaa oikeaa kannettavuutta jos linkitetty OpenCV eroaa nain.
 // ============================================================
 
+static const int g_granite_down = getenv("GRANITE_DOWN") ? atoi(getenv("GRANITE_DOWN")) : 4;
+
 static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
 {
     cv::Mat hsv, gray, gray_f, bg, darkness;
+    PT gpt;
 
     cv::cvtColor(frame_bgr, hsv, cv::COLOR_BGR2HSV);
     cv::cvtColor(frame_bgr, gray, cv::COLOR_BGR2GRAY);
     gray.convertTo(gray_f, CV_32F);
-    cv::GaussianBlur(gray_f, bg, cv::Size(0, 0), STONE_DARKNESS_SIGMA);
+    profAdd(P_GM_CVT, gpt.lap());
+    if (g_granite_down > 1 && gray_f.cols >= 8 * g_granite_down && gray_f.rows >= 8 * g_granite_down) {
+        // sigma=25 px:n taustan arvio on hyvin sileä -> lasketaan pienennetylla kuvalla
+        // (area-pienennys, sigma/down, bilineaarinen suurennus): ~5.5 -> ~1 ms.
+        cv::Mat small, small_bg;
+        cv::resize(gray_f, small, cv::Size(), 1.0 / g_granite_down, 1.0 / g_granite_down, cv::INTER_AREA);
+        cv::GaussianBlur(small, small_bg, cv::Size(0, 0), STONE_DARKNESS_SIGMA / g_granite_down);
+        cv::resize(small_bg, bg, gray_f.size(), 0, 0, cv::INTER_LINEAR);
+    } else {
+        cv::GaussianBlur(gray_f, bg, cv::Size(0, 0), STONE_DARKNESS_SIGMA);
+    }
     darkness = bg - gray_f;
+    profAdd(P_GM_BLUR, gpt.lap());
 
     std::vector<cv::Mat> hsv_ch;
     cv::split(hsv, hsv_ch);
@@ -800,11 +878,13 @@ static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
         }
     }
 
+    profAdd(P_GM_LOOP, gpt.lap());
     cv::Mat kernel_open = cv::Mat::ones(5, 5, CV_8U);
     cv::Mat kernel_close = cv::Mat::ones(3, 3, CV_8U);
     cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel_open);
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel_close);
 
+    profAdd(P_GM_MORPH, gpt.lap());
     return mask;
 }
 
