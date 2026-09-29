@@ -1002,6 +1002,7 @@ ICE_V_MIN = 128
 # videon" paastabiloinnin OMANA ytimena (katso sen kaytto alempana).
 # ============================================================
 
+PHOTO_SUBSAMPLE = int(os.environ.get("PHOTO_SUBSAMPLE", "4"))  # valotasapainon estimoinnin pikseliharvennus (1 = kaikki pikselit)
 SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso _phase_correlate_full_frame (kayttajan pyynnosta 10x, oli 1.0)
 
 # Kuinka suuri, kuvan keskelle keskitetty osuus (leveys JA korkeus)
@@ -2586,6 +2587,13 @@ def estimate_photometric_correction(frame_bgr, reference_bgr):
 
     gains = []
     biases = []
+
+    # Testi_03_01: estimoidaan harvennetusta pikseliruudukosta (joka PHOTO_SUBSAMPLE:s
+    # pikseli molemmissa suunnissa) - gain/bias on koko kuvan hidas globaali suure,
+    # 1/16 pikseleista riittaa (ero koko kuvan estimaattiin ~1e-4), ~100 -> ~7 ms.
+    st_ = PHOTO_SUBSAMPLE
+    frame_bgr = frame_bgr[::st_, ::st_]
+    reference_bgr = reference_bgr[::st_, ::st_]
 
     for channel in range(3):
 
