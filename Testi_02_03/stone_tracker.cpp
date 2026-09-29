@@ -76,6 +76,7 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <pybind11/stl.h>
 
 #include <opencv2/opencv.hpp>
 
@@ -84,7 +85,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -2321,14 +2325,377 @@ static cv::Vec3d parseVec3(py::array_t<double, py::array::c_style | py::array::f
 }
 
 
+// ============================================================
+// MEAN-SHIFT-SEURANTA (Testi_02_03, kayttajan idea - katso
+// keskusteluhistoria): korvaa SEURANNAN ristikkohaun (locateByGrid
+// SearchTrackingFast) iteratiivisella painopistesiirrolla.
+//
+// PERIAATE: kiven ennustettu 3D-projektio (hulli) ja sen 1.1-kertainen
+// laajennus (sama HULL_MARGIN_SCALE kuin hullOverlapScore:ssa) jaetaan
+// hullin painopisteen kautta kulkevalla vaaka- ja pystyviivalla
+// neljaan osaan. Maskin pikselit lasketaan painotettuina (sisahulli
+// w_in=2, vain 1.1x-kehaan osuva 1) ja puolikkaiden erotus
+//   s_y = sum(w*[maski]*sign(y-cy)) / sum(w)      (alhaalla - ylhaalla)
+//   s_x = sum(w*[maski]*sign(x-cx)) / sum(w)      (oikealla - vasemmalla)
+// kertoo mihin suuntaan malli pitaa siirtaa. Signaali EI ole lineaarinen
+// siirtyman suhteen (kyllastyy kun malli ja maski eivat enaa peity), joten
+// "paljonko siirretaan" -painokerroin on OPTIMOITU: s muunnetaan pikseli-
+// siirtymaksi d = gain * r * f^-1(s), missa f(delta) on YKSIKKOYMPYRAN
+// (r=1) vastefunktio - lasketaan numeerisesti kerran samoilla painoilla
+// ja marginaalilla kuin itse mittaus (getResponseLUT). Ellipsille (kiven
+// perspektiiviprojektio) tama on affiini-invariantti, kun r on hullin
+// puolileveys/-korkeus kyseisessa akselissa. gain on jaljelle jaava
+// empiirinen hienosaato (mallin ja maskin kokoero, reunojen sumeus).
+// Pikselisiirtyma muunnetaan (X,Y)-senteiksi paikallisella Jakobiaanilla.
+// Toistetaan kunnes siirtyma < tol_px, jonka jalkeen normaali
+// refinePositionJoint (LM) tarkentaa sub-pikselitasolle - TASMALLEEN
+// sama kuin ristikkohaun jalkeen.
+// ============================================================
+
+struct MeanShiftParams {
+    int max_iter = 10;
+    double gain = 1.0;
+    double tol_px = 0.10;
+    double inner_weight = 2.0;
+    double margin_scale = HULL_MARGIN_SCALE;
+    double min_mask_fraction = 0.02;
+    // Pehmea etumerkki: g(u)=clamp(u/tau,-1,1), u = (px - keskipiste)/puoliakseli.
+    // tau=0 -> kova sign() (alkuperainen). Pienilla (kaukaisilla) kivilla kova
+    // sign hyppii pikseliruudukon mukaan, pehmea on jatkuva siirtyman suhteen.
+    double tau = 0.0;
+    // Lopuksi paikallinen viimeistely hullOverlapScore-pistemaaralla (sama kuin
+    // ristikkohaussa): aloitusaskel polish_step_cm, puolitetaan kunnes < min.
+    double polish_step_cm = 0.0;
+    double polish_min_step_cm = 0.75;
+};
+
+struct ResponseLUT {
+    double dd = 0.01;
+    std::vector<double> f;
+    int imax = 0;
+};
+
+static std::shared_ptr<const ResponseLUT> getResponseLUT(double w_in, double margin, double tau)
+{
+    static std::mutex mtx;
+    static std::map<std::pair<long long, long long>, std::shared_ptr<const ResponseLUT>> cache;
+
+    std::lock_guard<std::mutex> lock(mtx);
+    auto key = std::make_pair((long long)std::llround(w_in * 1000.0) * 100000LL + (long long)std::llround(tau * 1000.0),
+                              (long long)std::llround(margin * 1000.0));
+    auto it = cache.find(key);
+    if (it != cache.end())
+        return it->second;
+
+    auto lut = std::make_shared<ResponseLUT>();
+    const int G = 241;
+    const double ext = margin + 0.05;
+    const double cell = 2.0 * ext / (double)(G - 1);
+
+    std::vector<cv::Point3d> pts;   // (x, y, w)
+    double wtot = 0.0;
+    for (int i = 0; i < G; ++i) {
+        double x = -ext + cell * i;
+        for (int j = 0; j < G; ++j) {
+            double y = -ext + cell * j;
+            double r2 = x * x + y * y;
+            double w = r2 <= 1.0 ? w_in : (r2 <= margin * margin ? 1.0 : 0.0);
+            if (w <= 0.0)
+                continue;
+            pts.emplace_back(x, y, w);
+            wtot += w;
+        }
+    }
+
+    const int N = 221;
+    lut->f.assign((size_t)N, 0.0);
+    for (int k = 0; k < N; ++k) {
+        double delta = lut->dd * k;
+        double sum = 0.0;
+        for (auto& p : pts) {
+            double dy = p.y - delta;
+            if (p.x * p.x + dy * dy <= 1.0) {
+                double g = tau > 0.0 ? std::max(-1.0, std::min(1.0, p.y / tau))
+                                     : (p.y > 0.0 ? 1.0 : (p.y < 0.0 ? -1.0 : 0.0));
+                sum += p.z * g;
+            }
+        }
+        lut->f[(size_t)k] = sum / wtot;
+    }
+
+    lut->imax = 0;
+    for (int k = 1; k < N; ++k) {
+        if (lut->f[(size_t)k] > lut->f[(size_t)lut->imax])
+            lut->imax = k;
+    }
+
+    cache[key] = lut;
+    return lut;
+}
+
+// f^-1: signaali -> normalisoitu siirtyma (r:n monikertoina), vain nousevalla haaralla.
+static double responseInverse(const ResponseLUT& lut, double s)
+{
+    double a = std::fabs(s);
+    double sign = s < 0.0 ? -1.0 : 1.0;
+    double fmax = lut.f[(size_t)lut.imax];
+    if (a >= fmax)
+        return sign * lut.dd * lut.imax;
+
+    int lo = 0, hi = lut.imax;
+    while (hi - lo > 1) {
+        int mid = (lo + hi) / 2;
+        if (lut.f[(size_t)mid] <= a)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    double f0 = lut.f[(size_t)lo], f1 = lut.f[(size_t)hi];
+    double u = (f1 - f0) > 1e-12 ? (a - f0) / (f1 - f0) : 0.0;
+    return sign * lut.dd * ((double)lo + u);
+}
+
+struct MsSignals {
+    bool valid = false;
+    double sx = 0.0, sy = 0.0;       // painotetut summat sign(x-cx)*w, sign(y-cy)*w (maski)
+    double wtot = 0.0, wmask = 0.0;  // koko alueen paino / maskin peittama paino
+    double rx = 0.0, ry = 0.0;       // hullin puolileveys / -korkeus (px)
+    double cx = 0.0, cy = 0.0;       // hullin painopiste (crop-koordinaatit)
+};
+
+static MsSignals computeMsSignals(
+    const cv::Mat& mask_crop, int off_x, int off_y,
+    const std::vector<cv::Point2f>& hull, const MeanShiftParams& P)
+{
+    MsSignals out;
+
+    std::vector<cv::Point2f> h(hull.size());
+    for (size_t i = 0; i < hull.size(); ++i)
+        h[i] = cv::Point2f(hull[i].x - (float)off_x, hull[i].y - (float)off_y);
+
+    cv::Moments m = cv::moments(h);
+    if (std::fabs(m.m00) < 4.0)
+        return out;
+    double cx = m.m10 / m.m00, cy = m.m01 / m.m00;
+
+    auto extents = [](const std::vector<cv::Point2f>& poly) {
+        float mnx = poly[0].x, mxx = poly[0].x, mny = poly[0].y, mxy = poly[0].y;
+        for (auto& q : poly) {
+            mnx = std::min(mnx, q.x); mxx = std::max(mxx, q.x);
+            mny = std::min(mny, q.y); mxy = std::max(mxy, q.y);
+        }
+        return cv::Rect2f(mnx, mny, mxx - mnx, mxy - mny);
+    };
+    cv::Rect2f hb = extents(h);
+    double rx = hb.width / 2.0, ry = hb.height / 2.0;
+    if (rx < 2.0 || ry < 2.0)
+        return out;
+
+    std::vector<cv::Point2f> h2(h.size());
+    for (size_t i = 0; i < h.size(); ++i)
+        h2[i] = cv::Point2f((float)(cx + (h[i].x - cx) * P.margin_scale),
+                            (float)(cy + (h[i].y - cy) * P.margin_scale));
+    cv::Rect2f hb2 = extents(h2);
+
+    int x0 = std::max(0, (int)std::floor(hb2.x) - 1);
+    int y0 = std::max(0, (int)std::floor(hb2.y) - 1);
+    int x1 = std::min(mask_crop.cols, (int)std::ceil(hb2.x + hb2.width) + 2);
+    int y1 = std::min(mask_crop.rows, (int)std::ceil(hb2.y + hb2.height) + 2);
+    if (x1 <= x0 || y1 <= y0)
+        return out;
+
+    // fillPoly sub-pikselitarkkuudella (shift=3 -> 1/8 px): tekee vasteesta
+    // tasaisen siirtyman suhteen (ei kokonaislukupikselin porrastusta).
+    const int SH = 3;
+    const double SC = (double)(1 << SH);
+    auto toFixed = [&](const std::vector<cv::Point2f>& poly) {
+        std::vector<cv::Point> o(poly.size());
+        for (size_t i = 0; i < poly.size(); ++i)
+            o[i] = cv::Point((int)std::lround((poly[i].x - x0) * SC),
+                             (int)std::lround((poly[i].y - y0) * SC));
+        return o;
+    };
+
+    cv::Mat c1 = cv::Mat::zeros(y1 - y0, x1 - x0, CV_8UC1);
+    cv::Mat c2 = cv::Mat::zeros(y1 - y0, x1 - x0, CV_8UC1);
+    {
+        std::vector<std::vector<cv::Point>> p1{toFixed(h)}, p2{toFixed(h2)};
+        cv::fillPoly(c1, p1, cv::Scalar(1), cv::LINE_8, SH);
+        cv::fillPoly(c2, p2, cv::Scalar(1), cv::LINE_8, SH);
+    }
+
+    double lcx = cx - x0, lcy = cy - y0;
+    double wtot = 0.0, wmask = 0.0, sx = 0.0, sy = 0.0;
+    const double tau = P.tau;
+    auto gfun = [tau](double u) {
+        if (tau > 0.0)
+            return std::max(-1.0, std::min(1.0, u / tau));
+        return u > 0.0 ? 1.0 : (u < 0.0 ? -1.0 : 0.0);
+    };
+    const double inv_rx = 1.0 / rx, inv_ry = 1.0 / ry;
+
+    for (int r = 0; r < c1.rows; ++r) {
+        const uchar* p1 = c1.ptr<uchar>(r);
+        const uchar* p2 = c2.ptr<uchar>(r);
+        const uchar* mp = mask_crop.ptr<uchar>(r + y0) + x0;
+        double gy = gfun(((double)r - lcy) * inv_ry);
+        for (int c = 0; c < c1.cols; ++c) {
+            double w = p1[c] ? P.inner_weight : (p2[c] ? 1.0 : 0.0);
+            if (w == 0.0)
+                continue;
+            wtot += w;
+            if (mp[c] > 0) {
+                wmask += w;
+                sx += w * gfun(((double)c - lcx) * inv_rx);
+                sy += w * gy;
+            }
+        }
+    }
+
+    out.valid = wtot > 0.0;
+    out.sx = sx; out.sy = sy; out.wtot = wtot; out.wmask = wmask;
+    out.rx = rx; out.ry = ry; out.cx = cx; out.cy = cy;
+    return out;
+}
+
+struct MeanShiftResult {
+    cv::Point2d xy;
+    double score = -1.0;
+    int iters = 0;
+    bool converged = false;
+};
+
+static MeanShiftResult meanShiftLocate(
+    const std::vector<cv::Point3d>& local_pts_search,
+    const cv::Mat& mask_crop, int off_x, int off_y,
+    double X0, double Y0, double x_half_range, double y_half_range,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    const MeanShiftParams& P)
+{
+    auto lut_ptr = getResponseLUT(P.inner_weight, P.margin_scale, P.tau);
+    const ResponseLUT& lut = *lut_ptr;
+
+    double zc = 0.0;
+    for (auto& p : local_pts_search)
+        zc += p.z;
+    zc /= std::max<size_t>(1, local_pts_search.size());
+
+    MeanShiftResult res;
+    res.xy = cv::Point2d(X0, Y0);
+
+    double X = X0, Y = Y0;
+    double gain = P.gain;
+    double prev_mag = 1e30;
+
+    for (int it = 0; it < P.max_iter; ++it) {
+
+        auto hull = predictedHull(local_pts_search, X, Y, K, R, t);
+        if (hull.size() < 3)
+            break;
+
+        MsSignals sg = computeMsSignals(mask_crop, off_x, off_y, hull, P);
+        if (!sg.valid)
+            break;
+        double rx = sg.rx, ry = sg.ry, wtot = sg.wtot, wmask = sg.wmask, sx = sg.sx, sy = sg.sy;
+
+        if (wtot <= 0.0 || wmask < P.min_mask_fraction * wtot)
+            break;
+
+        double dpx = gain * rx * responseInverse(lut, sx / wtot);
+        double dpy = gain * ry * responseInverse(lut, sy / wtot);
+
+        // Paikallinen Jakobiaani (px per cm) kiven runkokorkeudella.
+        std::vector<cv::Point3d> jp{
+            cv::Point3d(X, Y, zc), cv::Point3d(X + 1.0, Y, zc), cv::Point3d(X, Y + 1.0, zc)
+        };
+        auto jq = project3d(K, R, t, jp);
+        cv::Matx22d J(jq[1].x - jq[0].x, jq[2].x - jq[0].x,
+                      jq[1].y - jq[0].y, jq[2].y - jq[0].y);
+        double det = J(0, 0) * J(1, 1) - J(0, 1) * J(1, 0);
+        if (std::fabs(det) < 1e-9)
+            break;
+        double dX = ( J(1, 1) * dpx - J(0, 1) * dpy) / det;
+        double dY = (-J(1, 0) * dpx + J(0, 0) * dpy) / det;
+
+        double newX = std::max(X0 - x_half_range, std::min(X0 + x_half_range, X + dX));
+        double newY = std::max(Y0 - y_half_range, std::min(Y0 + y_half_range, Y + dY));
+
+        double mag = std::hypot(dpx, dpy);
+        if (it >= 2 && mag > 0.9 * prev_mag)
+            gain = std::max(0.2, gain * 0.5);
+        prev_mag = mag;
+
+        X = newX;
+        Y = newY;
+        res.iters = it + 1;
+
+        if (mag < P.tol_px) {
+            res.converged = true;
+            break;
+        }
+    }
+
+    res.xy = cv::Point2d(X, Y);
+    auto hull = predictedHull(local_pts_search, X, Y, K, R, t);
+    res.score = hullOverlapScore(mask_crop, hull, off_x, off_y);
+
+    // Paikallinen viimeistely: 8-naapurusto-kukkulankiipeily hullOverlapScore:lla,
+    // askel puolittuu kunnes polish_min_step_cm. Kasittelee mask-epasymmetrian
+    // aiheuttaman tasapainopisteen vinouman (katso offline-mittaukset).
+    if (P.polish_step_cm > 0.0 && res.score > -0.5) {
+        double step = P.polish_step_cm;
+        double bx = X, by = Y, bs = res.score;
+        while (step >= P.polish_min_step_cm) {
+            bool improved = true;
+            int guard = 0;
+            while (improved && guard++ < 6) {
+                improved = false;
+                double nx = bx, ny = by, ns = bs;
+                for (int di = -1; di <= 1; ++di) {
+                    for (int dj = -1; dj <= 1; ++dj) {
+                        if (di == 0 && dj == 0)
+                            continue;
+                        double cxp = std::max(X0 - x_half_range, std::min(X0 + x_half_range, bx + di * step));
+                        double cyp = std::max(Y0 - y_half_range, std::min(Y0 + y_half_range, by + dj * step));
+                        auto hh = predictedHull(local_pts_search, cxp, cyp, K, R, t);
+                        double sc = hullOverlapScore(mask_crop, hh, off_x, off_y);
+                        if (sc > ns + 1e-9) {
+                            ns = sc; nx = cxp; ny = cyp;
+                        }
+                    }
+                }
+                if (ns > bs + 1e-9) {
+                    bs = ns; bx = nx; by = ny;
+                    improved = true;
+                }
+            }
+            step *= 0.5;
+        }
+        res.xy = cv::Point2d(bx, by);
+        res.score = bs;
+    }
+    return res;
+}
+
+
 struct StoneUpdateResult {
     double score = 0.0;
     bool has_position = false;
     RefineResult refined;
+    // Diagnostiikka (Testi_02_03): vaiheiden ajat ja hakuvaiheen tulos.
+    double prep_ms = 0.0, locate_ms = 0.0, refine_ms = 0.0;
+    int iters = 0;
+    bool converged = false;
+    bool used_fallback = false;
+    double loc_X = 0.0, loc_Y = 0.0;
 };
 
 
-static StoneUpdateResult trackStoneUpdateOne(
+// locate_mode: 0 = alkuperainen laajeneva ristikkohaku (ei muutoksia),
+// 1 = mean-shift + ristikkohaku varana jos pistemaara < score_threshold,
+// 2 = pelkka mean-shift, 3 = TYHJENTAVA ristikkohaku ilman early-stopia
+// (vertailun "kulta-standardi": paras mahdollinen hullOverlapScore-optimi).
+static StoneUpdateResult trackStoneUpdateOneEx(
     const cv::Mat& frame_mat, const cv::Mat& background_reference, double diff_threshold,
     const std::vector<cv::Point3d>& local_pts_body,
     const std::vector<cv::Point3d>& local_pts_search,
@@ -2338,8 +2705,14 @@ static StoneUpdateResult trackStoneUpdateOne(
     double coarse_step_cm, double fine_step_cm,
     double score_threshold,
     double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
-    double max_backward_cm)
+    double max_backward_cm,
+    int locate_mode, const MeanShiftParams& ms_params)
 {
+    auto tp0 = std::chrono::steady_clock::now();
+    auto msSince = [](std::chrono::steady_clock::time_point a) {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
+    };
+
     int frame_w = frame_mat.cols, frame_h = frame_mat.rows;
 
     // ROI-rajaus kayttaa YHTA (konservatiivista, isompaa) half_rangea -
@@ -2416,11 +2789,48 @@ static StoneUpdateResult trackStoneUpdateOne(
     // (huomioiden mahdolliset peräkkäiset missit) jokaiselle kivelle
     // erikseen JOKA framella, eika tassa kaytita enaa kiinteaa
     // kamera9_02.py:n TRACK_HALF_RANGE_CM:ia.
-    auto best = locateByGridSearchTrackingFast(
-        local_pts_search, mask_for_track, roi.x, roi.y,
-        X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
-        coarse_step_cm, fine_step_cm, K, R, t
-    );
+    out.prep_ms = msSince(tp0);
+    auto tl0 = std::chrono::steady_clock::now();
+
+    std::pair<cv::Point2d, double> best;
+
+    if (locate_mode == 0) {
+        best = locateByGridSearchTrackingFast(
+            local_pts_search, mask_for_track, roi.x, roi.y,
+            X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
+            coarse_step_cm, fine_step_cm, K, R, t
+        );
+    } else if (locate_mode == 3) {
+        auto xv = arangeVec(X0 - track_half_range_x_cm, X0 + track_half_range_x_cm + 1e-6, coarse_step_cm);
+        auto yv = arangeVec(Y0 - track_half_range_y_cm, Y0 + track_half_range_y_cm + 1e-6, coarse_step_cm);
+        auto b1 = gridSearchBest(local_pts_search, mask_for_track, roi.x, roi.y, K, R, t, xv, yv);
+        auto xv2 = arangeVec(b1.first.x - coarse_step_cm, b1.first.x + coarse_step_cm + 1e-6, fine_step_cm);
+        auto yv2 = arangeVec(b1.first.y - coarse_step_cm, b1.first.y + coarse_step_cm + 1e-6, fine_step_cm);
+        best = gridSearchBest(local_pts_search, mask_for_track, roi.x, roi.y, K, R, t, xv2, yv2);
+    } else {
+        auto ms = meanShiftLocate(
+            local_pts_search, mask_for_track, roi.x, roi.y,
+            X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params
+        );
+        best = { ms.xy, ms.score };
+        out.iters = ms.iters;
+        out.converged = ms.converged;
+
+        if (locate_mode == 1 && best.second < score_threshold) {
+            auto gb = locateByGridSearchTrackingFast(
+                local_pts_search, mask_for_track, roi.x, roi.y,
+                X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
+                coarse_step_cm, fine_step_cm, K, R, t
+            );
+            out.used_fallback = true;
+            if (gb.second > best.second)
+                best = gb;
+        }
+    }
+
+    out.locate_ms = msSince(tl0);
+    out.loc_X = best.first.x;
+    out.loc_Y = best.first.y;
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts2 = std::chrono::steady_clock::now();
@@ -2438,10 +2848,12 @@ static StoneUpdateResult trackStoneUpdateOne(
         return out;
     }
 
+    auto tr0 = std::chrono::steady_clock::now();
     out.refined = refinePositionJoint(
         mask_for_track, sat_crop, roi.x, roi.y, frame_w, frame_h, local_pts_body, K, R, t,
         R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, best.first.x, best.first.y
     );
+    out.refine_ms = msSince(tr0);
 
     // Jos lahin runkokontuuri hylattiin YKSINOMAAN liian suuren pinta-
     // alan takia (kts. findContourNear/RefineResult::oversized_reject),
@@ -2471,11 +2883,41 @@ static StoneUpdateResult trackStoneUpdateOne(
 }
 
 
+
+static StoneUpdateResult trackStoneUpdateOne(
+    const cv::Mat& frame_mat, const cv::Mat& background_reference, double diff_threshold,
+    const std::vector<cv::Point3d>& local_pts_body,
+    const std::vector<cv::Point3d>& local_pts_search,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    double X0, double Y0,
+    double track_half_range_x_cm, double track_half_range_y_cm,
+    double coarse_step_cm, double fine_step_cm,
+    double score_threshold,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
+    double max_backward_cm)
+{
+    return trackStoneUpdateOneEx(
+        frame_mat, background_reference, diff_threshold, local_pts_body, local_pts_search, K, R, t,
+        X0, Y0, track_half_range_x_cm, track_half_range_y_cm, coarse_step_cm, fine_step_cm,
+        score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, max_backward_cm,
+        0, MeanShiftParams()
+    );
+}
+
+
 static py::dict resultToDict(const StoneUpdateResult& r)
 {
     py::dict d;
     d["score"] = r.score;
     d["found"] = r.has_position;
+    d["prep_ms"] = r.prep_ms;
+    d["locate_ms"] = r.locate_ms;
+    d["refine_ms"] = r.refine_ms;
+    d["iters"] = r.iters;
+    d["converged"] = r.converged;
+    d["used_fallback"] = r.used_fallback;
+    d["loc_X"] = r.loc_X;
+    d["loc_Y"] = r.loc_Y;
 
     if (r.has_position) {
         d["X_cm"] = r.refined.X_cm;
@@ -2554,7 +2996,10 @@ static py::list track_stones_batch(
     double score_threshold,
     double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double max_backward_cm,
-    double diff_threshold = 30.0)
+    double diff_threshold = 30.0,
+    int locate_mode = 0, double ms_gain = 1.0, int ms_max_iter = 10, double ms_tol_px = 0.10,
+    double ms_inner_weight = 2.0, double ms_margin_scale = HULL_MARGIN_SCALE,
+    double ms_tau = 0.0, double ms_polish_step_cm = 0.0)
 {
     auto buf = frame_u.request();
     if (buf.ndim != 3 || buf.shape[2] != 3)
@@ -2572,6 +3017,15 @@ static py::list track_stones_batch(
     auto K = parseMat33(K_arr);
     auto R = parseMat33(R_arr);
     auto t = parseVec3(t_arr);
+
+    MeanShiftParams msp;
+    msp.gain = ms_gain;
+    msp.max_iter = ms_max_iter;
+    msp.tol_px = ms_tol_px;
+    msp.inner_weight = ms_inner_weight;
+    msp.margin_scale = ms_margin_scale;
+    msp.tau = ms_tau;
+    msp.polish_step_cm = ms_polish_step_cm;
 
     auto X0b = X0_arr.unchecked<1>();
     auto Y0b = Y0_arr.unchecked<1>();
@@ -2610,10 +3064,11 @@ static py::list track_stones_batch(
                 int i = next_idx.fetch_add(1);
                 if (i >= n_stones)
                     break;
-                results[(size_t)i] = trackStoneUpdateOne(
+                results[(size_t)i] = trackStoneUpdateOneEx(
                     frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
                     X0b(i), Y0b(i), HXb(i), HYb(i), coarse_step_cm, fine_step_cm,
-                    score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, max_backward_cm
+                    score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, max_backward_cm,
+                    locate_mode, msp
                 );
             }
         };
@@ -3110,6 +3565,86 @@ static py::list scan_stone_candidates(
 }
 
 
+// Diagnostiikka (Testi_02_03): palauttaa seurannan maskin (samoin kuin
+// trackStoneUpdateOneEx sen muodostaa) sekä mean-shift-signaalit annetuissa
+// pisteissä - käytetään vain offline-viritykseen (tools/ms_offline.py).
+static py::dict ms_debug(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame_u,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> background_reference,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_search_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+    double X0, double Y0, double roi_half_cm, double R_max_cm, double H_total_cm,
+    double diff_threshold,
+    py::array_t<double, py::array::c_style | py::array::forcecast> evalX_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> evalY_arr,
+    double inner_weight, double margin_scale, double tau)
+{
+    auto buf = frame_u.request();
+    cv::Mat frame_mat((int)buf.shape[0], (int)buf.shape[1], CV_8UC3, (void*)buf.ptr);
+    cv::Mat ref_mat;
+    auto ref_buf = background_reference.request();
+    if (ref_buf.ndim == 3 && ref_buf.shape[2] == 3)
+        ref_mat = cv::Mat((int)ref_buf.shape[0], (int)ref_buf.shape[1], CV_8UC3, (void*)ref_buf.ptr);
+
+    auto local_pts_search = parsePts3(local_pts_search_arr);
+    auto K = parseMat33(K_arr);
+    auto R = parseMat33(R_arr);
+    auto t = parseVec3(t_arr);
+
+    cv::Rect roi = trackRoiBounds(X0, Y0, roi_half_cm + BOUNDARY_MAX_SHIFT_FROM_APPROX_CM,
+                                  R_max_cm, H_total_cm, frame_mat.cols, frame_mat.rows, K, R, t);
+    py::dict out;
+    if (roi.width <= 0 || roi.height <= 0)
+        return out;
+
+    cv::Mat crop = frame_mat(roi);
+    cv::Mat crop_filtered = crop;
+    bool have_bg = false;
+    if (!ref_mat.empty() && ref_mat.size() == frame_mat.size() && ref_mat.type() == frame_mat.type()) {
+        crop_filtered = suppressStaticBackground(crop, ref_mat(roi), diff_threshold);
+        have_bg = true;
+    }
+    cv::Mat mask_granite = createGraniteMask(crop_filtered);
+    cv::Mat mask_for_track = mask_granite;
+    if (have_bg)
+        mask_for_track = mask_granite | createForegroundFromWhitened(crop_filtered);
+
+    MeanShiftParams P;
+    P.inner_weight = inner_weight;
+    P.margin_scale = margin_scale;
+    P.tau = tau;
+
+    auto ex = evalX_arr.unchecked<1>();
+    auto ey = evalY_arr.unchecked<1>();
+    py::list sigs;
+    for (py::ssize_t i = 0; i < ex.shape(0); ++i) {
+        auto hull = predictedHull(local_pts_search, ex(i), ey(i), K, R, t);
+        py::dict d;
+        if (hull.size() >= 3) {
+            MsSignals sg = computeMsSignals(mask_for_track, roi.x, roi.y, hull, P);
+            d["valid"] = sg.valid;
+            d["sx"] = sg.sx; d["sy"] = sg.sy; d["wtot"] = sg.wtot; d["wmask"] = sg.wmask;
+            d["rx"] = sg.rx; d["ry"] = sg.ry; d["cx"] = sg.cx + roi.x; d["cy"] = sg.cy + roi.y;
+            d["score"] = hullOverlapScore(mask_for_track, hull, roi.x, roi.y);
+        } else {
+            d["valid"] = false;
+        }
+        sigs.append(d);
+    }
+
+    py::array_t<uint8_t> mask_np({mask_for_track.rows, mask_for_track.cols});
+    for (int r = 0; r < mask_for_track.rows; ++r)
+        std::memcpy(mask_np.mutable_data(r, 0), mask_for_track.ptr<uchar>(r), (size_t)mask_for_track.cols);
+
+    out["roi"] = py::make_tuple(roi.x, roi.y, roi.width, roi.height);
+    out["mask"] = mask_np;
+    out["signals"] = sigs;
+    return out;
+}
+
+
 PYBIND11_MODULE(stone_tracker, m)
 {
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";
@@ -3138,7 +3673,26 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("score_threshold"),
           py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"), py::arg("handle_r_frac"),
           py::arg("max_backward_cm"),
-          py::arg("diff_threshold") = 30.0);
+          py::arg("diff_threshold") = 30.0,
+          py::arg("locate_mode") = 0, py::arg("ms_gain") = 1.0, py::arg("ms_max_iter") = 10,
+          py::arg("ms_tol_px") = 0.10, py::arg("ms_inner_weight") = 2.0,
+          py::arg("ms_margin_scale") = HULL_MARGIN_SCALE,
+          py::arg("ms_tau") = 0.0, py::arg("ms_polish_step_cm") = 0.0);
+
+    m.def("ms_debug", &ms_debug,
+          "Diagnostiikka: seurantamaski + mean-shift-signaalit annetuissa pisteissa",
+          py::arg("frame_u"), py::arg("background_reference"), py::arg("local_pts_search"),
+          py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("X0"), py::arg("Y0"), py::arg("roi_half_cm"), py::arg("R_max_cm"), py::arg("H_total_cm"),
+          py::arg("diff_threshold"), py::arg("evalX"), py::arg("evalY"),
+          py::arg("inner_weight") = 2.0, py::arg("margin_scale") = HULL_MARGIN_SCALE, py::arg("tau") = 0.0);
+
+    m.def("ms_response_table", [](double w_in, double margin, double tau) {
+              auto lut = getResponseLUT(w_in, margin, tau);
+              return py::make_tuple(lut->dd, lut->f, lut->imax);
+          },
+          py::arg("inner_weight") = 2.0, py::arg("margin_scale") = HULL_MARGIN_SCALE, py::arg("tau") = 0.0,
+          "Mean-shift-vastefunktion f(delta) taulukkona (dd, f[], imax)");
 
     m.def("search_new_stone", &search_new_stone,
           "Uuden kiven haku kiinteältä vyohykkeelta (HAKU), koko frame",

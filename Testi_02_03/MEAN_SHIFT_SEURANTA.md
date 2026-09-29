@@ -1,0 +1,115 @@
+# Testi_02_03 – mean-shift-pohjainen hakuvaihe kivenseurantaan
+
+Testi_02_03 on Testi_02_02:n kopio, johon on lisätty **vaihtoehtoinen tapa löytää kivi seuraavasta framesta**:
+ristikkohaun (`locateByGridSearchTrackingFast`) tilalle iteratiivinen painopistesiirto (mean-shift),
+jonka jälkeen normaali LM-yhteissovitus (`refinePositionJoint`) tarkentaa sub-pikselitasolle.
+Kaikki uusi koodi on `stone_tracker.cpp`:ssä (`meanShiftLocate`), valinta `main.py`:ssä (`TRACKER_MODE`).
+
+## Idea (käyttäjän ehdotus) ja sen toteutus
+
+1. Kiven 3D-mallin projektio (hulli) ja sen 1,1-kertainen laajennus jaetaan hullin painopisteen kautta kulkevalla
+   vaaka- ja pystyviivalla neljään osaan (sama 1,1-marginaali kuin `hullOverlapScore`:ssa).
+2. Maskin pikselit lasketaan painotettuina: sisähullin alue paino 2, vain 1,1-kehään osuva paino 1.
+3. Alaosan ja yläosan (sekä oikean ja vasemman) painotettujen pikselien erotus normalisoituna kokonaispainolla
+   kertoo siirtosuunnan: `s_y = Σ w·[maski]·g(y−cy)/Σw`, `s_x` vastaavasti.
+4. Signaali muunnetaan siirtymäksi **optimoidulla painokertoimella** ja malli siirretään; toistetaan kunnes
+   siirtymä < `MS_TOL_PX`. Sen jälkeen LM tarkentaa.
+
+### Painokerroin (siirtymän optimaalinen suuruus)
+
+Pelkkä "erotus / leveys" ei ole lineaarinen siirtymän suhteen (signaali kyllästyy kun malli ja maski eivät enää
+peity), joten siirtymä lasketaan `d = gain · r · f⁻¹(s)`, missä
+
+* `f(δ)` on yksikköympyrän vastefunktio, joka lasketaan numeerisesti samoilla painoilla (2/1) ja marginaalilla
+  (1,10) kuin itse mittaus (`getResponseLUT`); ellipsille (kiven perspektiiviprojektio) tämä on affiini-invariantti,
+  kun `r` on hullin puolileveys/-korkeus kyseisessä akselissa;
+* `f` nousee monotonisesti arvoon δ ≈ 0,89·r (n. 12–13 cm) – yhden askeleen kaappausalue;
+* `gain` on empiirinen hienosäätö (oletus 0,8, ks. `tulokset/painokerroin_gain.txt`; optimi on litteä välillä 0,5–0,8).
+
+Pikselisiirtymä muunnetaan (X, Y)-senteiksi paikallisella Jakobiaanilla (projektiosta).
+
+### Kaksi poikkeamaa alkuperäisestä ideasta (mittausten perusteella)
+
+Offline-mittaus MAH00014-videolla paljasti, että puhdas idea ei riitä:
+
+* **Pehmeä painotus (`MS_TAU`).** Kaukana (Y ≈ 29 m) kivi näkyy vain ~7×11 px kokoisena ja 10 cm siirtymä on ~1 px.
+  Kova `sign()` hyppii silloin pikseliruudukon mukaan; `g(u) = clamp(u/τ, −1, 1)` (τ = 0,5) on jatkuva.
+* **Paikallinen viimeistely (`MS_POLISH`).** Maskin epäsymmetria (kahvan kolo, yläpinnan valaistus) siirtää
+  painopistetasapainon pois ristikkohaun IoU-optimista (mitattu: −0,2 signaalitaso ≈ 0,75 px ≈ 7 cm kaukana), jolloin
+  pelkän mean-shiftin pistemäärä jäi usein alle kynnyksen 0,35 (läpäisy 0,67). 8-naapuruston kukkulankiipeily
+  `hullOverlapScore`:lla (askel 4 cm → 0,75 cm) nostaa läpäisyn arvoon 0,95 ja on halpa (~0,7 ms).
+* **Varahaku.** Jos pistemäärä jää silti alle `TRACK_SCORE_THRESHOLD`:in, ajetaan alkuperäinen ristikkohaku
+  (hybridi, `TRACKER_MODE=meanshift`). Se pelastaa 7 % kaikista päivityksistä (1 590/23 216), jotka pelkkä
+  mean-shift menettäisi.
+
+## Käyttö
+
+Ympäristömuuttujat (`main.py`, kommentti ennen `run_pipeline`:a):
+
+| muuttuja | merkitys |
+|---|---|
+| `TRACKER_MODE=meanshift` (oletus) | mean-shift + ristikkohaku varana |
+| `TRACKER_MODE=grid` | alkuperäinen ristikkohaku – **identtinen Testi_02_02:n kanssa** (regressiotesti: 262 vertailua, 0 eroa) |
+| `TRACKER_MODE=meanshift_pure` | pelkkä mean-shift (ei varahakua) |
+| `TRACKER_MODE=compare` | ajaa grid + mean-shift (+ `TRACKER_GOLD=1`: tyhjentävä haku, `MS_GAINS=0.5,1.2`: lisägainit) samoilla syötteillä joka framella ja kirjaa CSV:hen (`TRACKER_COMPARE_LOG`) |
+| `MS_GAIN, MS_MAX_ITER, MS_TOL_PX, MS_TAU, MS_POLISH, MS_INNER_WEIGHT, MS_MARGIN` | virityskertoimet (oletus 0,8 / 6 / 0,3 / 0,5 / 4,0 / 2,0 / 1,10) |
+
+Windows-käännös: `CMakeLists.txt` ennallaan. `mode_engine.cpp` avaa videon `CAP_MSMF`:llä vain Windowsissa
+(`#ifdef _WIN32`), muualla `CAP_ANY` (jotta Linux-testaus onnistuu).
+
+## Työkalut (`tools/`)
+
+* `analyze_compare.py` – analysoi `compare`-ajon lokin (aika, tarkkuus pikseleinä, kerrostettuna).
+* `compare_tracks.py`, `compare_throws.py` – vertailevat kahden koko putken ajon `_kivien_sijainnit.csv`:tä
+  (rivikohdistus framen mukaan; "todellisten heittojen" kattavuus).
+* `ms_offline.py` – offline-virityskehys tallennetuilla framedumpeilla (`TRACKER_DUMP_DIR`, `TRACKER_DUMP_RANGE=alku:loppu`).
+* `stone_tracker.ms_debug(...)`, `ms_response_table(...)` – diagnostiikka.
+
+## Tulokset (MAH00014_leikattu.mp4, 1280×720, 16 501 ruutua, 23 216 kivipäivitystä)
+
+Kaikki aikavertailut ovat **saman ajon sisällä vuorotellen mitattuja** (kone on kohinainen: sama koodi vaihteli
+ajojen välillä ±50 %), tarkkuus pikseleinä (kaukana 10 cm ≈ 1 px) suhteessa tyhjentävään ristikkohakuun ("gold").
+Yksityiskohdat: `tulokset/`.
+
+### Aika (ms / kivipäivitys)
+
+| | prep (maski) | haku | LM-tarkennus | yhteensä |
+|---|---|---|---|---|
+| ristikkohaku (alkuperäinen) | 7,36 | 3,74 | 29,39 | **40,48** |
+| mean-shift-hybridi | 7,38 | 2,54 | 29,82 | **39,75 (−1,8 %)** |
+| mean-shift ilman varahakua (rivit joilla varahakua ei tarvittu) | – | 1,08 vs 2,68 | – | – |
+
+Hakuvaihe nopeutuu 32 % (hybridi) / 60 % (ilman varahakua), mutta se on vain 9 % päivityksen ajasta, joten
+**kokonaisnopeutus on vain ~2 %**. Varahakuun päätyy 17 % päivityksistä (niissä hakuaika ~9–10 ms).
+
+### Tarkkuus (px, mediaani / p90; pienempi parempi)
+
+| | haun tulos vs gold | lopullinen (LM:n jälkeen) vs gold |
+|---|---|---|
+| ristikkohaku | 0,73 / 1,78 | 0,49 / 1,61 |
+| mean-shift-hybridi | **0,40 / 1,05** | **0,26 / 0,93** |
+
+Aidoilla kivillä (gold `tarkka`=1, n = 4 461) ero on pieni: lopullinen 0,03 / 0,57 (ristikko) vs 0,03 / 0,55 (mean-shift).
+Lähellä (Y ≤ 15 m) menetelmät ovat tasoissa (0,06 px); kaukana (Y > 25 m) mean-shift on selvästi tarkempi
+(lopullinen 0,34 vs 0,77 px), koska ristikkohaun 1,5 cm askel/tasanko on kaukana karkea.
+Löytöaste: mean-shift löysi 136 kertaa kun ristikko ei, ristikko 4 kertaa kun mean-shift ei.
+
+### Koko putki (ratataso)
+
+Kontrolli: kaksi ristikkohakuajoa vastaavat toisiaan (90 % riveistä < 30 cm päässä, mediaani 0 cm), joten alla
+oleva ero on aito. Mean-shift-ajo löysi **12/15 todellista heittoa** (ruudut ≥ 2990), ristikkohaku **9–10/15**
+(`tulokset/vertailu_heitot.txt`); radan lukumäärä oli 173 vs 206 ja rms-mediaani 1,3 vs 9,3 px (vähemmän
+pelaaja-/lakaisijaratoja). Yhteisten todellisten heittojen sijaintiero: mediaani 0,12 cm, p90 7,4 cm.
+
+**Varaus:** yksi video, ~15 heittoa. Kivien löytyminen riippuu myös ehdokashallinnan ketjureaktioista
+(aktiivisten kivien lista, dedup), joten yksittäisten heittojen häviämistä/löytymistä ei voi yksiselitteisesti
+lukea trackerin ansioksi; mean-shift-ajo ei myöskään löytänyt kolmea heittoa, jotka ristikkohaku löysi.
+
+## Missä aika oikeasti kuluu (jatkosuunta)
+
+Profilointi (`tulokset/lm_profilointi.txt`): päivitys = prep 7,5 + haku 5,3 + **LM-tarkennus 25,5 ms**; LM #1 on 80 %
+tarkennuksesta, ja ulompi silmukka ajetaan keskimäärin 3,6 kertaa, koska suppenemisraja
+`BOUNDARY_CONVERGENCE_CM` on 0,05 cm (kaukana ~0,005 px). Kokeessa rajan nosto 0,5 cm:iin lyhensi tarkennuksen
+25,5 → 19,7 ms (−23 %) ja tulos oli 99 %:ssa päivityksistä identtinen (p99-ero 0,64 px). Sitä **ei ole otettu
+käyttöön** tässä kansiossa. Koko putken tasolla muut isot erät ovat varjonvaimennus (~22–29 ms/ruutu),
+stabilointi (~15–24) ja valotasapaino (~10–13).

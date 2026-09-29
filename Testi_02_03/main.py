@@ -3128,6 +3128,166 @@ def color_match_median_diff(frame_u_f64, local_pts_body, pose, X0, Y0,
 # perusteella - kukin vaihe kaynnistyy vasta edellisen valmistuttua.
 # ============================================================
 
+
+# ============================================================
+# SEURANNAN HAKUVAIHEEN VALINTA (Testi_02_03)
+#
+# Ympäristömuuttujilla ohjattava. OLETUS TRACKER_MODE=meanshift (hybridi);
+# TRACKER_MODE=grid palauttaa TÄSMÄLLEEN Testi_02_02:n alkuperäisen käytöksen:
+#   TRACKER_MODE=grid            alkuperäinen laajeneva ristikkohaku
+#   TRACKER_MODE=meanshift       mean-shift + ristikkohaku varana (hybridi)
+#   TRACKER_MODE=meanshift_pure  pelkkä mean-shift (ei varahakua)
+#   TRACKER_MODE=compare         ajaa SEKÄ grid- ETTÄ mean-shift-haun samoilla
+#                                syötteillä joka framella ja kirjaa vertailun
+#                                CSV:hen (TRACKER_COMPARE_LOG). Tilaa ohjaa
+#                                COMPARE_DRIVER (grid|ms, oletus grid).
+#   TRACKER_GOLD=1               compare-tilassa lisäksi TYHJENTÄVÄ ristikkohaku
+#                                (kulta-standardi, hullOverlapScore-optimi).
+#   MS_VARIANT=meanshift|meanshift_pure   (compare-tilassa vertailtava variantti)
+#   MS_GAIN, MS_MAX_ITER, MS_TOL_PX, MS_INNER_WEIGHT, MS_MARGIN, MS_TAU, MS_POLISH
+#                          virityskertoimet (oletukset = offline-viritetyt: 0.8/6/0.3/2.0/1.10/0.5/4.0)
+#   MS_GAINS=0.8,1.0,1.2   compare-tilassa ajetaan lisäksi nämä gain-arvot
+#                          (sarakkeet ms<gain>_*) - painokertoimen optimointiin.
+# ============================================================
+
+TRACKER_MODE = os.environ.get("TRACKER_MODE", "meanshift")
+TRACKER_COMPARE_LOG = os.environ.get("TRACKER_COMPARE_LOG")
+TRACKER_GOLD = os.environ.get("TRACKER_GOLD", "0") == "1"
+COMPARE_DRIVER = os.environ.get("COMPARE_DRIVER", "grid")
+MS_VARIANT = os.environ.get("MS_VARIANT", "meanshift")
+MS_GAIN = float(os.environ.get("MS_GAIN", "0.8"))
+MS_MAX_ITER = int(os.environ.get("MS_MAX_ITER", "6"))
+MS_TOL_PX = float(os.environ.get("MS_TOL_PX", "0.30"))
+MS_TAU = float(os.environ.get("MS_TAU", "0.5"))
+MS_POLISH_CM = float(os.environ.get("MS_POLISH", "4.0"))
+MS_INNER_WEIGHT = float(os.environ.get("MS_INNER_WEIGHT", "2.0"))
+MS_MARGIN = float(os.environ.get("MS_MARGIN", "1.10"))
+GOLD_COARSE_STEP_CM = 1.0
+GOLD_FINE_STEP_CM = 0.25
+GOLD_MAX_HALF_RANGE_CM = 30.0
+
+_TRACKER_MODE_ID = {"grid": 0, "meanshift": 1, "meanshift_pure": 2, "gold": 3}
+_compare_state = {"file": None, "writer": None, "rows": 0, "parity": 0}
+_COMPARE_FIELDS = ["frame", "stone_id", "X0", "Y0", "hx", "hy"]
+MS_GAINS = [float(x) for x in os.environ.get("MS_GAINS", "").split(",") if x.strip()]
+_COMPARE_METHODS = ["grid", "ms", "gold"] + [f"ms{g:g}" for g in MS_GAINS]
+_COMPARE_PER = ["wall_ms", "found", "X", "Y", "rms_px", "tarkka", "score",
+                "loc_X", "loc_Y", "prep_ms", "locate_ms", "refine_ms", "iters",
+                "converged", "fallback"]
+for _m in _COMPARE_METHODS:
+    _COMPARE_FIELDS += [f"{_m}_{k}" for k in _COMPARE_PER]
+
+
+def _compare_log_row(frame_index, stone_id, X0, Y0, hx, hy, per_method):
+    if TRACKER_COMPARE_LOG is None:
+        return
+    if _compare_state["file"] is None:
+        _compare_state["file"] = open(TRACKER_COMPARE_LOG, "w", newline="")
+        _compare_state["writer"] = csv.DictWriter(
+            _compare_state["file"], fieldnames=_COMPARE_FIELDS
+        )
+        _compare_state["writer"].writeheader()
+    row = {"frame": frame_index, "stone_id": stone_id,
+           "X0": X0, "Y0": Y0, "hx": hx, "hy": hy}
+    for name, (r, wall_ms) in per_method.items():
+        row[f"{name}_wall_ms"] = wall_ms
+        row[f"{name}_found"] = int(bool(r.get("found")))
+        row[f"{name}_X"] = r.get("X_cm", "")
+        row[f"{name}_Y"] = r.get("Y_cm", "")
+        row[f"{name}_rms_px"] = r.get("rms_px", "")
+        row[f"{name}_tarkka"] = int(bool(r.get("tarkka", False)))
+        row[f"{name}_score"] = r.get("score", "")
+        row[f"{name}_loc_X"] = r.get("loc_X", "")
+        row[f"{name}_loc_Y"] = r.get("loc_Y", "")
+        row[f"{name}_prep_ms"] = r.get("prep_ms", "")
+        row[f"{name}_locate_ms"] = r.get("locate_ms", "")
+        row[f"{name}_refine_ms"] = r.get("refine_ms", "")
+        row[f"{name}_iters"] = r.get("iters", "")
+        row[f"{name}_converged"] = int(bool(r.get("converged", False)))
+        row[f"{name}_fallback"] = int(bool(r.get("used_fallback", False)))
+    _compare_state["writer"].writerow(row)
+    _compare_state["rows"] += 1
+    if _compare_state["rows"] % 200 == 0:
+        _compare_state["file"].flush()
+
+
+def _seuranta_dispatch(frame_index, stone_ids, base_args, X0_arr, Y0_arr,
+                       half_x, half_y):
+    """Kutsuu stone_tracker.track_stones_batch:ia valitulla hakutavalla
+    (TRACKER_MODE). base_args = kaikki positioargumentit diff_threshold:iin
+    asti (X0/Y0/half_range-taulukot mukana indekseissä 2-5)."""
+
+    def call(mode_name, gold=False, gain=None):
+        t0 = time.perf_counter()
+        kwargs = dict(
+            locate_mode=_TRACKER_MODE_ID[mode_name],
+            ms_gain=MS_GAIN if gain is None else gain, ms_max_iter=MS_MAX_ITER, ms_tol_px=MS_TOL_PX,
+            ms_inner_weight=MS_INNER_WEIGHT, ms_margin_scale=MS_MARGIN,
+            ms_tau=MS_TAU, ms_polish_step_cm=MS_POLISH_CM,
+        )
+        args = list(base_args)
+        if gold:
+            # coarse/fine-askeleet kulta-standardille (indeksit 11, 12)
+            args[11] = GOLD_COARSE_STEP_CM
+            args[12] = GOLD_FINE_STEP_CM
+        res = stone_tracker.track_stones_batch(*args, **kwargs)
+        return res, (time.perf_counter() - t0) * 1000.0
+
+    # Virityskehyksen tallennus (TRACKER_DUMP_DIR + TRACKER_DUMP_RANGE=alku:loppu):
+    # tallentaa seurantaframen + syotteet .npz:ksi offline-kokeiluja varten.
+    if os.environ.get("TRACKER_DUMP_DIR"):
+        lo, hi = [int(x) for x in os.environ.get("TRACKER_DUMP_RANGE", "0:0").split(":")]
+        if lo <= frame_index <= hi:
+            np.savez_compressed(
+                os.path.join(os.environ["TRACKER_DUMP_DIR"], f"f{frame_index:06d}.npz"),
+                frame=base_args[0], X0=np.asarray(X0_arr), Y0=np.asarray(Y0_arr),
+                hx=np.asarray(half_x), hy=np.asarray(half_y),
+                stone_ids=np.asarray(stone_ids), diff_threshold=base_args[19]
+            )
+        elif frame_index > hi:
+            if _compare_state["file"] is not None:
+                _compare_state["file"].flush()
+            os._exit(0)
+
+    if TRACKER_MODE in ("grid", "meanshift", "meanshift_pure"):
+        res, _ = call(TRACKER_MODE)
+        # grid-tulokset talteen dumpin viereen (vertailukohta offline-kokeille)
+        if os.environ.get("TRACKER_DUMP_DIR"):
+            lo, hi = [int(x) for x in os.environ.get("TRACKER_DUMP_RANGE", "0:0").split(":")]
+            if lo <= frame_index <= hi:
+                import pickle as _pk
+                _pk.dump(res, open(os.path.join(os.environ["TRACKER_DUMP_DIR"], f"r{frame_index:06d}.pkl"), "wb"))
+        return res
+
+    # compare
+    order = ["grid", MS_VARIANT]
+    if _compare_state["parity"] % 2:
+        order.reverse()
+    _compare_state["parity"] += 1
+    out = {}
+    for name in order:
+        out[name] = call(name)
+    res_grid, wall_grid = out["grid"]
+    res_ms, wall_ms = out[MS_VARIANT]
+
+    res_gold = None
+    if TRACKER_GOLD and max(float(np.max(half_x)), float(np.max(half_y))) <= GOLD_MAX_HALF_RANGE_CM:
+        res_gold = call("gold", gold=True)
+
+    res_gain = {g: call(MS_VARIANT, gain=g) for g in MS_GAINS}
+
+    for i, sid in enumerate(stone_ids):
+        per = {"grid": (res_grid[i], wall_grid), "ms": (res_ms[i], wall_ms)}
+        if res_gold is not None:
+            per["gold"] = (res_gold[0][i], res_gold[1])
+        for g, (rg, wg) in res_gain.items():
+            per[f"ms{g:g}"] = (rg[i], wg)
+        _compare_log_row(frame_index, sid, float(X0_arr[i]), float(Y0_arr[i]),
+                         float(half_x[i]), float(half_y[i]), per)
+
+    return res_ms if COMPARE_DRIVER == "ms" else res_grid
+
+
 def run_pipeline(
     video_file,
     panel_data,
@@ -4258,18 +4418,22 @@ def run_pipeline(
                     )
 
                     t_seuranta0 = time.time()
-                    batch_results = stone_tracker.track_stones_batch(
-                        frame_u_for_tracking, ref_undist_live,
-                        X0_arr, Y0_arr,
-                        half_range_x_arr, half_range_y_arr,
-                        local_pts_body, local_pts_search,
-                        pose["K"], pose["R"], pose["t"],
-                        k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
-                        k92.TRACK_SCORE_THRESHOLD,
-                        live_state["R_max"], live_state["H_total"],
-                        live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
-                        TRACK_MAX_BACKWARD_CM,
-                        haku_seuranta_diff_threshold
+                    batch_results = _seuranta_dispatch(
+                        frame_index, [s["stone_id"] for s in seuranta_stones],
+                        (
+                            frame_u_for_tracking, ref_undist_live,
+                            X0_arr, Y0_arr,
+                            half_range_x_arr, half_range_y_arr,
+                            local_pts_body, local_pts_search,
+                            pose["K"], pose["R"], pose["t"],
+                            k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
+                            k92.TRACK_SCORE_THRESHOLD,
+                            live_state["R_max"], live_state["H_total"],
+                            live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
+                            TRACK_MAX_BACKWARD_CM,
+                            haku_seuranta_diff_threshold
+                        ),
+                        X0_arr, Y0_arr, half_range_x_arr, half_range_y_arr
                     )
                     total_seuranta_time += time.time() - t_seuranta0
                     n_seuranta_calls += 1

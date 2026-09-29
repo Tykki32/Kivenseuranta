@@ -1,0 +1,75 @@
+rivit (kivi-frame-parit): 23216, framea: 11464
+
+== AIKA (ms / kivi-paivitys; keskiarvo) ==
+menetelma    prep   haku     LM    yht | kutsu wall med / p95
+grid         7.36   3.74  29.39  40.48 |       60.7 48.1 / 147.6
+ms           7.38   2.54  29.82  39.75 |       59.5 46.9 / 146.1
+gold         6.86   3.60  31.95  42.40 |       62.8 49.6 / 150.7
+ms0.5        7.12   2.50  29.49  39.11 |       58.6 46.1 / 142.4
+ms1.2        7.09   2.48  29.51  39.08 |       58.8 46.4 / 142.9
+  ms: varahaku (fallback) osuus = 0.171, iteraatioita ka 2.99, suppeni 0.91
+  ms0.5: varahaku (fallback) osuus = 0.172, iteraatioita ka 2.65, suppeni 0.92
+  ms1.2: varahaku (fallback) osuus = 0.170, iteraatioita ka 3.43, suppeni 0.85
+
+== TARKKUUS vs. tyhjentava haku (gold), PIKSELEINA ==
+   loc = hakuvaiheen tulos, fin = LM:n jalkeinen lopullinen sijainti
+
+[kaikki] n=15434
+  menetelma  loytyi locScore loc mediaani  loc p90 fin mediaani  fin p90 rms_px med tarkka
+  grid         1.00    0.722         0.73     1.78         0.49     1.61      11.52   0.29
+  ms           1.00    0.696         0.40     1.05         0.26     0.93      11.55   0.29
+  ms0.5        1.00    0.699         0.39     1.02         0.26     0.90      11.55   0.29
+  ms1.2        1.00    0.693         0.43     1.06         0.28     0.96      11.55   0.29
+  gold         1.00    0.729  (vertailukohta)
+
+[aito kivi (gold tarkka=1)] n=4461
+  menetelma  loytyi locScore loc mediaani  loc p90 fin mediaani  fin p90 rms_px med tarkka
+  grid         1.00    0.680         0.58     1.49         0.03     0.57       0.85   0.98
+  ms           1.00    0.681         0.49     1.22         0.03     0.55       0.84   0.98
+  ms0.5        1.00    0.682         0.47     1.16         0.03     0.51       0.84   0.99
+  ms1.2        1.00    0.681         0.50     1.23         0.03     0.55       0.84   0.98
+  gold         1.00    0.698  (vertailukohta)
+
+[liikkuva (>2cm)] n=11700
+  menetelma  loytyi locScore loc mediaani  loc p90 fin mediaani  fin p90 rms_px med tarkka
+  grid         0.99    0.730         0.73     1.80         0.50     1.67      11.76   0.27
+  ms           1.00    0.702         0.41     1.05         0.29     0.97      11.80   0.27
+  ms0.5        1.00    0.704         0.41     1.03         0.29     0.94      11.79   0.27
+  ms1.2        1.00    0.699         0.42     1.07         0.29     0.99      11.79   0.27
+  gold         1.00    0.736  (vertailukohta)
+
+[paikallaan] n=3734
+  menetelma  loytyi locScore loc mediaani  loc p90 fin mediaani  fin p90 rms_px med tarkka
+  grid         1.00    0.698         0.73     1.69         0.44     1.38      10.36   0.35
+  ms           1.00    0.680         0.40     1.01         0.21     0.78      10.39   0.35
+  ms0.5        1.00    0.684         0.33     0.97         0.17     0.72      10.37   0.35
+  ms1.2        1.00    0.677         0.45     1.04         0.24     0.82      10.37   0.35
+  gold         1.00    0.709  (vertailukohta)
+
+[lahella Y<=15m] n=3648
+  menetelma  loytyi locScore loc mediaani  loc p90 fin mediaani  fin p90 rms_px med tarkka
+  grid         1.00    0.643         0.53     1.60         0.06     0.94       0.81   0.73
+  ms           1.00    0.650         0.46     1.19         0.06     0.76       0.82   0.73
+  ms0.5        1.00    0.650         0.46     1.17         0.06     0.79       0.82   0.73
+  ms1.2        1.00    0.649         0.46     1.23         0.06     0.79       0.82   0.74
+  gold         1.00    0.667  (vertailukohta)
+
+[keski 15-25m] n=2446
+  menetelma  loytyi locScore loc mediaani  loc p90 fin mediaani  fin p90 rms_px med tarkka
+  grid         0.99    0.648         0.79     1.64         0.46     1.53       1.54   0.41
+  ms           1.00    0.642         0.60     1.30         0.30     1.12       1.53   0.41
+  ms0.5        0.99    0.645         0.54     1.23         0.28     1.09       1.53   0.41
+  ms1.2        1.00    0.641         0.63     1.32         0.31     1.18       1.54   0.41
+  gold         1.00    0.665  (vertailukohta)
+
+[kaukana Y>25m] n=9340
+  menetelma  loytyi locScore loc mediaani  loc p90 fin mediaani  fin p90 rms_px med tarkka
+  grid         0.99    0.772         0.83     1.90         0.77     1.90      15.33   0.09
+  ms           1.00    0.729         0.36     0.92         0.34     0.91      15.34   0.09
+  ms0.5        1.00    0.733         0.35     0.87         0.33     0.85      15.34   0.09
+  ms1.2        1.00    0.725         0.38     0.94         0.37     0.93      15.34   0.09
+  gold         1.00    0.770  (vertailukohta)
+
+== ms vs grid: lopullinen sijainti toisiinsa nahden (px, LM jalkeen) ==
+  n=20682 mediaani 0.44 p90 1.71 p99 4.90 max 30.7 px
+  loytyi: grid 0.891, ms 0.897; ms loysi kun grid ei: 136, grid loysi kun ms ei: 4
