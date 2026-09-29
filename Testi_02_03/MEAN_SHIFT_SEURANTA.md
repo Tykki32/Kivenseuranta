@@ -197,8 +197,16 @@ ruutua (`tulokset/heittoportti.txt`), listaan kuulumattomia ratoja 0; rivejä 14
 `tulokset/heitot_MAH00014_leikattu.csv`. Kuvat jokaisen ylityksen kohdalta: `tulokset/kuvat/hogline_ylitykset/`
 (yleiskuva + nauhat ylitys −15/0/+15 ruutua; keltainen viiva = hogline, vihreä rengas = rata).
 
-**Silmämääräinen tarkistus kuvista:** 25/26 ylityskuvassa rengas on hoglinen kohdalla olevan kiven päällä. **#4 (ruutu 2360, id 158)
-on virheellinen radan alussa**: rengas on pelaajan jalan päällä ja heitetty kivi on renkaan vasemmalla puolella; rata lukkiutuu
-kiveen vasta myöhemmin, joten sen ylitysframe on epätarkka (lista sanoo 2425). Kolmessa (#17, #19, #23) rengas on ruudussa
-ylitys −15 vielä tyhjällä jäällä (kivi ei näy heittäjän takaa). Portin arvot on säädetty **yhdellä videolla ja tällä listalla**
-(esim. heikon sovituksen väylä osuu vain heittoon 15525), joten yleistettävyys toiselle videolle on todentamatta.
+**Silmämääräinen tarkistus kuvista ja heitto #4:** ensimmäisessä versiossa #4 (ruutu 2360, rata 158) oli väärin: rengas oli
+heittäjän jalan päällä. Selvitys (`tulokset/kuvat/hogline_ylitykset/heitto4_*.jpg`): seuraavaa kiveä ei ollut vielä
+heitetty ruudussa 2360 - HAKU rekisteröi ehdokkaan heittäjän jalalta, rata menetti kohteen (65 ruudun rivitön aukko) ja lukkiutui
+oikeaan kiveen vasta ruudussa 2439 (kivi lähtee heittäjältä hoglinen yli). Vasemmalla näkyvä kivi oli edellinen heitto (#3).
+**Korjaus:** radan alku pudotetaan, jos sen jälkeen on yli 30 ruudun rivitön aukko ja alku on lyhyt (< 40 riviä)
+(`GATE_HEAD_GAP_FRAMES`, `GATE_HEAD_MAX_ROWS`), ja jos rata alkaa hoglinen alapuolelta, ylitysaika ekstrapoloidaan taaksepäin radan
+alun nopeudesta (enintään 60 ruutua). Vain rata 158 kärsi tästä (muiden aukot < 20 ruutua). Uusi ylitys 2411 (lista 2425, ero
+−14); kaikkien 26 ylitysaikojen ero listaan ≤ 28 ruutua. Ekstrapolointi on likimääräinen: kivi liikkuu vapautuksessa aluksi hitaammin
+(Y 2856 → 2863 ruuduissa 2439–2447), joten todellinen ylitys on ~10–25 ruutua ekstrapoloitua myöhemmin. Portti voidaan ajaa
+raaka-CSV:lle uudelleen ilman videota: `python tools/regate_csv.py raaka.csv ulos.csv` (parametrit `GATE_*`).
+Muut ylityskuvat: rengas on kiven päällä; kolmessa (#17, #19, #23) rengas on ruudussa ylitys −15 vielä tyhjällä jäällä (kivi ei
+näy heittäjän takaa). Portin arvot on säädetty **yhdellä videolla ja tällä listalla** (esim. heikon sovituksen väylä osuu vain
+heittoon 15525), joten yleistettävyys toiselle videolle on todentamatta.

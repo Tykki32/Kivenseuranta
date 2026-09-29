@@ -1,11 +1,11 @@
-HEITTOPORTTI + MONIHAKU: portitettu CSV vs kayttajan hogline-ylitysaikalista (MAH00014_leikattu.mp4)
-Lista = karkeat ylitysajat (+-50 ruutua). ylitys = radan ensimmainen frame jossa Y <= kaukainen hogline (3017.6 cm).
+HEITTOPORTTI + MONIHAKU + radan alun karsinta: portitettu CSV vs kayttajan hogline-ylitysaikalista (MAH00014_leikattu.mp4)
+Lista = karkeat ylitysajat (+-50 ruutua). ylitys = radan ylitysframe (jos rata alkaa hoglinen alapuolelta: ekstrapoloitu taaksepain, max 60 ruutua).
 
  #  lista  ylitys   ero  id  rivit  ruudut          Y alku->loppu
  1   1825    1824    -1  116   542  1810-2351    3123->  514
  2   2025    2033    +8  134   525  2020-2544    3138->  660
- 3   2250    2290   +40  149   414  2290-2712    2908->  641
- 4   2425    2360   -65  158   506  2360-2933    3003->  682
+ 3   2250    2278   +28  149   414  2290-2712    2908->  641
+ 4   2425    2411   -14  158   491  2439-2933    2856->  682
  5   2775    2795   +20  174   414  2760-3176    3309->  645
  6   2975    2979    +4  200   474  2970-3461    3118->  435
  7   3250    3266   +16  215   627  3230-3864    3282->   87
@@ -14,22 +14,20 @@ Lista = karkeat ylitysajat (+-50 ruutua). ylitys = radan ensimmainen frame jossa
 10   6125    6142   +17  332   557  6110-6666    3278->  694
 11   6475    6482    +7  344   507  6450-6984    3293->  490
 12   6725    6734    +9  355   595  6700-7295    3234->  381
-13   7350    7360   +10  378   511  7360-7870    2893->  295
+13   7350    7347    -3  378   511  7360-7870    2893->  295
 14   7625    7642   +17  385   584  7610-8214    3234->  138
 15   8275    8279    +4  397   559  8260-8818    3200->  302
 16   8625    8625    +0  410   594  8590-9183    3234->  429
-17   9250    9270   +20  430   546  9270-9816    2907->  316
+17   9250    9256    +6  430   546  9270-9816    2907->  316
 18   9575    9594   +19  440   605  9590-10207    3056->   68
-19  10200   10210   +10  465   529  10210-10738    3010->  409
+19  10200   10209    +9  465   529  10210-10738    3010->  409
 20  10475   10478    +3  478   557  10460-11017    3208->  516
 21  11125   11128    +3  488   580  11100-11681    3247->  315
 22  11375   11370    -5  498   595  11330-11942    3334->  308
-23  11950   11980   +30  516   572  11980-12562    2936->  218
-24  12375   12400   +25  551   553  12400-12963    2941->  373
+23  11950   11969   +19  516   572  11980-12562    2936->  218
+24  12375   12390   +15  551   553  12400-12963    2941->  373
 25  13925   13923    -2  578   554  13900-14480    3218->  321
 26  15525   15530    +5  644   382  15510-15935    3204->  759
 
-listaan kuulumattomia ratoja: 0; ratoja yhteensa: 26 ; rivit: 14116
-Raaka (portittamaton) CSV: 332 vahvistettua rataa, 31 045 riviä.
-
-HUOM: #4 (id 158): rata on radan alussa pelaajan jalan paalla ja lukkiutuu kiveen vasta myohemmin; ylitysframe (2360) on siksi epatarkka.
+listaan kuulumattomia ratoja: 0; ratoja yhteensa: 26 ; rivit: 14101 (raaka: 332 rataa, 31 045 riviä)
+Suurin ero listaan: 28 ruutua (ei yhtaan yli +-50).
