@@ -3574,6 +3574,12 @@ def _print_prof_report(n_frames, n_seuranta_updates):
     print()
     print("=== VAIHEKOHTAINEN AIKAMITTAUS (Testi_03_01) ===")
     print(f"ruutuja: {n_frames}, kivipaivityksia: {n_seuranta_updates}")
+    _serial = sum(
+        sec for k, (sec, n) in _PROF.items()
+        if k.startswith("py:") and "taustasaikeen oma kesto" not in k and "varidiagnostiikka" not in k
+    )
+    _tot = _PROF.get("FRAME_KOKO", [0.0, 1])[0]
+    _PROF["py: MUU / JAANNOS (ei mitattu: FRAME_KOKO - mitatut sarjavaiheet)"] = [max(0.0, _tot - _serial), n_frames]
     print("--- Python-puoli (ms/ruutu, kutsuja) ---")
     tot = _PROF.get("FRAME_KOKO", [0.0, 1])[0]
     for k, (sec, n) in sorted(_PROF.items(), key=lambda kv: -kv[1][0]):
@@ -3844,6 +3850,7 @@ def run_pipeline(
         while True:
 
             t_frame_wall0 = time.perf_counter()
+            _t_post0 = None
             t_read0 = time.perf_counter()
             frame = engine.read()
             total_read_time += time.perf_counter() - t_read0
@@ -5266,6 +5273,10 @@ def run_pipeline(
                         ]
 
                 # --------------------------------------------
+                if _t_post0 is not None:
+                    _e = _PROF.setdefault("py: SEURANTA jalkeen: tulossilmukka yht. (sis. varidiagn., CSV, portti)", [0.0, 0])
+                    _e[0] += time.perf_counter() - _t_post0; _e[1] += 1
+
                 # HAKU:n tuloksen keraaminen - SEURANTA (ylla) ehti
                 # jo laskea RINNAN HAKU:n kanssa, joten odotus tassa
                 # (.result(), jos HAKU on viela kesken) on vain sen
@@ -5421,6 +5432,7 @@ def run_pipeline(
                 # merkityksesta.
                 # --------------------------------------------
 
+                _t_dbg0 = time.perf_counter()
                 if debug_video_writer is not None:
 
                     # Kayttajan pyynnosta: debug-videoon tallennetaan
@@ -5463,6 +5475,7 @@ def run_pipeline(
                     )
 
                     debug_video_writer.write(debug_frame)
+                    _e = _PROF.setdefault("py: debug-video (piirto + kirjoitus)", [0.0, 0]); _e[0] += time.perf_counter() - _t_dbg0; _e[1] += 1
 
             _e = _PROF.setdefault("FRAME_KOKO", [0.0, 0])
             _e[0] += time.perf_counter() - t_frame_wall0; _e[1] += 1
