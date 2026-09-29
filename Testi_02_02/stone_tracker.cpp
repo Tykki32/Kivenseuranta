@@ -448,6 +448,56 @@ static std::pair<cv::Point2d, double> gridSearchBest(
 }
 
 
+// HAKU:n ristikkohaun nopeutus (kayttajan ehdotus, katso keskustelu-
+// historia): HAKU:n hakuvyohyke on kiintea, KAPEA (x_half_width=70cm)
+// ja KAUKANA kamerasta (lahella kaukaista hogline:a, katso kamera9_02.
+// py:n SEARCH_Y_MIN/MAX_CM) - talla etaisyydella kiven projisoitu KOKO
+// JA MUOTO eivat muutu merkittavasti koko hakuvyohykkeen sisalla, joten
+// jokaiselle ristikkopisteelle EI TARVITSE laskea TAYTTA 3D->2D-
+// projisiota (predictedHull, joka projisioi KAIKKI local_pts_search-
+// pisteet erikseen) uudelleen - riittaa laskea taydellinen hulli VAIN
+// KERRAN hakuvyohykkeen keskella (x_center,y_center - kaukaisen hog-
+// linen kohdalla) ja SIIRTAA (translatoida) tata samaa hullia muille
+// ristikkopisteille paikallisen lineaarisen approksimaation (Jacobin
+// matriisi px/cm, laskettu differenssilla samasta keskipisteesta)
+// mukaan. HUOM: tama approksimaatio EI PADE koko radalle (lahella
+// kameraa/taloa projisio muuttuu paljon nopeammin) - siksi SEURANNAN
+// oma ristikkohaku (locateByGridSearchTrackingFast, jonka kohde voi
+// olla missa tahansa radalla) EI kayta tata, vain gridSearchBest:ia
+// suoraan taydella projisiolla joka pisteessa.
+static std::pair<cv::Point2d, double> gridSearchBestLinearized(
+    const cv::Mat& mask_crop, int off_x, int off_y,
+    const std::vector<cv::Point2f>& ref_hull, double ref_x, double ref_y,
+    const cv::Point2d& jac_col_x, const cv::Point2d& jac_col_y,
+    const std::vector<double>& x_vals, const std::vector<double>& y_vals)
+{
+    double best_score = -1.0;
+    cv::Point2d best_xy(x_vals.empty() ? 0.0 : x_vals[0], y_vals.empty() ? 0.0 : y_vals[0]);
+
+    std::vector<cv::Point2f> hull(ref_hull.size());
+
+    for (double X : x_vals) {
+        double dX = X - ref_x;
+        for (double Y : y_vals) {
+            double dY = Y - ref_y;
+            double dpx = dX * jac_col_x.x + dY * jac_col_y.x;
+            double dpy = dX * jac_col_x.y + dY * jac_col_y.y;
+
+            for (size_t i = 0; i < ref_hull.size(); ++i)
+                hull[i] = cv::Point2f(ref_hull[i].x + (float)dpx, ref_hull[i].y + (float)dpy);
+
+            double score = hullOverlapScore(mask_crop, hull, off_x, off_y);
+            if (score > best_score) {
+                best_score = score;
+                best_xy = cv::Point2d(X, Y);
+            }
+        }
+    }
+
+    return {best_xy, best_score};
+}
+
+
 static std::pair<cv::Point2d, double> locateByGridSearchFast(
     const std::vector<cv::Point3d>& local_pts_search,
     const cv::Mat& mask_crop, int off_x, int off_y,
@@ -455,13 +505,44 @@ static std::pair<cv::Point2d, double> locateByGridSearchFast(
     double coarse_step, double fine_step,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t)
 {
+    // Referenssihulli + paikallinen Jacobi (px per cm) hakuvyohykkeen
+    // keskella - katso gridSearchBestLinearized:in oma kommentti.
+    // JAC_DELTA_CM: pieni siirtyma differenssille - ei vaikuta tulokseen
+    // (lineaarinen approksimaatio joka tapauksessa), vain numeeriseen
+    // tarkkuuteen.
+    static const double JAC_DELTA_CM = 10.0;
+
+    auto ref_hull = predictedHull(local_pts_search, x_center, y_center, K, R, t);
+
+    std::vector<cv::Point3d> jac_pts{
+        cv::Point3d(x_center, y_center, 0.0),
+        cv::Point3d(x_center + JAC_DELTA_CM, y_center, 0.0),
+        cv::Point3d(x_center, y_center + JAC_DELTA_CM, 0.0),
+    };
+    // Referenssikorkeus ei ole taalla merkityksellinen (vain siirtymän
+    // suunta/mittakaava), mutta kaytetaan samaa Z=0-tasoa kuin
+    // rayPlaneIntersectionZ0 - riittava tarkkuus Jacobille.
+    auto jac_proj = project3d(K, R, t, jac_pts);
+    cv::Point2d jac_col_x(
+        (jac_proj[1].x - jac_proj[0].x) / JAC_DELTA_CM,
+        (jac_proj[1].y - jac_proj[0].y) / JAC_DELTA_CM
+    );
+    cv::Point2d jac_col_y(
+        (jac_proj[2].x - jac_proj[0].x) / JAC_DELTA_CM,
+        (jac_proj[2].y - jac_proj[0].y) / JAC_DELTA_CM
+    );
+
     auto x_vals = arangeVec(x_center - x_half_range, x_center + x_half_range + 1e-6, coarse_step);
     auto y_vals = arangeVec(y_center - y_half_range, y_center + y_half_range + 1e-6, coarse_step);
-    auto best1 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals);
+    auto best1 = gridSearchBestLinearized(
+        mask_crop, off_x, off_y, ref_hull, x_center, y_center, jac_col_x, jac_col_y, x_vals, y_vals
+    );
 
     auto x_vals2 = arangeVec(best1.first.x - coarse_step, best1.first.x + coarse_step + 1e-6, fine_step);
     auto y_vals2 = arangeVec(best1.first.y - coarse_step, best1.first.y + coarse_step + 1e-6, fine_step);
-    auto best2 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2);
+    auto best2 = gridSearchBestLinearized(
+        mask_crop, off_x, off_y, ref_hull, x_center, y_center, jac_col_x, jac_col_y, x_vals2, y_vals2
+    );
 
     return best2;
 }
@@ -2606,6 +2687,25 @@ static py::list track_stones_batch(
 // pelaajia vyohykkeella).
 static const int MAX_HAKU_ATTEMPTS_PER_SCAN = 5;
 
+// HAKU:n hyvaksymiskynnys HIENOSAADETYLLE (refinePositionJoint:in
+// jalkeiselle) peitto-osuudelle (kayttajan pyynnosta, katso keskustelu-
+// historia): AIEMMIN uuden kiven hyvaksyminen vaati LISAKSI etta kiven
+// pyorea reuna/rengasrakenne oli loydettavissa (refined.tarkka) - tama
+// hylkasi kuitenkin myos AIDOT mutta kaukana/pienena nakyvat kivet,
+// joiden rengasrakenne ei yksinkertaisesti erotu tarpeeksi harvoista
+// pikseleista (havaittu: kaukovyohykkeen kivi, jonka 3D-malli sopi
+// hyvin sen maskikontuuriin, mutta rengashaku ei koskaan konvergoinut
+// sen pienuuden takia). Korvattu SAMALLA peitto-/ulkopuoli-pisteytyksella
+// (hullOverlapScore, katso HULL_MARGIN_SCALE/HULL_OUTSIDE_PENALTY_WEIGHT)
+// kuin SEURANNAssakin, mutta MATALAMMALLA kynnyksella kuin k92.py:n
+// TRACK_SCORE_THRESHOLD (0.35) - uuden kiven ENSIHAVAINToa ei tarvitse
+// vaatia yhta tiukaksi kuin jatkuvaa seurantaa, koska main.py:n oma
+// "tarkka-osuus"-esivahvistusikkuna (MIN_PRECONFIRM_TARKKA_*) suodattaa
+// pelaajat/lakaisijat pois myohemmin usean framen yli kerätyn datan
+// perusteella - tama funktio ei siis ole ainoa suoja vaaria kandidaatteja
+// vastaan.
+static const double HAKU_ACCEPT_SCORE_THRESHOLD = 0.20;
+
 static StoneUpdateResult searchNewStoneOne(
     const cv::Mat& frame_mat, const cv::Mat& background_reference, double diff_threshold,
     const std::vector<cv::Point3d>& local_pts_body,
@@ -2666,30 +2766,26 @@ static StoneUpdateResult searchNewStoneOne(
         );
 
         // Sama liian-ison-kontuurin hylkays kuin trackStoneUpdateOne:ssa -
-        // katso sen kommentti. LISAKSI (kayttajan pyynnosta, katso git-
-        // historia): UUDEN kiven hyvaksyminen (HAKU, VAIN tama funktio -
-        // EI trackStoneUpdateOne/SEURANTA, joka jatkaa jo VAKIINTUNUTTA
-        // kiveä ja sietaa satunnaisen epatarkan framen normaalisti) vaatii
-        // LISAKSI etta yhteissovitus oikeasti ONNISTUI (refined.tarkka) -
-        // ei riita etta ristikkohaun peittopisteytys (hullOverlapScore =
-        // pelkka peitto-osuus, ei ylarajaa ymparoivan tumman alueen
-        // koolle) ylitti kynnyksen, koska pelaajan tumma vaatetus peittaa
-        // aivan yhta hyvin (jopa paremmin) pienen kivimallin kuin oikea
-        // kivi - EROTTAVA tekija on ONKO siina OIKEASTI kiven pyorea
-        // reuna/rengasrakenne loydettavissa (detectBoundaryPoints+LM-
-        // sovitus, refined.tarkka), EI onko jotain tummaa lahella. Tama
-        // HYVAKSYY edelleen kiven joka on OSITTAIN heittajan/lakaisijan
-        // peitossa TAI liitoksissa heihin maskissa (esim. juuri heitetty
-        // kivi jonka yli heittaja nakyy) - riittaa etta kiven OMA reuna
-        // on paikoin nakyvissa niin etta sovitus konvergoi - EI hylkaa
-        // pelkastaan siksi etta jotain muutakin (esim. pelaaja) on
-        // samassa maskin yhtenaisessa alueessa/lahella.
-        bool accept = !refined.oversized_reject && refined.tarkka;
+        // katso sen kommentti. HYVAKSYNTA (kayttajan pyynnosta, katso
+        // keskusteluhistoria - katso myos HAKU_ACCEPT_SCORE_THRESHOLD:in
+        // oma kommentti ylempana MIKSI refined.tarkka-vaatimuksesta
+        // luovuttiin): lasketaan HIENOSAADETYN (refinePositionJoint:in
+        // jalkeisen) sijainnin oma peitto-osuus SAMALLA hullOverlapScore-
+        // pisteytyksella kuin SEURANNAssakin (peitto sisalla MIINUS
+        // ulkopuolelle vuotava tumma alue) - pyorea, aito kivi saa
+        // korkean pisteen (tumma alue loppuu tasan mallin reunalle),
+        // pitkanomainen/epasaannollinen kohde (esim. jalka) matalamman
+        // (tumma alue jatkuu mallin reunan ohi). Kynnys on tarkoituksella
+        // MATALAMPI kuin SEURANNAssa (HAKU_ACCEPT_SCORE_THRESHOLD vs.
+        // k92.py:n TRACK_SCORE_THRESHOLD) - katso sen oma kommentti.
+        auto refined_hull = predictedHull(local_pts_body, refined.X_cm, refined.Y_cm, K, R, t);
+        double refined_score = hullOverlapScore(mask_search, refined_hull, 0, 0);
+        bool accept = !refined.oversized_reject && refined_score >= HAKU_ACCEPT_SCORE_THRESHOLD;
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
-        fprintf(stderr, " refine=%.2fms attempt=%d%s%s\n", ms(t4, std::chrono::steady_clock::now()),
-                attempt, refined.oversized_reject ? " OVERSIZED_REJECT" : "",
-                accept ? " ACCEPTED" : " (ei pyorea, poistetaan alue ja yritetaan uudelleen)");
+        fprintf(stderr, " refine=%.2fms attempt=%d score=%.3f%s%s\n", ms(t4, std::chrono::steady_clock::now()),
+                attempt, refined_score, refined.oversized_reject ? " OVERSIZED_REJECT" : "",
+                accept ? " ACCEPTED" : " (liian matala peitto-osuus, poistetaan alue ja yritetaan uudelleen)");
 #endif
 
         if (accept) {

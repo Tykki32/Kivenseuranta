@@ -96,7 +96,18 @@ SEARCH_Y_MAX_CM = k8.FAR_HOGLINE_Y_CM + 300.0
 # paljon kuin ensimmainen.
 SEARCH_COARSE_STEP_CM = 10.0
 SEARCH_FINE_STEP_CM = 2.0
-SEARCH_SCORE_THRESHOLD = 0.55  # peitto-osuus jolla "loytyi" hyvaksytaan
+
+# Karkean ristikkohaun ESIKARSINTA (kayttajan pyynnosta laskettu, katso
+# keskusteluhistoria): tama on VAIN nopea karsinta ENNEN yhteissovitusta
+# (refinePositionJoint) - lopullinen hyvaksynta tehdaan stone_tracker.
+# cpp:n HAKU_ACCEPT_SCORE_THRESHOLD:lla VASTA sovituksen jalkeen (samalla
+# peitto-/ulkopuoli-pisteytyksella, katso sen oma kommentti). Pidetty
+# TAHALLAAN MATALAMPANA kuin lopullinen kynnys, jotta kaukana/pienena
+# nakyvat AIDOT kivet (epatarkka karkea ristikko-osuma ennen hienosaatoa)
+# eivat karsiudu pois jo tassa vaiheessa - havaittu oikealla MAH-videolla
+# etta vanha 0.55 esti useiden aitojen, 20m+ liu'un tehneiden kivien
+# rekisteroinnin taalla kaukovyohykkeella.
+SEARCH_SCORE_THRESHOLD = 0.15  # vain esikarsinta, katso yllaoleva kommentti
 
 TRACK_HALF_RANGE_CM = 35.0
 TRACK_COARSE_STEP_CM = 7.0
