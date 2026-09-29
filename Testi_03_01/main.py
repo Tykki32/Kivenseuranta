@@ -3811,6 +3811,15 @@ def run_pipeline(
     # HAKU-kutsu voi olla kerrallaan kesken (SEARCH_EVERY_N_FRAMES
     # varmistaa etta edellinen on aina jo koottu ennen seuraavaa).
     haku_executor = ThreadPoolExecutor(max_workers=1)
+    photo_executor = ThreadPoolExecutor(max_workers=1)
+    photo_future = None
+
+    def _estimate_photo_timed(frame_bgr, ref_bgr):
+        t0 = time.perf_counter()
+        res = estimate_photometric_correction(frame_bgr, ref_bgr)
+        _e = _PROF.setdefault("bg: valotasapaino taustasaikeessa (rinnan, ei lisaa)", [0.0, 0])
+        _e[0] += time.perf_counter() - t0; _e[1] += 1
+        return res
 
     def _run_haku_timed(*args):
         t0 = time.time()
@@ -4578,16 +4587,28 @@ def run_pipeline(
                 # estimate_photometric_correction:in kommentti) - ei
                 # kosketa frame_u:ta itsea (varitarkistus/debug-video),
                 # vain erillinen frame_u_photo-kopio taustanvaimennukselle.
-                if (
-                    photo_gain is None
-                    or frame_index >= next_photo_update_frame
-                ):
+                # Testi_03_01: estimointi (~110 ms) ajetaan TAUSTASAIKEESSA (kerran
+                # sekunnissa) - paasaie kayttaa edellista gain/bias-paria kunnes uusi
+                # on valmis (ajautuminen on hidasta, muutaman ruudun viive ei nay).
+                # Ensimmainen estimaatti lasketaan synkronisesti.
+                if photo_future is not None and photo_future.done():
+                    photo_gain, photo_bias = photo_future.result()
+                    photo_future = None
+
+                if photo_gain is None:
                     t_photo0 = time.perf_counter()
                     photo_gain, photo_bias = estimate_photometric_correction(
                         frame_u, ref_undist_live
                     )
                     total_photometric_time += time.perf_counter() - t_photo0
-                    _e = _PROF.setdefault("py: valotasapaino", [0.0, 0]); _e[0] += time.perf_counter() - t_photo0; _e[1] += 1
+                    _e = _PROF.setdefault("py: valotasapaino (alkuestimaatti, synkroninen)", [0.0, 0]); _e[0] += time.perf_counter() - t_photo0; _e[1] += 1
+                    next_photo_update_frame = frame_index + max(
+                        1, int(round(fps))
+                    )
+                elif photo_future is None and frame_index >= next_photo_update_frame:
+                    photo_future = photo_executor.submit(
+                        _estimate_photo_timed, frame_u.copy(), ref_undist_live
+                    )
                     next_photo_update_frame = frame_index + max(
                         1, int(round(fps))
                     )
@@ -5541,6 +5562,7 @@ def run_pipeline(
         haku_executor.shutdown(
             wait=True
         )
+        photo_executor.shutdown(wait=True)
 
         if csv_file is not None:
             csv_file.close()
