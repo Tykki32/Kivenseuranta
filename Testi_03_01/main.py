@@ -1003,7 +1003,9 @@ ICE_V_MIN = 128
 # videon" paastabiloinnin OMANA ytimena (katso sen kaytto alempana).
 # ============================================================
 
+LIVE_PIPELINE = os.environ.get("LIVE_PIPELINE", "1") == "1"  # liukuhihna: ruudun valmistelu omassa saikeessa
 VIDEO_PREFETCH = os.environ.get("VIDEO_PREFETCH", "1") == "1"  # videon luku omassa saikeessa elavassa vaiheessa
+PHOTO_APPLY_DELAY_FRAMES = int(os.environ.get("PHOTO_APPLY_DELAY_FRAMES", "10"))  # valotasapainon uusi arvo kayttoon tasan N ruudun paasta (toistettava ajo)
 PHOTO_SUBSAMPLE = int(os.environ.get("PHOTO_SUBSAMPLE", "4"))  # valotasapainon estimoinnin pikseliharvennus (1 = kaikki pikselit)
 SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso _phase_correlate_full_frame (kayttajan pyynnosta 10x, oli 1.0)
 
@@ -3611,7 +3613,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_03_01 v1.0 (2026-09-29)"
+SOFTWARE_VERSION = "Testi_03_01 v1.1 liukuhihna (2026-09-30)"
 
 
 def _version_string():
@@ -3637,6 +3639,215 @@ def _version_string():
         except Exception:
             parts.append(getattr(mod, "__name__", "?") + " (ei build_info: vanha .so - kaanna uudelleen)")
     return " | ".join(parts)
+
+
+def _estimate_photo_timed(frame_bgr, ref_bgr):
+    t0 = time.perf_counter()
+    res = estimate_photometric_correction(frame_bgr, ref_bgr)
+    _e = _PROF.setdefault("bg: valotasapaino taustasaikeessa (rinnan, ei lisaa)", [0.0, 0])
+    _e[0] += time.perf_counter() - t0; _e[1] += 1
+    return res
+
+
+class _LivePrep:
+    """Elavan vaiheen KOKO RUUDUN valmistelu (Testi_03_01): warpAffine+remap, valotasapaino ja
+    varjonsietoinen taustanvaimennus -> (frame_u, frame_u_for_tracking, haku_seuranta_diff_threshold).
+    Sama logiikka kuin aiemmin suoraan pääsilmukassa; nyt omana luokkanaan jotta sama koodi voidaan
+    ajaa joko pääsäikeessä (ensimmäinen elävä ruutu) tai liukuhihnan tuottajasäikeessä.
+    prefix: aikamittausavaimen etuliite ("py:" = pääsäie, "pipe:" = tuottajasäie)."""
+
+    def __init__(self, photo_executor, fps, width, height, prefix="py:"):
+        self.photo_executor = photo_executor
+        self.fps = fps
+        self.width, self.height = width, height
+        self.photo_gain = None
+        self.photo_bias = None
+        self.photo_future = None
+        self.next_photo_update_frame = 0
+        self.photo_apply_at = 0
+        self.prefix = prefix
+
+    def process(self, frame, stabilization_matrix, frame_index, live_state, calib_result):
+        pf = self.prefix
+        t_warp0 = time.perf_counter()
+        stabilized = cv2.warpAffine(
+            frame, stabilization_matrix, (self.width, self.height)
+        )
+        frame_u = cv2.remap(
+            stabilized, live_state["map1"], live_state["map2"],
+            interpolation=cv2.INTER_LINEAR
+        )
+        _e = _PROF.setdefault(pf + " warpAffine+remap (koko frame)", [0.0, 0]); _e[0] += time.perf_counter() - t_warp0; _e[1] += 1
+
+        ref_undist_live = calib_result["calib"]["frame_undistorted"]
+
+        # VALOTASAPAINO: estimointi taustasaikeessa kerran sekunnissa. Uusi gain/bias otetaan kayttoon
+        # AINA tasan PHOTO_APPLY_DELAY_FRAMES ruutua laheteyksen jalkeen (tarvittaessa odotetaan tulosta),
+        # jolloin ajo on TOISTETTAVA - ei riipu siita kuinka nopeasti taustasaie ehti valmistua.
+        if self.photo_future is not None and frame_index >= self.photo_apply_at:
+            self.photo_gain, self.photo_bias = self.photo_future.result()
+            self.photo_future = None
+
+        if self.photo_gain is None:
+            t_photo0 = time.perf_counter()
+            self.photo_gain, self.photo_bias = estimate_photometric_correction(
+                frame_u, ref_undist_live
+            )
+            _e = _PROF.setdefault(pf + " valotasapaino (alkuestimaatti, synkroninen)", [0.0, 0]); _e[0] += time.perf_counter() - t_photo0; _e[1] += 1
+            self.next_photo_update_frame = frame_index + max(1, int(round(self.fps)))
+        elif self.photo_future is None and frame_index >= self.next_photo_update_frame:
+            self.photo_future = self.photo_executor.submit(
+                _estimate_photo_timed, frame_u.copy(), ref_undist_live
+            )
+            self.photo_apply_at = frame_index + PHOTO_APPLY_DELAY_FRAMES
+            self.next_photo_update_frame = frame_index + max(1, int(round(self.fps)))
+
+        _fast_shadow = (
+            ENABLE_SHADOW_TOLERANT_STABILIZATION
+            and hasattr(stone_tracker, "suppress_shadow_background")
+            and ref_undist_live is not None
+            and frame_u.shape == ref_undist_live.shape
+        )
+
+        frame_u_photo = None
+        if not _fast_shadow:
+            frame_u_photo = apply_photometric_correction(
+                frame_u, self.photo_gain, self.photo_bias
+            )
+
+        if ENABLE_SHADOW_TOLERANT_STABILIZATION:
+            t_shadow0 = time.perf_counter()
+            if _fast_shadow:
+                frame_u_for_tracking = stone_tracker.suppress_shadow_background(
+                    frame_u, ref_undist_live,
+                    np.asarray(self.photo_gain, dtype=np.float64),
+                    np.asarray(self.photo_bias, dtype=np.float64),
+                    float(GRANITE_DIFF_THRESHOLD), float(SHADOW_V_DROP_MIN),
+                    float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN)
+                )
+            else:
+                frame_u_for_tracking = suppress_static_background(
+                    frame_u_photo, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
+                )
+            _e = _PROF.setdefault(pf + " varjonsietoinen taustanvaimennus (koko frame)", [0.0, 0]); _e[0] += time.perf_counter() - t_shadow0; _e[1] += 1
+            # frame_u_for_tracking on jo taustanvaimennettu - C++:n oma vaimennus ohitetaan (0.0).
+            haku_seuranta_diff_threshold = 0.0
+        else:
+            frame_u_for_tracking = frame_u_photo
+            haku_seuranta_diff_threshold = GRANITE_DIFF_THRESHOLD
+
+        return frame_u, frame_u_for_tracking, haku_seuranta_diff_threshold
+
+
+class _LivePipeline:
+    """LIUKUHIHNA (Testi_03_01), 3 vaihetta rinnan:
+      A) tuottajasaie 1: luku + gray + stabilointi (vaihekorrelaatio) + set_transform
+      B) tuottajasaie 2: warp+remap + valotasapaino + varjonsuodatus
+      C) paasaie: HAKU/SEURANTA, tulokset, CSV
+    Ruutujen jarjestys ja sisalto ovat samat kuin ilman hihnaa. Kaytetaan vasta kun calib_result on
+    valmis ja live_state luotu."""
+
+    def __init__(self, source_read, engine, prep, ref_gray, live_state, calib_result, first_index, depth=3):
+        import queue as _queue
+        self._qa = _queue.Queue(maxsize=depth)   # A -> B
+        self._q = _queue.Queue(maxsize=depth)    # B -> paasaie
+        self._stop = threading.Event()
+        self._source_read = source_read
+        self._engine = engine
+        self._prep = prep
+        self._ref_gray = ref_gray
+        self._live_state = live_state
+        self._calib_result = calib_result
+        self._index = first_index
+        self._ta = threading.Thread(target=self._run_a, daemon=True)
+        self._tb = threading.Thread(target=self._run_b, daemon=True)
+        self._ta.start()
+        self._tb.start()
+
+    def _put(self, q, item, key):
+        import queue as _queue
+        t0 = time.perf_counter()
+        while not self._stop.is_set():
+            try:
+                q.put(item, timeout=0.2)
+                break
+            except _queue.Full:
+                continue
+        _e = _PROF.setdefault(key, [0.0, 0])
+        _e[0] += time.perf_counter() - t0; _e[1] += 1
+
+    def _run_a(self):
+        try:
+            while not self._stop.is_set():
+                t0 = time.perf_counter()
+                frame = self._source_read()
+                _e = _PROF.setdefault("pipe A: read(video)", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+                if frame is None or frame.size == 0:
+                    self._put(self._qa, None, "pipe A: odottaa vaihetta B (jono taynna)")
+                    return
+
+                t0 = time.perf_counter()
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                _e = _PROF.setdefault("pipe A: gray cvtColor", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+
+                t0 = time.perf_counter()
+                dx, dy = _phase_correlate_cached(self._ref_gray, gray)
+                stab = np.array([[1.0, 0.0, -dx], [0.0, 1.0, -dy]], dtype=np.float64)
+                _e = _PROF.setdefault("pipe A: stabilointi (vaihekorrelaatio)", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+
+                t0 = time.perf_counter()
+                self._engine.set_transform(stab)
+                _e = _PROF.setdefault("pipe A: set_transform", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+
+                self._put(self._qa, (self._index, frame, stab), "pipe A: odottaa vaihetta B (jono taynna)")
+                self._index += 1
+        except BaseException as e:      # valitetaan eteenpain
+            self._put(self._qa, e, "pipe A: odottaa vaihetta B (jono taynna)")
+
+    def _run_b(self):
+        import queue as _queue
+        try:
+            while not self._stop.is_set():
+                t0 = time.perf_counter()
+                try:
+                    item = self._qa.get(timeout=0.2)
+                except _queue.Empty:
+                    continue
+                _e = _PROF.setdefault("pipe B: odottaa vaihetta A", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+                if item is None or isinstance(item, BaseException):
+                    self._put(self._q, item, "pipe B: odottaa paasaiketta (jono taynna)")
+                    return
+                idx, frame, stab = item
+                frame_u, frame_u_for_tracking, thr = self._prep.process(
+                    frame, stab, idx, self._live_state, self._calib_result
+                )
+                self._put(self._q, {
+                    "frame": frame, "stab": stab, "frame_u": frame_u,
+                    "frame_u_for_tracking": frame_u_for_tracking, "thr": thr,
+                }, "pipe B: odottaa paasaiketta (jono taynna)")
+        except BaseException as e:
+            self._put(self._q, e, "pipe B: odottaa paasaiketta (jono taynna)")
+
+    def get(self):
+        t0 = time.perf_counter()
+        item = self._q.get()
+        _e = _PROF.setdefault("pipe C: paasaie odottaa hihnaa (sisaltyy py: read(video)-riviin)", [0.0, 0])
+        _e[0] += time.perf_counter() - t0; _e[1] += 1
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    def close(self):
+        import queue as _queue
+        self._stop.set()
+        for q in (self._q, self._qa):
+            try:
+                while True:
+                    q.get_nowait()
+            except _queue.Empty:
+                pass
+        self._ta.join(timeout=10.0)
+        self._tb.join(timeout=10.0)
 
 
 class _FramePrefetcher:
@@ -3912,13 +4123,8 @@ def run_pipeline(
     photo_executor = ThreadPoolExecutor(max_workers=1)
     frame_prefetcher = None
     photo_future = None
-
-    def _estimate_photo_timed(frame_bgr, ref_bgr):
-        t0 = time.perf_counter()
-        res = estimate_photometric_correction(frame_bgr, ref_bgr)
-        _e = _PROF.setdefault("bg: valotasapaino taustasaikeessa (rinnan, ei lisaa)", [0.0, 0])
-        _e[0] += time.perf_counter() - t0; _e[1] += 1
-        return res
+    live_prep = _LivePrep(photo_executor, fps, width, height)
+    frame_pipeline = None
 
     def _run_haku_timed(*args):
         t0 = time.time()
@@ -3936,8 +4142,12 @@ def run_pipeline(
 
             t_frame_wall0 = time.perf_counter()
             _t_post0 = None
+            pipe_item = None
             t_read0 = time.perf_counter()
-            if calib_result is not None and VIDEO_PREFETCH:
+            if frame_pipeline is not None:
+                pipe_item = frame_pipeline.get()
+                frame = None if pipe_item is None else pipe_item["frame"]
+            elif calib_result is not None and VIDEO_PREFETCH:
                 if frame_prefetcher is None:
                     frame_prefetcher = _FramePrefetcher(engine)
                 frame = frame_prefetcher.read()
@@ -3950,9 +4160,9 @@ def run_pipeline(
             if frame is None or frame.size == 0:
                 break
             t0 = time.perf_counter()
-            gray = cv2.cvtColor(
-                frame,
-                cv2.COLOR_BGR2GRAY
+            gray = (
+                cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if pipe_item is None else None
             )
             t1 = time.perf_counter()
             total_gray_time += t1 - t0
@@ -4233,14 +4443,17 @@ def run_pipeline(
                 # havinneet kokonaan eivatka pysyneet tasaisina ajan
                 # mukana: vaara suunta kasvatti virhetta sita enemman mita
                 # suurempi todellinen siirtyma oli.
-                dx, dy = _phase_correlate_cached(
-                    loppuvideo_ref_gray, gray
-                )
+                if pipe_item is None:
+                    dx, dy = _phase_correlate_cached(
+                        loppuvideo_ref_gray, gray
+                    )
 
-                stabilization_matrix = np.array(
-                    [[1.0, 0.0, -dx], [0.0, 1.0, -dy]],
-                    dtype=np.float64
-                )
+                    stabilization_matrix = np.array(
+                        [[1.0, 0.0, -dx], [0.0, 1.0, -dy]],
+                        dtype=np.float64
+                    )
+                else:
+                    stabilization_matrix = pipe_item["stab"]
 
             total_stabilize_compute_time += time.perf_counter() - t_stab0
             _e = _PROF.setdefault("py: stabilointi (vaihekorrelaatio+paneelit)", [0.0, 0]); _e[0] += time.perf_counter() - t_stab0; _e[1] += 1
@@ -4249,9 +4462,10 @@ def run_pipeline(
             # LÄHETÄ STABILOINNIN MATRIX C++:LLE
             # ------------------------------------------------
             t4 = time.perf_counter()
-            engine.set_transform(
-                stabilization_matrix
-            )
+            if pipe_item is None:
+                engine.set_transform(
+                    stabilization_matrix
+                )
             t5 = time.perf_counter()
             total_transform_time += t5 - t4
             _e = _PROF.setdefault("py: set_transform", [0.0, 0]); _e[0] += t5 - t4; _e[1] += 1
@@ -4646,16 +4860,29 @@ def run_pipeline(
                 # muunnos ei ollutkaan niin halpa). Palautettu alku-
                 # peraiseen kahteen erilliseen vaiheeseen - EI otettu
                 # kayttoon todentamatonta optimointia.
-                t_warp0 = time.perf_counter()
-                stabilized = cv2.warpAffine(
-                    frame, stabilization_matrix, (width, height)
-                )
-                frame_u = cv2.remap(
-                    stabilized, live_state["map1"], live_state["map2"],
-                    interpolation=cv2.INTER_LINEAR
-                )
-                total_warp_remap_time += time.perf_counter() - t_warp0
-                _e = _PROF.setdefault("py: warpAffine+remap (koko frame)", [0.0, 0]); _e[0] += time.perf_counter() - t_warp0; _e[1] += 1
+                if pipe_item is None:
+                    frame_u, frame_u_for_tracking, haku_seuranta_diff_threshold = live_prep.process(
+                        frame, stabilization_matrix, frame_index, live_state, calib_result
+                    )
+                else:
+                    frame_u = pipe_item["frame_u"]
+                    frame_u_for_tracking = pipe_item["frame_u_for_tracking"]
+                    haku_seuranta_diff_threshold = pipe_item["thr"]
+
+                # LIUKUHIHNA kaynnistetaan ensimmaisen (paasaikeessa valmistellun) elavan ruudun JALKEEN:
+                # tuottajasaie ottaa seuraavat ruudut (frame_index+1...) ja valmistelee ne rinnan seurannan kanssa.
+                if pipe_item is None and frame_pipeline is None and LIVE_PIPELINE:
+                    if VIDEO_PREFETCH:
+                        if frame_prefetcher is None:
+                            frame_prefetcher = _FramePrefetcher(engine)
+                        _pipe_source = frame_prefetcher.read
+                    else:
+                        _pipe_source = engine.read
+                    live_prep.prefix = "pipe B:"
+                    frame_pipeline = _LivePipeline(
+                        _pipe_source, engine, live_prep, loppuvideo_ref_gray,
+                        live_state, calib_result, frame_index + 1
+                    )
 
                 timestamp = frame_index / fps
                 pose = calib_result["pose"]
@@ -4687,102 +4914,6 @@ def run_pipeline(
                 # samalla testiframella, ei pienentanyt sita.
                 # --------------------------------------------
                 ref_undist_live = calib_result["calib"]["frame_undistorted"]
-
-                # VALOTASAPAINO/KIRKKAUS - vain kerran sekunnissa (katso
-                # estimate_photometric_correction:in kommentti) - ei
-                # kosketa frame_u:ta itsea (varitarkistus/debug-video),
-                # vain erillinen frame_u_photo-kopio taustanvaimennukselle.
-                # Testi_03_01: estimointi (~110 ms) ajetaan TAUSTASAIKEESSA (kerran
-                # sekunnissa) - paasaie kayttaa edellista gain/bias-paria kunnes uusi
-                # on valmis (ajautuminen on hidasta, muutaman ruudun viive ei nay).
-                # Ensimmainen estimaatti lasketaan synkronisesti.
-                if photo_future is not None and photo_future.done():
-                    photo_gain, photo_bias = photo_future.result()
-                    photo_future = None
-
-                if photo_gain is None:
-                    t_photo0 = time.perf_counter()
-                    photo_gain, photo_bias = estimate_photometric_correction(
-                        frame_u, ref_undist_live
-                    )
-                    total_photometric_time += time.perf_counter() - t_photo0
-                    _e = _PROF.setdefault("py: valotasapaino (alkuestimaatti, synkroninen)", [0.0, 0]); _e[0] += time.perf_counter() - t_photo0; _e[1] += 1
-                    next_photo_update_frame = frame_index + max(
-                        1, int(round(fps))
-                    )
-                elif photo_future is None and frame_index >= next_photo_update_frame:
-                    photo_future = photo_executor.submit(
-                        _estimate_photo_timed, frame_u.copy(), ref_undist_live
-                    )
-                    next_photo_update_frame = frame_index + max(
-                        1, int(round(fps))
-                    )
-
-                _fast_shadow = (
-                    ENABLE_SHADOW_TOLERANT_STABILIZATION
-                    and hasattr(stone_tracker, "suppress_shadow_background")
-                    and ref_undist_live is not None
-                    and frame_u.shape == ref_undist_live.shape
-                )
-
-                if not _fast_shadow:
-                    frame_u_photo = apply_photometric_correction(
-                        frame_u, photo_gain, photo_bias
-                    )
-
-                if ENABLE_SHADOW_TOLERANT_STABILIZATION:
-                    t_shadow0 = time.perf_counter()
-                    if _fast_shadow:
-                        # C++: valotasapaino + varjonsietoinen taustanvaimennus yhdella
-                        # lapikaynnilla (Testi_03_01, ~50 ms -> ~3 ms/ruutu; katso
-                        # stone_tracker.cpp suppress_shadow_background).
-                        frame_u_for_tracking = stone_tracker.suppress_shadow_background(
-                            frame_u, ref_undist_live,
-                            np.asarray(photo_gain, dtype=np.float64),
-                            np.asarray(photo_bias, dtype=np.float64),
-                            float(GRANITE_DIFF_THRESHOLD), float(SHADOW_V_DROP_MIN),
-                            float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN)
-                        )
-                    else:
-                        frame_u_for_tracking = suppress_static_background(
-                            frame_u_photo, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
-                        )
-                    total_shadow_suppress_time += time.perf_counter() - t_shadow0
-                    _e = _PROF.setdefault("py: varjonsietoinen taustanvaimennus (koko frame)", [0.0, 0]); _e[0] += time.perf_counter() - t_shadow0; _e[1] += 1
-                    # frame_u_for_tracking on jo taustanvaimennettu (myos
-                    # varjonsietoisesti) - C++:n OMA sisainen vaimennus
-                    # HAKU/SEURANTA-kutsuissa ohitetaan antamalla sille 0.0,
-                    # jotta frame_u_for_tracking:ia ei vaimenneta uudelleen.
-                    haku_seuranta_diff_threshold = 0.0
-                else:
-                    frame_u_for_tracking = frame_u_photo
-                    haku_seuranta_diff_threshold = GRANITE_DIFF_THRESHOLD
-
-                # --------------------------------------------
-                # HAKU: uusia kiviä kiinteältä paata-rajatulta
-                # vyohykkeelta (kamera9_02.py:n SEARCH_*), vain
-                # jos tilaa (< MAX_CONCURRENT_STONES) ja tama on
-                # hakutarkistusframe. C++-porttaus (stone_tracker.
-                # cpp:n search_new_stone, Task 6) - ristikkohaku
-                # JA yhteissovitus yhdessa kutsussa, samaan tapaan
-                # kuin SEURANTA (Task 5).
-                #
-                # KAYNNISTETAAN OMALLE TAUSTASAIKEELLE (kayttajan
-                # pyynnosta): HAKU ja SEURANTA ovat riippumattomia
-                # (molemmat lukevat vain jo valmiin frame_u:n,
-                # eivat toistensa tulosta talta framelta), joten
-                # ne ajetaan SAMANAIKAISESTI - HAKU taustasaikeessa,
-                # SEURANTA paasaikeessa alempana. TULOS KERATAAN
-                # VASTA SEURANTAN JALKEEN (katso "HAKU:n tuloksen
-                # keraaminen" alempana) - uuden kiven rekisterointi
-                # pysyy SILTI TASMALLEEN samalla framella kuin ennen,
-                # EI viivastu, koska odotamme HAKU:n tuloksen ennen
-                # seuraavaan frameen siirtymista. Katso stone_tracker.
-                # cpp:n search_new_stone/track_stones_batch -kommentit
-                # (ScopedSingleThreadedOpenCV) OpenCV:n oman sisaisen
-                # rinnakkaistuksen turvallisesta poiskytkennasta taman
-                # samanaikaisuuden ajaksi.
-                # --------------------------------------------
 
                 _frame_dump_hook(frame_index, frame_u_for_tracking)
 
@@ -5690,6 +5821,8 @@ def run_pipeline(
         haku_executor.shutdown(
             wait=True
         )
+        if frame_pipeline is not None:
+            frame_pipeline.close()
         photo_executor.shutdown(wait=True)
         if frame_prefetcher is not None:
             frame_prefetcher.close()
@@ -5731,6 +5864,16 @@ def run_pipeline(
     # jos haluat kertoa miten kivenseuranta (HAKU+SEURANTA, molemmat
     # C++:aa) kayttaytyy omalla koneellasi oikealla datalla.
     # --------------------------------------------------------
+
+    # Liukuhihnan tuottajasaikeen mittaukset mukaan yhteenvetolaskureihin (ne ajavat RINNAN paasaikeen kanssa).
+    def _ps(k):
+        return _PROF.get(k, [0.0, 0])[0]
+    total_read_time += _ps("pipe A: read(video)")
+    total_gray_time += _ps("pipe A: gray cvtColor")
+    total_stabilize_compute_time += _ps("pipe A: stabilointi (vaihekorrelaatio)")
+    total_transform_time += _ps("pipe A: set_transform")
+    total_warp_remap_time += _ps("pipe B: warpAffine+remap (koko frame)")
+    total_shadow_suppress_time += _ps("pipe B: varjonsietoinen taustanvaimennus (koko frame)")
 
     total_elapsed = time.time() - start_time
     processed_frames = max(1, frame_index)
