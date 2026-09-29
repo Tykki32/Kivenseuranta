@@ -839,6 +839,9 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
 
 static const int g_granite_down = getenv("GRANITE_DOWN") ? atoi(getenv("GRANITE_DOWN")) : 4;
 
+static const int g_granite_open = getenv("GRANITE_OPEN") ? atoi(getenv("GRANITE_OPEN")) : 5;
+static const int g_granite_close = getenv("GRANITE_CLOSE") ? atoi(getenv("GRANITE_CLOSE")) : 3;
+
 static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
 {
     cv::Mat hsv, gray, gray_f, bg, darkness;
@@ -879,10 +882,15 @@ static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
     }
 
     profAdd(P_GM_LOOP, gpt.lap());
-    cv::Mat kernel_open = cv::Mat::ones(5, 5, CV_8U);
-    cv::Mat kernel_close = cv::Mat::ones(3, 3, CV_8U);
-    cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel_open);
-    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel_close);
+    // Morfologia (kokeiluun ymparistomuuttujilla GRANITE_OPEN / GRANITE_CLOSE, 0 = ei kayteta)
+    if (g_granite_open > 0) {
+        cv::Mat kernel_open = cv::Mat::ones(g_granite_open, g_granite_open, CV_8U);
+        cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel_open);
+    }
+    if (g_granite_close > 0) {
+        cv::Mat kernel_close = cv::Mat::ones(g_granite_close, g_granite_close, CV_8U);
+        cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel_close);
+    }
 
     profAdd(P_GM_MORPH, gpt.lap());
     return mask;
