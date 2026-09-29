@@ -1378,6 +1378,7 @@ MIN_CONFIRMED_THROW_DISPLACEMENT_CM = 25.0
 # eika kandidaattia enaa seurata.
 MIN_PRECONFIRM_TARKKA_OBSERVATIONS = 8
 MIN_PRECONFIRM_TARKKA_FRACTION = 0.4
+PRECONFIRM_RESCUE_MAX_RMS = float(os.environ.get("PRECONFIRM_RESCUE_MAX_RMS", "12.0"))
 
 # JATKUVA TARKKA-OSUUSTARKISTUS VAHVISTETUILLE KIVILLE (Testi_02_02,
 # kayttajan pyynnosta) - katso kayttokohdan kommentti. Eri (loyhempi)
@@ -4999,9 +5000,20 @@ def run_pipeline(
                                         if n_pending > 0 else 1.0
                                     )
 
+                                    # Testi_03_01: kaukaiset (30+ m) AIDOT heitot saavat huonon sovituksen
+                                    # (rms 8-10 px, tarkka=0) mutta ovat nopeita ja vahvistuvat pian; hauras
+                                    # "1 ruutu myohemmin -> hylatty" -kisa hylkasi aitoja heittoja. Hylataan
+                                    # siksi vain jos myos rms-mediaani on korkea (roskaradat 15-25 px).
+                                    _pre_rms = [
+                                        prow.get("rms_px") for _, _, prow in s["pending_rows"]
+                                        if prow.get("rms_px") is not None
+                                    ]
+                                    _pre_rms_med = float(np.median(_pre_rms)) if _pre_rms else 1e9
+
                                     if (
                                         n_pending >= MIN_PRECONFIRM_TARKKA_OBSERVATIONS
                                         and tarkka_frac < MIN_PRECONFIRM_TARKKA_FRACTION
+                                        and _pre_rms_med >= PRECONFIRM_RESCUE_MAX_RMS
                                     ):
 
                                         reject_low_tarkka = True
