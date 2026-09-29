@@ -3,6 +3,7 @@ import sys
 import math
 import csv
 import time
+import threading
 import argparse
 import importlib.util
 import cv2
@@ -1002,6 +1003,7 @@ ICE_V_MIN = 128
 # videon" paastabiloinnin OMANA ytimena (katso sen kaytto alempana).
 # ============================================================
 
+VIDEO_PREFETCH = os.environ.get("VIDEO_PREFETCH", "1") == "1"  # videon luku omassa saikeessa elavassa vaiheessa
 PHOTO_SUBSAMPLE = int(os.environ.get("PHOTO_SUBSAMPLE", "4"))  # valotasapainon estimoinnin pikseliharvennus (1 = kaikki pikselit)
 SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso _phase_correlate_full_frame (kayttajan pyynnosta 10x, oli 1.0)
 
@@ -1378,6 +1380,7 @@ MIN_CONFIRMED_THROW_DISPLACEMENT_CM = 25.0
 # eika kandidaattia enaa seurata.
 MIN_PRECONFIRM_TARKKA_OBSERVATIONS = 8
 MIN_PRECONFIRM_TARKKA_FRACTION = 0.4
+PRECONFIRM_RESCUE_MAX_RMS = float(os.environ.get("PRECONFIRM_RESCUE_MAX_RMS", "12.0"))
 
 # JATKUVA TARKKA-OSUUSTARKISTUS VAHVISTETUILLE KIVILLE (Testi_02_02,
 # kayttajan pyynnosta) - katso kayttokohdan kommentti. Eri (loyhempi)
@@ -3574,6 +3577,12 @@ def _print_prof_report(n_frames, n_seuranta_updates):
     print()
     print("=== VAIHEKOHTAINEN AIKAMITTAUS (Testi_03_01) ===")
     print(f"ruutuja: {n_frames}, kivipaivityksia: {n_seuranta_updates}")
+    _serial = sum(
+        sec for k, (sec, n) in _PROF.items()
+        if k.startswith("py:") and "taustasaikeen oma kesto" not in k and "varidiagnostiikka" not in k
+    )
+    _tot = _PROF.get("FRAME_KOKO", [0.0, 1])[0]
+    _PROF["py: MUU / JAANNOS (ei mitattu: FRAME_KOKO - mitatut sarjavaiheet)"] = [max(0.0, _tot - _serial), n_frames]
     print("--- Python-puoli (ms/ruutu, kutsuja) ---")
     tot = _PROF.get("FRAME_KOKO", [0.0, 1])[0]
     for k, (sec, n) in sorted(_PROF.items(), key=lambda kv: -kv[1][0]):
@@ -3594,6 +3603,53 @@ def _print_prof_report(n_frames, n_seuranta_updates):
                 continue
             print(f"{name:58s} {ms / n_frames:9.2f} {ms / n:9.3f} {n:8d}")
     print("================================================")
+
+
+class _FramePrefetcher:
+    """Videon luku+dekoodaus omassa saikeessaan (Testi_03_01): engine.read() vapauttaa GIL:n, joten
+    dekoodaus ja paasaikeen tyo ajavat rinnan. Kaytetaan vain ELAVASSA vaiheessa (calib_result != None),
+    jolloin engine.add_mode_frame (joka lukee engine.current_frame_:ia) ei ole enaa kaytossa.
+    Framejarjestys ja -sisalto ovat identtiset suoran engine.read()-kutsun kanssa."""
+
+    def __init__(self, engine, depth=4):
+        import queue as _queue
+        self._engine = engine
+        self._q = _queue.Queue(maxsize=depth)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        import queue as _queue
+        while not self._stop.is_set():
+            try:
+                f = self._engine.read()
+            except Exception as e:      # valitetaan paasaikeelle
+                f = e
+            while not self._stop.is_set():
+                try:
+                    self._q.put(f, timeout=0.2)
+                    break
+                except _queue.Full:
+                    continue
+            if isinstance(f, Exception) or f is None or f.size == 0:
+                return
+
+    def read(self):
+        f = self._q.get()
+        if isinstance(f, Exception):
+            raise f
+        return f
+
+    def close(self):
+        import queue as _queue
+        self._stop.set()
+        try:
+            while True:
+                self._q.get_nowait()
+        except _queue.Empty:
+            pass
+        self._thread.join(timeout=5.0)
 
 
 def run_pipeline(
@@ -3820,6 +3876,7 @@ def run_pipeline(
     # varmistaa etta edellinen on aina jo koottu ennen seuraavaa).
     haku_executor = ThreadPoolExecutor(max_workers=1)
     photo_executor = ThreadPoolExecutor(max_workers=1)
+    frame_prefetcher = None
     photo_future = None
 
     def _estimate_photo_timed(frame_bgr, ref_bgr):
@@ -3844,8 +3901,14 @@ def run_pipeline(
         while True:
 
             t_frame_wall0 = time.perf_counter()
+            _t_post0 = None
             t_read0 = time.perf_counter()
-            frame = engine.read()
+            if calib_result is not None and VIDEO_PREFETCH:
+                if frame_prefetcher is None:
+                    frame_prefetcher = _FramePrefetcher(engine)
+                frame = frame_prefetcher.read()
+            else:
+                frame = engine.read()
             total_read_time += time.perf_counter() - t_read0
             _PROF.setdefault("py: read(video)", [0.0, 0])[0] += time.perf_counter() - t_read0
             _PROF["py: read(video)"][1] += 1
@@ -4859,7 +4922,10 @@ def run_pipeline(
 
                             with _prof("py: SEURANTA jalkeen: varidiagnostiikka (astype+median)"):
                                 if frame_u_f64 is None:
-                                    frame_u_f64 = frame_u.astype(np.float64)
+                                    # Testi_03_01: bilineaarinen naytteistys toimii suoraan uint8-kuvalla
+                                    # (numpy nostaa painokertoimien kanssa float64:ksi) - koko framen
+                                    # astype(float64) (~22 MB) maksoi ~5 ms/ruutu.
+                                    frame_u_f64 = frame_u
 
                                 median_diff = color_match_median_diff(
                                     frame_u_f64, local_pts_body, pose,
@@ -4992,9 +5058,20 @@ def run_pipeline(
                                         if n_pending > 0 else 1.0
                                     )
 
+                                    # Testi_03_01: kaukaiset (30+ m) AIDOT heitot saavat huonon sovituksen
+                                    # (rms 8-10 px, tarkka=0) mutta ovat nopeita ja vahvistuvat pian; hauras
+                                    # "1 ruutu myohemmin -> hylatty" -kisa hylkasi aitoja heittoja. Hylataan
+                                    # siksi vain jos myos rms-mediaani on korkea (roskaradat 15-25 px).
+                                    _pre_rms = [
+                                        prow.get("rms_px") for _, _, prow in s["pending_rows"]
+                                        if prow.get("rms_px") is not None
+                                    ]
+                                    _pre_rms_med = float(np.median(_pre_rms)) if _pre_rms else 1e9
+
                                     if (
                                         n_pending >= MIN_PRECONFIRM_TARKKA_OBSERVATIONS
                                         and tarkka_frac < MIN_PRECONFIRM_TARKKA_FRACTION
+                                        and _pre_rms_med >= PRECONFIRM_RESCUE_MAX_RMS
                                     ):
 
                                         reject_low_tarkka = True
@@ -5266,6 +5343,10 @@ def run_pipeline(
                         ]
 
                 # --------------------------------------------
+                if _t_post0 is not None:
+                    _e = _PROF.setdefault("py: SEURANTA jalkeen: tulossilmukka yht. (sis. varidiagn., CSV, portti)", [0.0, 0])
+                    _e[0] += time.perf_counter() - _t_post0; _e[1] += 1
+
                 # HAKU:n tuloksen keraaminen - SEURANTA (ylla) ehti
                 # jo laskea RINNAN HAKU:n kanssa, joten odotus tassa
                 # (.result(), jos HAKU on viela kesken) on vain sen
@@ -5404,6 +5485,9 @@ def run_pipeline(
                                     f"({refined['X_cm']:.1f}, "
                                     f"{refined['Y_cm']:.1f}) cm "
                                     "(odottaa liikevahvistusta ennen CSV-kirjausta)"
+                                    f" [ehdokasominaisuudet score={refined.get('score')} "
+                                    f"rms={refined.get('rms_px')} n_body={refined.get('n_body')} "
+                                    f"n_ring={refined.get('n_ring')} tarkka={refined.get('tarkka')}]"
                                 )
 
 
@@ -5418,6 +5502,7 @@ def run_pipeline(
                 # merkityksesta.
                 # --------------------------------------------
 
+                _t_dbg0 = time.perf_counter()
                 if debug_video_writer is not None:
 
                     # Kayttajan pyynnosta: debug-videoon tallennetaan
@@ -5460,6 +5545,7 @@ def run_pipeline(
                     )
 
                     debug_video_writer.write(debug_frame)
+                    _e = _PROF.setdefault("py: debug-video (piirto + kirjoitus)", [0.0, 0]); _e[0] += time.perf_counter() - _t_dbg0; _e[1] += 1
 
             _e = _PROF.setdefault("FRAME_KOKO", [0.0, 0])
             _e[0] += time.perf_counter() - t_frame_wall0; _e[1] += 1
@@ -5571,6 +5657,8 @@ def run_pipeline(
             wait=True
         )
         photo_executor.shutdown(wait=True)
+        if frame_prefetcher is not None:
+            frame_prefetcher.close()
 
         if csv_file is not None:
             csv_file.close()
