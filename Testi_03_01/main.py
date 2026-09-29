@@ -4553,15 +4553,35 @@ def run_pipeline(
                         1, int(round(fps))
                     )
 
-                frame_u_photo = apply_photometric_correction(
-                    frame_u, photo_gain, photo_bias
+                _fast_shadow = (
+                    ENABLE_SHADOW_TOLERANT_STABILIZATION
+                    and hasattr(stone_tracker, "suppress_shadow_background")
+                    and ref_undist_live is not None
+                    and frame_u.shape == ref_undist_live.shape
                 )
+
+                if not _fast_shadow:
+                    frame_u_photo = apply_photometric_correction(
+                        frame_u, photo_gain, photo_bias
+                    )
 
                 if ENABLE_SHADOW_TOLERANT_STABILIZATION:
                     t_shadow0 = time.perf_counter()
-                    frame_u_for_tracking = suppress_static_background(
-                        frame_u_photo, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
-                    )
+                    if _fast_shadow:
+                        # C++: valotasapaino + varjonsietoinen taustanvaimennus yhdella
+                        # lapikaynnilla (Testi_03_01, ~50 ms -> ~3 ms/ruutu; katso
+                        # stone_tracker.cpp suppress_shadow_background).
+                        frame_u_for_tracking = stone_tracker.suppress_shadow_background(
+                            frame_u, ref_undist_live,
+                            np.asarray(photo_gain, dtype=np.float64),
+                            np.asarray(photo_bias, dtype=np.float64),
+                            float(GRANITE_DIFF_THRESHOLD), float(SHADOW_V_DROP_MIN),
+                            float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN)
+                        )
+                    else:
+                        frame_u_for_tracking = suppress_static_background(
+                            frame_u_photo, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
+                        )
                     total_shadow_suppress_time += time.perf_counter() - t_shadow0
                     _e = _PROF.setdefault("py: varjonsietoinen taustanvaimennus (koko frame)", [0.0, 0]); _e[0] += time.perf_counter() - t_shadow0; _e[1] += 1
                     # frame_u_for_tracking on jo taustanvaimennettu (myos

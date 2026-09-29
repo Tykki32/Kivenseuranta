@@ -4095,6 +4095,86 @@ static py::dict ms_debug(
 }
 
 
+
+// ============================================================
+// VARJONSIETOINEN TAUSTANVAIMENNUS + VALOTASAPAINON SOVELLUS YHDELLA LAPIKAYNNILLA
+// (Testi_03_01, nopeusoptimointi). Korvaa Pythonin apply_photometric_correction +
+// suppress_static_background(_shadow_tolerant_background_mask): ~30-50 ms/ruutu (numpy, useita
+// koko frame -valiaikaistaulukoita) -> yksi rivikohtainen lapikaynti (cv::parallel_for_).
+// Tulos vastaa tasmalleen Pythonia: OpenCV:n BGR2GRAY-kokonaislukukaava, HSV:n V=max ja
+// S=(diff*sdiv+2048)>>12, sekä float->uint8 katkaisu (clip + trunc).
+// ============================================================
+static py::array_t<uint8_t> suppress_shadow_background(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> reference,
+    py::array_t<double, py::array::c_style | py::array::forcecast> gains,
+    py::array_t<double, py::array::c_style | py::array::forcecast> biases,
+    double diff_threshold, double v_drop_min, double v_drop_max, int ice_s_max, int ice_v_min)
+{
+    auto fb = frame.request();
+    auto rb = reference.request();
+    if (fb.ndim != 3 || fb.shape[2] != 3 || rb.ndim != 3 || rb.shape[2] != 3 || fb.shape[0] != rb.shape[0] || fb.shape[1] != rb.shape[1])
+        throw std::runtime_error("suppress_shadow_background: frame/reference must be HxWx3 uint8 of equal size");
+
+    const int H = (int)fb.shape[0], W = (int)fb.shape[1];
+    double g[3] = {1, 1, 1}, bi[3] = {0, 0, 0};
+    bool photo = gains.size() >= 3 && biases.size() >= 3;
+    if (photo) { auto gu = gains.unchecked<1>(); auto bu = biases.unchecked<1>(); for (int c = 0; c < 3; ++c) { g[c] = gu(c); bi[c] = bu(c); } }
+
+    py::array_t<uint8_t> out({ (py::ssize_t)H, (py::ssize_t)W, (py::ssize_t)3 });
+    uint8_t* dst = (uint8_t*)out.request().ptr;
+    const uint8_t* src = (const uint8_t*)fb.ptr;
+    const uint8_t* ref = (const uint8_t*)rb.ptr;
+
+    static int sdiv[256];
+    static bool sdiv_init = false;
+    if (!sdiv_init) {
+        sdiv[0] = 0;
+        for (int i = 1; i < 256; ++i) sdiv[i] = (int)std::lround((255 << 12) / (1.0 * i));
+        sdiv_init = true;
+    }
+    // valotasapaino LUT per kanava: uint8 -> uint8 (Pythonin float32-clip-astype(uint8) -kaava)
+    uint8_t lut[3][256];
+    for (int c = 0; c < 3; ++c)
+        for (int v = 0; v < 256; ++v) {
+            if (!photo) { lut[c][v] = (uint8_t)v; continue; }
+            float x = (float)((double)v * g[c] + bi[c]);
+            if (x < 0.f) x = 0.f; if (x > 255.f) x = 255.f;
+            lut[c][v] = (uint8_t)x;
+        }
+
+    {
+        py::gil_scoped_release release;
+        cv::parallel_for_(cv::Range(0, H), [&](const cv::Range& rr) {
+            for (int y = rr.start; y < rr.end; ++y) {
+                const uint8_t* sp = src + (size_t)y * W * 3;
+                const uint8_t* rp = ref + (size_t)y * W * 3;
+                uint8_t* dp = dst + (size_t)y * W * 3;
+                for (int x = 0; x < W; ++x, sp += 3, rp += 3, dp += 3) {
+                    const int b = lut[0][sp[0]], gg = lut[1][sp[1]], r = lut[2][sp[2]];
+                    const int db = std::abs(b - rp[0]), dg = std::abs(gg - rp[1]), dr = std::abs(r - rp[2]);
+                    const int gray = (db * 1868 + dg * 9617 + dr * 4899 + 8192) >> 14;
+                    bool bg = (double)gray < diff_threshold;
+                    if (!bg) {
+                        const int vmax = std::max(b, std::max(gg, r));
+                        const int vmin = std::min(b, std::min(gg, r));
+                        const int rv = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2]));
+                        const double vdrop = (double)(rv - vmax);
+                        if (vdrop > v_drop_min && vdrop < v_drop_max) bg = true;
+                        else {
+                            const int sat = ((vmax - vmin) * sdiv[vmax] + 2048) >> 12;
+                            if (sat < ice_s_max && vmax > ice_v_min) bg = true;
+                        }
+                    }
+                    if (bg) { dp[0] = dp[1] = dp[2] = 255; }
+                    else { dp[0] = (uint8_t)b; dp[1] = (uint8_t)gg; dp[2] = (uint8_t)r; }
+                }
+            }
+        });
+    }
+    return out;
+}
+
 static void prof_reset() { for (int i = 0; i < P_COUNT; ++i) { g_prof_ns[i] = 0; g_prof_n[i] = 0; } }
 static py::list prof_snapshot() {
     py::list L;
@@ -4105,6 +4185,9 @@ static py::list prof_snapshot() {
 
 PYBIND11_MODULE(stone_tracker, m)
 {
+    m.def("suppress_shadow_background", &suppress_shadow_background,
+          py::arg("frame"), py::arg("reference"), py::arg("gains"), py::arg("biases"),
+          py::arg("diff_threshold"), py::arg("v_drop_min"), py::arg("v_drop_max"), py::arg("ice_s_max"), py::arg("ice_v_min"));
     m.def("prof_reset", &prof_reset);
     m.def("prof_snapshot", &prof_snapshot);
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";
