@@ -167,3 +167,38 @@ kasvaa. Rinnakkain ajettujen ajojen absoluuttiset ajat eivät ole vertailukelpoi
 heitto jonka mikään ajo ei löydä jää huomaamatta; heittojen määrä kasvoi 13 → 16 menetelmien parantuessa. Simulaattori käyttää
 tol 0,1 px / 10 iteraatiota, koko putken ajot oletuksia 0,3 px / 6 iteraatiota. Roskaratoja (pelaajat) syntyy edelleen ja ne
 ovat > 50 % riveistä; niiden karsinta ei kuulunut tähän työhön.
+
+## Heittoportti ja monihaku (käyttäjän hogline-ylitysaikalista, 26 heittoa)
+
+Käyttäjän antama lista (karkeat kaukaisen hoglinen ylitysajat ±50 ruutua, joka kerta vain yksi kivi) toimi tavoitteena:
+*poimi kaikki nämä heitot ja mahdollisimman vähän muita.* Yhdistelmähakuajo (yllä) löysi niistä 20/26, ja portittamatta CSV:ssä
+oli 252 rataa (20 aitoa).
+
+**Mitä puuttui ja miksi:** viisi heittoa (2425, 7350, 9250, 11950, 12375) ei ollut seurannassa lainkaan, koska HAKU palautti
+yhdellä kutsulla vain ensimmäisen kelvollisen ehdokkaan - kiven vieressä oleva pelaaja/lakaisija voitti kilpailun ja kivi jäi
+rekisteröimättä. Yksi (15525) oli seurannassa, mutta sovitus oli huono (lakaisija peittää kiven, rms 9,7 px).
+
+**Muutokset:**
+1. **Monihaku** (`search_new_stones`, `HAKU_MULTI=1`): HAKU palauttaa kaikki kelvolliset ehdokkaat (enintään `HAKU_MAX_RESULTS`=4,
+   `HAKU_MAX_ATTEMPTS`=8); jokainen rekisteröidään (ei kaksoisrekisteröintiä < 30 cm, enintään 8 samanaikaista kiveä).
+   Tämä nosti kattavuuden 20/26 → 25/26.
+2. **Heittoportti** (`THROW_GATE=1`): rivit kirjoitetaan varsinaiseen CSV:hen vasta videon lopussa, kun rata on koko elinkaarensa
+   perusteella *heitto*: matka ≥ 1500 cm, loppu-Y ≤ 1100 cm (lähihogline 823 + marginaali), ≥ 300 riviä, **hidastuu**
+   (loppunopeus / alkunopeus ≤ 0,6) sekä sovitus joko hyvä (rms-mediaani ≤ 3 px ja tarkka-osuus ≥ 0,3) tai heikko mutta
+   kelvollinen (rms ≤ 12 ja tarkka-osuus ≥ 0,1, esim. lakaisija peittää kiven). Lisäksi **yksi rata / hogline-ylitys**: kaksi
+   rataa joiden ylitysajat < 40 ruutua toisistaan ovat sama heitto, ja parempi säilyy. Raaka CSV kirjoitetaan viereen
+   (`*_raaka.csv`) omaa jälkisuodatusta varten.
+   - Hidastuvuusehto poistaa pelaajan päätä seuraavan radan (211, ylitys 3182: nopeussuhde 1,05, päättyy Y = 1372), jonka
+     pyöreä pää läpäisi muuten sovituskriteerit; aidoilla heitoilla suhde on 0,19–0,41.
+   - 100 ruudun yhdistysraja pudotti ruudun 2425 heiton (kaksi oikeaa heittoa vain 70 ruudun välein) → raja on 40.
+
+**Tulos (koko putki, oletusasetukset):** 26 heittoa portitetussa CSV:ssä, **26/26 vastaa listaa**, ylitysajan ero listaan −65…+40
+ruutua (`tulokset/heittoportti.txt`), listaan kuulumattomia ratoja 0; rivejä 14 116 (raaka 31 045). CSV:
+`tulokset/heitot_MAH00014_leikattu.csv`. Kuvat jokaisen ylityksen kohdalta: `tulokset/kuvat/hogline_ylitykset/`
+(yleiskuva + nauhat ylitys −15/0/+15 ruutua; keltainen viiva = hogline, vihreä rengas = rata).
+
+**Silmämääräinen tarkistus kuvista:** 25/26 ylityskuvassa rengas on hoglinen kohdalla olevan kiven päällä. **#4 (ruutu 2360, id 158)
+on virheellinen radan alussa**: rengas on pelaajan jalan päällä ja heitetty kivi on renkaan vasemmalla puolella; rata lukkiutuu
+kiveen vasta myöhemmin, joten sen ylitysframe on epätarkka (lista sanoo 2425). Kolmessa (#17, #19, #23) rengas on ruudussa
+ylitys −15 vielä tyhjällä jäällä (kivi ei näy heittäjän takaa). Portin arvot on säädetty **yhdellä videolla ja tällä listalla**
+(esim. heikon sovituksen väylä osuu vain heittoon 15525), joten yleistettävyys toiselle videolle on todentamatta.
