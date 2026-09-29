@@ -3602,7 +3602,41 @@ def _print_prof_report(n_frames, n_seuranta_updates):
                 print(f"{name:58s} {'':>9s} {'':>9s} {n:8d}   (ulkoiteraatioita / LM-tarkennus)")
                 continue
             print(f"{name:58s} {ms / n_frames:9.2f} {ms / n:9.3f} {n:8d}")
+    print("Versio: " + _version_string())
     print("================================================")
+
+
+# ------------------------------------------------------------------
+# VERSIO (Testi_03_01): nakyy nopeusraporttien lopussa. Nosta SOFTWARE_VERSION jokaisen julkaistavan
+# muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
+# nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
+# ------------------------------------------------------------------
+SOFTWARE_VERSION = "Testi_03_01 v1.0 (2026-09-29)"
+
+
+def _version_string():
+    parts = [SOFTWARE_VERSION]
+    try:
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        h = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=here,
+            capture_output=True, text=True, timeout=3
+        )
+        if h.returncode == 0 and h.stdout.strip():
+            d = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=no", "."], cwd=here,
+                capture_output=True, text=True, timeout=3
+            )
+            parts.append("git " + h.stdout.strip() + ("+muokattu" if d.stdout.strip() else ""))
+    except Exception:
+        pass
+    for mod in (stone_tracker, mode_engine):
+        try:
+            parts.append(mod.build_info())
+        except Exception:
+            parts.append(getattr(mod, "__name__", "?") + " (ei build_info: vanha .so - kaanna uudelleen)")
+    return " | ".join(parts)
 
 
 class _FramePrefetcher:
@@ -5741,6 +5775,7 @@ def run_pipeline(
           f"{((total_haku_time + total_seuranta_time + muu_yhteensa) / processed_frames) * 1000:.2f} "
           "ms/ruutu keskimaarin (25fps-reaaliaikatavoite = 40.0 ms/ruutu, "
           "tiukempi tavoite hyvalla marginaalilla = 20.0 ms/ruutu)")
+    print("Versio: " + _version_string())
     print("===========================================================")
     _print_prof_report(processed_frames, n_seuranta_stone_updates)
 

@@ -1747,6 +1747,7 @@ PYBIND11_MODULE(
     m
 )
 {
+    m.def("build_info", []() { return std::string("mode_engine kaannetty ") + __DATE__ + " " + __TIME__; });
     py::class_<ModeEngine>(
         m,
         "ModeEngine"

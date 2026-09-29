@@ -4363,6 +4363,7 @@ static py::list prof_snapshot() {
 
 PYBIND11_MODULE(stone_tracker, m)
 {
+    m.def("build_info", []() { return std::string("stone_tracker kaannetty ") + __DATE__ + " " + __TIME__; });
     m.def("suppress_shadow_background", &suppress_shadow_background,
           py::arg("frame"), py::arg("reference"), py::arg("gains"), py::arg("biases"),
           py::arg("diff_threshold"), py::arg("v_drop_min"), py::arg("v_drop_max"), py::arg("ice_s_max"), py::arg("ice_v_min"));
