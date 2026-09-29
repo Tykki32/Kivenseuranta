@@ -48,11 +48,18 @@ Ympäristömuuttujat (`main.py`, kommentti ennen `run_pipeline`:a):
 
 | muuttuja | merkitys |
 |---|---|
-| `TRACKER_MODE=meanshift` (oletus) | mean-shift + ristikkohaku varana |
+| `TRACKER_MODE=ensemble` (**oletus**) | yhdistelmähaku (ks. "Kaikkien kivien seuranta") |
+| `TRACKER_MODE=meanshift` | mean-shift + ristikkohaku varana |
 | `TRACKER_MODE=grid` | alkuperäinen ristikkohaku – **identtinen Testi_02_02:n kanssa** (regressiotesti: 262 vertailua, 0 eroa) |
 | `TRACKER_MODE=meanshift_pure` | pelkkä mean-shift (ei varahakua) |
 | `TRACKER_MODE=compare` | ajaa grid + mean-shift (+ `TRACKER_GOLD=1`: tyhjentävä haku, `MS_GAINS=0.5,1.2`: lisägainit) samoilla syötteillä joka framella ja kirjaa CSV:hen (`TRACKER_COMPARE_LOG`) |
 | `MS_GAIN, MS_MAX_ITER, MS_TOL_PX, MS_TAU, MS_POLISH, MS_INNER_WEIGHT, MS_MARGIN` | virityskertoimet (oletus 0,8 / 6 / 0,3 / 0,5 / 4,0 / 2,0 / 1,10) |
+| `ENS_BACK_PEN, ENS_PRED_PEN, ENS_BACK_TOL_CM, PRED_LOOKBACK, PRED_MIN_SPAN` | yhdistelmähaun rangaistukset (oletus 0,15 / 0,02 / 2 cm) ja liike-ennusteen ikkuna (12 / 4 framea) |
+| `NEW_STONE_DEDUP_CM`, `DUP_MERGE_CM`, `DUP_MERGE_FRAMES` | uuden kiven eston säde (oletus **20**, alkuperäinen 100), duplikaattien yhdistäminen (oletus **30 cm**, 3 framea; 0 = pois) |
+| `HAKU_LOG=polku.csv` | kirjaa jokaisen HAKU-kutsun tuloksen ja sen, esti/salli päällekkäisyyden esto |
+| `TRACKER_FRAME_DUMP_DIR`, `TRACKER_FRAME_DUMP_RANGES=a:b,c:d` | tallentaa jokaisen framen simulaattoria varten (`tools/sim_track.py`) |
+
+**Alkuperäinen Testi_02_02-käytös:** `TRACKER_MODE=grid NEW_STONE_DEDUP_CM=100 DUP_MERGE_CM=0`.
 
 Windows-käännös: `CMakeLists.txt` ennallaan. `mode_engine.cpp` avaa videon `CAP_MSMF`:llä vain Windowsissa
 (`#ifdef _WIN32`), muualla `CAP_ANY` (jotta Linux-testaus onnistuu).
@@ -63,6 +70,9 @@ Windows-käännös: `CMakeLists.txt` ennallaan. `mode_engine.cpp` avaa videon `C
 * `compare_tracks.py`, `compare_throws.py` – vertailevat kahden koko putken ajon `_kivien_sijainnit.csv`:tä
   (rivikohdistus framen mukaan; "todellisten heittojen" kattavuus).
 * `ms_offline.py` – offline-virityskehys tallennetuilla framedumpeilla (`TRACKER_DUMP_DIR`, `TRACKER_DUMP_RANGE=alku:loppu`).
+* `sim_track.py`, `sim_experiments.py` – yhden kiven **peräkkäinen seurantasimulaattori** (toistaa `main.py`:n SEURANTA-logiikan: hakualue nopeusrajasta, "ei taaksepäin", missit, "pysähtynyt") tallennetuilla frameilla; vertaa rataa oikeaan.
+* `analyze_haku.py` – HAKU-lokin analyysi (mikä esti minkä heiton, mistä etäisyydeltä).
+* `plot_coverage.py`, `make_diff_images.py` – kattavuuskuva ja heittokohtaiset kuvat (`tulokset/kuvat/`).
 * `stone_tracker.ms_debug(...)`, `ms_response_table(...)` – diagnostiikka.
 
 ## Tulokset (MAH00014_leikattu.mp4, 1280×720, 16 501 ruutua, 23 216 kivipäivitystä)
@@ -113,3 +123,47 @@ tarkennuksesta, ja ulompi silmukka ajetaan keskimäärin 3,6 kertaa, koska suppe
 25,5 → 19,7 ms (−23 %) ja tulos oli 99 %:ssa päivityksistä identtinen (p99-ero 0,64 px). Sitä **ei ole otettu
 käyttöön** tässä kansiossa. Koko putken tasolla muut isot erät ovat varjonvaimennus (~22–29 ms/ruutu),
 stabilointi (~15–24) ja valotasapaino (~10–13).
+
+
+## Kaikkien kivien seuranta (jatkotyö: miksi osa heitoista hukkui ja mitä tehtiin)
+
+Ensimmäinen mean-shift-versio löysi 12/16 heittoa (ristikkohaku 9/16), mutta kaksi ristikkohaun löytämää heittoa
+(ruudut 3500–4002 ja 5940–6685) puuttui. Syyt selvitettiin HAKU-lokilla (`HAKU_LOG`) ja simulaattorilla:
+
+1. **Päällekkäisyyden esto hylkäsi oikean kiven.** HAKU löysi kiven molemmissa ajoissa, mutta `NEW_STONE_DEDUP_CM`
+   (100 cm) esti rekisteröinnin, koska lähellä oli *vahvistettu roskarata* (ruudussa 3500: rata 124, 38 cm päässä;
+   ruudussa 5940: rata 164, 49 cm päässä). Ristikkohakuajossa esto meni ohi vain sattumalta (100,2 cm). Etäisyys, tarkka-osuus
+   tai radan liike **eivät erottele** oikeaa kaksoisosumaa roskaradasta (kaukana aidon kiven tarkka-osuus 0,23 vs roskan 0,09).
+   Korjaus: esto vain alle 20 cm, ja kaksi rataa jotka ovat < 30 cm päässä toisistaan 3 peräkkäistä framea yhdistetään
+   (uudempi/vahvistamaton poistetaan).
+2. **Seuranta menettää kiven häiriökohdassa.** Simulaattorissa (kiven seuranta varhaisimmasta havainnosta) sekä
+   ristikkohaku että mean-shift pysähtyivät heiton alussa (T1, ruutu 3480: peitto 4–6 %), koska maski on hetken huono
+   (rms 9–12 px) ja kivi liikkuu ~8 cm/ruutu. Lisäksi kummallakin on oma virhetapansa, kun kiven viereen/taakse osuu
+   pelaaja: mean-shift valuu pelaajan maskin massaan (T2), ristikkohaku ajautuu taaksepäin (T4). Molemmissa virhe on liike
+   *taaksepäin* (Y kasvaa), mikä on fysikaalisesti mahdotonta.
+3. **Ratkaisu: yhdistelmähaku (`TRACKER_MODE=ensemble`, `locate_mode=5`).** Kivikohtainen **liike-ennuste** (vakionopeus
+   viimeisten 12 framen havainnoista) → ehdokkaat: ristikkohaku ennustetusta keskipisteestä, mean-shift viimeisestä
+   paikasta ja mean-shift ennustetusta paikasta. Valinta = pistemäärä − 0,15/10 cm taaksepäin (yli 2 cm) − 0,02/10 cm
+   poikkeamasta ennusteesta. Simulaattorin neljä heittoa (T1–T4): ristikko 0,04/0,99/1,00/0,01, ensimmäinen mean-shift
+   0,06/0,00/1,00/1,00, **yhdistelmä 0,98/0,99/1,00/1,00** (peitto < 30 cm). Rangaistusten arvot ovat vakaita
+   (back 0,15–0,3, pred 0–0,02); pred 0,05 rikkoo T4:n. Kokeiltu ja hylätty: kehän painon nollaus/negatiivinen,
+   epäsymmetrinen hakulaatikko, ennuste-prioriehdokas, reunavarahaku (eivät korjanneet T2:ta tai huononsivat muita).
+
+### Tulos koko videolla (MAH00014_leikattu.mp4, unioni 16 todellista heittoa)
+
+| | ristikkohaku | ensimmäinen mean-shift | yhdistelmä | yhdistelmä + esto/yhdistys (oletus) |
+|---|---|---|---|---|
+| heittoja katettu | 9/16 | 12/16 | 15/16 | **16/16** |
+| aitoja ratoja (liike > 5 m) | 11 | 14 | 19 | 20 |
+| CSV-rivejä aidoilla radoilla | 5 687 | 7 605 | 10 538 | 10 647 |
+| roskarivien osuus | 67 % | 51 % | 57 % | 57 % |
+
+Kuva: `tulokset/kuvat/kattavuus_heitot.png`; heittokohtaiset kuvat `tulokset/kuvat/yhdistelma_heitto_*.png`;
+taulukko `tulokset/kattavuus_yhdistelma.txt`. Yhdistelmän kustannus tyhjällä koneella (ilman ennustetta): haku 6,4 ms vs
+ristikko 5,3 ms (+1 ms / päivitys, +1,7 %); koko putki seuraa enemmän kiviä (2,5 vs 2,0 kiveä/kutsu), joten kokonaisaika
+kasvaa. Rinnakkain ajettujen ajojen absoluuttiset ajat eivät ole vertailukelpoisia.
+
+**Varaukset:** yksi video; "kaikki heitot" on määritelty *unionina* kaikista ajoista (sääntö: pitkä, laadukas rata), joten
+heitto jonka mikään ajo ei löydä jää huomaamatta; heittojen määrä kasvoi 13 → 16 menetelmien parantuessa. Simulaattori käyttää
+tol 0,1 px / 10 iteraatiota, koko putken ajot oletuksia 0,3 px / 6 iteraatiota. Roskaratoja (pelaajat) syntyy edelleen ja ne
+ovat > 50 % riveistä; niiden karsinta ei kuulunut tähän työhön.

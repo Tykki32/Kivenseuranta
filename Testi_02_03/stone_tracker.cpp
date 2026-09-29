@@ -2357,6 +2357,7 @@ struct MeanShiftParams {
     double gain = 1.0;
     double tol_px = 0.10;
     double inner_weight = 2.0;
+    double ring_weight = 1.0;   // 1.1x-kehan paino (negatiivinen = ulkopuolisen maskin rangaistus)
     double margin_scale = HULL_MARGIN_SCALE;
     double min_mask_fraction = 0.02;
     // Pehmea etumerkki: g(u)=clamp(u/tau,-1,1), u = (px - keskipiste)/puoliakseli.
@@ -2367,6 +2368,14 @@ struct MeanShiftParams {
     // ristikkohaussa): aloitusaskel polish_step_cm, puolitetaan kunnes < min.
     double polish_step_cm = 0.0;
     double polish_min_step_cm = 0.75;
+    // Fysikaalinen rajoite: kivi ei liiku taaksepain (Y kasvaa = taaksepain). Salli enintaan
+    // back_allow_cm taaksepain edellisesta paikasta (mittauskohina). Iso arvo = ei rajoitusta.
+    double back_allow_cm = 1e9;
+    double prior_bias = 0.0;
+    // Yhdistelmahaku (locate_mode 5): valinta = pistemaara - rangaistukset
+    double ens_back_tol_cm = 2.0;   // sallittu taaksepain-siirtyma ilman rangaistusta
+    double ens_back_pen = 0.15;     // rangaistus / 10 cm taaksepain (yli toleranssin)
+    double ens_pred_pen = 0.02;     // rangaistus / 10 cm poikkeamasta ennustetusta paikasta
 };
 
 struct ResponseLUT {
@@ -2375,14 +2384,14 @@ struct ResponseLUT {
     int imax = 0;
 };
 
-static std::shared_ptr<const ResponseLUT> getResponseLUT(double w_in, double margin, double tau)
+static std::shared_ptr<const ResponseLUT> getResponseLUT(double w_in, double margin, double tau, double w_ring = 1.0)
 {
     static std::mutex mtx;
     static std::map<std::pair<long long, long long>, std::shared_ptr<const ResponseLUT>> cache;
 
     std::lock_guard<std::mutex> lock(mtx);
     auto key = std::make_pair((long long)std::llround(w_in * 1000.0) * 100000LL + (long long)std::llround(tau * 1000.0),
-                              (long long)std::llround(margin * 1000.0));
+                              (long long)std::llround(margin * 1000.0) * 100000LL + (long long)std::llround((w_ring + 50.0) * 1000.0));
     auto it = cache.find(key);
     if (it != cache.end())
         return it->second;
@@ -2399,11 +2408,11 @@ static std::shared_ptr<const ResponseLUT> getResponseLUT(double w_in, double mar
         for (int j = 0; j < G; ++j) {
             double y = -ext + cell * j;
             double r2 = x * x + y * y;
-            double w = r2 <= 1.0 ? w_in : (r2 <= margin * margin ? 1.0 : 0.0);
-            if (w <= 0.0)
+            double w = r2 <= 1.0 ? w_in : (r2 <= margin * margin ? w_ring : 0.0);
+            if (w == 0.0)
                 continue;
             pts.emplace_back(x, y, w);
-            wtot += w;
+            wtot += std::fabs(w);
         }
     }
 
@@ -2540,10 +2549,10 @@ static MsSignals computeMsSignals(
         const uchar* mp = mask_crop.ptr<uchar>(r + y0) + x0;
         double gy = gfun(((double)r - lcy) * inv_ry);
         for (int c = 0; c < c1.cols; ++c) {
-            double w = p1[c] ? P.inner_weight : (p2[c] ? 1.0 : 0.0);
+            double w = p1[c] ? P.inner_weight : (p2[c] ? P.ring_weight : 0.0);
             if (w == 0.0)
                 continue;
-            wtot += w;
+            wtot += std::fabs(w);
             if (mp[c] > 0) {
                 wmask += w;
                 sx += w * gfun(((double)c - lcx) * inv_rx);
@@ -2570,9 +2579,10 @@ static MeanShiftResult meanShiftLocate(
     const cv::Mat& mask_crop, int off_x, int off_y,
     double X0, double Y0, double x_half_range, double y_half_range,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
-    const MeanShiftParams& P)
+    const MeanShiftParams& P, double start_X = std::numeric_limits<double>::quiet_NaN(),
+    double start_Y = std::numeric_limits<double>::quiet_NaN())
 {
-    auto lut_ptr = getResponseLUT(P.inner_weight, P.margin_scale, P.tau);
+    auto lut_ptr = getResponseLUT(P.inner_weight, P.margin_scale, P.tau, P.ring_weight);
     const ResponseLUT& lut = *lut_ptr;
 
     double zc = 0.0;
@@ -2583,7 +2593,9 @@ static MeanShiftResult meanShiftLocate(
     MeanShiftResult res;
     res.xy = cv::Point2d(X0, Y0);
 
-    double X = X0, Y = Y0;
+    // Hakulaatikko on aina (X0,Y0) keskella; aloituspiste voi olla ennustettu paikka.
+    double X = std::isnan(start_X) ? X0 : std::max(X0 - x_half_range, std::min(X0 + x_half_range, start_X));
+    double Y = std::isnan(start_Y) ? Y0 : std::max(Y0 - y_half_range, std::min(std::min(Y0 + y_half_range, Y0 + P.back_allow_cm), start_Y));
     double gain = P.gain;
     double prev_mag = 1e30;
 
@@ -2618,7 +2630,7 @@ static MeanShiftResult meanShiftLocate(
         double dY = (-J(1, 0) * dpx + J(0, 0) * dpy) / det;
 
         double newX = std::max(X0 - x_half_range, std::min(X0 + x_half_range, X + dX));
-        double newY = std::max(Y0 - y_half_range, std::min(Y0 + y_half_range, Y + dY));
+        double newY = std::max(Y0 - y_half_range, std::min(std::min(Y0 + y_half_range, Y0 + P.back_allow_cm), Y + dY));
 
         double mag = std::hypot(dpx, dpy);
         if (it >= 2 && mag > 0.9 * prev_mag)
@@ -2656,7 +2668,7 @@ static MeanShiftResult meanShiftLocate(
                         if (di == 0 && dj == 0)
                             continue;
                         double cxp = std::max(X0 - x_half_range, std::min(X0 + x_half_range, bx + di * step));
-                        double cyp = std::max(Y0 - y_half_range, std::min(Y0 + y_half_range, by + dj * step));
+                        double cyp = std::max(Y0 - y_half_range, std::min(std::min(Y0 + y_half_range, Y0 + P.back_allow_cm), by + dj * step));
                         auto hh = predictedHull(local_pts_search, cxp, cyp, K, R, t);
                         double sc = hullOverlapScore(mask_crop, hh, off_x, off_y);
                         if (sc > ns + 1e-9) {
@@ -2706,7 +2718,8 @@ static StoneUpdateResult trackStoneUpdateOneEx(
     double score_threshold,
     double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double max_backward_cm,
-    int locate_mode, const MeanShiftParams& ms_params)
+    int locate_mode, const MeanShiftParams& ms_params,
+    double pred_dX = 0.0, double pred_dY = 0.0, bool edge_fallback = false)
 {
     auto tp0 = std::chrono::steady_clock::now();
     auto msSince = [](std::chrono::steady_clock::time_point a) {
@@ -2793,6 +2806,7 @@ static StoneUpdateResult trackStoneUpdateOneEx(
     auto tl0 = std::chrono::steady_clock::now();
 
     std::pair<cv::Point2d, double> best;
+    bool ms_needed = (locate_mode == 1 || locate_mode == 2);
 
     if (locate_mode == 0) {
         best = locateByGridSearchTrackingFast(
@@ -2800,6 +2814,58 @@ static StoneUpdateResult trackStoneUpdateOneEx(
             X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
             coarse_step_cm, fine_step_cm, K, R, t
         );
+    } else if (locate_mode == 4) {
+        // Ristikkohaku ENSIN (ennustetusta keskipisteesta jos liike-ennuste annettu);
+        // mean-shift vain jos ristikkohaku ei loyda riittavan hyvaa pistemaaraa.
+        best = locateByGridSearchTrackingFast(
+            local_pts_search, mask_for_track, roi.x, roi.y,
+            X0 + pred_dX, track_half_range_x_cm, Y0 + pred_dY, track_half_range_y_cm,
+            coarse_step_cm, fine_step_cm, K, R, t
+        );
+        ms_needed = best.second < score_threshold;
+        out.used_fallback = ms_needed;   // tassa moodissa: MS-varahaku kaytossa
+    } else if (locate_mode == 5) {
+        // YHDISTELMAHAKU: ristikkohaku (ennustetusta keskipisteesta) + mean-shift (viimeisesta ja
+        // ennustetusta paikasta). Kummallakin on oma virhetapansa (viereinen pelaaja vetaa MS:aa tai
+        // ristikkohakua), joten valinta tehdaan pistemaarasta MINUS rangaistus fysikaalisesti
+        // mahdottomasta liikkeesta (taaksepain = Y kasvaa) ja ennusteesta poikkeamisesta.
+        struct Cand { cv::Point2d xy; double score; double adj; int src; };
+        std::vector<Cand> cands;
+        const bool have_pred = std::hypot(pred_dX, pred_dY) > 0.5;
+        auto adjust = [&](const std::pair<cv::Point2d, double>& c, int src) {
+            double back = std::max(0.0, (c.first.y - Y0) - ms_params.ens_back_tol_cm);
+            double pdev = have_pred ? std::hypot(c.first.x - (X0 + pred_dX), c.first.y - (Y0 + pred_dY)) : 0.0;
+            double adj = c.second - ms_params.ens_back_pen * back / 10.0 - ms_params.ens_pred_pen * pdev / 10.0;
+            cands.push_back({ c.first, c.second, adj, src });
+        };
+        auto g = locateByGridSearchTrackingFast(
+            local_pts_search, mask_for_track, roi.x, roi.y,
+            X0 + pred_dX, track_half_range_x_cm, Y0 + pred_dY, track_half_range_y_cm,
+            coarse_step_cm, fine_step_cm, K, R, t
+        );
+        adjust(g, 0);
+        auto m1 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+            X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params);
+        adjust({ m1.xy, m1.score }, 1);
+        out.iters = m1.iters; out.converged = m1.converged;
+        if (have_pred) {
+            auto m2 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+                X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params,
+                X0 + pred_dX, Y0 + pred_dY);
+            adjust({ m2.xy, m2.score }, 2);
+            out.iters += m2.iters;
+        }
+        // hyvaksyttavat: pistemaara >= kynnys; jos ei yhtaan, paras raaka pistemaara (kuten ennenkin)
+        const Cand* pick = nullptr;
+        for (auto& c : cands)
+            if (c.score >= score_threshold && (!pick || c.adj > pick->adj))
+                pick = &c;
+        if (!pick)
+            for (auto& c : cands)
+                if (!pick || c.score > pick->score)
+                    pick = &c;
+        best = { pick->xy, pick->score };
+        out.used_fallback = (pick->src == 0);   // tassa moodissa: valittiin ristikkohaun tulos
     } else if (locate_mode == 3) {
         auto xv = arangeVec(X0 - track_half_range_x_cm, X0 + track_half_range_x_cm + 1e-6, coarse_step_cm);
         auto yv = arangeVec(Y0 - track_half_range_y_cm, Y0 + track_half_range_y_cm + 1e-6, coarse_step_cm);
@@ -2807,7 +2873,10 @@ static StoneUpdateResult trackStoneUpdateOneEx(
         auto xv2 = arangeVec(b1.first.x - coarse_step_cm, b1.first.x + coarse_step_cm + 1e-6, fine_step_cm);
         auto yv2 = arangeVec(b1.first.y - coarse_step_cm, b1.first.y + coarse_step_cm + 1e-6, fine_step_cm);
         best = gridSearchBest(local_pts_search, mask_for_track, roi.x, roi.y, K, R, t, xv2, yv2);
-    } else {
+    }
+
+    if (ms_needed) {
+        const auto grid_best = best;
         auto ms = meanShiftLocate(
             local_pts_search, mask_for_track, roi.x, roi.y,
             X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params
@@ -2816,7 +2885,43 @@ static StoneUpdateResult trackStoneUpdateOneEx(
         out.iters = ms.iters;
         out.converged = ms.converged;
 
-        if (locate_mode == 1 && best.second < score_threshold) {
+        // Liike-ennuste: toinen mean-shift ennustetusta paikasta; valitaan parempi pistemaara
+        // (ennuste saa pienen edun, koska liike on jatkuvaa ja maski voi olla hairitty).
+        if (std::hypot(pred_dX, pred_dY) > 0.5) {
+            auto ms2 = meanShiftLocate(
+                local_pts_search, mask_for_track, roi.x, roi.y,
+                X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params,
+                X0 + pred_dX, Y0 + pred_dY
+            );
+            out.iters += ms2.iters;
+            if (ms2.score + 0.02 >= best.second)
+                best = { ms2.xy, ms2.score };
+
+            // Prioriehdokas: pelkka viimeistely ennustetussa pisteessa (ei mean-shiftia).
+            // Saa pistemaaraetua prior_bias - seuraa liikettä ellei mean-shift ole SELVASTI parempi
+            // (esim. viereinen pelaaja vetaa maskin painopistetta ja pistemaara voi olla korkeampi vaarassa paikassa).
+            if (ms_params.prior_bias > 0.0) {
+                MeanShiftParams p0 = ms_params;
+                p0.max_iter = 0;
+                auto pr = meanShiftLocate(
+                    local_pts_search, mask_for_track, roi.x, roi.y,
+                    X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, p0,
+                    X0 + pred_dX, Y0 + pred_dY
+                );
+                if (pr.score + ms_params.prior_bias >= best.second)
+                    best = { pr.xy, pr.score };
+            }
+        }
+
+        bool at_edge = false;
+        if (edge_fallback) {
+            at_edge = std::fabs(best.first.y - Y0) >= track_half_range_y_cm - 0.6 && track_half_range_y_cm >= 6.0;
+        }
+
+        if (locate_mode == 4 && grid_best.second > best.second)
+            best = grid_best;
+
+        if (locate_mode == 1 && (best.second < score_threshold || at_edge)) {
             auto gb = locateByGridSearchTrackingFast(
                 local_pts_search, mask_for_track, roi.x, roi.y,
                 X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
@@ -2999,8 +3104,21 @@ static py::list track_stones_batch(
     double diff_threshold = 30.0,
     int locate_mode = 0, double ms_gain = 1.0, int ms_max_iter = 10, double ms_tol_px = 0.10,
     double ms_inner_weight = 2.0, double ms_margin_scale = HULL_MARGIN_SCALE,
-    double ms_tau = 0.0, double ms_polish_step_cm = 0.0)
+    double ms_tau = 0.0, double ms_polish_step_cm = 0.0,
+    py::object pred_dx_obj = py::none(), py::object pred_dy_obj = py::none(),
+    bool ms_edge_fallback = false, double ms_back_allow_cm = 1e9, double ms_prior_bias = 0.0,
+    double ms_ring_weight = 1.0, double ens_back_tol_cm = 2.0, double ens_back_pen = 0.15,
+    double ens_pred_pen = 0.02)
 {
+    std::vector<double> pdx, pdy;
+    if (!pred_dx_obj.is_none()) {
+        auto a = py::cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(pred_dx_obj);
+        auto u = a.unchecked<1>(); for (py::ssize_t i = 0; i < u.shape(0); ++i) pdx.push_back(u(i));
+    }
+    if (!pred_dy_obj.is_none()) {
+        auto a = py::cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(pred_dy_obj);
+        auto u = a.unchecked<1>(); for (py::ssize_t i = 0; i < u.shape(0); ++i) pdy.push_back(u(i));
+    }
     auto buf = frame_u.request();
     if (buf.ndim != 3 || buf.shape[2] != 3)
         throw std::runtime_error("frame_u must be HxWx3 uint8 BGR");
@@ -3026,6 +3144,12 @@ static py::list track_stones_batch(
     msp.margin_scale = ms_margin_scale;
     msp.tau = ms_tau;
     msp.polish_step_cm = ms_polish_step_cm;
+    msp.back_allow_cm = ms_back_allow_cm;
+    msp.prior_bias = ms_prior_bias;
+    msp.ring_weight = ms_ring_weight;
+    msp.ens_back_tol_cm = ens_back_tol_cm;
+    msp.ens_back_pen = ens_back_pen;
+    msp.ens_pred_pen = ens_pred_pen;
 
     auto X0b = X0_arr.unchecked<1>();
     auto Y0b = Y0_arr.unchecked<1>();
@@ -3068,7 +3192,9 @@ static py::list track_stones_batch(
                     frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
                     X0b(i), Y0b(i), HXb(i), HYb(i), coarse_step_cm, fine_step_cm,
                     score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, max_backward_cm,
-                    locate_mode, msp
+                    locate_mode, msp,
+                    (size_t)i < pdx.size() ? pdx[(size_t)i] : 0.0, (size_t)i < pdy.size() ? pdy[(size_t)i] : 0.0,
+                    ms_edge_fallback
                 );
             }
         };
@@ -3677,7 +3803,11 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("locate_mode") = 0, py::arg("ms_gain") = 1.0, py::arg("ms_max_iter") = 10,
           py::arg("ms_tol_px") = 0.10, py::arg("ms_inner_weight") = 2.0,
           py::arg("ms_margin_scale") = HULL_MARGIN_SCALE,
-          py::arg("ms_tau") = 0.0, py::arg("ms_polish_step_cm") = 0.0);
+          py::arg("ms_tau") = 0.0, py::arg("ms_polish_step_cm") = 0.0,
+          py::arg("pred_dx") = py::none(), py::arg("pred_dy") = py::none(),
+          py::arg("ms_edge_fallback") = false, py::arg("ms_back_allow_cm") = 1e9,
+          py::arg("ms_prior_bias") = 0.0, py::arg("ms_ring_weight") = 1.0,
+          py::arg("ens_back_tol_cm") = 2.0, py::arg("ens_back_pen") = 0.15, py::arg("ens_pred_pen") = 0.02);
 
     m.def("ms_debug", &ms_debug,
           "Diagnostiikka: seurantamaski + mean-shift-signaalit annetuissa pisteissa",

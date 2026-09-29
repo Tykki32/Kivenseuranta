@@ -1,0 +1,23 @@
+Todellisten heittojen kattavuus MAH00014_leikattu.mp4:llä (osuus heiton riveistä, joissa ajolla on rata < 30 cm päässä).
+Heitto = rata (>=20 riviä, Y-matka >5 m, tarkka-osuus >=50 %, rms-mediaani <=3 px) missä tahansa ajossa; unioni deduplikoitu.
+Kaikki ajot ovat koko videon läpiajoja samalla kalibroinnilla (calib_profile.pkl).
+
+      ruudut         Y cm               ristikko(alkup.)                 mean-shift(1.)                     yhdistelma   yhdistelma+esto/yhd.(oletus)
+ 2990-3415    2932->  555                           1.00                           1.00                           1.00                           1.00
+ 3140-3371    3303-> 1372                           0.87                           0.56                           1.00                           1.00
+ 3500-4002    2973->  668                           1.00                           0.02                           0.90                           0.90
+ 5940-6685    3028-> -116                           1.00                           0.00                           0.98                           0.98
+ 6110-6666    3278->  694                           0.03                           0.02                           1.00                           1.00
+ 6500-6984    2908->  490                           1.00                           0.99                           0.99                           0.99
+ 6740-7292    2941->  383                           1.00                           0.99                           0.99                           0.99
+ 7610-8231    3234->  125                           0.03                           1.00                           0.95                           0.95
+ 8270-8818    3098->  302                           0.00                           1.00                           1.00                           1.00
+ 8640-9182    2908->  430                           1.00                           1.00                           1.00                           1.00
+ 9590-10212   3056->   68                           0.00                           1.00                           0.99                           0.99
+10220-10738   2927->  410                           1.00                           1.00                           1.00                           1.00
+10480-11033   3013->  456                           0.00                           1.00                           0.95                           0.95
+11100-11681   3247->  315                           0.01                           0.01                           0.00                           1.00
+11370-11942   3013->  305                           1.00                           0.99                           0.99                           0.99
+13900-14448   3218->  370                           0.01                           1.00                           0.99                           0.99
+
+katettu (>=50 %): {'ristikko(alkup.)': '9/16', 'mean-shift(1.)': '12/16', 'yhdistelma': '15/16', 'yhdistelma+esto/yhd.(oletus)': '16/16'}

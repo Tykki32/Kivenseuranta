@@ -1491,7 +1491,16 @@ HAKU_SEARCH_INTERVAL_FRAMES = 10
 # edelleenkaan voi saada duplikaatti-ID:ta, mutta viela vahvistamaton
 # (mahdollisesti vaara) ehdokas ei enaa voi tukkia vieressa olevan
 # oikean kiven havaitsemista.
-NEW_STONE_DEDUP_CM = 100.0
+NEW_STONE_DEDUP_CM = float(os.environ.get("NEW_STONE_DEDUP_CM", "20.0"))
+
+# Testi_02_03: kaksi rataa jotka ovat DUP_MERGE_CM:n sisalla toisistaan SAMALLA
+# framella (molemmat loysivat kohteensa) tulkitaan samaksi kiveksi ja uudempi
+# (tai vahvistamaton) poistetaan. Tekee mahdolliseksi pienentaa NEW_STONE_DEDUP_CM:aa
+# (vahvistettu ROSKARATA ei enaa estä oikean kiven rekisteroitymista), koska
+# mahdolliset duplikaatit siivotaan tassa. 0 = pois. HUOM: Testi_02_03:n OLETUS on 30 (+ NEW_STONE_DEDUP_CM=20);
+# alkuperainen Testi_02_02-kayttaytyminen: NEW_STONE_DEDUP_CM=100 DUP_MERGE_CM=0.
+DUP_MERGE_CM = float(os.environ.get("DUP_MERGE_CM", "30"))
+DUP_MERGE_FRAMES = int(os.environ.get("DUP_MERGE_FRAMES", "3"))
 
 # Kayttajan pyynnosta: kun kivi on ollut lahes paikallaan (liikkunut
 # alle STOP_TRACKING_DISPLACEMENT_CM) STOP_TRACKING_SECONDS ajan,
@@ -3137,6 +3146,10 @@ def color_match_median_diff(frame_u_f64, local_pts_body, pose, X0, Y0,
 #   TRACKER_MODE=grid            alkuperäinen laajeneva ristikkohaku
 #   TRACKER_MODE=meanshift       mean-shift + ristikkohaku varana (hybridi)
 #   TRACKER_MODE=meanshift_pure  pelkkä mean-shift (ei varahakua)
+#   TRACKER_MODE=ensemble        yhdistelmähaku: ristikkohaku (ennustetusta keskipisteestä) + mean-shift
+#                                (viimeisestä ja ennustetusta paikasta); valinta = pistemäärä - rangaistus
+#                                taaksepäin liikkumisesta (ENS_BACK_PEN) ja ennusteesta poikkeamisesta
+#                                (ENS_PRED_PEN). Käyttää kivikohtaista liike-ennustetta (PRED_LOOKBACK).
 #   TRACKER_MODE=compare         ajaa SEKÄ grid- ETTÄ mean-shift-haun samoilla
 #                                syötteillä joka framella ja kirjaa vertailun
 #                                CSV:hen (TRACKER_COMPARE_LOG). Tilaa ohjaa
@@ -3150,7 +3163,7 @@ def color_match_median_diff(frame_u_f64, local_pts_body, pose, X0, Y0,
 #                          (sarakkeet ms<gain>_*) - painokertoimen optimointiin.
 # ============================================================
 
-TRACKER_MODE = os.environ.get("TRACKER_MODE", "meanshift")
+TRACKER_MODE = os.environ.get("TRACKER_MODE", "ensemble")
 TRACKER_COMPARE_LOG = os.environ.get("TRACKER_COMPARE_LOG")
 TRACKER_GOLD = os.environ.get("TRACKER_GOLD", "0") == "1"
 COMPARE_DRIVER = os.environ.get("COMPARE_DRIVER", "grid")
@@ -3162,11 +3175,16 @@ MS_TAU = float(os.environ.get("MS_TAU", "0.5"))
 MS_POLISH_CM = float(os.environ.get("MS_POLISH", "4.0"))
 MS_INNER_WEIGHT = float(os.environ.get("MS_INNER_WEIGHT", "2.0"))
 MS_MARGIN = float(os.environ.get("MS_MARGIN", "1.10"))
+ENS_BACK_TOL_CM = float(os.environ.get("ENS_BACK_TOL_CM", "2.0"))
+ENS_BACK_PEN = float(os.environ.get("ENS_BACK_PEN", "0.15"))
+ENS_PRED_PEN = float(os.environ.get("ENS_PRED_PEN", "0.02"))
+PRED_LOOKBACK = int(os.environ.get("PRED_LOOKBACK", "12"))
+PRED_MIN_SPAN = int(os.environ.get("PRED_MIN_SPAN", "4"))
 GOLD_COARSE_STEP_CM = 1.0
 GOLD_FINE_STEP_CM = 0.25
 GOLD_MAX_HALF_RANGE_CM = 30.0
 
-_TRACKER_MODE_ID = {"grid": 0, "meanshift": 1, "meanshift_pure": 2, "gold": 3}
+_TRACKER_MODE_ID = {"grid": 0, "meanshift": 1, "meanshift_pure": 2, "gold": 3, "ensemble": 5}
 _compare_state = {"file": None, "writer": None, "rows": 0, "parity": 0}
 _COMPARE_FIELDS = ["frame", "stone_id", "X0", "Y0", "hx", "hy"]
 MS_GAINS = [float(x) for x in os.environ.get("MS_GAINS", "").split(",") if x.strip()]
@@ -3212,19 +3230,22 @@ def _compare_log_row(frame_index, stone_id, X0, Y0, hx, hy, per_method):
 
 
 def _seuranta_dispatch(frame_index, stone_ids, base_args, X0_arr, Y0_arr,
-                       half_x, half_y):
+                       half_x, half_y, pred=None):
     """Kutsuu stone_tracker.track_stones_batch:ia valitulla hakutavalla
     (TRACKER_MODE). base_args = kaikki positioargumentit diff_threshold:iin
     asti (X0/Y0/half_range-taulukot mukana indekseissä 2-5)."""
 
-    def call(mode_name, gold=False, gain=None):
+    def call(mode_name, gold=False, gain=None, pred=None):
         t0 = time.perf_counter()
         kwargs = dict(
             locate_mode=_TRACKER_MODE_ID[mode_name],
             ms_gain=MS_GAIN if gain is None else gain, ms_max_iter=MS_MAX_ITER, ms_tol_px=MS_TOL_PX,
             ms_inner_weight=MS_INNER_WEIGHT, ms_margin_scale=MS_MARGIN,
             ms_tau=MS_TAU, ms_polish_step_cm=MS_POLISH_CM,
+            ens_back_tol_cm=ENS_BACK_TOL_CM, ens_back_pen=ENS_BACK_PEN, ens_pred_pen=ENS_PRED_PEN,
         )
+        if pred is not None and mode_name in ("ensemble",):
+            kwargs["pred_dx"], kwargs["pred_dy"] = pred
         args = list(base_args)
         if gold:
             # coarse/fine-askeleet kulta-standardille (indeksit 11, 12)
@@ -3249,8 +3270,8 @@ def _seuranta_dispatch(frame_index, stone_ids, base_args, X0_arr, Y0_arr,
                 _compare_state["file"].flush()
             os._exit(0)
 
-    if TRACKER_MODE in ("grid", "meanshift", "meanshift_pure"):
-        res, _ = call(TRACKER_MODE)
+    if TRACKER_MODE in ("grid", "meanshift", "meanshift_pure", "ensemble"):
+        res, _ = call(TRACKER_MODE, pred=pred)
         # grid-tulokset talteen dumpin viereen (vertailukohta offline-kokeille)
         if os.environ.get("TRACKER_DUMP_DIR"):
             lo, hi = [int(x) for x in os.environ.get("TRACKER_DUMP_RANGE", "0:0").split(":")]
@@ -3286,6 +3307,78 @@ def _seuranta_dispatch(frame_index, stone_ids, base_args, X0_arr, Y0_arr,
                          float(half_x[i]), float(half_y[i]), per)
 
     return res_ms if COMPARE_DRIVER == "ms" else res_grid
+
+
+
+# HAKU-diagnostiikka (Testi_02_03): HAKU_LOG=polku.csv kirjaa jokaisen HAKU-kutsun
+# tuloksen ja sen, esikoko dedup/enimmaismaara tehtavaa uuden kiven rekisteroinnin.
+HAKU_LOG = os.environ.get("HAKU_LOG")
+_haku_log_state = {"file": None, "writer": None}
+
+
+def _haku_log(frame_index, n_active, called, found, bx, by, score, registered,
+              blocker_id, blocker_dist, blocker_confirmed):
+    if not HAKU_LOG:
+        return
+    if _haku_log_state["file"] is None:
+        _haku_log_state["file"] = open(HAKU_LOG, "w", newline="")
+        _haku_log_state["writer"] = csv.writer(_haku_log_state["file"])
+        _haku_log_state["writer"].writerow(
+            ["frame", "n_active", "called", "found", "X", "Y", "score",
+             "registered", "blocker_id", "blocker_dist_cm", "blocker_confirmed"])
+    _haku_log_state["writer"].writerow(
+        [frame_index, n_active, int(called), int(found),
+         "" if bx is None else f"{bx:.1f}", "" if by is None else f"{by:.1f}",
+         "" if score is None else f"{score:.3f}", int(registered),
+         "" if blocker_id is None else blocker_id,
+         "" if blocker_dist is None else f"{blocker_dist:.1f}",
+         "" if blocker_confirmed is None else int(blocker_confirmed)])
+    if frame_index % 100 == 0:
+        _haku_log_state["file"].flush()
+
+
+
+# Koko framejen tallennus simulaattoria varten (Testi_02_03): TRACKER_FRAME_DUMP_DIR +
+# TRACKER_FRAME_DUMP_RANGES="a:b,c:d" tallentaa JOKAISEN framen (frame_u_for_tracking)
+# valeilta g<frame>.npz ja lopettaa ajon viimeisen valin jalkeen.
+_FRAME_DUMP_DIR = os.environ.get("TRACKER_FRAME_DUMP_DIR")
+_FRAME_DUMP_RANGES = [
+    tuple(int(v) for v in part.split(":"))
+    for part in os.environ.get("TRACKER_FRAME_DUMP_RANGES", "").split(",") if part.strip()
+]
+
+
+def _frame_dump_hook(frame_index, frame_for_tracking):
+    if not _FRAME_DUMP_DIR or not _FRAME_DUMP_RANGES:
+        return
+    if any(lo <= frame_index <= hi for lo, hi in _FRAME_DUMP_RANGES):
+        np.savez_compressed(
+            os.path.join(_FRAME_DUMP_DIR, f"g{frame_index:06d}.npz"), frame=frame_for_tracking
+        )
+    elif frame_index > max(hi for _, hi in _FRAME_DUMP_RANGES):
+        os._exit(0)
+
+
+
+def _stone_prediction(seuranta_stones, frame_index, half_x, half_y):
+    """Kivikohtainen liike-ennuste (cm) edellisesta paikasta: vakionopeus viimeisista havainnoista
+    (position_history, PRED_LOOKBACK framea, vahintaan PRED_MIN_SPAN framea), skaalattuna
+    puuttuneilla frameilla (misses+1) ja rajattuna hakualueen sisaan."""
+    pdx, pdy = [], []
+    for i, s in enumerate(seuranta_stones):
+        hist = [h for h in s["position_history"] if frame_index - PRED_LOOKBACK <= h[0] <= frame_index - 1 - s["misses"]]
+        dx = dy = 0.0
+        if len(hist) >= 2:
+            (f0, x0, y0), (f1, x1, y1) = hist[0], hist[-1]
+            if f1 - f0 >= PRED_MIN_SPAN:
+                n = s["misses"] + 1
+                dx = (x1 - x0) / (f1 - f0) * n
+                dy = (y1 - y0) / (f1 - f0) * n
+                dx = max(-float(half_x[i]), min(float(half_x[i]), dx))
+                dy = max(-float(half_y[i]), min(float(half_y[i]), dy))
+        pdx.append(dx)
+        pdy.append(dy)
+    return np.array(pdx, dtype=np.float64), np.array(pdy, dtype=np.float64)
 
 
 def run_pipeline(
@@ -4319,7 +4412,16 @@ def run_pipeline(
                 # samanaikaisuuden ajaksi.
                 # --------------------------------------------
 
+                _frame_dump_hook(frame_index, frame_u_for_tracking)
+
                 haku_future = None
+
+                if (
+                    len(active_stones) >= MAX_CONCURRENT_STONES
+                    and frame_index % haku_interval_frames == 0
+                ):
+                    _haku_log(frame_index, len(active_stones), False, False,
+                              None, None, None, False, None, None, None)
 
                 if (
                     len(active_stones) < MAX_CONCURRENT_STONES
@@ -4433,7 +4535,13 @@ def run_pipeline(
                             TRACK_MAX_BACKWARD_CM,
                             haku_seuranta_diff_threshold
                         ),
-                        X0_arr, Y0_arr, half_range_x_arr, half_range_y_arr
+                        X0_arr, Y0_arr, half_range_x_arr, half_range_y_arr,
+                        pred=(
+                            _stone_prediction(
+                                seuranta_stones, frame_index,
+                                half_range_x_arr, half_range_y_arr
+                            ) if TRACKER_MODE == "ensemble" else None
+                        )
                     )
                     total_seuranta_time += time.time() - t_seuranta0
                     n_seuranta_calls += 1
@@ -4827,6 +4935,48 @@ def run_pipeline(
 
                 active_stones = still_active
 
+                if DUP_MERGE_CM > 0 and len(active_stones) > 1:
+                    # Duplikaattien yhdistaminen (katso DUP_MERGE_CM-kommentti).
+                    # Laskuri s["dup_frames"]: montako perakkaista framea rata
+                    # on ollut toisen radan DUP_MERGE_CM:n sisalla (molemmat found).
+                    losers = set()
+                    for ia in range(len(active_stones)):
+                        a = active_stones[ia]
+                        for ib in range(ia + 1, len(active_stones)):
+                            b = active_stones[ib]
+                            key = (b["stone_id"],)
+                            close = (
+                                a["misses"] == 0 and b["misses"] == 0
+                                and math.hypot(
+                                    a["last_xy"][0] - b["last_xy"][0],
+                                    a["last_xy"][1] - b["last_xy"][1]
+                                ) < DUP_MERGE_CM
+                            )
+                            cnt = a.setdefault("dup_counts", {})
+                            if close:
+                                cnt[b["stone_id"]] = cnt.get(b["stone_id"], 0) + 1
+                            else:
+                                cnt.pop(b["stone_id"], None)
+                            if close and cnt.get(b["stone_id"], 0) >= DUP_MERGE_FRAMES:
+                                # havioaja: vahvistamaton ensin, muuten uudempi id
+                                if a["confirmed"] != b["confirmed"]:
+                                    loser = a if not a["confirmed"] else b
+                                else:
+                                    loser = b if b["stone_id"] > a["stone_id"] else a
+                                losers.add(loser["stone_id"])
+                    if losers:
+                        for s_lose in active_stones:
+                            if s_lose["stone_id"] in losers:
+                                s_lose["pending_rows"] = []
+                                print(
+                                    f"[frame {frame_index}] Rata {s_lose['stone_id']} "
+                                    "yhdistetty toiseen (duplikaatti, "
+                                    f"< {DUP_MERGE_CM:.0f} cm)."
+                                )
+                        active_stones = [
+                            x for x in active_stones if x["stone_id"] not in losers
+                        ]
+
                 # --------------------------------------------
                 # HAKU:n tuloksen keraaminen - SEURANTA (ylla) ehti
                 # jo laskea RINNAN HAKU:n kanssa, joten odotus tassa
@@ -4845,6 +4995,11 @@ def run_pipeline(
                     total_haku_time += haku_dt
                     n_haku_calls += 1
 
+                    if not haku_result["found"]:
+                        _haku_log(frame_index, len(active_stones), True, False,
+                                  None, None, haku_result.get("score"), False,
+                                  None, None, None)
+
                     if haku_result["found"]:
 
                         refined = haku_result
@@ -4857,6 +5012,19 @@ def run_pipeline(
                             for s in active_stones
                             if s["confirmed"]
                         )
+
+                        if HAKU_LOG:
+                            near = min(
+                                ((math.hypot(bx - s["last_xy"][0], by - s["last_xy"][1]), s)
+                                 for s in active_stones),
+                                key=lambda x: x[0], default=(None, None)
+                            )
+                            _haku_log(frame_index, len(active_stones), True, True,
+                                      bx, by, haku_result.get("score"),
+                                      not already_tracked,
+                                      near[1]["stone_id"] if near[1] else None,
+                                      near[0],
+                                      near[1]["confirmed"] if near[1] else None)
 
                         # --------------------------------------------
                         # DIAGNOSTIIKKA (kayttajan raportoima bugi, katso

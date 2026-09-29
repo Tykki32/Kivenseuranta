@@ -63,7 +63,7 @@ for title, src, kid, (f0, f1) in CASES:
         cx, cy = proj(row[1], row[2])
         x0 = int(np.clip(cx - W, 0, im.shape[1] - 2 * W)); y0 = int(np.clip(cy - H, 0, im.shape[0] - 2 * H))
         crop = cv2.resize(im[y0:y0 + 2 * H, x0:x0 + 2 * W], None, fx=S, fy=S, interpolation=cv2.INTER_CUBIC)
-        for name, tr, col in (("ristikko", G, (0, 140, 255)), ("mean-shift", M, (0, 200, 0))):
+        for name, tr, col in (("a", G, (0, 140, 255)), ("b", M, (0, 200, 0))):
             for (x, y) in pos_at(tr, f):
                 px_, py_ = proj(x, y)
                 if x0 <= px_ < x0 + 2 * W and y0 <= py_ < y0 + 2 * H:
@@ -74,7 +74,8 @@ for title, src, kid, (f0, f1) in CASES:
     strip = np.hstack(panels)
     head = np.full((44, strip.shape[1], 3), 255, np.uint8)
     cv2.putText(head, title, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
-    cv2.putText(head, "oranssi = ristikkohaku   vihrea = mean-shift   (rengas vain jos ajo seuraa kohdetta)", (8, 38),
+    names = os.environ.get("NAMES", "ristikkohaku,mean-shift").split(",")
+    cv2.putText(head, f"oranssi = {names[0]}   vihrea = {names[1]}   (rengas vain jos ajo seuraa kohdetta)", (8, 38),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (90, 90, 90), 1, cv2.LINE_AA)
     out = os.path.join(outdir, f"heitto_{f0}_{f1}_{src}.png")
     cv2.imwrite(out, np.vstack([head, strip]))
