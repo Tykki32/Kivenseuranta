@@ -1,0 +1,26 @@
+Todellisten heittojen kattavuus (unioni kaikista ajoista; rata = >=20 riviä, Y-matka >=100 cm, tarkka >=50 %, rms med <=3 px).
+Huom: erillisen ajon live-seuranta alkoi vasta kalibroinnin/profiilin jälkeen (~ruutu 2400), joten sen aiemmat heitot eivät ole vertailukelpoisia.
+
+      ruudut   Y-matka cm    ristikko(vertailuajo)  ristikko(erillinen ajo)    meanshift(koko putki)
+ 1830-2358    2940->  510                     0.00                     0.00                     1.00
+ 2050-2544    2908->  659                     1.00                     0.00                     1.00
+ 2290-2723    2908->  641                     1.00                     0.00                     0.02
+ 2370-2933    2978->  682                     1.00                     0.00                     0.98
+ 2990-3415    2932->  555                     1.00                     1.00                     1.00
+ 3500-4002    2973->  668                     1.00                     0.91                     0.02
+ 4750-4856    3202-> 3206                     1.00                     1.00                     0.92
+ 5940-6685    3028-> -116                     1.00                     1.00                     0.00
+ 6500-6984    2908->  490                     1.00                     1.00                     0.99
+ 6740-7292    2941->  383                     1.00                     1.00                     0.99
+ 7610-8231    3234->  125                     0.03                     0.03                     1.00
+ 8270-8818    3098->  302                     0.00                     0.00                     1.00
+ 8640-9182    2908->  430                     1.00                     1.00                     1.00
+ 9590-10212   3056->   68                     0.00                     0.00                     1.00
+10220-10738   2927->  410                     1.00                     1.00                     1.00
+10480-11033   3013->  456                     0.00                     0.00                     1.00
+11370-11942   3013->  305                     1.00                     0.99                     0.99
+11950-12494   3204->  305                     0.00                     1.00                     0.00
+13900-14448   3218->  370                     0.01                     0.01                     1.00
+
+katettuja heittoja, kaikki: {'ristikko(vertailuajo)': '12/19', 'ristikko(erillinen ajo)': '10/19', 'meanshift(koko putki)': '15/19'}
+katettuja heittoja, ruudut >= 2990 (kaikki ajot mukana):  {'ristikko(vertailuajo)': '9/15', 'ristikko(erillinen ajo)': '10/15', 'meanshift(koko putki)': '12/15'}

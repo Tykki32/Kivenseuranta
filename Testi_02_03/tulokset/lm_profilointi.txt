@@ -1,0 +1,25 @@
+LM-TARKENNUKSEN (refinePositionJoint) PROFILOINTI JA SUPPENEMISRAJAKOE
+======================================================================
+Data: 634 kivipäivitystä (dump-framet 200-1100, MAH00014_leikattu.mp4), ristikkohaku (mode 0),
+erillinen profilointikopio (chrono-ajastimet, EI tuotantokoodissa).
+
+Ajat / päivitys:  prep 7.45 ms | haku (ristikko) 5.25 ms | refine (LM-tarkennus) 25.49 ms
+refine-kutsuja 579, ulkoiteraatioita 2076 (3.59 / kutsu, maksimi 5)
+
+Refine-vaiheiden osuus (ms / kutsu, %):
+  copyMakeBorder-pad         0.44   1.6 %
+  findContour+iceFilter      0.62   2.2 %
+  detectBoundaryPoints       0.24   0.9 %
+  LM #1                     22.38  80.2 %   <-- pullonkaula
+  MAD-poikkeamat             0.74   2.7 %
+  LM #2 (uusinta)            2.80  10.0 %   (ajettu 358/2076 ulkoiteraatiolla)
+  lopullinen residuaali      0.68   2.4 %
+
+KOE (ei tuotantokoodissa): BOUNDARY_CONVERGENCE_CM (ulomman silmukan suppenemisraja)
+  raja   refine ms/päiv.  ulkoiter/kutsu  ero rajaan 0.05 (px): med / p90 / p99 / max   found-eroja
+  0.05      25.5             3.54           0.000 / 0.000 / 0.000 / 0.00                 0/634
+  0.20      23.3             3.26           0.000 / 0.000 / 0.056 / 1.41                 0/634
+  0.50      19.7             3.04           0.000 / 0.000 / 0.638 / 2.57                 0/634
+  1.00      19.2             2.88           0.000 / 0.000 / 0.638 / 2.57                 0/634
+=> Rajan nosto 0.05 -> 0.5 cm säästäisi n. 23 % refine-ajasta (~6 ms / päivitys) lähes identtisellä tuloksella.
+   EI otettu käyttöön Testi_02_03:ssa (erillinen viritysvalinta, käyttäjän päätettävä).

@@ -1,0 +1,21 @@
+PAINOKERROIN (MS_GAIN) - viritys
+================================
+Siirtymä d = gain * r * f^-1(s): f^-1 on analyyttisesti (numeerisesti) laskettu yksikköympyrän vastefunktion
+käänteisfunktio (samat painot 2/1 ja marginaali 1.10 kuin mittauksessa), gain on empiirinen hienosäätö.
+
+Offline-sweep (kaukaiset kivet, dump-framet 200-1100, tau=0.5, viimeistely 4 cm, max 12 iteraatiota):
+  gain  läpäisy  loc-virhe med px  fin-virhe med px  iteraatiota  suppeni
+  0.6    0.95        0.42              0.39               5.7        0.74
+  0.8    0.95        0.43              0.39               6.2        0.74
+  1.0    0.94        0.47              0.41               6.5        0.74
+  1.2    0.93        0.49              0.44               6.8        0.74
+  1.5    0.94        0.49              0.43               7.2        0.74
+  1.8    0.94        0.49              0.43               7.8        0.74
+
+Koko videon vertailuajo (hybridi, tol 0.3 px, max 6 iteraatiota; virhe px kulta-standardiin):
+  gain  loc med  fin med  iteraatiota (ka)
+  0.5   0.39     0.26     2.65
+  0.8   0.40     0.26     2.99
+  1.2   0.43     0.28     3.43
+=> Optimi on litteä välillä 0.5-0.8 (teoreettinen 1.0 ylittää: maskin epäsymmetria ja pikselikvantisointi
+   vaativat vaimennusta). Oletus MS_GAIN=0.8 (e2e-validoitu); 0.5 marginaalisesti parempi, ero kohinan sisällä.

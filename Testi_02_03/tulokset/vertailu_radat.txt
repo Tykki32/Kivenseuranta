@@ -1,0 +1,17 @@
+### Ratavertailu: ristikkohaku (vertailuajo) vs mean-shift (koko putki), kaikki ruudut
+ristikko: rivit 17032, eri kivet 206, rata-pituus (rivia) med 38 p90 192 max 722, tarkka-osuus 0.370, rms med 9.31 px
+meanshift: rivit 15529, eri kivet 173, rata-pituus (rivia) med 34 p90 368 max 606, tarkka-osuus 0.499, rms med 1.27 px
+
+kohdistus framen mukaan (lahin rivi samalla framella):
+  ristikko->meanshift: kohdistui 14708 riviä, ilman paria 2324; etaisyys cm: mediaani 40.75 p90 994.26 p99 2435.84
+  meanshift->ristikko: kohdistui 12905 riviä, ilman paria 2624
+  ristikko-rivit joilla meanshift:ssa pari <30 cm paassa: 0.474
+
+### KONTROLLI: kaksi ristikkohakuajoa keskenaan, ruudut >= 3000
+ristikkoA: rivit 13318, eri kivet 154, rata-pituus (rivia) med 36 p90 225 max 722, tarkka-osuus 0.358, rms med 9.31 px
+ristikkoB: rivit 14929, eri kivet 153, rata-pituus (rivia) med 38 p90 305 max 721, tarkka-osuus 0.356, rms med 9.02 px
+
+kohdistus framen mukaan (lahin rivi samalla framella):
+  ristikkoA->ristikkoB: kohdistui 13199 riviä, ilman paria 119; etaisyys cm: mediaani 0.00 p90 28.29 p99 379.59
+  ristikkoB->ristikkoA: kohdistui 14499 riviä, ilman paria 430
+  ristikkoA-rivit joilla ristikkoB:ssa pari <30 cm paassa: 0.903
