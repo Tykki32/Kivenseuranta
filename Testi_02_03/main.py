@@ -1507,6 +1507,9 @@ GATE_MAX_SPEED_RATIO = float(os.environ.get("GATE_MAX_SPEED_RATIO", "0.6"))
 GATE_RESCUE_MAX_RMS = float(os.environ.get("GATE_RESCUE_MAX_RMS", "12.0"))
 GATE_RESCUE_MIN_TARKKA = float(os.environ.get("GATE_RESCUE_MIN_TARKKA", "0.1"))
 GATE_CROSS_DEDUP_FRAMES = float(os.environ.get("GATE_CROSS_DEDUP_FRAMES", "40"))
+GATE_HEAD_GAP_FRAMES = int(os.environ.get("GATE_HEAD_GAP_FRAMES", "30"))
+GATE_HEAD_MAX_ROWS = int(os.environ.get("GATE_HEAD_MAX_ROWS", "40"))
+GATE_CROSS_EXTRAPOLATE_MAX = float(os.environ.get("GATE_CROSS_EXTRAPOLATE_MAX", "60"))
 GATE_MAX_RMS = float(os.environ.get("GATE_MAX_RMS", "3.0"))
 GATE_MIN_TARKKA = float(os.environ.get("GATE_MIN_TARKKA", "0.3"))
 
@@ -1531,6 +1534,32 @@ def _track_kinematics(rows):
     if cross is None and ys[0] <= hog:
         cross = float(fr[0])
     return float(ys[0] - ys.min()), float(ys[-1]), float(ratio), cross
+
+
+def _trim_track_head(rows):
+    """Pudottaa radan alun, jos sen jalkeen on GATE_HEAD_GAP_FRAMES:ia pidempi rivitön aukko ja alku on lyhyt
+    (< GATE_HEAD_MAX_ROWS riviä): rata on alussa lukkiutunut vääraan kohteeseen (esim. pelaajan jalka)
+    ja löytänyt oikean kiven vasta aukon jalkeen. Havaittu: heitto #4 (rata 158)."""
+    for i in range(min(len(rows) - 1, GATE_HEAD_MAX_ROWS)):
+        if rows[i + 1][0] - rows[i][0] > GATE_HEAD_GAP_FRAMES:
+            return rows[i + 1:]
+    return rows
+
+
+def _estimate_crossing(rows):
+    """Kaukaisen hoglinen ylitysframe. Jos rata alkaa jo hoglinen ALAPUOLELTA (rekisteroity myohassa),
+    ylitys ekstrapoloidaan taaksepain radan alun nopeudesta (enintaan GATE_CROSS_EXTRAPOLATE_MAX ruutua)."""
+    cross = _track_kinematics(rows)[3]
+    ys = np.array([r["Y_cm"] for _, _, r in rows])
+    fr = np.array([f for f, _, _ in rows], dtype=float)
+    hog = k8.FAR_HOGLINE_Y_CM
+    if ys[0] <= hog and len(rows) >= 10:
+        m = min(len(rows), 30)
+        v = (ys[0] - ys[m - 1]) / max(1.0, fr[m - 1] - fr[0])   # cm/frame, Y pienenee -> v > 0
+        if v > 1.0:
+            back = min((hog - ys[0]) / v, GATE_CROSS_EXTRAPOLATE_MAX)
+            return float(fr[0] - back)
+    return cross
 
 
 def _track_throw_class(rows):
@@ -1560,11 +1589,12 @@ def _select_throws(tracks):
     kerta vain YKSI kivi ylittaa hoglinen) -> sailyy parempi (hyva sovitus ensin, sitten pienin rms)."""
     cands = []
     for sid, rows in tracks:
+        rows = _trim_track_head(rows)
         cls = _track_throw_class(rows)
         if cls == 0:
             continue
         rms = [r["rms_px"] for _, _, r in rows if r.get("rms_px") is not None]
-        cross = _track_kinematics(rows)[3]
+        cross = _estimate_crossing(rows)
         cands.append((-cls, float(np.median(rms)), -len(rows), sid, rows, cross))
     cands.sort(key=lambda c: c[:3])
     kept = []

@@ -1,0 +1,57 @@
+=== VAIHEKOHTAINEN AIKAMITTAUS (Testi_03_01) ===
+ruutuja: 2900, kivipaivityksia: 7949
+--- Python-puoli (ms/ruutu, kutsuja) ---
+FRAME_KOKO                                                    57.96 ms/ruutu 100.0%  n=2900
+py: SEURANTA dispatch+C++ seinakello                          28.73 ms/ruutu  49.6%  n=2525
+py: stabilointi (vaihekorrelaatio+paneelit)                   14.67 ms/ruutu  25.3%  n=2900
+py: HAKU taustasaikeen oma kesto (ei lisaa, ajaa rinnan)       7.47 ms/ruutu  12.9%  n=289
+py: warpAffine+remap (koko frame)                              5.24 ms/ruutu   9.0%  n=2900
+bg: valotasapaino taustasaikeessa (rinnan, ei lisaa)           4.34 ms/ruutu   7.5%  n=115
+py: HAKU odotus (result) - taakka SEURANNAN jalkeen            4.34 ms/ruutu   7.5%  n=289
+py: read(video)                                                2.33 ms/ruutu   4.0%  n=2900
+py: varjonsietoinen taustanvaimennus (koko frame)              1.96 ms/ruutu   3.4%  n=2900
+py: gray cvtColor                                              0.45 ms/ruutu   0.8%  n=2900
+py: set_transform                                              0.02 ms/ruutu   0.0%  n=2900
+py: valotasapaino (alkuestimaatti, synkroninen)                0.01 ms/ruutu   0.0%  n=1
+py: HAKU submit (Python, saikeen kaynnistys)                   0.01 ms/ruutu   0.0%  n=289
+--- C++-puoli (summattu CPU-aika saikeiden yli) ---
+vaihe                                                       ms/ruutu  ms/kutsu  kutsuja
+seuranta/kivi-paivitys yhteensa (CPU)                          66.43    24.235     7949
+  prep: rajaus + taustanvaimennus                               1.14     0.415     7949
+  prep: saturaatio                                              1.10     0.400     7949
+  prep: graniittimaski (GaussianBlur)                          20.81     7.593     7949
+  prep: etualamaski (whitened)                                  0.60     0.220     7949
+  haku: mean-shift (viimeisesta)                                3.23     1.177     7949
+  haku: mean-shift (ennustetusta)                               2.20     1.148     5563
+  haku: ristikko (yhdistelma, ennustettu keskipiste)           13.00     4.741     7949
+  haku yhteensa                                                18.43     6.723     7949
+  LM-tarkennus yhteensa                                        24.33    10.014     7047
+    LM: reunustus (copyMakeBorder)                              0.98     0.391     7303
+    LM: runkokontuuri + jaasuodatus                             1.65     0.655     7303
+    LM: reunapisteet (detectBoundaryPoints)                     0.98     0.116    24568
+    LM: sovitus #1                                             16.16     1.918    24440
+    LM: MAD-poikkeamat                                          1.61     0.191    24440
+    LM: sovitus #2 (uusinta)                                    1.94     1.130     4969
+    LM: lopullinen residuaali                                   1.50     0.178    24440
+    LM: ulkoiteraatioita (lkm)                                                    24568   (ulkoiteraatioita / LM-tarkennus)
+  HAKU: taustanvaimennus (koko frame)                           0.30     2.981      289
+  HAKU: graniittimaski (koko frame)                             5.50    55.192      289
+  HAKU: saturaatio (koko frame)                                 0.26     2.622      289
+  HAKU: ristikkohaku                                            0.87     4.630      543
+  HAKU: LM-tarkennus                                            0.50     5.673      256
+  HAKU: floodFill-poisto                                        0.03     0.303      254
+SEURANTA-kutsu seinakello (track_stones_batch)                 28.56    32.805     2525
+  kutsun alustus (numpy->cv, GIL)                               0.02     0.019     2525
+  kutsun tulokset (dict)                                        0.03     0.031     2525
+    LM: TARKKA VARAKEINO-LM (linearisointi hylatty)             5.48     4.614     3442
+    LM#1: lineaarinen LM                                        8.60     0.849    29409
+    LM#1: tarkka varmistus                                      4.01     0.396    29409
+    LM: linearisoinnin rakennus                                 1.41     0.139    29409
+    LM: residuaali+jacobi evaluaatiot                           6.54     0.045   420121
+LASKURI keskiarvo: runkopisteita/LM                           759.64    74.908    29409
+LASKURI keskiarvo: rengaspisteita/LM                           83.68     8.251    29409
+LASKURI keskiarvo: hull-kulmia/LM                             790.97    77.997    29409
+LASKURI keskiarvo: LM-iteraatioita/LM                          59.40     5.858    29409
+LASKURI keskiarvo: residuaalievaluaatioita/LM                 155.01    15.285    29409
+================================================
+DONE 168.14596676826477

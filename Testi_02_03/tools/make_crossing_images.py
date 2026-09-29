@@ -32,6 +32,11 @@ def crossing(v):
     for a, b in zip(v, v[1:]):
         if a[2] > HOG >= b[2]:
             return a[0]
+    if v[0][2] <= HOG and len(v) >= 10:
+        m = min(len(v), 30)
+        sp = (v[0][2] - v[m - 1][2]) / max(1, v[m - 1][0] - v[0][0])
+        if sp > 1.0:
+            return int(round(v[0][0] - min((HOG - v[0][2]) / sp, 60)))
     return v[0][0] if v[0][2] <= HOG else None
 
 
@@ -45,6 +50,14 @@ def tile(frame, v, label, mark=True):
     ok, im = cap.read()
     im = cv2.undistort(im, cam, dist)
     row = min(v, key=lambda r: abs(r[0] - frame))
+    if frame < v[0][0] and len(v) >= 10:
+        # radalla ei ole rivejä ennen alkuaan (esim. alkupää pudotettu): ekstrapoloi alun nopeudesta
+        m = min(len(v), 30)
+        vx = (v[m - 1][1] - v[0][1]) / max(1, v[m - 1][0] - v[0][0])
+        vy = (v[m - 1][2] - v[0][2]) / max(1, v[m - 1][0] - v[0][0])
+        d = frame - v[0][0]
+        row = (frame, v[0][1] + vx * d, v[0][2] + vy * d)
+    no_rows = frame < v[0][0] - 2 or frame > v[-1][0] + 2
     cx, cy = proj(row[1], row[2])
     x0 = int(np.clip(cx - W, 0, im.shape[1] - 2 * W)); y0 = int(np.clip(cy - H, 0, im.shape[0] - 2 * H))
     crop = cv2.resize(im[y0:y0 + 2 * H, x0:x0 + 2 * W], None, fx=S, fy=S, interpolation=cv2.INTER_CUBIC)
@@ -52,10 +65,10 @@ def tile(frame, v, label, mark=True):
     a = proj(-150, HOG, 0.0); b = proj(150, HOG, 0.0)
     pa = ((a - [x0, y0]) * S).astype(int); pb = ((b - [x0, y0]) * S).astype(int)
     cv2.line(crop, tuple(pa), tuple(pb), (0, 220, 255), 1, cv2.LINE_AA)
-    if mark:
+    if mark and not no_rows:
         cv2.circle(crop, (int((cx - x0) * S), int((cy - y0) * S)), 5 * S, (0, 200, 0), 2, cv2.LINE_AA)
     cv2.rectangle(crop, (0, 0), (crop.shape[1], 26), (255, 255, 255), -1)
-    cv2.putText(crop, label, (6, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.putText(crop, label + (" (ei rivia)" if no_rows else ""), (6, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
     return crop
 
 

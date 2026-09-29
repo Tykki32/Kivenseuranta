@@ -1,0 +1,46 @@
+=== VAIHEKOHTAINEN AIKAMITTAUS (Testi_03_01) ===
+ruutuja: 2900, kivipaivityksia: 8157
+--- Python-puoli (ms/ruutu, kutsuja) ---
+FRAME_KOKO                                                   160.56 ms/ruutu 100.0%  n=2900
+py: SEURANTA dispatch+C++ seinakello                          55.29 ms/ruutu  34.4%  n=2504
+py: varjonsietoinen taustanvaimennus (koko frame)             32.60 ms/ruutu  20.3%  n=2900
+py: stabilointi (vaihekorrelaatio+paneelit)                   26.31 ms/ruutu  16.4%  n=2900
+py: valotasapaino                                             16.91 ms/ruutu  10.5%  n=116
+py: HAKU taustasaikeen oma kesto (ei lisaa, ajaa rinnan)       8.61 ms/ruutu   5.4%  n=290
+py: warpAffine+remap (koko frame)                              4.58 ms/ruutu   2.9%  n=2900
+py: HAKU odotus (result) - taakka SEURANNAN jalkeen            3.51 ms/ruutu   2.2%  n=290
+py: read(video)                                                1.93 ms/ruutu   1.2%  n=2900
+py: gray cvtColor                                              0.35 ms/ruutu   0.2%  n=2900
+py: set_transform                                              0.03 ms/ruutu   0.0%  n=2900
+py: HAKU submit (Python, saikeen kaynnistys)                   0.01 ms/ruutu   0.0%  n=290
+--- C++-puoli (summattu CPU-aika saikeiden yli) ---
+vaihe                                                       ms/ruutu  ms/kutsu  kutsuja
+seuranta/kivi-paivitys yhteensa (CPU)                         120.00    42.661     8157
+  prep: rajaus + taustanvaimennus                               1.22     0.435     8157
+  prep: saturaatio                                              1.10     0.393     8157
+  prep: graniittimaski (GaussianBlur)                          19.99     7.108     8157
+  prep: etualamaski (whitened)                                  0.57     0.204     8157
+  haku: mean-shift (viimeisesta)                                3.00     1.068     8157
+  haku: mean-shift (ennustetusta)                               2.14     1.072     5790
+  haku: ristikko (yhdistelma, ennustettu keskipiste)           11.99     4.263     8157
+  haku yhteensa                                                17.14     6.093     8157
+  LM-tarkennus yhteensa                                        79.94    31.588     7339
+    LM: reunustus (copyMakeBorder)                              0.97     0.368     7611
+    LM: runkokontuuri + jaasuodatus                             1.58     0.604     7611
+    LM: reunapisteet (detectBoundaryPoints)                     0.86     0.094    26456
+    LM: sovitus #1                                             60.33     6.640    26351
+    LM: MAD-poikkeamat                                          1.94     0.213    26351
+    LM: sovitus #2 (uusinta)                                   14.26     7.356     5620
+    LM: lopullinen residuaali                                   1.80     0.198    26351
+    LM: ulkoiteraatioita (lkm)                                                    26456   (ulkoiteraatioita / LM-tarkennus)
+  HAKU: taustanvaimennus (koko frame)                           0.31     3.134      290
+  HAKU: graniittimaski (koko frame)                             5.29    52.936      290
+  HAKU: saturaatio (koko frame)                                 0.26     2.553      290
+  HAKU: ristikkohaku                                            0.89     4.598      560
+  HAKU: LM-tarkennus                                            1.81    19.300      272
+  HAKU: floodFill-poisto                                        0.03     0.347      270
+SEURANTA-kutsu seinakello (track_stones_batch)                 55.10    63.811     2504
+  kutsun alustus (numpy->cv, GIL)                               0.02     0.027     2504
+  kutsun tulokset (dict)                                        0.03     0.038     2504
+================================================
+DONE 466.0456614494324

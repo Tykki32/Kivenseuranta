@@ -1163,25 +1163,30 @@ def find_house_pair(mask, min_area, min_ratio, min_size_ratio, min_contour_len=2
     return outer, inner
 
 
-def detect_line_segments(frame, ellipse):
+# ============================================================
+# JAA-SUODATUS-POHJAINEN LISAREUNALAHDE (Testi_02_02, kayttajan
+# pyynnosta - katso keskusteluhistoria): joissakin videoissa (esim.
+# MAH00014, jossa lahempi pesa on aivan kuvan reunassa) hogline/
+# keskiviiva on niin haalea (matala kontrasti jaata vasten) etta
+# tavallinen harmaasavy-Canny (alla) ei loyda sita luotettavasti -
+# se hukkuu kirkkaan jaan omaan kohinaan. Rata-alueen S/V-histogrammin
+# (Testi_02_01:ssa kehitetty jaa-suodatus, main.py:n ICE_S_MAX/ICE_
+# V_MIN) HAVAITTIIN paljastavan tallaisen haalean viivan selvasti
+# PAREMMIN kuin Canny: jaa on tasaisen kirkasta JA matalasaturoitunutta
+# (S<LINE_ICE_S_MAX, V>LINE_ICE_V_MIN), joten kaikki mika EI tayta tata
+# (mukaan lukien haalea harmaa viiva, JOKA ON hieman jaata tummempi)
+# erottuu binaarimaskina huomattavasti kontrastikkaammin kuin raa'an
+# harmaasavykuvan gradientti. Tama LISATAAN (ei korvata) alkuperaisen
+# Cannyn rinnalle - molempien lahteiden segmentit yhdistetaan, joten
+# jo ennestaan toimiva videon (0001) tulos ei voi huonontua (samat
+# vanhat segmentit ovat yha mukana, uudet vain lisaavat kandidaatteja).
+# ============================================================
+LINE_ICE_S_MAX = 22
+LINE_ICE_V_MIN = 165
 
-    h, w = frame.shape[:2]
 
-    (cx, cy), (ew, eh), _ = ellipse
+def _detect_line_segments_from_edges(edges, roi_mask):
 
-    margin_x = int(max(250, ew * 1.0))
-    margin_y = int(max(300, eh * 0.8))
-
-    x1 = max(0, int(cx - margin_x))
-    x2 = min(w - 1, int(cx + margin_x))
-    y1 = max(0, int(cy - margin_y))
-    y2 = min(h - 1, int(cy + margin_y))
-
-    roi_mask = np.zeros((h, w), dtype=np.uint8)
-    roi_mask[y1:y2 + 1, x1:x2 + 1] = 255
-
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
     edges = cv2.bitwise_and(edges, roi_mask)
 
     lines = cv2.HoughLinesP(
@@ -1210,6 +1215,38 @@ def detect_line_segments(frame, ellipse):
             "p1": p1, "p2": p2, "length": length,
             "angle": angle, "mid": midpoint(p1, p2)
         })
+
+    return segments
+
+
+def detect_line_segments(frame, ellipse):
+
+    h, w = frame.shape[:2]
+
+    (cx, cy), (ew, eh), _ = ellipse
+
+    margin_x = int(max(250, ew * 1.0))
+    margin_y = int(max(300, eh * 0.8))
+
+    x1 = max(0, int(cx - margin_x))
+    x2 = min(w - 1, int(cx + margin_x))
+    y1 = max(0, int(cy - margin_y))
+    y2 = min(h - 1, int(cy + margin_y))
+
+    roi_mask = np.zeros((h, w), dtype=np.uint8)
+    roi_mask[y1:y2 + 1, x1:x2 + 1] = 255
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray_edges = cv2.Canny(gray, 50, 150)
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.int16)
+    non_ice = (
+        (hsv[..., 1] >= LINE_ICE_S_MAX) | (hsv[..., 2] <= LINE_ICE_V_MIN)
+    ).astype(np.uint8) * 255
+    ice_edges = cv2.Canny(non_ice, 50, 150)
+
+    segments = _detect_line_segments_from_edges(gray_edges, roi_mask)
+    segments += _detect_line_segments_from_edges(ice_edges, roi_mask)
 
     return segments
 
@@ -1279,12 +1316,81 @@ def pair_line_segments(segments, ellipse, orientation, center):
     return best_pair
 
 
+def _single_sided_line(segments, ellipse, orientation, center):
+    """VARAKEINO (Testi_02_02, kayttajan pyynnosta - katso keskustelu-
+    historia): pair_line_segments vaatii AINA kaksi segmenttia, yhden
+    keskipisteen KUMMALTAKIN puolelta - tama toimii vain jos lahempi
+    pesa on kuvassa niin etta rataa nakyy molemmin puolin sita. Jos
+    pesa on aivan kuvan reunassa (esim. MAH00014, kamera kuvaa rataa
+    sivulta), toinen puoli ei koskaan nay eika paria loydy vaikka
+    varsinainen viiva olisi selvasti nakyvissa toisella puolella.
+    Kaytetaan silloin PARASTA YKSITTAISTA riittavan pitkaa segmenttia
+    joka kulkee lahella keskipistetta - se maarittaa itsessaan koko
+    suoran (combined lasketaan AINA vain yhden segmentin p1/p2:sta,
+    katso pair_line_segments), joten toista puolta ei oikeasti
+    tarvita geometrista suoraa varten - VAIN build_image_directions:in
+    suuntavektorille (keskipisteen KAUTTA peilattu synteettinen
+    "toinen puoli", jotta sen "mid" antaa oikean suunnan)."""
+
+    if orientation == "vertical":
+        candidates = [
+            s for s in segments
+            if angle_distance_to_vertical(s["angle"]) <= 35.0
+        ]
+    else:
+        candidates = [
+            s for s in segments
+            if angle_distance_to_horizontal(s["angle"]) <= 35.0
+        ]
+
+    best = None
+    best_score = float("inf")
+
+    for s in candidates:
+
+        combined = line_from_points(s["p1"], s["p2"])
+        center_distance = point_line_distance(center, combined)
+
+        if center_distance > 80:
+            continue
+
+        intersections = line_ellipse_intersections(combined, ellipse)
+
+        if len(intersections) != 2:
+            continue
+
+        score = center_distance * 3.0 - s["length"] * 0.01
+
+        if score < best_score:
+            best_score = score
+            best = (s, combined)
+
+    if best is None:
+        return None
+
+    s1, combined = best
+    mirrored_mid = 2.0 * center - s1["mid"]
+    s2 = {
+        "p1": s1["p1"], "p2": s1["p2"],
+        "length": s1["length"], "angle": s1["angle"],
+        "mid": mirrored_mid,
+    }
+
+    return (s1, s2, combined)
+
+
 def select_t_and_centerline(segments, ellipse):
 
     center = np.array(ellipse[0], dtype=np.float64)
 
     t_pair = pair_line_segments(segments, ellipse, "vertical", center)
     centerline_pair = pair_line_segments(segments, ellipse, "horizontal", center)
+
+    if t_pair is None:
+        t_pair = _single_sided_line(segments, ellipse, "vertical", center)
+
+    if centerline_pair is None:
+        centerline_pair = _single_sided_line(segments, ellipse, "horizontal", center)
 
     if t_pair is None or centerline_pair is None:
         raise RuntimeError("T-linjaa tai keskilinjaa ei loytynyt.")

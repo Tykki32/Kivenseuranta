@@ -76,6 +76,7 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <pybind11/stl.h>
 
 #include <opencv2/opencv.hpp>
 
@@ -84,12 +85,61 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
 
 namespace py = pybind11;
+
+// ============================================================
+// AIKAMITTAUKSET (Testi_03_01): jokainen seurannan/HAKU:n vaihe kirjaa kokonaisajan ja kutsumaaran
+// globaaleihin (atomic) laskureihin. prof_reset()/prof_snapshot() Pythonista. Ajastimen oma kustannus
+// on ~50 ns / mittaus, eli mitätön verrattuna vaiheisiin (ms). Säikeissä ajoaika summataan
+// (CPU-aika), joten P_BATCH_WALL vs. summa kertoo rinnakkaistuksen hyodyn.
+// ============================================================
+enum ProfId {
+    P_CALL_TOTAL, P_PREP_CROP_SUPPRESS, P_PREP_SAT, P_PREP_GRANITE, P_PREP_FOREGROUND,
+    P_LOC_GRID, P_LOC_MS1, P_LOC_MS2, P_LOC_ENS_GRID, P_LOC_TOTAL,
+    P_REFINE_TOTAL, P_R_PAD, P_R_CONTOUR, P_R_BOUNDARY, P_R_LM1, P_R_MAD, P_R_LM2, P_R_FINAL, P_R_OUTER_ITER,
+    P_HAKU_TOTAL, P_HAKU_SUPPRESS, P_HAKU_MASK, P_HAKU_SAT, P_HAKU_LOCATE, P_HAKU_REFINE, P_HAKU_FLOOD,
+    P_BATCH_WALL, P_BATCH_SETUP, P_BATCH_RESULT,
+    P_GM_CVT, P_GM_BLUR, P_GM_LOOP, P_GM_MORPH, P_GS_HULL, P_GS_SCORE,
+    P_LM_FALLBACK, P_LM_LIN, P_LM_VERIFY, P_LM_BUILD, P_LM_EVAL_ONLY,
+    P_C_NBODY, P_C_NRING, P_C_NHULL, P_C_LMITER, P_C_LMEVAL,
+    P_COUNT
+};
+static const char* PROF_NAMES[P_COUNT] = {
+    "seuranta/kivi-paivitys yhteensa (CPU)", "  prep: rajaus + taustanvaimennus", "  prep: saturaatio", "  prep: graniittimaski (GaussianBlur)",
+    "  prep: etualamaski (whitened)", "  haku: ristikkohaku", "  haku: mean-shift (viimeisesta)", "  haku: mean-shift (ennustetusta)",
+    "  haku: ristikko (yhdistelma, ennustettu keskipiste)", "  haku yhteensa", "  LM-tarkennus yhteensa", "    LM: reunustus (copyMakeBorder)",
+    "    LM: runkokontuuri + jaasuodatus", "    LM: reunapisteet (detectBoundaryPoints)", "    LM: sovitus #1", "    LM: MAD-poikkeamat",
+    "    LM: sovitus #2 (uusinta)", "    LM: lopullinen residuaali", "    LM: ulkoiteraatioita (lkm)",
+    "HAKU yhteensa", "  HAKU: taustanvaimennus (koko frame)", "  HAKU: graniittimaski (koko frame)", "  HAKU: saturaatio (koko frame)",
+    "  HAKU: ristikkohaku", "  HAKU: LM-tarkennus", "  HAKU: floodFill-poisto",
+    "SEURANTA-kutsu seinakello (track_stones_batch)", "  kutsun alustus (numpy->cv, GIL)", "  kutsun tulokset (dict)",
+    "    granite: cvtColor x2 + convert", "    granite: GaussianBlur", "    granite: kynnys-silmukka", "    granite: morfologia", "    ristikko: predictedHull", "    ristikko: hullOverlapScore",
+    "    LM: TARKKA VARAKEINO-LM (linearisointi hylatty)", "    LM#1: lineaarinen LM", "    LM#1: tarkka varmistus", "    LM: linearisoinnin rakennus", "    LM: residuaali+jacobi evaluaatiot",
+    "LASKURI keskiarvo: runkopisteita/LM", "LASKURI keskiarvo: rengaspisteita/LM", "LASKURI keskiarvo: hull-kulmia/LM", "LASKURI keskiarvo: LM-iteraatioita/LM", "LASKURI keskiarvo: residuaalievaluaatioita/LM"
+};
+static std::atomic<long long> g_prof_ns[P_COUNT];
+static std::atomic<long long> g_prof_n[P_COUNT];
+
+static inline void profAdd(ProfId id, long long ns) { g_prof_ns[id] += ns; g_prof_n[id] += 1; }
+
+struct PT {
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    long long lap() {
+        auto t1 = std::chrono::steady_clock::now();
+        long long d = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        t0 = t1;
+        return d;
+    }
+};
+
 
 
 // ============================================================
@@ -198,6 +248,24 @@ static const int MASK_ROI_MARGIN_PX = 150;
 // (95%) testihullon".
 static const double TRACK_EARLY_STOP_SCORE = 0.95;
 
+// HULLIN ULKOPUOLISTEN LOYDOSTEN MIINUSPISTEET (UUSI, EI Python-
+// porttaus - kayttajan pyynnosta): hullOverlapScore oli aiemmin
+// YKSISUUNTAINEN - se mittasi VAIN kuinka suuri osa ennustetun
+// hullin SISALLA olevista pikseleista loytyy maskista, muttei
+// mitenkaan rangaissut siita etta maski jatkuu reilusti hullin
+// ULKOPUOLELLE (esim. pelaaja/harja tai kaksi toisiinsa koskettavaa
+// kivea, jotka voisivat silti antaa taydellisen 1.0-pistemaaran
+// koska KAIKKI hullin pikselit sattuvat olemaan maskissa). Lisatty
+// "turvavyohyke" (hulli laajennettuna HULL_MARGIN_SCALE:lla omasta
+// painopisteestaan) - vyohykkeen SISALLA (mutta alkuperaisen hullin
+// ULKOPUOLELLA) loydetyt maskipikselit vahennetaan pistemaarasta
+// painotettuna HULL_OUTSIDE_PENALTY_WEIGHT:lla. Hullin skaalaus
+// 2D:ssa omasta painopisteestaan (ei 3D-sateen kautta) on tietoinen
+// yksinkertaistus - riittavan tarkka pienelle (10%) marginaalille,
+// eika vaadi K/R/t-projektiota tai 3D-pisteita tahan funktioon.
+static const double HULL_MARGIN_SCALE = 1.10;
+static const double HULL_OUTSIDE_PENALTY_WEIGHT = 1.0;
+
 
 // ============================================================
 // KAMERAPROJEKTIO (kamera9_01.py:n _project_3d)
@@ -300,7 +368,24 @@ static double hullOverlapScore(
         hull_int[i] = cv::Point((int)(hull[i].x), (int)(hull[i].y));
     for (auto& p : hull_int) { p.x -= off_x; p.y -= off_y; }
 
-    cv::Rect bbox = cv::boundingRect(hull_int);
+    // Turvavyohyke (UUSI, EI Python-porttaus): hulli skaalattuna
+    // HULL_MARGIN_SCALE:lla OMASTA PAINOPISTEESTAAN - suhteellinen
+    // (pikseleina hullin omaan kokoon nahden, EI kiintea cm-etaisyys),
+    // katso TAMAN FUNKTION ylla oleva HULL_MARGIN_SCALE-kommentti.
+    cv::Point2d centroid(0.0, 0.0);
+    for (auto& p : hull_int) { centroid.x += p.x; centroid.y += p.y; }
+    centroid.x /= (double)hull_int.size();
+    centroid.y /= (double)hull_int.size();
+
+    std::vector<cv::Point> margin_int(hull_int.size());
+    for (size_t i = 0; i < hull_int.size(); ++i) {
+        margin_int[i] = cv::Point(
+            (int)std::lround(centroid.x + (hull_int[i].x - centroid.x) * HULL_MARGIN_SCALE),
+            (int)std::lround(centroid.y + (hull_int[i].y - centroid.y) * HULL_MARGIN_SCALE)
+        );
+    }
+
+    cv::Rect bbox = cv::boundingRect(margin_int);
 
     int x0 = std::max(bbox.x, 0);
     int y0 = std::max(bbox.y, 0);
@@ -314,6 +399,10 @@ static double hullOverlapScore(
     for (size_t i = 0; i < hull_int.size(); ++i)
         shifted[i] = cv::Point(hull_int[i].x - x0, hull_int[i].y - y0);
 
+    std::vector<cv::Point> margin_shifted(margin_int.size());
+    for (size_t i = 0; i < margin_int.size(); ++i)
+        margin_shifted[i] = cv::Point(margin_int[i].x - x0, margin_int[i].y - y0);
+
     cv::Mat canvas = cv::Mat::zeros(y1 - y0, x1 - x0, CV_8UC1);
     std::vector<std::vector<cv::Point>> polys{shifted};
     cv::fillPoly(canvas, polys, cv::Scalar(255));
@@ -322,18 +411,40 @@ static double hullOverlapScore(
     if (hull_area == 0)
         return 0.0;
 
+    cv::Mat margin_canvas = cv::Mat::zeros(y1 - y0, x1 - x0, CV_8UC1);
+    std::vector<std::vector<cv::Point>> margin_polys{margin_shifted};
+    cv::fillPoly(margin_canvas, margin_polys, cv::Scalar(255));
+
     cv::Mat mask_sub = mask_crop(cv::Rect(x0, y0, x1 - x0, y1 - y0));
 
     int overlap = 0;
+    int outside_overlap = 0;
+    int band_area = 0;
+
     for (int r = 0; r < canvas.rows; ++r) {
         const uchar* cptr = canvas.ptr<uchar>(r);
         const uchar* mptr = mask_sub.ptr<uchar>(r);
-        for (int c = 0; c < canvas.cols; ++c)
-            if (cptr[c] > 0 && mptr[c] > 0)
+        const uchar* bptr = margin_canvas.ptr<uchar>(r);
+        for (int c = 0; c < canvas.cols; ++c) {
+            bool inside = cptr[c] > 0;
+            bool in_margin = bptr[c] > 0;
+            bool in_band = in_margin && !inside;
+
+            if (inside && mptr[c] > 0)
                 ++overlap;
+
+            if (in_band) {
+                ++band_area;
+                if (mptr[c] > 0)
+                    ++outside_overlap;
+            }
+        }
     }
 
-    return (double)overlap / (double)hull_area;
+    double inside_score = (double)overlap / (double)hull_area;
+    double outside_score = band_area > 0 ? (double)outside_overlap / (double)band_area : 0.0;
+
+    return inside_score - HULL_OUTSIDE_PENALTY_WEIGHT * outside_score;
 }
 
 
@@ -363,46 +474,63 @@ static std::vector<double> arangeVec(double start, double stop, double step)
 }
 
 
-// ============================================================
-// ENABLE_HAKU_PARALLEL_GRID (Testi_03_01, kayttajan pyynnosta -
-// profiloinnissa HAKU n. 103-167 ms/kutsu, YKSI kutsu joka
-// haku_interval_frames:s ruutu, EI mitaan sisaista rinnakkaistusta
-// aiemmin - ainoa rinnakkaisuus oli etta koko HAKU-kutsu ajettiin
-// omalla Python-taustasaikeellaan SEURANNAN kanssa samanaikaisesti).
-//
-// TAMA ristikkohaku (locateByGridSearchFast, kayttajan pyynnosta
-// tehtava TAYSIN EXHAUSTIIVISENA - EI early-stop-optimointia, EI
-// pienennetty hakuikkuna/askel - "vasta viimeinen keino") kay lapi
-// karkean vaiheen n. 15x31=465 (X,Y)-pistetta HAKU:n oletusasetuksilla
-// (SEARCH_X_HALF_WIDTH_CM=70, SEARCH_Y-vali 300cm, askel 10cm) + hienon
-// vaiheen n. 11x11=121 pistetta - JOKAINEN piste on TAYSIN RIIPPUMATON
-// (predictedHull+hullOverlapScore lukevat vain omat parametrinsa ja
-// muuttumattoman mask_crop:in, eivat mitaan jaettua muuttuvaa tilaa) -
-// siis TASMALLEEN samanlainen embarrassingly-parallel-tilanne kuin
-// track_stones_batch:in (SEURANTA) jo olemassaoleva per-kivi-
-// saiejako, tassa vain per-ruudukkopiste. Kaytetaan TASMALLEEN samaa,
-// jo validoitua kaavaa (atominen tyonvarastus-indeksi + per-saie oma
-// paras-tulos + lopuksi reduktio) - EI uutta, testaamatonta
-// synkronointimekanismia.
-//
-// NUMEERINEN VAIKUTUS: haku on TAYSIN exhaustiivinen (ei early-stop),
-// joten PARAS LOYDETTY PISTEMAARA (best_score) on AINA tasan sama kuin
-// sarjallisessa versiossa. AINOA mahdollinen ero: jos KAKSI (tai
-// useampi) pistetta saavat TASAN saman parhaan pistemaaran, se KUMPI
-// niista palautetaan voi erota sarjallisen (rivi kerrallaan) ja
-// rinnakkaisen (saiejako+reduktio-jarjestys) valilla - TASMALLEEN sama,
-// jo hyvaksytty tasapeli-poikkeama kuin locateByGridSearchTrackingFast:
-// issa (katso sen oma kommentti ylla) ja tiedoston alun kommentti
-// yleisesta liukulukuherkkyydesta. EI ole regressio - vain SEN kahden
-// yhta hyvan ehdokkaan valilla tehty valinta voi vaihtua.
-//
-// KAYTOSSA VAIN jos parallel=true JA ruudukossa on tarpeeksi pisteita
-// (n_total >= 8) etta saikeiden luonti/liittaminen kannattaa - pienella
-// ruudukolla (esim. hyvin kapea hienosaatovaihe) sarjallinen polku on
-// nopeampi eika maksa mitaan saieylikuormaa.
-// ============================================================
 
-static std::pair<cv::Point2d, double> gridSearchBestSerial(
+// ------------------------------------------------------------------
+// NOPEA ennustettu hull (Testi_03_01): projektio pi = K*(R*(local+(X,Y,0))+t) on lineaarinen
+// (X,Y):n suhteen ENNEN jakoa, joten K*(R*local+t) lasketaan kerran pisteita kohti ja jokainen
+// (X,Y)-kokeilu on vain pi = A_i + X*kx + Y*ky + jako. Sama tulos kuin predictedHull
+// (liukulukuero ~1e-13), mutta ei 3x3-matriisikertolaskuja jokaiselle pisteelle/kokeilulle.
+// ------------------------------------------------------------------
+struct HullProjector {
+    std::vector<cv::Vec3d> A;
+    cv::Vec3d kx, ky;
+    std::vector<cv::Point2f> pts;   // uudelleenkaytettava puskuri
+    HullProjector(const std::vector<cv::Point3d>& local_pts, const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t)
+        : A(local_pts.size()), pts(local_pts.size())
+    {
+        for (size_t i = 0; i < local_pts.size(); ++i)
+            A[i] = K * (R * cv::Vec3d(local_pts[i].x, local_pts[i].y, local_pts[i].z) + t);
+        kx = K * cv::Vec3d(R(0, 0), R(1, 0), R(2, 0));
+        ky = K * cv::Vec3d(R(0, 1), R(1, 1), R(2, 1));
+    }
+    // Hullin karkijoukko (indeksit) lasketaan tayden convexHull:in avulla vain kun vertailupiste
+    // (X,Y) on yli HULL_REF_RANGE_CM paassa edellisesta - sen sisalla hull-karjet pysyvat
+    // kaytannossa samoina (perspektiivimuutos alle pikselin), joten pelkkien karkien projisointi
+    // riittaa eika convexHull:ia tarvita jokaiselle kokeilulle.
+    std::vector<int> ref_idx;
+    double ref_x = 0, ref_y = 0;
+    std::vector<cv::Point2f> hull(double X, double Y)
+    {
+        const double ox = X * kx[0] + Y * ky[0], oy = X * kx[1] + Y * ky[1], oz = X * kx[2] + Y * ky[2];
+        const bool fast = !ref_idx.empty() && std::abs(X - ref_x) < 15.0 && std::abs(Y - ref_y) < 15.0;
+        if (fast) {
+            std::vector<cv::Point2f> h(ref_idx.size());
+            for (size_t k = 0; k < ref_idx.size(); ++k) {
+                const cv::Vec3d& a = A[(size_t)ref_idx[k]];
+                const double z = a[2] + oz;
+                h[k] = cv::Point2f((float)((a[0] + ox) / z), (float)((a[1] + oy) / z));
+            }
+            return h;
+        }
+        bool all_finite = true;
+        for (size_t i = 0; i < A.size(); ++i) {
+            const double z = A[i][2] + oz;
+            const double px = (A[i][0] + ox) / z, py = (A[i][1] + oy) / z;
+            if (!std::isfinite(px) || !std::isfinite(py)) all_finite = false;
+            pts[i] = cv::Point2f((float)px, (float)py);
+        }
+        if (!all_finite) return {};
+        std::vector<int> idx;
+        cv::convexHull(pts, idx, false, false);
+        if (idx.size() < 3) return {};
+        std::vector<cv::Point2f> h(idx.size());
+        for (size_t k = 0; k < idx.size(); ++k) h[k] = pts[(size_t)idx[k]];
+        ref_idx = idx; ref_x = X; ref_y = Y;
+        return h;
+    }
+};
+
+static std::pair<cv::Point2d, double> gridSearchBest(
     const std::vector<cv::Point3d>& local_pts_search,
     const cv::Mat& mask_crop, int off_x, int off_y,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
@@ -411,9 +539,10 @@ static std::pair<cv::Point2d, double> gridSearchBestSerial(
     double best_score = -1.0;
     cv::Point2d best_xy(x_vals.empty() ? 0.0 : x_vals[0], y_vals.empty() ? 0.0 : y_vals[0]);
 
+    HullProjector proj_(local_pts_search, K, R, t);
     for (double X : x_vals) {
         for (double Y : y_vals) {
-            auto hull = predictedHull(local_pts_search, X, Y, K, R, t);
+            auto hull = proj_.hull(X, Y);
             double score = hullOverlapScore(mask_crop, hull, off_x, off_y);
             if (score > best_score) {
                 best_score = score;
@@ -426,68 +555,49 @@ static std::pair<cv::Point2d, double> gridSearchBestSerial(
 }
 
 
-static std::pair<cv::Point2d, double> gridSearchBest(
-    const std::vector<cv::Point3d>& local_pts_search,
+// HAKU:n ristikkohaun nopeutus (kayttajan ehdotus, katso keskustelu-
+// historia): HAKU:n hakuvyohyke on kiintea, KAPEA (x_half_width=70cm)
+// ja KAUKANA kamerasta (lahella kaukaista hogline:a, katso kamera9_02.
+// py:n SEARCH_Y_MIN/MAX_CM) - talla etaisyydella kiven projisoitu KOKO
+// JA MUOTO eivat muutu merkittavasti koko hakuvyohykkeen sisalla, joten
+// jokaiselle ristikkopisteelle EI TARVITSE laskea TAYTTA 3D->2D-
+// projisiota (predictedHull, joka projisioi KAIKKI local_pts_search-
+// pisteet erikseen) uudelleen - riittaa laskea taydellinen hulli VAIN
+// KERRAN hakuvyohykkeen keskella (x_center,y_center - kaukaisen hog-
+// linen kohdalla) ja SIIRTAA (translatoida) tata samaa hullia muille
+// ristikkopisteille paikallisen lineaarisen approksimaation (Jacobin
+// matriisi px/cm, laskettu differenssilla samasta keskipisteesta)
+// mukaan. HUOM: tama approksimaatio EI PADE koko radalle (lahella
+// kameraa/taloa projisio muuttuu paljon nopeammin) - siksi SEURANNAN
+// oma ristikkohaku (locateByGridSearchTrackingFast, jonka kohde voi
+// olla missa tahansa radalla) EI kayta tata, vain gridSearchBest:ia
+// suoraan taydella projisiolla joka pisteessa.
+static std::pair<cv::Point2d, double> gridSearchBestLinearized(
     const cv::Mat& mask_crop, int off_x, int off_y,
-    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
-    const std::vector<double>& x_vals, const std::vector<double>& y_vals,
-    bool parallel = false, int max_workers = 0)
+    const std::vector<cv::Point2f>& ref_hull, double ref_x, double ref_y,
+    const cv::Point2d& jac_col_x, const cv::Point2d& jac_col_y,
+    const std::vector<double>& x_vals, const std::vector<double>& y_vals)
 {
-    size_t n_x = x_vals.size();
-    size_t n_y = y_vals.size();
-    size_t n_total = n_x * n_y;
-
-    if (!parallel || n_total < 8 || n_x == 0 || n_y == 0) {
-        return gridSearchBestSerial(
-            local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals
-        );
-    }
-
-    unsigned hw = std::thread::hardware_concurrency();
-    int worker_count = std::max(
-        1,
-        std::min(
-            (int)n_total,
-            max_workers > 0 ? max_workers : (int)(hw == 0 ? 4u : hw)
-        )
-    );
-
-    std::atomic<size_t> next_idx(0);
-    std::vector<double> thread_best_score((size_t)worker_count, -1.0);
-    std::vector<cv::Point2d> thread_best_xy(
-        (size_t)worker_count, cv::Point2d(x_vals[0], y_vals[0])
-    );
-
-    auto worker = [&](int wi) {
-        while (true) {
-            size_t idx = next_idx.fetch_add(1);
-            if (idx >= n_total)
-                break;
-            double X = x_vals[idx / n_y];
-            double Y = y_vals[idx % n_y];
-            auto hull = predictedHull(local_pts_search, X, Y, K, R, t);
-            double score = hullOverlapScore(mask_crop, hull, off_x, off_y);
-            if (score > thread_best_score[(size_t)wi]) {
-                thread_best_score[(size_t)wi] = score;
-                thread_best_xy[(size_t)wi] = cv::Point2d(X, Y);
-            }
-        }
-    };
-
-    std::vector<std::thread> workers;
-    workers.reserve((size_t)(worker_count - 1));
-    for (int i = 1; i < worker_count; ++i)
-        workers.emplace_back(worker, i);
-    worker(0); // kutsuva saie osallistuu itsekin tyohon - ei jouten odota
-    for (auto& w : workers)
-        w.join();
-
     double best_score = -1.0;
-    cv::Point2d best_xy(x_vals[0], y_vals[0]);
-    for (int wi = 0; wi < worker_count; ++wi) {
-        if (thread_best_score[(size_t)wi] > best_score) {
-            best_score = thread_best_score[(size_t)wi];
-            best_xy = thread_best_xy[(size_t)wi];
+    cv::Point2d best_xy(x_vals.empty() ? 0.0 : x_vals[0], y_vals.empty() ? 0.0 : y_vals[0]);
+
+    std::vector<cv::Point2f> hull(ref_hull.size());
+
+    for (double X : x_vals) {
+        double dX = X - ref_x;
+        for (double Y : y_vals) {
+            double dY = Y - ref_y;
+            double dpx = dX * jac_col_x.x + dY * jac_col_y.x;
+            double dpy = dX * jac_col_x.y + dY * jac_col_y.y;
+
+            for (size_t i = 0; i < ref_hull.size(); ++i)
+                hull[i] = cv::Point2f(ref_hull[i].x + (float)dpx, ref_hull[i].y + (float)dpy);
+
+            double score = hullOverlapScore(mask_crop, hull, off_x, off_y);
+            if (score > best_score) {
+                best_score = score;
+                best_xy = cv::Point2d(X, Y);
+            }
         }
     }
 
@@ -500,16 +610,46 @@ static std::pair<cv::Point2d, double> locateByGridSearchFast(
     const cv::Mat& mask_crop, int off_x, int off_y,
     double x_center, double x_half_range, double y_center, double y_half_range,
     double coarse_step, double fine_step,
-    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
-    bool parallel = false, int max_workers = 0)
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t)
 {
+    // Referenssihulli + paikallinen Jacobi (px per cm) hakuvyohykkeen
+    // keskella - katso gridSearchBestLinearized:in oma kommentti.
+    // JAC_DELTA_CM: pieni siirtyma differenssille - ei vaikuta tulokseen
+    // (lineaarinen approksimaatio joka tapauksessa), vain numeeriseen
+    // tarkkuuteen.
+    static const double JAC_DELTA_CM = 10.0;
+
+    auto ref_hull = predictedHull(local_pts_search, x_center, y_center, K, R, t);
+
+    std::vector<cv::Point3d> jac_pts{
+        cv::Point3d(x_center, y_center, 0.0),
+        cv::Point3d(x_center + JAC_DELTA_CM, y_center, 0.0),
+        cv::Point3d(x_center, y_center + JAC_DELTA_CM, 0.0),
+    };
+    // Referenssikorkeus ei ole taalla merkityksellinen (vain siirtymän
+    // suunta/mittakaava), mutta kaytetaan samaa Z=0-tasoa kuin
+    // rayPlaneIntersectionZ0 - riittava tarkkuus Jacobille.
+    auto jac_proj = project3d(K, R, t, jac_pts);
+    cv::Point2d jac_col_x(
+        (jac_proj[1].x - jac_proj[0].x) / JAC_DELTA_CM,
+        (jac_proj[1].y - jac_proj[0].y) / JAC_DELTA_CM
+    );
+    cv::Point2d jac_col_y(
+        (jac_proj[2].x - jac_proj[0].x) / JAC_DELTA_CM,
+        (jac_proj[2].y - jac_proj[0].y) / JAC_DELTA_CM
+    );
+
     auto x_vals = arangeVec(x_center - x_half_range, x_center + x_half_range + 1e-6, coarse_step);
     auto y_vals = arangeVec(y_center - y_half_range, y_center + y_half_range + 1e-6, coarse_step);
-    auto best1 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals, parallel, max_workers);
+    auto best1 = gridSearchBestLinearized(
+        mask_crop, off_x, off_y, ref_hull, x_center, y_center, jac_col_x, jac_col_y, x_vals, y_vals
+    );
 
     auto x_vals2 = arangeVec(best1.first.x - coarse_step, best1.first.x + coarse_step + 1e-6, fine_step);
     auto y_vals2 = arangeVec(best1.first.y - coarse_step, best1.first.y + coarse_step + 1e-6, fine_step);
-    auto best2 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2, parallel, max_workers);
+    auto best2 = gridSearchBestLinearized(
+        mask_crop, off_x, off_y, ref_hull, x_center, y_center, jac_col_x, jac_col_y, x_vals2, y_vals2
+    );
 
     return best2;
 }
@@ -570,11 +710,16 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
 
         std::vector<char> visited((size_t)nx * (size_t)ny, 0);
         auto idx = [ny](int i, int j) { return (size_t)i * (size_t)ny + (size_t)j; };
+        HullProjector hull_proj(local_pts_search, K, R, t);
 
         auto evalPoint = [&](int i, int j) -> double {
             visited[idx(i, j)] = 1;
-            auto hull = predictedHull(local_pts_search, x_vals[(size_t)i], y_vals[(size_t)j], K, R, t);
-            return hullOverlapScore(mask_crop, hull, off_x, off_y);
+            PT gpt2;
+            auto hull = hull_proj.hull(x_vals[(size_t)i], y_vals[(size_t)j]);
+            profAdd(P_GS_HULL, gpt2.lap());
+            double sc_ = hullOverlapScore(mask_crop, hull, off_x, off_y);
+            profAdd(P_GS_SCORE, gpt2.lap());
+            return sc_;
         };
 
         int ix0 = (int)std::lround((x_center - x_vals[0]) / coarse_step);
@@ -692,15 +837,29 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
 // vastaa oikeaa kannettavuutta jos linkitetty OpenCV eroaa nain.
 // ============================================================
 
+static const int g_granite_down = getenv("GRANITE_DOWN") ? atoi(getenv("GRANITE_DOWN")) : 4;
+
 static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
 {
     cv::Mat hsv, gray, gray_f, bg, darkness;
+    PT gpt;
 
     cv::cvtColor(frame_bgr, hsv, cv::COLOR_BGR2HSV);
     cv::cvtColor(frame_bgr, gray, cv::COLOR_BGR2GRAY);
     gray.convertTo(gray_f, CV_32F);
-    cv::GaussianBlur(gray_f, bg, cv::Size(0, 0), STONE_DARKNESS_SIGMA);
+    profAdd(P_GM_CVT, gpt.lap());
+    if (g_granite_down > 1 && gray_f.cols >= 8 * g_granite_down && gray_f.rows >= 8 * g_granite_down) {
+        // sigma=25 px:n taustan arvio on hyvin sileä -> lasketaan pienennetylla kuvalla
+        // (area-pienennys, sigma/down, bilineaarinen suurennus): ~5.5 -> ~1 ms.
+        cv::Mat small, small_bg;
+        cv::resize(gray_f, small, cv::Size(), 1.0 / g_granite_down, 1.0 / g_granite_down, cv::INTER_AREA);
+        cv::GaussianBlur(small, small_bg, cv::Size(0, 0), STONE_DARKNESS_SIGMA / g_granite_down);
+        cv::resize(small_bg, bg, gray_f.size(), 0, 0, cv::INTER_LINEAR);
+    } else {
+        cv::GaussianBlur(gray_f, bg, cv::Size(0, 0), STONE_DARKNESS_SIGMA);
+    }
     darkness = bg - gray_f;
+    profAdd(P_GM_BLUR, gpt.lap());
 
     std::vector<cv::Mat> hsv_ch;
     cv::split(hsv, hsv_ch);
@@ -719,11 +878,13 @@ static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
         }
     }
 
+    profAdd(P_GM_LOOP, gpt.lap());
     cv::Mat kernel_open = cv::Mat::ones(5, 5, CV_8U);
     cv::Mat kernel_close = cv::Mat::ones(3, 3, CV_8U);
     cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel_open);
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel_close);
 
+    profAdd(P_GM_MORPH, gpt.lap());
     return mask;
 }
 
@@ -774,6 +935,69 @@ static cv::Mat suppressStaticBackground(
     }
 
     return out;
+}
+
+
+// ============================================================
+// ETUALAMASKI VALMIIKSI VAIMENNETUSTA KUVASTA (UUSI, EI Python-
+// porttaus - kayttajan pyynnosta, katso keskusteluhistoria):
+// suppressStaticBackground (ja Pythonin ENABLE_SHADOW_TOLERANT_
+// STABILIZATION-polun oma, varjonsietoisempi vastine main.py:ssa,
+// jonka tulos ANNETAAN TASSA jo valmiiksi crop_filtered:ina) VALKAISEE
+// (asettaa TASMALLEEN (255,255,255):ksi) kaikki taustaa vastaavat
+// pikselit - siis "ei-valkoinen" crop_filtered:issa ON JO taman
+// olemassaolevan, jo validoidun vaimennuslogiikan oma etuala-paatos,
+// riippumatta kumpi (Python-taso vai tama C++-taso, tai molemmat)
+// sen teki. Kaytetaan SEURANNASSA (trackStoneUpdateOne) YHDISTETTYNA
+// (OR) rakeisuusmaskiin (createGraniteMask) - juurisyyanalyysi (katso
+// keskusteluhistoria) osoitti etta pelkka rakeisuusmaski voi olla
+// HYVIN HARVA pitkalla etaisyydella (esim. ohuen sivultapain
+// nakyvan kiven reunalla, jossa paikallinen tummuuskontrasti
+// darkness-testille on heikko) - talloin refinePositionJoint:in
+// runkopisteiden (n_body) maara putoaa niin alas etta sen oma
+// MAD-pohjainen poikkeavien hylkays (katso taman tiedoston alun
+// kommentti - se ITSESSAAN on epajatkuva funktio pienella
+// pistemaaralla) alkaa hypahdella framesta toiseen VAIKKA kivi
+// liikkuisi tasaisesti - mitattu oikealla datalla: X-suunnan
+// sijainti hyppii jopa n. 5-6cm yhden framen valilla kiven kulkiessa
+// yksin, ilman mitaan naapurikohdetta lahella (varmistettu
+// vertaamalla molempia maskeja silmamaarin taman jakson framista).
+// Taustanvaimennus loytaa saman kiven riippumatta paikallisesta
+// varikontrastista, joten yhdistetty (rakeisuus OR etuala) maski
+// antaa TIHEAMMAN, siten VAKAAMMAN pistejoukon findContourNear:lle -
+// juurisyy (harva pistejoukko + jyrkka MAD-kynnys) korjataan siis
+// TIHENTAMALLA syotemaski, ei muuttamalla itse MAD-logiikkaa.
+//
+// HUOM (tarkeaa): TATA EI SAA laskea suoraan absdiff(crop, ref):sta
+// omalla erillisella kynnyksellaan, koska kutsuja saattaa antaa
+// diff_threshold=0.0 (main.py:n haku_seuranta_diff_threshold, kun
+// ENABLE_SHADOW_TOLERANT_STABILIZATION=True - katso trackStoneUpdate-
+// One:n omaa kutsua alla) TARKOITUKSELLA ohittaakseen taman C++:n
+// SISAISEN, YKSINKERTAISEMMAN vaimennuksen (koska Python on jo tehnyt
+// paremman, varjonsietoisen vaimennuksen FRAME:LLE ITSELLEEN ennen
+// kutsua) - jos tama funktio laskisi oman diff-testinsa uudelleen
+// diff_threshold:lla, 0.0 tekisi JOKAISESTA pikselista "etualaa"
+// (koska absdiff >= 0.0 patee aina), mika hajottaisi koko haun
+// (havaittu talla TASMALLEEN talla tavalla ensimmaisessa
+// A/B-testauksessa - katso keskusteluhistoria). Lukemalla etuala
+// SUORAAN jo-vaimennetun crop_filtered:in valkoisuudesta valtetaan
+// tama kokonaan, koska crop_filtered ITSE on jo oikein laskettu
+// (kummalla tahansa vaimennuspolulla) ENNEN taman funktion kutsua.
+// ============================================================
+
+static cv::Mat createForegroundFromWhitened(const cv::Mat& crop_filtered_bgr)
+{
+    cv::Mat mask(crop_filtered_bgr.size(), CV_8UC1);
+    for (int r = 0; r < mask.rows; ++r) {
+        const cv::Vec3b* pptr = crop_filtered_bgr.ptr<cv::Vec3b>(r);
+        uchar* mp = mask.ptr<uchar>(r);
+        for (int c = 0; c < mask.cols; ++c) {
+            const cv::Vec3b& px = pptr[c];
+            bool is_whitened = (px[0] == 255 && px[1] == 255 && px[2] == 255);
+            mp[c] = is_whitened ? 0 : 255;
+        }
+    }
+    return mask;
 }
 
 
@@ -1075,6 +1299,69 @@ static std::vector<cv::Point2d> filterIceBoundaryPoints(
 // kamera9_03.py:n _ring_point_residuals)
 // ============================================================
 
+// Kahvan aiheuttaman kolon sade suhteessa R_max:iin - kolon SIJAINTI on
+// MAARITELTY (keskitetty kiven pystyakselille (X0,Y0) korkeudella
+// z=H_total), mutta SADE (handle_r_frac) on kayttajan pyynnosta
+// AJONAIKAINEN PARAMETRI, sovitettu Pythonin fit_stone_profile:ssa
+// (kamera9_01.py:n HANDLE_NOTCH_R_FRAC-kommentti) ja annettu tanne
+// jokaisen kutsun mukana (R_max_cm/H_total_cm:n tapaan) - EI enaa
+// kiintea C++-vakio.
+static std::vector<cv::Point2f> predictedNotchHull(
+    double X0, double Y0, double R_max_cm, double H_total_cm, double handle_r_frac,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    int n_theta = 28)
+{
+    double r_cm = handle_r_frac * R_max_cm;
+    std::vector<cv::Point2f> proj_f((size_t)n_theta);
+    bool all_finite = true;
+
+    for (int i = 0; i < n_theta; ++i) {
+        double theta = 2.0 * M_PI * (double)i / (double)n_theta;
+        cv::Vec3d p(X0 + r_cm * std::cos(theta), Y0 + r_cm * std::sin(theta), H_total_cm);
+        cv::Vec3d pc = R * p + t;
+        cv::Vec3d pi = K * pc;
+        double px = pi[0] / pi[2], py = pi[1] / pi[2];
+
+        if (!std::isfinite(px) || !std::isfinite(py))
+            all_finite = false;
+        proj_f[(size_t)i] = cv::Point2f((float)px, (float)py);
+    }
+
+    if (!all_finite)
+        return {};
+
+    std::vector<cv::Point2f> hull;
+    cv::convexHull(proj_f, hull);
+
+    if (hull.size() < 3)
+        return {};
+
+    return hull;
+}
+
+// kamera9_01.py:n _signed_dist_with_notch:in porttaus - etumerkillinen
+// etaisyys graniittirungon (hull) MIINUS kahvan kolon (notch_hull)
+// reunaan. Positiivinen SISALLA todellisessa (kolollisessa) muodossa,
+// negatiivinen ULKOPUOLELLA (joko kokonaan hullin ulkopuolella TAI
+// kolon SISALLA, koska kolo on POIS LEIKATTU alue).
+static double signedDistWithNotch(
+    const std::vector<cv::Point2f>& hull,
+    const std::vector<cv::Point2f>& notch_hull,
+    const cv::Point2f& pt)
+{
+    double d_outer = cv::pointPolygonTest(hull, pt, true);
+
+    if (notch_hull.empty() || d_outer <= 0.0)
+        return d_outer;
+
+    double d_notch = cv::pointPolygonTest(notch_hull, pt, true);
+
+    if (d_notch > 0.0)
+        return -d_notch;
+
+    return std::min(d_outer, -d_notch);
+}
+
 // OPTIMOINTI (EI numeerista eroa): pts otetaan nyt VALMIIKSI Point2f:
 // ksi kasteltuna (katso toPoint2fVec) - profileResiduals on jointResi
 // duals:in kautta LM:n Jacobian/damping-silmukan sisalla, kutsuttuna
@@ -1087,8 +1374,22 @@ static std::vector<cv::Point2d> filterIceBoundaryPoints(
 // on deterministinen - sama kutsu tuottaa AINA saman bittitarkan
 // tuloksen laskettiinpa se kerran tai monta kertaa, joten tama EI
 // muuta yhtaan lukua.
+//
+// HUOM (kayttajan pyynnosta lisatty kahvan kolo): TAMA on TARKKA
+// residuaalifunktio, ja on NYT kolotietoinen (predictedNotchHull +
+// signedDistWithNotch). levenbergMarquardt3Linearized:in OMA,
+// linearisoitu nopea polku (buildLinearizedHull/evalLinearizedHull)
+// EI ole paivitetty kolotietoiseksi - se mallintaa vain konveksin
+// ulkorungon, ei koloa. Tama on TIETOINEN rajaus: levenbergMarquardt3
+// LinearizedVerified vertaa linearisoidun tuloksen TARKKAA (tata
+// funktiota kayttavaa) kustannusta lahtopisteen tarkkaan kustannukseen
+// ja hylkaa linearisoidun tuloksen taydeksi tarkaksi LM:ksi jos se ei
+// ole vahintaan yhta hyva - kolon aiheuttama poikkeama nakyy siis AINA
+// oikein lopullisessa hyvaksytyssa tuloksessa, vaikka linearisoitu
+// nopea polku itse ei sita "nae" hakiessaan askeltaan.
 static std::vector<double> profileResiduals(
     const std::vector<cv::Point3d>& local_pts_body, double X0, double Y0,
+    double R_max_cm, double H_total_cm, double handle_r_frac,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     const std::vector<cv::Point2f>& pts_f)
 {
@@ -1101,8 +1402,10 @@ static std::vector<double> profileResiduals(
         return out;
     }
 
+    auto notch_hull = predictedNotchHull(X0, Y0, R_max_cm, H_total_cm, handle_r_frac, K, R, t);
+
     for (size_t i = 0; i < pts_f.size(); ++i)
-        out[i] = cv::pointPolygonTest(hull, pts_f[i], true);
+        out[i] = signedDistWithNotch(hull, notch_hull, pts_f[i]);
 
     return out;
 }
@@ -1192,6 +1495,8 @@ struct ResidualContext {
     const std::vector<cv::Point2f>* body_pts_f;
     const std::vector<cv::Point2f>* ring_pts_f;
     double ring_height_cm;
+    double R_max_cm;
+    double handle_r_frac;
     const cv::Matx33d* K;
     const cv::Matx33d* R;
     const cv::Vec3d* t;
@@ -1204,7 +1509,11 @@ static std::vector<double> jointResiduals(const ResidualContext& ctx, const cv::
     std::vector<double> out;
 
     if (!ctx.body_pts_f->empty()) {
-        auto r = profileResiduals(*ctx.local_pts_body, X, Y, *ctx.K, *ctx.R, *ctx.t, *ctx.body_pts_f);
+        // ring_height_cm == H_total_cm (katso refinePositionJoint:in
+        // "double ring_height_cm = H_total_cm;") - uudelleenkaytetty
+        // tassa H_total_cm:na, ei oma erillinen kenttansa.
+        auto r = profileResiduals(*ctx.local_pts_body, X, Y, ctx.R_max_cm, ctx.ring_height_cm,
+                                   ctx.handle_r_frac, *ctx.K, *ctx.R, *ctx.t, *ctx.body_pts_f);
         out.insert(out.end(), r.begin(), r.end());
     }
 
@@ -1297,6 +1606,10 @@ static bool solve3x3(double A[3][3], const double b[3], double x[3])
 // videoframelle) yhta valideiksi naissa tapauksissa.
 // ============================================================
 
+static const bool g_lm_notch = getenv("LM_NOTCH") ? atoi(getenv("LM_NOTCH")) != 0 : true;
+static const int g_body_stride = getenv("LM_BODY_STRIDE") ? atoi(getenv("LM_BODY_STRIDE")) : 2;
+static const double g_hull_eps = getenv("LM_HULL_EPS") ? atof(getenv("LM_HULL_EPS")) : 0.0;
+
 struct LinearizedHull {
     bool valid = false;
     std::vector<cv::Point2f> ref_pts;
@@ -1336,6 +1649,27 @@ static LinearizedHull buildLinearizedHull(
 
     cv::Vec3d kx = K * cv::Vec3d(R(0, 0), R(1, 0), R(2, 0));
     cv::Vec3d ky = K * cv::Vec3d(R(0, 1), R(1, 1), R(2, 1));
+
+    if (g_hull_eps > 0.0) {
+        // Poistetaan karjet joiden etaisyys naapurien valiseen janaan < eps px (kupera kayra
+        // ylitarkasti diskretoitu) - LM:n reunatestin hinta on suoraan verrannollinen karkien maaraan.
+        std::vector<int> idx(hull_idx.begin(), hull_idx.end());
+        bool removed = true;
+        while (removed && idx.size() > 12) {
+            removed = false;
+            for (size_t k = 0; k < idx.size() && idx.size() > 12; ) {
+                const cv::Point2f& a = proj_f[(size_t)idx[(k + idx.size() - 1) % idx.size()]];
+                const cv::Point2f& b = proj_f[(size_t)idx[k]];
+                const cv::Point2f& c = proj_f[(size_t)idx[(k + 1) % idx.size()]];
+                double abx = c.x - a.x, aby = c.y - a.y;
+                double L = std::sqrt(abx * abx + aby * aby);
+                double dist = L < 1e-9 ? 0.0 : std::abs((b.x - a.x) * aby - (b.y - a.y) * abx) / L;
+                if (dist < g_hull_eps) { idx.erase(idx.begin() + (long)k); removed = true; k += 1; }
+                else ++k;
+            }
+        }
+        hull_idx.assign(idx.begin(), idx.end());
+    }
 
     size_t n = hull_idx.size();
     result.ref_pts.resize(n);
@@ -1435,6 +1769,7 @@ struct LinearizedResidualContext {
     const std::vector<cv::Point2f>* body_pts_f;
     const std::vector<cv::Point2f>* ring_pts_f;
     double X0_ref, Y0_ref, R0_ref;
+    const LinearizedRing* notch_lin = nullptr;   // kahvan loveus (signedDistWithNotch), nullptr = ei kaytossa
 };
 
 static std::vector<double> jointResidualsLinearized(const LinearizedResidualContext& ctx, const cv::Vec3d& params)
@@ -1579,6 +1914,97 @@ static ResidualWithGrad polygonResidualWithGrad(
 }
 
 
+// ------------------------------------------------------------------
+// NOPEA polygonietaisyys (LM-optimointi, Testi_03_01): sama tulos kuin
+// polygonResidualWithGrad, mutta reunojen vakiosuureet (dx,dy,1/len2,
+// seuraavan karjen y) lasketaan KERRAN polygonia kohti (ei jokaiselle
+// pisteelle), ei modulo-operaatiota eika jakolaskua reunasilmukassa.
+// ------------------------------------------------------------------
+struct PolyEdges {
+    std::vector<double> x1, y1, dx, dy, y2, inv_len2;
+    mutable std::vector<double> d2buf, tbuf;
+    size_t n = 0;
+    void build(const std::vector<cv::Point2f>& pts) {
+        n = pts.size();
+        x1.resize(n); y1.resize(n); dx.resize(n); dy.resize(n); y2.resize(n); inv_len2.resize(n);
+        d2buf.resize(n); tbuf.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            size_t j = (i + 1 == n) ? 0 : i + 1;
+            double v1x = pts[i].x, v1y = pts[i].y, v2x = pts[j].x, v2y = pts[j].y;
+            x1[i] = v1x; y1[i] = v1y; y2[i] = v2y;
+            dx[i] = v2x - v1x; dy[i] = v2y - v1y;
+            double len2 = dx[i] * dx[i] + dy[i] * dy[i];
+            inv_len2[i] = (len2 < 1e-12) ? 0.0 : 1.0 / len2;
+        }
+    }
+};
+
+static inline ResidualWithGrad polygonResidualFast(
+    const PolyEdges& E,
+    const float* jac_ux, const float* jac_uy, const float* jac_ur,
+    const float* jac_vx, const float* jac_vy, const float* jac_vr,
+    double px, double py)
+{
+    ResidualWithGrad out;
+    const size_t n = E.n;
+    if (n < 3) { out.value = 1000.0; return out; }
+
+    const double* X1 = E.x1.data(); const double* Y1 = E.y1.data();
+    const double* DX = E.dx.data(); const double* DY = E.dy.data();
+    const double* Y2 = E.y2.data(); const double* IL = E.inv_len2.data();
+    double* D2 = E.d2buf.data(); double* TT = E.tbuf.data();
+
+    // Vaihe 1: etaisyys jokaiseen reunaan - ei haaroja, kaantajan vektoroitavissa.
+    for (size_t i = 0; i < n; ++i) {
+        const double dx = DX[i], dy = DY[i];
+        const double wx = px - X1[i], wy = py - Y1[i];
+        double t = (wx * dx + wy * dy) * IL[i];
+        t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        const double ex = wx - t * dx, ey = wy - t * dy;
+        D2[i] = ex * ex + ey * ey;
+        TT[i] = t;
+    }
+
+    // Vaihe 2: lahin reuna + sisapuolitesti (risteykset).
+    bool inside = false;
+    double best_d2 = std::numeric_limits<double>::max();
+    size_t best_i = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (D2[i] < best_d2) { best_d2 = D2[i]; best_i = i; }
+        const double v1y = Y1[i];
+        if ((v1y > py) != (Y2[i] > py)) {
+            double x_cross = X1[i] + (py - v1y) / DY[i] * DX[i];
+            if (px < x_cross) inside = !inside;
+        }
+    }
+    const double best_t = TT[best_i];
+
+    const double sign = inside ? 1.0 : -1.0;
+    const double D = std::sqrt(best_d2);
+    out.value = sign * D;
+    if (D < 1e-9) return out;
+
+    const size_t i1 = best_i, i2 = (best_i + 1 == n) ? 0 : best_i + 1;
+    const double t = best_t;
+    const double qx = X1[i1] + t * DX[i1];
+    const double qy = Y1[i1] + t * DY[i1];
+    const double ux = (qx - px) / D, uy = (qy - py) / D;
+
+    const double dQx_dX = (1.0 - t) * jac_ux[i1] + t * jac_ux[i2];
+    const double dQx_dY = (1.0 - t) * jac_uy[i1] + t * jac_uy[i2];
+    const double dQy_dX = (1.0 - t) * jac_vx[i1] + t * jac_vx[i2];
+    const double dQy_dY = (1.0 - t) * jac_vy[i1] + t * jac_vy[i2];
+    out.dX = sign * (ux * dQx_dX + uy * dQy_dX);
+    out.dY = sign * (ux * dQx_dY + uy * dQy_dY);
+    if (jac_ur != nullptr) {
+        const double dQx_dR = (1.0 - t) * jac_ur[i1] + t * jac_ur[i2];
+        const double dQy_dR = (1.0 - t) * jac_vr[i1] + t * jac_vr[i2];
+        out.dR = sign * (ux * dQx_dR + uy * dQy_dR);
+    }
+    return out;
+}
+
+
 struct ResidualsAndJacobian {
     std::vector<double> residuals;
     std::vector<std::array<double, 3>> J;
@@ -1591,14 +2017,37 @@ static ResidualsAndJacobian jointResidualsAndJacobianLinearized(
     double dX = params[0] - ctx.X0_ref;
     double dY = params[1] - ctx.Y0_ref;
     double dR = params[2] - ctx.R0_ref;
+    out.residuals.reserve(ctx.body_pts_f->size() + ctx.ring_pts_f->size());
+    out.J.reserve(ctx.body_pts_f->size() + ctx.ring_pts_f->size());
 
     if (!ctx.body_pts_f->empty()) {
         if (ctx.hull_lin->valid) {
             auto hull = evalLinearizedHull(*ctx.hull_lin, dX, dY);
+            PolyEdges E; E.build(hull);
+            PolyEdges NE; bool notch_built = false;
+            std::vector<cv::Point2f> notch_poly;
             for (auto& p : *ctx.body_pts_f) {
-                auto rg = polygonResidualWithGrad(
-                    hull, ctx.hull_lin->jac_ux.data(), ctx.hull_lin->jac_uy.data(), nullptr,
-                    ctx.hull_lin->jac_vx.data(), ctx.hull_lin->jac_vy.data(), nullptr, p);
+                auto rg = polygonResidualFast(
+                    E, ctx.hull_lin->jac_ux.data(), ctx.hull_lin->jac_uy.data(), nullptr,
+                    ctx.hull_lin->jac_vx.data(), ctx.hull_lin->jac_vy.data(), nullptr,
+                    (double)p.x, (double)p.y);
+                // signedDistWithNotch: ulkopuolella tai ilman loveusta -> d_outer sellaisenaan
+                if (ctx.notch_lin != nullptr && rg.value > 0.0) {
+                    if (!notch_built) {
+                        notch_poly = evalLinearizedRing(*ctx.notch_lin, dX, dY, 0.0);
+                        NE.build(notch_poly);
+                        notch_built = true;
+                    }
+                    auto rn = polygonResidualFast(
+                        NE, ctx.notch_lin->jac_ux.data(), ctx.notch_lin->jac_uy.data(), nullptr,
+                        ctx.notch_lin->jac_vx.data(), ctx.notch_lin->jac_vy.data(), nullptr,
+                        (double)p.x, (double)p.y);
+                    if (rn.value > 0.0) {
+                        rg.value = -rn.value; rg.dX = -rn.dX; rg.dY = -rn.dY;
+                    } else if (-rn.value < rg.value) {
+                        rg.value = -rn.value; rg.dX = -rn.dX; rg.dY = -rn.dY;
+                    }
+                }
                 out.residuals.push_back(rg.value);
                 out.J.push_back({ rg.dX, rg.dY, 0.0 });
             }
@@ -1612,10 +2061,12 @@ static ResidualsAndJacobian jointResidualsAndJacobianLinearized(
 
     if (!ctx.ring_pts_f->empty()) {
         auto ring = evalLinearizedRing(*ctx.ring_lin, dX, dY, dR);
+        PolyEdges E; E.build(ring);
         for (auto& p : *ctx.ring_pts_f) {
-            auto rg = polygonResidualWithGrad(
-                ring, ctx.ring_lin->jac_ux.data(), ctx.ring_lin->jac_uy.data(), ctx.ring_lin->jac_ur.data(),
-                ctx.ring_lin->jac_vx.data(), ctx.ring_lin->jac_vy.data(), ctx.ring_lin->jac_vr.data(), p);
+            auto rg = polygonResidualFast(
+                E, ctx.ring_lin->jac_ux.data(), ctx.ring_lin->jac_uy.data(), ctx.ring_lin->jac_ur.data(),
+                ctx.ring_lin->jac_vx.data(), ctx.ring_lin->jac_vy.data(), ctx.ring_lin->jac_vr.data(),
+                (double)p.x, (double)p.y);
             out.residuals.push_back(rg.value);
             out.J.push_back({ rg.dX, rg.dY, rg.dR });
         }
@@ -1625,16 +2076,31 @@ static ResidualsAndJacobian jointResidualsAndJacobianLinearized(
 }
 
 
+static const double g_lm_rel_tol = getenv("LM_REL_TOL") ? atof(getenv("LM_REL_TOL")) : 1e-6;
+static const double g_lm_step_tol = getenv("LM_STEP_TOL") ? atof(getenv("LM_STEP_TOL")) : 0.0;
+
 static cv::Vec3d levenbergMarquardt3Linearized(
     const ResidualContext& ctx, cv::Vec3d params0,
     int max_iterations = 30, double lambda_init = 1e-3, double rel_tol = 1e-10)
 {
+    PT bpt2;
     LinearizedHull hull_lin = buildLinearizedHull(*ctx.local_pts_body, params0[0], params0[1], *ctx.K, *ctx.R, *ctx.t);
     LinearizedRing ring_lin;
     if (!ctx.ring_pts_f->empty())
         ring_lin = buildLinearizedRing(params0[0], params0[1], params0[2], ctx.ring_height_cm, *ctx.K, *ctx.R, *ctx.t);
+    profAdd(P_LM_BUILD, bpt2.lap());
 
-    LinearizedResidualContext lctx{ &hull_lin, &ring_lin, ctx.body_pts_f, ctx.ring_pts_f, params0[0], params0[1], params0[2] };
+    LinearizedRing notch_lin;
+    if (g_lm_notch && !ctx.body_pts_f->empty() && ctx.handle_r_frac > 0.0)
+        notch_lin = buildLinearizedRing(params0[0], params0[1], ctx.handle_r_frac * ctx.R_max_cm, ctx.ring_height_cm, *ctx.K, *ctx.R, *ctx.t, 28);
+    LinearizedResidualContext lctx{ &hull_lin, &ring_lin, ctx.body_pts_f, ctx.ring_pts_f, params0[0], params0[1], params0[2],
+                                    (g_lm_notch && !ctx.body_pts_f->empty() && ctx.handle_r_frac > 0.0) ? &notch_lin : nullptr };
+    profAdd(P_C_NBODY, (long long)ctx.body_pts_f->size() * 1000000LL);
+    profAdd(P_C_NRING, (long long)ctx.ring_pts_f->size() * 1000000LL);
+    profAdd(P_C_NHULL, (long long)hull_lin.ref_pts.size() * 1000000LL);
+    long long lm_iters = 0, lm_evals = 1;
+    double last_step_max = 1e9;
+    rel_tol = std::max(rel_tol, g_lm_rel_tol);
 
     auto sumsq = [](const std::vector<double>& v) {
         double s = 0.0;
@@ -1651,6 +2117,7 @@ static cv::Vec3d levenbergMarquardt3Linearized(
     double lam = lambda_init;
 
     for (int iter = 0; iter < max_iterations; ++iter) {
+        ++lm_iters;
 
         size_t m = residuals.size();
 
@@ -1694,15 +2161,18 @@ static cv::Vec3d levenbergMarquardt3Linearized(
             // vain KERRAN hyvaksytylle askeleelle (alla) - katso
             // taman lohkon alun kommentti.
             cv::Vec3d trial = params + cv::Vec3d(delta[0], delta[1], delta[2]);
-            auto trial_res = jointResidualsLinearized(lctx, trial);
-            double trial_cost = sumsq(trial_res);
+            lm_evals += 1;
+            PT ept;
+            auto rj_new = jointResidualsAndJacobianLinearized(lctx, trial);
+            profAdd(P_LM_EVAL_ONLY, ept.lap());
+            double trial_cost = sumsq(rj_new.residuals);
 
             if (trial_cost < cost) {
                 rel_improvement = (cost - trial_cost) / std::max(cost, 1e-12);
                 params = trial;
-                auto rj_new = jointResidualsAndJacobianLinearized(lctx, params);
-                residuals = rj_new.residuals;
-                J = rj_new.J;
+                last_step_max = std::max(std::abs(delta[0]), std::max(std::abs(delta[1]), std::abs(delta[2])));
+                residuals = std::move(rj_new.residuals);
+                J = std::move(rj_new.J);
                 cost = trial_cost;
                 lam = std::max(lam / 5.0, 1e-12);
                 step_taken = true;
@@ -1712,9 +2182,11 @@ static cv::Vec3d levenbergMarquardt3Linearized(
             lam *= 5.0;
         }
 
-        if (!step_taken || rel_improvement < rel_tol)
+        if (!step_taken || rel_improvement < rel_tol || last_step_max < g_lm_step_tol)
             break;
     }
+    profAdd(P_C_LMITER, lm_iters * 1000000LL);
+    profAdd(P_C_LMEVAL, lm_evals * 1000000LL);
 
     return params;
 }
@@ -1845,7 +2317,9 @@ static cv::Vec3d levenbergMarquardt3LinearizedVerified(
     const ResidualContext& ctx, cv::Vec3d params0,
     int max_iterations = 30, double lambda_init = 1e-3, double rel_tol = 1e-10)
 {
+    PT vpt;
     cv::Vec3d params_lin = levenbergMarquardt3Linearized(ctx, params0, max_iterations, lambda_init, rel_tol);
+    profAdd(P_LM_LIN, vpt.lap());
 
     auto sumsq = [](const std::vector<double>& v) {
         double s = 0.0;
@@ -1856,10 +2330,23 @@ static cv::Vec3d levenbergMarquardt3LinearizedVerified(
     double exact_cost_start = sumsq(jointResiduals(ctx, params0));
     double exact_cost_lin = sumsq(jointResiduals(ctx, params_lin));
 
+    profAdd(P_LM_VERIFY, vpt.lap());
+    static const bool g_lm_debug = getenv("LM_DEBUG") != nullptr;
+    if (g_lm_debug) {
+        static std::atomic<int> dbg(0);
+        if (dbg++ < 60)
+            fprintf(stderr, "[LMDBG] %s start=(%.1f,%.1f,%.2f) lin=(%.1f,%.1f,%.2f) cost0=%.1f costLin=%.1f nb=%zu nr=%zu\n",
+                exact_cost_lin <= exact_cost_start * (1.0 + 1e-9) ? "OK  " : "FAIL",
+                params0[0], params0[1], params0[2], params_lin[0], params_lin[1], params_lin[2],
+                exact_cost_start, exact_cost_lin, ctx.body_pts_f->size(), ctx.ring_pts_f->size());
+    }
     if (exact_cost_lin <= exact_cost_start * (1.0 + 1e-9))
         return params_lin;
 
-    return levenbergMarquardt3(ctx, params0, max_iterations, lambda_init, rel_tol);
+    PT fpt;
+    auto res_exact = levenbergMarquardt3(ctx, params0, max_iterations, lambda_init, rel_tol);
+    profAdd(P_LM_FALLBACK, fpt.lap());
+    return res_exact;
 }
 
 
@@ -1895,7 +2382,7 @@ static RefineResult refinePositionJoint(
     int frame_w, int frame_h,
     const std::vector<cv::Point3d>& local_pts_body,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double X0_approx, double Y0_approx)
 {
     // Python: mask/sat ANNETAAN AINA koko-framen kokoisina taulukkoina
@@ -1909,6 +2396,7 @@ static RefineResult refinePositionJoint(
     // kontuuri-/rengashakua - muuten bilineaarinaytto hylkaisi Pythonissa
     // KELVOLLISIA (ROI:n reunan lahella olevia) pisteita vain koska ne
     // ovat taman PIENEN crop:in omien pikselirajojen ulkopuolella.
+    PT rpt;
     const int PAD = 200;
     int pad_left = std::max(0, std::min(PAD, off_x_roi));
     int pad_top = std::max(0, std::min(PAD, off_y_roi));
@@ -1922,6 +2410,7 @@ static RefineResult refinePositionJoint(
                         cv::BORDER_CONSTANT, cv::Scalar(0));
     int off_x = off_x_roi - pad_left;
     int off_y = off_y_roi - pad_top;
+    profAdd(P_R_PAD, rpt.lap());
 
     double ring_height_cm = H_total_cm;
 
@@ -1964,7 +2453,13 @@ static RefineResult refinePositionJoint(
         for (size_t i = 0; i < body_pts_crop.size(); ++i)
             body_pts[i] = cv::Point2d(body_pts_crop[i].x + off_x, body_pts_crop[i].y + off_y);
     }
+    if (g_body_stride > 1 && body_pts.size() > 40) {
+        std::vector<cv::Point2d> dec;
+        for (size_t i = 0; i < body_pts.size(); i += (size_t)g_body_stride) dec.push_back(body_pts[i]);
+        body_pts.swap(dec);
+    }
     int n_body = (int)body_pts.size();
+    profAdd(P_R_CONTOUR, rpt.lap());
 
     // body_pts EI MUUTU koko BOUNDARY_MAX_ITERATIONS-silmukan/LM-ajon
     // aikana (vain ring_pts vaihtuu per ulompi iteraatio) - kastetaan
@@ -2000,6 +2495,8 @@ static RefineResult refinePositionJoint(
         }
 
         int n_ring = (int)ring_pts.size();
+        profAdd(P_R_BOUNDARY, rpt.lap());
+        profAdd(P_R_OUTER_ITER, 0);
 
         // ring_pts VAIHTUU joka ulommalla iteraatiolla, joten kastetaan
         // uudelleen tassa (mutta silti vain KERRAN per ulompi iteraatio,
@@ -2015,14 +2512,15 @@ static RefineResult refinePositionJoint(
             return res;
         }
 
-        ResidualContext ctx{ &local_pts_body, &body_pts_f, &ring_pts_f, ring_height_cm, &K, &R, &t };
+        ResidualContext ctx{ &local_pts_body, &body_pts_f, &ring_pts_f, ring_height_cm, R_max_cm, handle_r_frac, &K, &R, &t };
         cv::Vec3d params_final = levenbergMarquardt3LinearizedVerified(ctx, cv::Vec3d(X_cur, Y_cur, R_cur), 30);
+        profAdd(P_R_LM1, rpt.lap());
 
         std::vector<cv::Point2d> clean_body = body_pts;
         std::vector<cv::Point2d> clean_ring = ring_pts;
 
         if (n_body > 0) {
-            auto body_resid = profileResiduals(local_pts_body, params_final[0], params_final[1], K, R, t, body_pts_f);
+            auto body_resid = profileResiduals(local_pts_body, params_final[0], params_final[1], R_max_cm, H_total_cm, handle_r_frac, K, R, t, body_pts_f);
             double med = median(body_resid);
             std::vector<double> abs_dev(body_resid.size());
             for (size_t i = 0; i < body_resid.size(); ++i) abs_dev[i] = std::abs(body_resid[i] - med);
@@ -2060,12 +2558,14 @@ static RefineResult refinePositionJoint(
         std::vector<cv::Point2f> clean_ring_f =
             (clean_ring.size() == ring_pts.size()) ? ring_pts_f : toPoint2fVec(clean_ring);
 
+        profAdd(P_R_MAD, rpt.lap());
         if (clean_body.size() != body_pts.size() || clean_ring.size() != ring_pts.size()) {
-            ResidualContext ctx2{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, &K, &R, &t };
+            ResidualContext ctx2{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, R_max_cm, handle_r_frac, &K, &R, &t };
             params_final = levenbergMarquardt3LinearizedVerified(ctx2, params_final, 30);
+            profAdd(P_R_LM2, rpt.lap());
         }
 
-        ResidualContext ctx_final{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, &K, &R, &t };
+        ResidualContext ctx_final{ &local_pts_body, &clean_body_f, &clean_ring_f, ring_height_cm, R_max_cm, handle_r_frac, &K, &R, &t };
         auto resid_final = jointResiduals(ctx_final, params_final);
 
         if (!resid_final.empty()) {
@@ -2077,6 +2577,7 @@ static RefineResult refinePositionJoint(
             has_rms = false;
         }
 
+        profAdd(P_R_FINAL, rpt.lap());
         double X_new = params_final[0], Y_new = params_final[1], R_new = std::abs(params_final[2]);
         double moved = std::hypot(X_new - X_cur, Y_new - Y_cur);
         X_cur = X_new; Y_cur = Y_new; R_cur = R_new;
@@ -2140,14 +2641,389 @@ static cv::Vec3d parseVec3(py::array_t<double, py::array::c_style | py::array::f
 }
 
 
+// ============================================================
+// MEAN-SHIFT-SEURANTA (Testi_02_03, kayttajan idea - katso
+// keskusteluhistoria): korvaa SEURANNAN ristikkohaun (locateByGrid
+// SearchTrackingFast) iteratiivisella painopistesiirrolla.
+//
+// PERIAATE: kiven ennustettu 3D-projektio (hulli) ja sen 1.1-kertainen
+// laajennus (sama HULL_MARGIN_SCALE kuin hullOverlapScore:ssa) jaetaan
+// hullin painopisteen kautta kulkevalla vaaka- ja pystyviivalla
+// neljaan osaan. Maskin pikselit lasketaan painotettuina (sisahulli
+// w_in=2, vain 1.1x-kehaan osuva 1) ja puolikkaiden erotus
+//   s_y = sum(w*[maski]*sign(y-cy)) / sum(w)      (alhaalla - ylhaalla)
+//   s_x = sum(w*[maski]*sign(x-cx)) / sum(w)      (oikealla - vasemmalla)
+// kertoo mihin suuntaan malli pitaa siirtaa. Signaali EI ole lineaarinen
+// siirtyman suhteen (kyllastyy kun malli ja maski eivat enaa peity), joten
+// "paljonko siirretaan" -painokerroin on OPTIMOITU: s muunnetaan pikseli-
+// siirtymaksi d = gain * r * f^-1(s), missa f(delta) on YKSIKKOYMPYRAN
+// (r=1) vastefunktio - lasketaan numeerisesti kerran samoilla painoilla
+// ja marginaalilla kuin itse mittaus (getResponseLUT). Ellipsille (kiven
+// perspektiiviprojektio) tama on affiini-invariantti, kun r on hullin
+// puolileveys/-korkeus kyseisessa akselissa. gain on jaljelle jaava
+// empiirinen hienosaato (mallin ja maskin kokoero, reunojen sumeus).
+// Pikselisiirtyma muunnetaan (X,Y)-senteiksi paikallisella Jakobiaanilla.
+// Toistetaan kunnes siirtyma < tol_px, jonka jalkeen normaali
+// refinePositionJoint (LM) tarkentaa sub-pikselitasolle - TASMALLEEN
+// sama kuin ristikkohaun jalkeen.
+// ============================================================
+
+struct MeanShiftParams {
+    int max_iter = 10;
+    double gain = 1.0;
+    double tol_px = 0.10;
+    double inner_weight = 2.0;
+    double ring_weight = 1.0;   // 1.1x-kehan paino (negatiivinen = ulkopuolisen maskin rangaistus)
+    double margin_scale = HULL_MARGIN_SCALE;
+    double min_mask_fraction = 0.02;
+    // Pehmea etumerkki: g(u)=clamp(u/tau,-1,1), u = (px - keskipiste)/puoliakseli.
+    // tau=0 -> kova sign() (alkuperainen). Pienilla (kaukaisilla) kivilla kova
+    // sign hyppii pikseliruudukon mukaan, pehmea on jatkuva siirtyman suhteen.
+    double tau = 0.0;
+    // Lopuksi paikallinen viimeistely hullOverlapScore-pistemaaralla (sama kuin
+    // ristikkohaussa): aloitusaskel polish_step_cm, puolitetaan kunnes < min.
+    double polish_step_cm = 0.0;
+    double polish_min_step_cm = 0.75;
+    // Fysikaalinen rajoite: kivi ei liiku taaksepain (Y kasvaa = taaksepain). Salli enintaan
+    // back_allow_cm taaksepain edellisesta paikasta (mittauskohina). Iso arvo = ei rajoitusta.
+    double back_allow_cm = 1e9;
+    double prior_bias = 0.0;
+    // Yhdistelmahaku (locate_mode 5): valinta = pistemaara - rangaistukset
+    double ens_back_tol_cm = 2.0;   // sallittu taaksepain-siirtyma ilman rangaistusta
+    double ens_back_pen = 0.15;     // rangaistus / 10 cm taaksepain (yli toleranssin)
+    double ens_pred_pen = 0.02;     // rangaistus / 10 cm poikkeamasta ennustetusta paikasta
+};
+
+struct ResponseLUT {
+    double dd = 0.01;
+    std::vector<double> f;
+    int imax = 0;
+};
+
+static std::shared_ptr<const ResponseLUT> getResponseLUT(double w_in, double margin, double tau, double w_ring = 1.0)
+{
+    static std::mutex mtx;
+    static std::map<std::pair<long long, long long>, std::shared_ptr<const ResponseLUT>> cache;
+
+    std::lock_guard<std::mutex> lock(mtx);
+    auto key = std::make_pair((long long)std::llround(w_in * 1000.0) * 100000LL + (long long)std::llround(tau * 1000.0),
+                              (long long)std::llround(margin * 1000.0) * 100000LL + (long long)std::llround((w_ring + 50.0) * 1000.0));
+    auto it = cache.find(key);
+    if (it != cache.end())
+        return it->second;
+
+    auto lut = std::make_shared<ResponseLUT>();
+    const int G = 241;
+    const double ext = margin + 0.05;
+    const double cell = 2.0 * ext / (double)(G - 1);
+
+    std::vector<cv::Point3d> pts;   // (x, y, w)
+    double wtot = 0.0;
+    for (int i = 0; i < G; ++i) {
+        double x = -ext + cell * i;
+        for (int j = 0; j < G; ++j) {
+            double y = -ext + cell * j;
+            double r2 = x * x + y * y;
+            double w = r2 <= 1.0 ? w_in : (r2 <= margin * margin ? w_ring : 0.0);
+            if (w == 0.0)
+                continue;
+            pts.emplace_back(x, y, w);
+            wtot += std::fabs(w);
+        }
+    }
+
+    const int N = 221;
+    lut->f.assign((size_t)N, 0.0);
+    for (int k = 0; k < N; ++k) {
+        double delta = lut->dd * k;
+        double sum = 0.0;
+        for (auto& p : pts) {
+            double dy = p.y - delta;
+            if (p.x * p.x + dy * dy <= 1.0) {
+                double g = tau > 0.0 ? std::max(-1.0, std::min(1.0, p.y / tau))
+                                     : (p.y > 0.0 ? 1.0 : (p.y < 0.0 ? -1.0 : 0.0));
+                sum += p.z * g;
+            }
+        }
+        lut->f[(size_t)k] = sum / wtot;
+    }
+
+    lut->imax = 0;
+    for (int k = 1; k < N; ++k) {
+        if (lut->f[(size_t)k] > lut->f[(size_t)lut->imax])
+            lut->imax = k;
+    }
+
+    cache[key] = lut;
+    return lut;
+}
+
+// f^-1: signaali -> normalisoitu siirtyma (r:n monikertoina), vain nousevalla haaralla.
+static double responseInverse(const ResponseLUT& lut, double s)
+{
+    double a = std::fabs(s);
+    double sign = s < 0.0 ? -1.0 : 1.0;
+    double fmax = lut.f[(size_t)lut.imax];
+    if (a >= fmax)
+        return sign * lut.dd * lut.imax;
+
+    int lo = 0, hi = lut.imax;
+    while (hi - lo > 1) {
+        int mid = (lo + hi) / 2;
+        if (lut.f[(size_t)mid] <= a)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    double f0 = lut.f[(size_t)lo], f1 = lut.f[(size_t)hi];
+    double u = (f1 - f0) > 1e-12 ? (a - f0) / (f1 - f0) : 0.0;
+    return sign * lut.dd * ((double)lo + u);
+}
+
+struct MsSignals {
+    bool valid = false;
+    double sx = 0.0, sy = 0.0;       // painotetut summat sign(x-cx)*w, sign(y-cy)*w (maski)
+    double wtot = 0.0, wmask = 0.0;  // koko alueen paino / maskin peittama paino
+    double rx = 0.0, ry = 0.0;       // hullin puolileveys / -korkeus (px)
+    double cx = 0.0, cy = 0.0;       // hullin painopiste (crop-koordinaatit)
+};
+
+static MsSignals computeMsSignals(
+    const cv::Mat& mask_crop, int off_x, int off_y,
+    const std::vector<cv::Point2f>& hull, const MeanShiftParams& P)
+{
+    MsSignals out;
+
+    std::vector<cv::Point2f> h(hull.size());
+    for (size_t i = 0; i < hull.size(); ++i)
+        h[i] = cv::Point2f(hull[i].x - (float)off_x, hull[i].y - (float)off_y);
+
+    cv::Moments m = cv::moments(h);
+    if (std::fabs(m.m00) < 4.0)
+        return out;
+    double cx = m.m10 / m.m00, cy = m.m01 / m.m00;
+
+    auto extents = [](const std::vector<cv::Point2f>& poly) {
+        float mnx = poly[0].x, mxx = poly[0].x, mny = poly[0].y, mxy = poly[0].y;
+        for (auto& q : poly) {
+            mnx = std::min(mnx, q.x); mxx = std::max(mxx, q.x);
+            mny = std::min(mny, q.y); mxy = std::max(mxy, q.y);
+        }
+        return cv::Rect2f(mnx, mny, mxx - mnx, mxy - mny);
+    };
+    cv::Rect2f hb = extents(h);
+    double rx = hb.width / 2.0, ry = hb.height / 2.0;
+    if (rx < 2.0 || ry < 2.0)
+        return out;
+
+    std::vector<cv::Point2f> h2(h.size());
+    for (size_t i = 0; i < h.size(); ++i)
+        h2[i] = cv::Point2f((float)(cx + (h[i].x - cx) * P.margin_scale),
+                            (float)(cy + (h[i].y - cy) * P.margin_scale));
+    cv::Rect2f hb2 = extents(h2);
+
+    int x0 = std::max(0, (int)std::floor(hb2.x) - 1);
+    int y0 = std::max(0, (int)std::floor(hb2.y) - 1);
+    int x1 = std::min(mask_crop.cols, (int)std::ceil(hb2.x + hb2.width) + 2);
+    int y1 = std::min(mask_crop.rows, (int)std::ceil(hb2.y + hb2.height) + 2);
+    if (x1 <= x0 || y1 <= y0)
+        return out;
+
+    // fillPoly sub-pikselitarkkuudella (shift=3 -> 1/8 px): tekee vasteesta
+    // tasaisen siirtyman suhteen (ei kokonaislukupikselin porrastusta).
+    const int SH = 3;
+    const double SC = (double)(1 << SH);
+    auto toFixed = [&](const std::vector<cv::Point2f>& poly) {
+        std::vector<cv::Point> o(poly.size());
+        for (size_t i = 0; i < poly.size(); ++i)
+            o[i] = cv::Point((int)std::lround((poly[i].x - x0) * SC),
+                             (int)std::lround((poly[i].y - y0) * SC));
+        return o;
+    };
+
+    cv::Mat c1 = cv::Mat::zeros(y1 - y0, x1 - x0, CV_8UC1);
+    cv::Mat c2 = cv::Mat::zeros(y1 - y0, x1 - x0, CV_8UC1);
+    {
+        std::vector<std::vector<cv::Point>> p1{toFixed(h)}, p2{toFixed(h2)};
+        cv::fillPoly(c1, p1, cv::Scalar(1), cv::LINE_8, SH);
+        cv::fillPoly(c2, p2, cv::Scalar(1), cv::LINE_8, SH);
+    }
+
+    double lcx = cx - x0, lcy = cy - y0;
+    double wtot = 0.0, wmask = 0.0, sx = 0.0, sy = 0.0;
+    const double tau = P.tau;
+    auto gfun = [tau](double u) {
+        if (tau > 0.0)
+            return std::max(-1.0, std::min(1.0, u / tau));
+        return u > 0.0 ? 1.0 : (u < 0.0 ? -1.0 : 0.0);
+    };
+    const double inv_rx = 1.0 / rx, inv_ry = 1.0 / ry;
+
+    for (int r = 0; r < c1.rows; ++r) {
+        const uchar* p1 = c1.ptr<uchar>(r);
+        const uchar* p2 = c2.ptr<uchar>(r);
+        const uchar* mp = mask_crop.ptr<uchar>(r + y0) + x0;
+        double gy = gfun(((double)r - lcy) * inv_ry);
+        for (int c = 0; c < c1.cols; ++c) {
+            double w = p1[c] ? P.inner_weight : (p2[c] ? P.ring_weight : 0.0);
+            if (w == 0.0)
+                continue;
+            wtot += std::fabs(w);
+            if (mp[c] > 0) {
+                wmask += w;
+                sx += w * gfun(((double)c - lcx) * inv_rx);
+                sy += w * gy;
+            }
+        }
+    }
+
+    out.valid = wtot > 0.0;
+    out.sx = sx; out.sy = sy; out.wtot = wtot; out.wmask = wmask;
+    out.rx = rx; out.ry = ry; out.cx = cx; out.cy = cy;
+    return out;
+}
+
+struct MeanShiftResult {
+    cv::Point2d xy;
+    double score = -1.0;
+    int iters = 0;
+    bool converged = false;
+};
+
+static MeanShiftResult meanShiftLocate(
+    const std::vector<cv::Point3d>& local_pts_search,
+    const cv::Mat& mask_crop, int off_x, int off_y,
+    double X0, double Y0, double x_half_range, double y_half_range,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    const MeanShiftParams& P, double start_X = std::numeric_limits<double>::quiet_NaN(),
+    double start_Y = std::numeric_limits<double>::quiet_NaN())
+{
+    auto lut_ptr = getResponseLUT(P.inner_weight, P.margin_scale, P.tau, P.ring_weight);
+    const ResponseLUT& lut = *lut_ptr;
+
+    double zc = 0.0;
+    for (auto& p : local_pts_search)
+        zc += p.z;
+    zc /= std::max<size_t>(1, local_pts_search.size());
+
+    MeanShiftResult res;
+    res.xy = cv::Point2d(X0, Y0);
+
+    // Hakulaatikko on aina (X0,Y0) keskella; aloituspiste voi olla ennustettu paikka.
+    double X = std::isnan(start_X) ? X0 : std::max(X0 - x_half_range, std::min(X0 + x_half_range, start_X));
+    double Y = std::isnan(start_Y) ? Y0 : std::max(Y0 - y_half_range, std::min(std::min(Y0 + y_half_range, Y0 + P.back_allow_cm), start_Y));
+    double gain = P.gain;
+    double prev_mag = 1e30;
+
+    for (int it = 0; it < P.max_iter; ++it) {
+
+        auto hull = predictedHull(local_pts_search, X, Y, K, R, t);
+        if (hull.size() < 3)
+            break;
+
+        MsSignals sg = computeMsSignals(mask_crop, off_x, off_y, hull, P);
+        if (!sg.valid)
+            break;
+        double rx = sg.rx, ry = sg.ry, wtot = sg.wtot, wmask = sg.wmask, sx = sg.sx, sy = sg.sy;
+
+        if (wtot <= 0.0 || wmask < P.min_mask_fraction * wtot)
+            break;
+
+        double dpx = gain * rx * responseInverse(lut, sx / wtot);
+        double dpy = gain * ry * responseInverse(lut, sy / wtot);
+
+        // Paikallinen Jakobiaani (px per cm) kiven runkokorkeudella.
+        std::vector<cv::Point3d> jp{
+            cv::Point3d(X, Y, zc), cv::Point3d(X + 1.0, Y, zc), cv::Point3d(X, Y + 1.0, zc)
+        };
+        auto jq = project3d(K, R, t, jp);
+        cv::Matx22d J(jq[1].x - jq[0].x, jq[2].x - jq[0].x,
+                      jq[1].y - jq[0].y, jq[2].y - jq[0].y);
+        double det = J(0, 0) * J(1, 1) - J(0, 1) * J(1, 0);
+        if (std::fabs(det) < 1e-9)
+            break;
+        double dX = ( J(1, 1) * dpx - J(0, 1) * dpy) / det;
+        double dY = (-J(1, 0) * dpx + J(0, 0) * dpy) / det;
+
+        double newX = std::max(X0 - x_half_range, std::min(X0 + x_half_range, X + dX));
+        double newY = std::max(Y0 - y_half_range, std::min(std::min(Y0 + y_half_range, Y0 + P.back_allow_cm), Y + dY));
+
+        double mag = std::hypot(dpx, dpy);
+        if (it >= 2 && mag > 0.9 * prev_mag)
+            gain = std::max(0.2, gain * 0.5);
+        prev_mag = mag;
+
+        X = newX;
+        Y = newY;
+        res.iters = it + 1;
+
+        if (mag < P.tol_px) {
+            res.converged = true;
+            break;
+        }
+    }
+
+    res.xy = cv::Point2d(X, Y);
+    auto hull = predictedHull(local_pts_search, X, Y, K, R, t);
+    res.score = hullOverlapScore(mask_crop, hull, off_x, off_y);
+
+    // Paikallinen viimeistely: 8-naapurusto-kukkulankiipeily hullOverlapScore:lla,
+    // askel puolittuu kunnes polish_min_step_cm. Kasittelee mask-epasymmetrian
+    // aiheuttaman tasapainopisteen vinouman (katso offline-mittaukset).
+    if (P.polish_step_cm > 0.0 && res.score > -0.5) {
+        double step = P.polish_step_cm;
+        double bx = X, by = Y, bs = res.score;
+        while (step >= P.polish_min_step_cm) {
+            bool improved = true;
+            int guard = 0;
+            while (improved && guard++ < 6) {
+                improved = false;
+                double nx = bx, ny = by, ns = bs;
+                for (int di = -1; di <= 1; ++di) {
+                    for (int dj = -1; dj <= 1; ++dj) {
+                        if (di == 0 && dj == 0)
+                            continue;
+                        double cxp = std::max(X0 - x_half_range, std::min(X0 + x_half_range, bx + di * step));
+                        double cyp = std::max(Y0 - y_half_range, std::min(std::min(Y0 + y_half_range, Y0 + P.back_allow_cm), by + dj * step));
+                        auto hh = predictedHull(local_pts_search, cxp, cyp, K, R, t);
+                        double sc = hullOverlapScore(mask_crop, hh, off_x, off_y);
+                        if (sc > ns + 1e-9) {
+                            ns = sc; nx = cxp; ny = cyp;
+                        }
+                    }
+                }
+                if (ns > bs + 1e-9) {
+                    bs = ns; bx = nx; by = ny;
+                    improved = true;
+                }
+            }
+            step *= 0.5;
+        }
+        res.xy = cv::Point2d(bx, by);
+        res.score = bs;
+    }
+    return res;
+}
+
+
 struct StoneUpdateResult {
     double score = 0.0;
     bool has_position = false;
     RefineResult refined;
+    // Diagnostiikka (Testi_02_03): vaiheiden ajat ja hakuvaiheen tulos.
+    double prep_ms = 0.0, locate_ms = 0.0, refine_ms = 0.0;
+    int iters = 0;
+    bool converged = false;
+    bool used_fallback = false;
+    double loc_X = 0.0, loc_Y = 0.0;
 };
 
 
-static StoneUpdateResult trackStoneUpdateOne(
+// locate_mode: 0 = alkuperainen laajeneva ristikkohaku (ei muutoksia),
+// 1 = mean-shift + ristikkohaku varana jos pistemaara < score_threshold,
+// 2 = pelkka mean-shift, 3 = TYHJENTAVA ristikkohaku ilman early-stopia
+// (vertailun "kulta-standardi": paras mahdollinen hullOverlapScore-optimi).
+static StoneUpdateResult trackStoneUpdateOneEx(
     const cv::Mat& frame_mat, const cv::Mat& background_reference, double diff_threshold,
     const std::vector<cv::Point3d>& local_pts_body,
     const std::vector<cv::Point3d>& local_pts_search,
@@ -2156,9 +3032,18 @@ static StoneUpdateResult trackStoneUpdateOne(
     double track_half_range_x_cm, double track_half_range_y_cm,
     double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
-    double max_backward_cm)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
+    double max_backward_cm,
+    int locate_mode, const MeanShiftParams& ms_params,
+    double pred_dX = 0.0, double pred_dY = 0.0, bool edge_fallback = false)
 {
+    auto tp0 = std::chrono::steady_clock::now();
+    auto msSince = [](std::chrono::steady_clock::time_point a) {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
+    };
+    PT pt_call;   // koko kutsun kello
+    PT pt;
+
     int frame_w = frame_mat.cols, frame_h = frame_mat.rows;
 
     // ROI-rajaus kayttaa YHTA (konservatiivista, isompaa) half_rangea -
@@ -2172,13 +3057,16 @@ static StoneUpdateResult trackStoneUpdateOne(
 
     StoneUpdateResult out;
 
-    if (roi.width <= 0 || roi.height <= 0)
+    if (roi.width <= 0 || roi.height <= 0) {
+        profAdd(P_CALL_TOTAL, pt_call.lap());
         return out;
+    }
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts0 = std::chrono::steady_clock::now();
 #endif
     cv::Mat crop = frame_mat(roi);
+    pt.lap();
 
     // Kayttajan pyynnosta (katso git-historia): taustanvaimennus (sama
     // suppressStaticBackground jo HAKU:ssa/searchNewStoneOne:ssa) nyt
@@ -2194,14 +3082,40 @@ static StoneUpdateResult trackStoneUpdateOne(
     // pikselit, mika loisi keinotekoisen terävän saturaatiorajan
     // kiven reunalle jos sita kaytettaisiin reunanhakuun).
     cv::Mat crop_filtered = crop;
+    bool have_bg_reference = false;
     if (!background_reference.empty() && background_reference.size() == frame_mat.size()
         && background_reference.type() == frame_mat.type()) {
         cv::Mat ref_crop = background_reference(roi);
         crop_filtered = suppressStaticBackground(crop, ref_crop, diff_threshold);
+        have_bg_reference = true;
     }
 
+    profAdd(P_PREP_CROP_SUPPRESS, pt.lap());
     cv::Mat sat_crop = computeSat(crop);
+    profAdd(P_PREP_SAT, pt.lap());
     cv::Mat mask_crop = createGraniteMask(crop_filtered);
+    profAdd(P_PREP_GRANITE, pt.lap());
+
+    // Kayttajan ehdottama korjaus (katso keskusteluhistoria ja
+    // createForegroundFromWhitened:in oma kommentti ylla): yhdistetaan
+    // rakeisuusmaski suoraan (jo laskettuun) taustanvaimennuksen
+    // etualamaskiin (OR) ENNEN ristikkohakua ja runkokontuurin
+    // (findContourNear) hakua - tama on SEURANNAN ainoa kaytto
+    // (HAKU/searchNewStoneOne EI koske tata, pysyy muuttumattomana).
+    // mask_crop (pelkka rakeisuus) sailyy omana muuttujanaan, koska
+    // sita EI muuteta - vain se MITA alempana valitetaan grid-haulle/
+    // refinePositionJoint:lle vaihtuu. have_bg_reference-tarkistus
+    // (sama ehto kuin crop_filtered:in laskennassa ylla) estaa taman
+    // tapahtumasta jos taustareferenssia ei ole lainkaan kaytettavissa
+    // - silloin crop_filtered==crop (ei valkaisua ollenkaan), jolloin
+    // "ei-valkoinen" kattaisi lahes koko kuvan eika olisi mielekas
+    // etuala-signaali.
+    cv::Mat mask_for_track = mask_crop;
+    if (have_bg_reference) {
+        cv::Mat fg_mask = createForegroundFromWhitened(crop_filtered);
+        mask_for_track = mask_crop | fg_mask;
+    }
+    profAdd(P_PREP_FOREGROUND, pt.lap());
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts1 = std::chrono::steady_clock::now();
 #endif
@@ -2213,11 +3127,146 @@ static StoneUpdateResult trackStoneUpdateOne(
     // (huomioiden mahdolliset peräkkäiset missit) jokaiselle kivelle
     // erikseen JOKA framella, eika tassa kaytita enaa kiinteaa
     // kamera9_02.py:n TRACK_HALF_RANGE_CM:ia.
-    auto best = locateByGridSearchTrackingFast(
-        local_pts_search, mask_crop, roi.x, roi.y,
-        X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
-        coarse_step_cm, fine_step_cm, K, R, t
-    );
+    out.prep_ms = msSince(tp0);
+    auto tl0 = std::chrono::steady_clock::now();
+    pt.lap();
+
+    std::pair<cv::Point2d, double> best;
+    bool ms_needed = (locate_mode == 1 || locate_mode == 2);
+
+    if (locate_mode == 0) {
+        best = locateByGridSearchTrackingFast(
+            local_pts_search, mask_for_track, roi.x, roi.y,
+            X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
+            coarse_step_cm, fine_step_cm, K, R, t
+        );
+        profAdd(P_LOC_GRID, pt.lap());
+    } else if (locate_mode == 4) {
+        // Ristikkohaku ENSIN (ennustetusta keskipisteesta jos liike-ennuste annettu);
+        // mean-shift vain jos ristikkohaku ei loyda riittavan hyvaa pistemaaraa.
+        best = locateByGridSearchTrackingFast(
+            local_pts_search, mask_for_track, roi.x, roi.y,
+            X0 + pred_dX, track_half_range_x_cm, Y0 + pred_dY, track_half_range_y_cm,
+            coarse_step_cm, fine_step_cm, K, R, t
+        );
+        ms_needed = best.second < score_threshold;
+        out.used_fallback = ms_needed;   // tassa moodissa: MS-varahaku kaytossa
+    } else if (locate_mode == 5) {
+        // YHDISTELMAHAKU: ristikkohaku (ennustetusta keskipisteesta) + mean-shift (viimeisesta ja
+        // ennustetusta paikasta). Kummallakin on oma virhetapansa (viereinen pelaaja vetaa MS:aa tai
+        // ristikkohakua), joten valinta tehdaan pistemaarasta MINUS rangaistus fysikaalisesti
+        // mahdottomasta liikkeesta (taaksepain = Y kasvaa) ja ennusteesta poikkeamisesta.
+        struct Cand { cv::Point2d xy; double score; double adj; int src; };
+        std::vector<Cand> cands;
+        const bool have_pred = std::hypot(pred_dX, pred_dY) > 0.5;
+        auto adjust = [&](const std::pair<cv::Point2d, double>& c, int src) {
+            double back = std::max(0.0, (c.first.y - Y0) - ms_params.ens_back_tol_cm);
+            double pdev = have_pred ? std::hypot(c.first.x - (X0 + pred_dX), c.first.y - (Y0 + pred_dY)) : 0.0;
+            double adj = c.second - ms_params.ens_back_pen * back / 10.0 - ms_params.ens_pred_pen * pdev / 10.0;
+            cands.push_back({ c.first, c.second, adj, src });
+        };
+        auto g = locateByGridSearchTrackingFast(
+            local_pts_search, mask_for_track, roi.x, roi.y,
+            X0 + pred_dX, track_half_range_x_cm, Y0 + pred_dY, track_half_range_y_cm,
+            coarse_step_cm, fine_step_cm, K, R, t
+        );
+        profAdd(P_LOC_ENS_GRID, pt.lap());
+        adjust(g, 0);
+        auto m1 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+            X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params);
+        profAdd(P_LOC_MS1, pt.lap());
+        adjust({ m1.xy, m1.score }, 1);
+        out.iters = m1.iters; out.converged = m1.converged;
+        if (have_pred) {
+            auto m2 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+                X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params,
+                X0 + pred_dX, Y0 + pred_dY);
+            profAdd(P_LOC_MS2, pt.lap());
+            adjust({ m2.xy, m2.score }, 2);
+            out.iters += m2.iters;
+        }
+        // hyvaksyttavat: pistemaara >= kynnys; jos ei yhtaan, paras raaka pistemaara (kuten ennenkin)
+        const Cand* pick = nullptr;
+        for (auto& c : cands)
+            if (c.score >= score_threshold && (!pick || c.adj > pick->adj))
+                pick = &c;
+        if (!pick)
+            for (auto& c : cands)
+                if (!pick || c.score > pick->score)
+                    pick = &c;
+        best = { pick->xy, pick->score };
+        out.used_fallback = (pick->src == 0);   // tassa moodissa: valittiin ristikkohaun tulos
+    } else if (locate_mode == 3) {
+        auto xv = arangeVec(X0 - track_half_range_x_cm, X0 + track_half_range_x_cm + 1e-6, coarse_step_cm);
+        auto yv = arangeVec(Y0 - track_half_range_y_cm, Y0 + track_half_range_y_cm + 1e-6, coarse_step_cm);
+        auto b1 = gridSearchBest(local_pts_search, mask_for_track, roi.x, roi.y, K, R, t, xv, yv);
+        auto xv2 = arangeVec(b1.first.x - coarse_step_cm, b1.first.x + coarse_step_cm + 1e-6, fine_step_cm);
+        auto yv2 = arangeVec(b1.first.y - coarse_step_cm, b1.first.y + coarse_step_cm + 1e-6, fine_step_cm);
+        best = gridSearchBest(local_pts_search, mask_for_track, roi.x, roi.y, K, R, t, xv2, yv2);
+    }
+
+    if (ms_needed) {
+        const auto grid_best = best;
+        auto ms = meanShiftLocate(
+            local_pts_search, mask_for_track, roi.x, roi.y,
+            X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params
+        );
+        best = { ms.xy, ms.score };
+        out.iters = ms.iters;
+        out.converged = ms.converged;
+
+        // Liike-ennuste: toinen mean-shift ennustetusta paikasta; valitaan parempi pistemaara
+        // (ennuste saa pienen edun, koska liike on jatkuvaa ja maski voi olla hairitty).
+        if (std::hypot(pred_dX, pred_dY) > 0.5) {
+            auto ms2 = meanShiftLocate(
+                local_pts_search, mask_for_track, roi.x, roi.y,
+                X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params,
+                X0 + pred_dX, Y0 + pred_dY
+            );
+            out.iters += ms2.iters;
+            if (ms2.score + 0.02 >= best.second)
+                best = { ms2.xy, ms2.score };
+
+            // Prioriehdokas: pelkka viimeistely ennustetussa pisteessa (ei mean-shiftia).
+            // Saa pistemaaraetua prior_bias - seuraa liikettä ellei mean-shift ole SELVASTI parempi
+            // (esim. viereinen pelaaja vetaa maskin painopistetta ja pistemaara voi olla korkeampi vaarassa paikassa).
+            if (ms_params.prior_bias > 0.0) {
+                MeanShiftParams p0 = ms_params;
+                p0.max_iter = 0;
+                auto pr = meanShiftLocate(
+                    local_pts_search, mask_for_track, roi.x, roi.y,
+                    X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, p0,
+                    X0 + pred_dX, Y0 + pred_dY
+                );
+                if (pr.score + ms_params.prior_bias >= best.second)
+                    best = { pr.xy, pr.score };
+            }
+        }
+
+        bool at_edge = false;
+        if (edge_fallback) {
+            at_edge = std::fabs(best.first.y - Y0) >= track_half_range_y_cm - 0.6 && track_half_range_y_cm >= 6.0;
+        }
+
+        if (locate_mode == 4 && grid_best.second > best.second)
+            best = grid_best;
+
+        if (locate_mode == 1 && (best.second < score_threshold || at_edge)) {
+            auto gb = locateByGridSearchTrackingFast(
+                local_pts_search, mask_for_track, roi.x, roi.y,
+                X0, track_half_range_x_cm, Y0, track_half_range_y_cm,
+                coarse_step_cm, fine_step_cm, K, R, t
+            );
+            out.used_fallback = true;
+            if (gb.second > best.second)
+                best = gb;
+        }
+    }
+
+    out.locate_ms = msSince(tl0);
+    profAdd(P_LOC_TOTAL, (long long)(out.locate_ms * 1e6));
+    out.loc_X = best.first.x;
+    out.loc_Y = best.first.y;
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts2 = std::chrono::steady_clock::now();
@@ -2232,13 +3281,17 @@ static StoneUpdateResult trackStoneUpdateOne(
 #ifdef STONE_TRACKER_DEBUG_TIMING
         fprintf(stderr, " (no refine, score=%.3f)\n", out.score);
 #endif
+        profAdd(P_CALL_TOTAL, pt_call.lap());
         return out;
     }
 
+    auto tr0 = std::chrono::steady_clock::now();
     out.refined = refinePositionJoint(
-        mask_crop, sat_crop, roi.x, roi.y, frame_w, frame_h, local_pts_body, K, R, t,
-        R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
+        mask_for_track, sat_crop, roi.x, roi.y, frame_w, frame_h, local_pts_body, K, R, t,
+        R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, best.first.x, best.first.y
     );
+    out.refine_ms = msSince(tr0);
+    profAdd(P_REFINE_TOTAL, (long long)(out.refine_ms * 1e6));
 
     // Jos lahin runkokontuuri hylattiin YKSINOMAAN liian suuren pinta-
     // alan takia (kts. findContourNear/RefineResult::oversized_reject),
@@ -2264,7 +3317,30 @@ static StoneUpdateResult trackStoneUpdateOne(
             out.refined.oversized_reject ? " OVERSIZED_REJECT" : "");
 #endif
 
+    profAdd(P_CALL_TOTAL, pt_call.lap());
     return out;
+}
+
+
+
+static StoneUpdateResult trackStoneUpdateOne(
+    const cv::Mat& frame_mat, const cv::Mat& background_reference, double diff_threshold,
+    const std::vector<cv::Point3d>& local_pts_body,
+    const std::vector<cv::Point3d>& local_pts_search,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    double X0, double Y0,
+    double track_half_range_x_cm, double track_half_range_y_cm,
+    double coarse_step_cm, double fine_step_cm,
+    double score_threshold,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
+    double max_backward_cm)
+{
+    return trackStoneUpdateOneEx(
+        frame_mat, background_reference, diff_threshold, local_pts_body, local_pts_search, K, R, t,
+        X0, Y0, track_half_range_x_cm, track_half_range_y_cm, coarse_step_cm, fine_step_cm,
+        score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, max_backward_cm,
+        0, MeanShiftParams()
+    );
 }
 
 
@@ -2273,6 +3349,14 @@ static py::dict resultToDict(const StoneUpdateResult& r)
     py::dict d;
     d["score"] = r.score;
     d["found"] = r.has_position;
+    d["prep_ms"] = r.prep_ms;
+    d["locate_ms"] = r.locate_ms;
+    d["refine_ms"] = r.refine_ms;
+    d["iters"] = r.iters;
+    d["converged"] = r.converged;
+    d["used_fallback"] = r.used_fallback;
+    d["loc_X"] = r.loc_X;
+    d["loc_Y"] = r.loc_Y;
 
     if (r.has_position) {
         d["X_cm"] = r.refined.X_cm;
@@ -2300,7 +3384,7 @@ static py::dict track_stone_update(
     double track_half_range_x_cm, double track_half_range_y_cm,
     double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double max_backward_cm,
     double diff_threshold = 30.0)
 {
@@ -2327,7 +3411,7 @@ static py::dict track_stone_update(
         result = trackStoneUpdateOne(
             frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
             X0, Y0, track_half_range_x_cm, track_half_range_y_cm, coarse_step_cm, fine_step_cm,
-            score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, max_backward_cm
+            score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, max_backward_cm
         );
     }
 
@@ -2349,11 +3433,27 @@ static py::list track_stones_batch(
     py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
     double coarse_step_cm, double fine_step_cm,
     double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
     double max_backward_cm,
     double diff_threshold = 30.0,
-    int reserved_threads = 0)
+    int locate_mode = 0, double ms_gain = 1.0, int ms_max_iter = 10, double ms_tol_px = 0.10,
+    double ms_inner_weight = 2.0, double ms_margin_scale = HULL_MARGIN_SCALE,
+    double ms_tau = 0.0, double ms_polish_step_cm = 0.0,
+    py::object pred_dx_obj = py::none(), py::object pred_dy_obj = py::none(),
+    bool ms_edge_fallback = false, double ms_back_allow_cm = 1e9, double ms_prior_bias = 0.0,
+    double ms_ring_weight = 1.0, double ens_back_tol_cm = 2.0, double ens_back_pen = 0.15,
+    double ens_pred_pen = 0.02)
 {
+    PT bpt_wall, bpt;
+    std::vector<double> pdx, pdy;
+    if (!pred_dx_obj.is_none()) {
+        auto a = py::cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(pred_dx_obj);
+        auto u = a.unchecked<1>(); for (py::ssize_t i = 0; i < u.shape(0); ++i) pdx.push_back(u(i));
+    }
+    if (!pred_dy_obj.is_none()) {
+        auto a = py::cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(pred_dy_obj);
+        auto u = a.unchecked<1>(); for (py::ssize_t i = 0; i < u.shape(0); ++i) pdy.push_back(u(i));
+    }
     auto buf = frame_u.request();
     if (buf.ndim != 3 || buf.shape[2] != 3)
         throw std::runtime_error("frame_u must be HxWx3 uint8 BGR");
@@ -2371,6 +3471,21 @@ static py::list track_stones_batch(
     auto R = parseMat33(R_arr);
     auto t = parseVec3(t_arr);
 
+    MeanShiftParams msp;
+    msp.gain = ms_gain;
+    msp.max_iter = ms_max_iter;
+    msp.tol_px = ms_tol_px;
+    msp.inner_weight = ms_inner_weight;
+    msp.margin_scale = ms_margin_scale;
+    msp.tau = ms_tau;
+    msp.polish_step_cm = ms_polish_step_cm;
+    msp.back_allow_cm = ms_back_allow_cm;
+    msp.prior_bias = ms_prior_bias;
+    msp.ring_weight = ms_ring_weight;
+    msp.ens_back_tol_cm = ens_back_tol_cm;
+    msp.ens_back_pen = ens_back_pen;
+    msp.ens_pred_pen = ens_pred_pen;
+
     auto X0b = X0_arr.unchecked<1>();
     auto Y0b = Y0_arr.unchecked<1>();
     auto HXb = half_range_x_arr.unchecked<1>();
@@ -2378,6 +3493,7 @@ static py::list track_stones_batch(
     int n_stones = (int)X0b.shape(0);
 
     std::vector<StoneUpdateResult> results((size_t)n_stones);
+    profAdd(P_BATCH_SETUP, bpt.lap());
 
     {
         py::gil_scoped_release release;
@@ -2401,34 +3517,28 @@ static py::list track_stones_batch(
 
         std::atomic<int> next_idx(0);
         unsigned hw = std::thread::hardware_concurrency();
-        int hw_budget = (int)(hw == 0 ? 4u : hw) - std::max(0, reserved_threads);
-        // ENABLE_SEURANTA_HAKU_THREAD_SPLIT (Testi_03_01, ks. main.py:n
-        // lipun kommentti): reserved_threads > 0 kun main.py TIETAA tama
-        // ruutu kaynnistaa myos HAKU:n (search_new_stone) SAMANAIKAISESTI
-        // taustasaikeella - jattaa sille sovitun maaran ytimia sen sijaan
-        // etta molemmat riippumattomasti yrittaisivat varata KAIKKI
-        // hardware_concurrency():n ytimet samaan aikaan (ylikuormitus,
-        // EI vaaraa/turvallisuusongelmaa, vain hukattua nopeutta).
-        int worker_count = std::max(1, std::min(n_stones, std::max(1, hw_budget)));
+        int worker_count = std::max(1, std::min(n_stones, (int)(hw == 0 ? 4u : hw)));
 
         auto worker = [&]() {
             while (true) {
                 int i = next_idx.fetch_add(1);
                 if (i >= n_stones)
                     break;
-                results[(size_t)i] = trackStoneUpdateOne(
+                results[(size_t)i] = trackStoneUpdateOneEx(
                     frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
                     X0b(i), Y0b(i), HXb(i), HYb(i), coarse_step_cm, fine_step_cm,
-                    score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, max_backward_cm
+                    score_threshold, R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, max_backward_cm,
+                    locate_mode, msp,
+                    (size_t)i < pdx.size() ? pdx[(size_t)i] : 0.0, (size_t)i < pdy.size() ? pdy[(size_t)i] : 0.0,
+                    ms_edge_fallback
                 );
             }
         };
 
         std::vector<std::thread> workers;
-        workers.reserve((size_t)(worker_count - 1));
-        for (int i = 1; i < worker_count; ++i)
+        workers.reserve((size_t)worker_count);
+        for (int i = 0; i < worker_count; ++i)
             workers.emplace_back(worker);
-        worker(); // kutsuva saie osallistuu itsekin tyohon - ei jouten odota join():ssa
         for (auto& w : workers)
             w.join();
 
@@ -2436,9 +3546,12 @@ static py::list track_stones_batch(
         // tahan tuhoutuessaan (scope-lopun RAII, katso sen kommentti).
     }
 
+    bpt.lap();
     py::list out;
     for (auto& r : results)
         out.append(resultToDict(r));
+    profAdd(P_BATCH_RESULT, bpt.lap());
+    profAdd(P_BATCH_WALL, bpt_wall.lap());
 
     return out;
 }
@@ -2463,6 +3576,56 @@ static py::list track_stones_batch(
 //   position_joint_fast).
 // ============================================================
 
+// Kayttajan raportoima ongelma (katso keskusteluhistoria): kivia "ei
+// tunnisteta tai ne hukataan muutama metri hogin jalkeen" - juurisyy
+// loydetty tasta funktiosta: locateByGridSearchFast palauttaa VAIN
+// YHDEN, KOKO haku-vyohykkeen parhaiten pistetyn (hullOverlapScore)
+// ehdokkaan. hullOverlapScore ei tee eroa kiven ja esim. pelaajan/
+// lakaisijan tumman vaatetuksen valilla (katso alla oleva, jo
+// olemassaollut kommentti) - PELAAJA ON TYYPILLISESTI LAHEMPANA
+// KAMERAA JA ISOMPI kuin kaukainen, ohuena sivuprofiilina nakyva kivi,
+// joten pelaaja VOITTAA ristikkohaun LAHES AINA kun molemmat ovat
+// samaan aikaan hakuvyohykkeella (esim. lakaisija/skippi seisoo tai
+// kavelee hog-linjan tuntumassa, mika on aivan tavallista curlingissa
+// juuri talla vyohykkeella). Koska funktio aiemmin kokeili VAIN taman
+// YHDEN parhaan ehdokkaan (ja hylkasi sen oikein refined.tarkka:n
+// kautta koska pelaaja ei ole pyorea), koko HAKU-yritys palautti
+// TYHJAA - kivi EI KOSKAAN paassyt edes yritykseen asti, vaikka se
+// olisi ollut samaan aikaan nakyvissa samalla vyohykkeella.
+//
+// KORJAUS: jos parhaaksi loydetty ehdokas ei lapaise refined.tarkka-
+// tarkistusta (ts. ei ole oikeasti pyorea kivi), sen sijaan etta
+// luovutetaan valittomasti, POISTETAAN se hakumaskista (taytetaan
+// nolliksi koko sen SAMA yhtenainen maskialue, cv::floodFill, ei vain
+// kiven kokoinen laatikko - pelaaja on yleensa isompi kuin kivimalli,
+// joten pelkka kiven kokoinen alue ei riittaisi estamaan samaa
+// pelaajaa "voittamasta" uudelleen seuraavalla yrityksella) ja
+// YRITETAAN UUDELLEEN jaljella olevalla vyohykkeella - jolloin
+// SEURAAVAKSI paras ehdokas (mahdollisesti oikea, kauempana oleva
+// kivi) paasee vuoroon. Rajattu MAX_HAKU_ATTEMPTS_PER_SCAN kertaan
+// ettei yksi skannaus voi jaada ikuisesti silmukkaan (esim. useita
+// pelaajia vyohykkeella).
+static const int MAX_HAKU_ATTEMPTS_PER_SCAN = 5;
+
+// HAKU:n hyvaksymiskynnys HIENOSAADETYLLE (refinePositionJoint:in
+// jalkeiselle) peitto-osuudelle (kayttajan pyynnosta, katso keskustelu-
+// historia): AIEMMIN uuden kiven hyvaksyminen vaati LISAKSI etta kiven
+// pyorea reuna/rengasrakenne oli loydettavissa (refined.tarkka) - tama
+// hylkasi kuitenkin myos AIDOT mutta kaukana/pienena nakyvat kivet,
+// joiden rengasrakenne ei yksinkertaisesti erotu tarpeeksi harvoista
+// pikseleista (havaittu: kaukovyohykkeen kivi, jonka 3D-malli sopi
+// hyvin sen maskikontuuriin, mutta rengashaku ei koskaan konvergoinut
+// sen pienuuden takia). Korvattu SAMALLA peitto-/ulkopuoli-pisteytyksella
+// (hullOverlapScore, katso HULL_MARGIN_SCALE/HULL_OUTSIDE_PENALTY_WEIGHT)
+// kuin SEURANNAssakin, mutta MATALAMMALLA kynnyksella kuin k92.py:n
+// TRACK_SCORE_THRESHOLD (0.35) - uuden kiven ENSIHAVAINToa ei tarvitse
+// vaatia yhta tiukaksi kuin jatkuvaa seurantaa, koska main.py:n oma
+// "tarkka-osuus"-esivahvistusikkuna (MIN_PRECONFIRM_TARKKA_*) suodattaa
+// pelaajat/lakaisijat pois myohemmin usean framen yli kerätyn datan
+// perusteella - tama funktio ei siis ole ainoa suoja vaaria kandidaatteja
+// vastaan.
+static const double HAKU_ACCEPT_SCORE_THRESHOLD = 0.20;
+
 static StoneUpdateResult searchNewStoneOne(
     const cv::Mat& frame_mat, const cv::Mat& background_reference, double diff_threshold,
     const std::vector<cv::Point3d>& local_pts_body,
@@ -2470,83 +3633,157 @@ static StoneUpdateResult searchNewStoneOne(
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     double x_center, double x_half_width, double y_center, double y_half_range,
     double coarse_step_cm, double fine_step_cm, double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
-    bool parallel_grid_search, int max_grid_workers)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
+    std::vector<StoneUpdateResult>* multi_out = nullptr, int max_results = 1,
+    int max_attempts = MAX_HAKU_ATTEMPTS_PER_SCAN)
 {
     int frame_w = frame_mat.cols, frame_h = frame_mat.rows;
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto t0 = std::chrono::steady_clock::now();
 #endif
+    PT hpt_total, hpt;
     cv::Mat frame_filtered = suppressStaticBackground(frame_mat, background_reference, diff_threshold);
+    profAdd(P_HAKU_SUPPRESS, hpt.lap());
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto t1 = std::chrono::steady_clock::now();
 #endif
     cv::Mat mask_search = createGraniteMask(frame_filtered);
+    profAdd(P_HAKU_MASK, hpt.lap());
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto t2 = std::chrono::steady_clock::now();
 #endif
     cv::Mat sat_search = computeSat(frame_mat);
+    profAdd(P_HAKU_SAT, hpt.lap());
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto t3 = std::chrono::steady_clock::now();
 #endif
 
     StoneUpdateResult out;
 
-    auto best = locateByGridSearchFast(
-        local_pts_search, mask_search, 0, 0,
-        x_center, x_half_width, y_center, y_half_range,
-        coarse_step_cm, fine_step_cm, K, R, t,
-        parallel_grid_search, max_grid_workers
-    );
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+
+        auto best = locateByGridSearchFast(
+            local_pts_search, mask_search, 0, 0,
+            x_center, x_half_width, y_center, y_half_range,
+            coarse_step_cm, fine_step_cm, K, R, t
+        );
+        profAdd(P_HAKU_LOCATE, hpt.lap());
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
-    auto t4 = std::chrono::steady_clock::now();
-    auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
-    fprintf(stderr, "[HAKU timing] suppress=%.2fms mask=%.2fms sat=%.2fms grid=%.2fms",
-            ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4));
+        auto t4 = std::chrono::steady_clock::now();
+        auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+        if (attempt == 0)
+            fprintf(stderr, "[HAKU timing] suppress=%.2fms mask=%.2fms sat=%.2fms grid=%.2fms",
+                    ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4));
 #endif
 
-    out.score = best.second;
+        out.score = best.second;
 
-    if (out.score < score_threshold) {
+        if (out.score < score_threshold) {
 #ifdef STONE_TRACKER_DEBUG_TIMING
-        fprintf(stderr, " (no refine, score=%.3f)\n", out.score);
+            fprintf(stderr, " (no refine, score=%.3f, attempt=%d)\n", out.score, attempt);
 #endif
-        return out;
+            return out;
+        }
+
+        RefineResult refined = refinePositionJoint(
+            mask_search, sat_search, 0, 0, frame_w, frame_h, local_pts_body, K, R, t,
+            R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac, best.first.x, best.first.y
+        );
+        profAdd(P_HAKU_REFINE, hpt.lap());
+
+        // Sama liian-ison-kontuurin hylkays kuin trackStoneUpdateOne:ssa -
+        // katso sen kommentti. HYVAKSYNTA (kayttajan pyynnosta, katso
+        // keskusteluhistoria - katso myos HAKU_ACCEPT_SCORE_THRESHOLD:in
+        // oma kommentti ylempana MIKSI refined.tarkka-vaatimuksesta
+        // luovuttiin): lasketaan HIENOSAADETYN (refinePositionJoint:in
+        // jalkeisen) sijainnin oma peitto-osuus SAMALLA hullOverlapScore-
+        // pisteytyksella kuin SEURANNAssakin (peitto sisalla MIINUS
+        // ulkopuolelle vuotava tumma alue) - pyorea, aito kivi saa
+        // korkean pisteen (tumma alue loppuu tasan mallin reunalle),
+        // pitkanomainen/epasaannollinen kohde (esim. jalka) matalamman
+        // (tumma alue jatkuu mallin reunan ohi). Kynnys on tarkoituksella
+        // MATALAMPI kuin SEURANNAssa (HAKU_ACCEPT_SCORE_THRESHOLD vs.
+        // k92.py:n TRACK_SCORE_THRESHOLD) - katso sen oma kommentti.
+        auto refined_hull = predictedHull(local_pts_body, refined.X_cm, refined.Y_cm, K, R, t);
+        double refined_score = hullOverlapScore(mask_search, refined_hull, 0, 0);
+        bool accept = !refined.oversized_reject && refined_score >= HAKU_ACCEPT_SCORE_THRESHOLD;
+
+#ifdef STONE_TRACKER_DEBUG_TIMING
+        fprintf(stderr, " refine=%.2fms attempt=%d score=%.3f%s%s\n", ms(t4, std::chrono::steady_clock::now()),
+                attempt, refined_score, refined.oversized_reject ? " OVERSIZED_REJECT" : "",
+                accept ? " ACCEPTED" : " (liian matala peitto-osuus, poistetaan alue ja yritetaan uudelleen)");
+#endif
+
+        if (accept) {
+            out.refined = refined;
+            out.has_position = true;
+            if (!multi_out)
+                return out;
+            // Monituloshaku: talletetaan ja jatketaan (poistetaan tama alue alla, etsitaan seuraava).
+            multi_out->push_back(out);
+            if ((int)multi_out->size() >= max_results)
+                return out;
+        }
+
+        // Ei kelvannut - poistetaan TAMA yhtenainen maskialue (floodFill,
+        // ei vain kiven kokoinen laatikko - katso ylla oleva kommentti)
+        // jotta sama (esim. pelaaja) ei voi voittaa uudelleen, ja
+        // yritetaan seuraavaa parasta jaljella olevalla vyohykkeella.
+        std::vector<cv::Point3d> best_pos3d{
+            cv::Point3d(best.first.x, best.first.y, H_total_cm / 2.0)
+        };
+        auto best_proj = project3d(K, R, t, best_pos3d);
+        int px0 = (int)std::lround(best_proj[0].x);
+        int py0 = (int)std::lround(best_proj[0].y);
+
+        // Etsitaan LAHIN maskin ei-nolla-pikseli (px0,py0):n ymparilta -
+        // hullOverlapScore:n voittanut malliprojektio ei valttamatta osu
+        // TASAN oikean kohteen omalle pikselille (mallin keskipisteen
+        // projektio vs. kohteen todellinen muoto/paikka maskissa voivat
+        // poiketa hieman), mutta jokin ei-nolla pikseli on TAKUULLA
+        // lahella koska juuri tama alue voitti peitto-osuuspisteytyksen.
+        int seed_px = -1, seed_py = -1;
+        const int SEED_SEARCH_RADIUS_PX = 25;
+        for (int rad = 0; rad <= SEED_SEARCH_RADIUS_PX && seed_px < 0; ++rad) {
+            int x_lo = std::max(0, px0 - rad), x_hi = std::min(mask_search.cols - 1, px0 + rad);
+            int y_lo = std::max(0, py0 - rad), y_hi = std::min(mask_search.rows - 1, py0 + rad);
+            for (int yy = y_lo; yy <= y_hi && seed_px < 0; ++yy) {
+                bool on_border_row = (yy == py0 - rad || yy == py0 + rad);
+                int step = on_border_row ? 1 : std::max(1, x_hi - x_lo);
+                for (int xx = x_lo; xx <= x_hi; xx += step) {
+                    if (mask_search.at<uchar>(yy, xx) != 0) {
+                        seed_px = xx; seed_py = yy;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (seed_px < 0) {
+            // Ei loytynyt yhtaan ei-nolla pikselia edes lahialueelta -
+            // ei voida poistaa mitaan yhtenaista aluetta, luovutetaan
+            // ettei jaada ikuisesti samaan tulokseen.
+            out.has_position = false;
+            return out;
+        }
+
+        cv::Mat flood_mask = cv::Mat::zeros(mask_search.rows + 2, mask_search.cols + 2, CV_8UC1);
+        cv::floodFill(
+            mask_search, flood_mask, cv::Point(seed_px, seed_py), cv::Scalar(0),
+            nullptr, cv::Scalar(0), cv::Scalar(0), 4 | cv::FLOODFILL_MASK_ONLY | (255 << 8)
+        );
+        // FLOODFILL_MASK_ONLY jattaa mask_search:in itsensa koskematto-
+        // maksi (vain flood_mask taytetaan) - poistetaan loydetty alue
+        // eksplisiittisesti mask_search:ista flood_mask:in perusteella.
+        cv::Mat region = flood_mask(cv::Rect(1, 1, mask_search.cols, mask_search.rows));
+        mask_search.setTo(cv::Scalar(0), region);
+        profAdd(P_HAKU_FLOOD, hpt.lap());
     }
 
-    out.refined = refinePositionJoint(
-        mask_search, sat_search, 0, 0, frame_w, frame_h, local_pts_body, K, R, t,
-        R_max_cm, H_total_cm, ring_r_frac_guess, best.first.x, best.first.y
-    );
-
-    // Sama liian-ison-kontuurin hylkays kuin trackStoneUpdateOne:ssa -
-    // katso sen kommentti. LISAKSI (kayttajan pyynnosta, katso git-
-    // historia): UUDEN kiven hyvaksyminen (HAKU, VAIN tama funktio -
-    // EI trackStoneUpdateOne/SEURANTA, joka jatkaa jo VAKIINTUNUTTA
-    // kiveä ja sietaa satunnaisen epatarkan framen normaalisti) vaatii
-    // LISAKSI etta yhteissovitus oikeasti ONNISTUI (refined.tarkka) -
-    // ei riita etta ristikkohaun peittopisteytys (hullOverlapScore =
-    // pelkka peitto-osuus, ei ylarajaa ymparoivan tumman alueen
-    // koolle) ylitti kynnyksen, koska pelaajan tumma vaatetus peittaa
-    // aivan yhta hyvin (jopa paremmin) pienen kivimallin kuin oikea
-    // kivi - EROTTAVA tekija on ONKO siina OIKEASTI kiven pyorea
-    // reuna/rengasrakenne loydettavissa (detectBoundaryPoints+LM-
-    // sovitus, refined.tarkka), EI onko jotain tummaa lahella. Tama
-    // HYVAKSYY edelleen kiven joka on OSITTAIN heittajan/lakaisijan
-    // peitossa TAI liitoksissa heihin maskissa (esim. juuri heitetty
-    // kivi jonka yli heittaja nakyy) - riittaa etta kiven OMA reuna
-    // on paikoin nakyvissa niin etta sovitus konvergoi - EI hylkaa
-    // pelkastaan siksi etta jotain muutakin (esim. pelaaja) on
-    // samassa maskin yhtenaisessa alueessa/lahella.
-    out.has_position = !out.refined.oversized_reject && out.refined.tarkka;
-
-#ifdef STONE_TRACKER_DEBUG_TIMING
-    auto t5 = std::chrono::steady_clock::now();
-    fprintf(stderr, " refine=%.2fms%s\n", ms(t4, t5), out.refined.oversized_reject ? " OVERSIZED_REJECT" : "");
-#endif
-
+    out.has_position = false;
+    profAdd(P_HAKU_TOTAL, hpt_total.lap());
     return out;
 }
 
@@ -2561,10 +3798,8 @@ static py::dict search_new_stone(
     py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
     double x_center, double x_half_width, double y_center, double y_half_range,
     double coarse_step_cm, double fine_step_cm, double score_threshold,
-    double R_max_cm, double H_total_cm, double ring_r_frac_guess,
-    double diff_threshold = 30.0,
-    bool parallel_grid_search = true,
-    int max_grid_workers = 0)
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
+    double diff_threshold = 30.0)
 {
     auto buf = frame_u.request();
     if (buf.ndim != 3 || buf.shape[2] != 3)
@@ -2603,25 +3838,65 @@ static py::dict search_new_stone(
         // remap - katso git-historia).
         ScopedSingleThreadedOpenCV single_threaded_opencv_guard;
 
-        // ENABLE_HAKU_PARALLEL_GRID / max_grid_workers (Testi_03_01, ks.
-        // gridSearchBest:in yla puolen kommentti): main.py paattaa
-        // max_grid_workers:in (0 = kayta koko hardware_concurrency()) -
-        // main.py TIETAA jo talla framella ajetaanko SEURANTA (track_
-        // stones_batch) SAMANAIKAISESTI, joten se voi jakaa ydinmaaran
-        // jarkevasti naiden kahden rinnakkaisen C++-kutsun kesken (ks.
-        // ENABLE_SEURANTA_HAKU_THREAD_SPLIT main.py:ssa) sen sijaan etta
-        // molemmat riippumattomasti yrittaisivat varata KAIKKI ytimet
-        // samaan aikaan.
         result = searchNewStoneOne(
             frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
             x_center, x_half_width, y_center, y_half_range,
             coarse_step_cm, fine_step_cm, score_threshold,
-            R_max_cm, H_total_cm, ring_r_frac_guess,
-            parallel_grid_search, max_grid_workers
+            R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac
         );
     }
 
     return resultToDict(result);
+}
+
+
+// Testi_02_03: kuten search_new_stone, mutta palauttaa KAIKKI kelvolliset ehdokkaat (enintaan max_results)
+// - alkuperainen palauttaa vain ensimmaisen, jolloin pelaaja/lakaisija voi voittaa kilpailun ja kiven
+// rekisterointi jaa nain valiin (havaittu: 5 heittoa 26:sta jai kokonaan rekisteroimatta).
+static py::list search_new_stones(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame_u,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> background_reference,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_search_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+    double x_center, double x_half_width, double y_center, double y_half_range,
+    double coarse_step_cm, double fine_step_cm, double score_threshold,
+    double R_max_cm, double H_total_cm, double ring_r_frac_guess, double handle_r_frac,
+    double diff_threshold = 30.0, int max_results = 4, int max_attempts = 8)
+{
+    auto buf = frame_u.request();
+    if (buf.ndim != 3 || buf.shape[2] != 3)
+        throw std::runtime_error("frame_u must be HxWx3 uint8 BGR");
+    cv::Mat frame_mat((int)buf.shape[0], (int)buf.shape[1], CV_8UC3, (void*)buf.ptr);
+    cv::Mat ref_mat;
+    auto ref_buf = background_reference.request();
+    if (ref_buf.ndim == 3 && ref_buf.shape[2] == 3)
+        ref_mat = cv::Mat((int)ref_buf.shape[0], (int)ref_buf.shape[1], CV_8UC3, (void*)ref_buf.ptr);
+
+    auto local_pts_body = parsePts3(local_pts_body_arr);
+    auto local_pts_search = parsePts3(local_pts_search_arr);
+    auto K = parseMat33(K_arr);
+    auto R = parseMat33(R_arr);
+    auto t = parseVec3(t_arr);
+
+    std::vector<StoneUpdateResult> results;
+    {
+        py::gil_scoped_release release;
+        ScopedSingleThreadedOpenCV single_threaded_opencv_guard;
+        searchNewStoneOne(
+            frame_mat, ref_mat, diff_threshold, local_pts_body, local_pts_search, K, R, t,
+            x_center, x_half_width, y_center, y_half_range,
+            coarse_step_cm, fine_step_cm, score_threshold,
+            R_max_cm, H_total_cm, ring_r_frac_guess, handle_r_frac,
+            &results, max_results, max_attempts
+        );
+    }
+    py::list out;
+    for (auto& r : results)
+        out.append(resultToDict(r));
+    return out;
 }
 
 
@@ -2820,8 +4095,274 @@ static py::list scan_stone_candidates(
 }
 
 
+// Diagnostiikka (Testi_02_03): palauttaa seurannan maskin (samoin kuin
+// trackStoneUpdateOneEx sen muodostaa) sekä mean-shift-signaalit annetuissa
+// pisteissä - käytetään vain offline-viritykseen (tools/ms_offline.py).
+static py::dict ms_debug(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame_u,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> background_reference,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_search_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+    double X0, double Y0, double roi_half_cm, double R_max_cm, double H_total_cm,
+    double diff_threshold,
+    py::array_t<double, py::array::c_style | py::array::forcecast> evalX_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> evalY_arr,
+    double inner_weight, double margin_scale, double tau)
+{
+    auto buf = frame_u.request();
+    cv::Mat frame_mat((int)buf.shape[0], (int)buf.shape[1], CV_8UC3, (void*)buf.ptr);
+    cv::Mat ref_mat;
+    auto ref_buf = background_reference.request();
+    if (ref_buf.ndim == 3 && ref_buf.shape[2] == 3)
+        ref_mat = cv::Mat((int)ref_buf.shape[0], (int)ref_buf.shape[1], CV_8UC3, (void*)ref_buf.ptr);
+
+    auto local_pts_search = parsePts3(local_pts_search_arr);
+    auto K = parseMat33(K_arr);
+    auto R = parseMat33(R_arr);
+    auto t = parseVec3(t_arr);
+
+    cv::Rect roi = trackRoiBounds(X0, Y0, roi_half_cm + BOUNDARY_MAX_SHIFT_FROM_APPROX_CM,
+                                  R_max_cm, H_total_cm, frame_mat.cols, frame_mat.rows, K, R, t);
+    py::dict out;
+    if (roi.width <= 0 || roi.height <= 0)
+        return out;
+
+    cv::Mat crop = frame_mat(roi);
+    cv::Mat crop_filtered = crop;
+    bool have_bg = false;
+    if (!ref_mat.empty() && ref_mat.size() == frame_mat.size() && ref_mat.type() == frame_mat.type()) {
+        crop_filtered = suppressStaticBackground(crop, ref_mat(roi), diff_threshold);
+        have_bg = true;
+    }
+    cv::Mat mask_granite = createGraniteMask(crop_filtered);
+    cv::Mat mask_for_track = mask_granite;
+    if (have_bg)
+        mask_for_track = mask_granite | createForegroundFromWhitened(crop_filtered);
+
+    MeanShiftParams P;
+    P.inner_weight = inner_weight;
+    P.margin_scale = margin_scale;
+    P.tau = tau;
+
+    auto ex = evalX_arr.unchecked<1>();
+    auto ey = evalY_arr.unchecked<1>();
+    py::list sigs;
+    for (py::ssize_t i = 0; i < ex.shape(0); ++i) {
+        auto hull = predictedHull(local_pts_search, ex(i), ey(i), K, R, t);
+        py::dict d;
+        if (hull.size() >= 3) {
+            MsSignals sg = computeMsSignals(mask_for_track, roi.x, roi.y, hull, P);
+            d["valid"] = sg.valid;
+            d["sx"] = sg.sx; d["sy"] = sg.sy; d["wtot"] = sg.wtot; d["wmask"] = sg.wmask;
+            d["rx"] = sg.rx; d["ry"] = sg.ry; d["cx"] = sg.cx + roi.x; d["cy"] = sg.cy + roi.y;
+            d["score"] = hullOverlapScore(mask_for_track, hull, roi.x, roi.y);
+        } else {
+            d["valid"] = false;
+        }
+        sigs.append(d);
+    }
+
+    py::array_t<uint8_t> mask_np({mask_for_track.rows, mask_for_track.cols});
+    for (int r = 0; r < mask_for_track.rows; ++r)
+        std::memcpy(mask_np.mutable_data(r, 0), mask_for_track.ptr<uchar>(r), (size_t)mask_for_track.cols);
+
+    out["roi"] = py::make_tuple(roi.x, roi.y, roi.width, roi.height);
+    out["mask"] = mask_np;
+    out["signals"] = sigs;
+    return out;
+}
+
+
+
+// ============================================================
+// VARJONSIETOINEN TAUSTANVAIMENNUS + VALOTASAPAINON SOVELLUS YHDELLA LAPIKAYNNILLA
+// (Testi_03_01, nopeusoptimointi). Korvaa Pythonin apply_photometric_correction +
+// suppress_static_background(_shadow_tolerant_background_mask): ~30-50 ms/ruutu (numpy, useita
+// koko frame -valiaikaistaulukoita) -> yksi rivikohtainen lapikaynti (cv::parallel_for_).
+// Tulos vastaa tasmalleen Pythonia: OpenCV:n BGR2GRAY-kokonaislukukaava, HSV:n V=max ja
+// S=(diff*sdiv+2048)>>12, sekä float->uint8 katkaisu (clip + trunc).
+// ============================================================
+static py::array_t<uint8_t> suppress_shadow_background(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> reference,
+    py::array_t<double, py::array::c_style | py::array::forcecast> gains,
+    py::array_t<double, py::array::c_style | py::array::forcecast> biases,
+    double diff_threshold, double v_drop_min, double v_drop_max, int ice_s_max, int ice_v_min)
+{
+    auto fb = frame.request();
+    auto rb = reference.request();
+    if (fb.ndim != 3 || fb.shape[2] != 3 || rb.ndim != 3 || rb.shape[2] != 3 || fb.shape[0] != rb.shape[0] || fb.shape[1] != rb.shape[1])
+        throw std::runtime_error("suppress_shadow_background: frame/reference must be HxWx3 uint8 of equal size");
+
+    const int H = (int)fb.shape[0], W = (int)fb.shape[1];
+    double g[3] = {1, 1, 1}, bi[3] = {0, 0, 0};
+    bool photo = gains.size() >= 3 && biases.size() >= 3;
+    if (photo) { auto gu = gains.unchecked<1>(); auto bu = biases.unchecked<1>(); for (int c = 0; c < 3; ++c) { g[c] = gu(c); bi[c] = bu(c); } }
+
+    py::array_t<uint8_t> out({ (py::ssize_t)H, (py::ssize_t)W, (py::ssize_t)3 });
+    uint8_t* dst = (uint8_t*)out.request().ptr;
+    const uint8_t* src = (const uint8_t*)fb.ptr;
+    const uint8_t* ref = (const uint8_t*)rb.ptr;
+
+    static int sdiv[256];
+    static bool sdiv_init = false;
+    if (!sdiv_init) {
+        sdiv[0] = 0;
+        for (int i = 1; i < 256; ++i) sdiv[i] = (int)std::lround((255 << 12) / (1.0 * i));
+        sdiv_init = true;
+    }
+    // valotasapaino LUT per kanava: uint8 -> uint8 (Pythonin float32-clip-astype(uint8) -kaava)
+    uint8_t lut[3][256];
+    for (int c = 0; c < 3; ++c)
+        for (int v = 0; v < 256; ++v) {
+            if (!photo) { lut[c][v] = (uint8_t)v; continue; }
+            float x = (float)((double)v * g[c] + bi[c]);
+            if (x < 0.f) x = 0.f; if (x > 255.f) x = 255.f;
+            lut[c][v] = (uint8_t)x;
+        }
+
+    {
+        py::gil_scoped_release release;
+        cv::parallel_for_(cv::Range(0, H), [&](const cv::Range& rr) {
+            for (int y = rr.start; y < rr.end; ++y) {
+                const uint8_t* sp = src + (size_t)y * W * 3;
+                const uint8_t* rp = ref + (size_t)y * W * 3;
+                uint8_t* dp = dst + (size_t)y * W * 3;
+                for (int x = 0; x < W; ++x, sp += 3, rp += 3, dp += 3) {
+                    const int b = lut[0][sp[0]], gg = lut[1][sp[1]], r = lut[2][sp[2]];
+                    const int db = std::abs(b - rp[0]), dg = std::abs(gg - rp[1]), dr = std::abs(r - rp[2]);
+                    const int gray = (db * 1868 + dg * 9617 + dr * 4899 + 8192) >> 14;
+                    bool bg = (double)gray < diff_threshold;
+                    if (!bg) {
+                        const int vmax = std::max(b, std::max(gg, r));
+                        const int vmin = std::min(b, std::min(gg, r));
+                        const int rv = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2]));
+                        const double vdrop = (double)(rv - vmax);
+                        if (vdrop > v_drop_min && vdrop < v_drop_max) bg = true;
+                        else {
+                            const int sat = ((vmax - vmin) * sdiv[vmax] + 2048) >> 12;
+                            if (sat < ice_s_max && vmax > ice_v_min) bg = true;
+                        }
+                    }
+                    if (bg) { dp[0] = dp[1] = dp[2] = 255; }
+                    else { dp[0] = (uint8_t)b; dp[1] = (uint8_t)gg; dp[2] = (uint8_t)r; }
+                }
+            }
+        });
+    }
+    return out;
+}
+
+
+// ============================================================
+// NOPEA VAIHEKORRELAATIO MOODIKUVAA VASTEN (Testi_03_01, nopeusoptimointi). cv::phaseCorrelate
+// laskee JOKA kutsulla molempien kuvien FFT:n uudelleen (~30 ms/ruutu 1280x720:lla). Referenssin
+// (moodikuvan) ikkunoitu FFT on sama joka ruudulla -> Python valimuistittaa sen. FFT:t ajetaan
+// Pythonin cv2:lla (IPP-kiihdytetty) ja tama moduuli hoitaa muistiliikennetta rasittavat
+// elementtikohtaiset vaiheet yhdella rinnakkaisella lapikaynnilla:
+//   phase_window   : uint8 -> float32 * Hanning-ikkuna
+//   phase_mulnorm  : P = ref * conj(F) / |ref * conj(F)| CCS-pakkauksessa (tasmalleen kuin OpenCV)
+//   phase_peak     : huippu + 5x5-painopiste kuten cv::phaseCorrelate (fftShift huomioiden)
+// Tarkistettu numeerisesti cv2.phaseCorrelatea vastaan (virhe < 1e-6 px).
+// ============================================================
+static py::array_t<float> phase_window(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> gray,
+    py::array_t<float, py::array::c_style | py::array::forcecast> window)
+{
+    auto gb = gray.request(); auto wb = window.request();
+    if (gb.ndim != 2 || wb.ndim != 2 || gb.shape[0] != wb.shape[0] || gb.shape[1] != wb.shape[1])
+        throw std::runtime_error("phase_window: size mismatch");
+    const int H = (int)gb.shape[0], W = (int)gb.shape[1];
+    py::array_t<float> out({ (py::ssize_t)H, (py::ssize_t)W });
+    float* o = (float*)out.request().ptr;
+    const uint8_t* g = (const uint8_t*)gb.ptr; const float* w = (const float*)wb.ptr;
+    {
+        py::gil_scoped_release release;
+        cv::parallel_for_(cv::Range(0, H), [&](const cv::Range& r) {
+            for (int y = r.start; y < r.end; ++y)
+                for (int x = 0; x < W; ++x) o[(size_t)y * W + x] = (float)g[(size_t)y * W + x] * w[(size_t)y * W + x];
+        });
+    }
+    return out;
+}
+
+static py::array_t<float> phase_mulnorm(
+    py::array_t<float, py::array::c_style | py::array::forcecast> ref_ccs,
+    py::array_t<float, py::array::c_style | py::array::forcecast> f_ccs)
+{
+    auto rb = ref_ccs.request(); auto fb = f_ccs.request();
+    if (rb.ndim != 2 || fb.ndim != 2 || rb.shape[0] != fb.shape[0] || rb.shape[1] != fb.shape[1])
+        throw std::runtime_error("phase_mulnorm: size mismatch");
+    const int M = (int)rb.shape[0], N = (int)rb.shape[1];
+    py::array_t<float> out({ (py::ssize_t)M, (py::ssize_t)N });
+    float* P = (float*)out.request().ptr;
+    const float* R = (const float*)rb.ptr; const float* F = (const float*)fb.ptr;
+    auto cmul = [](float ar, float ai, float br, float bi, float& re, float& im) {
+        float pr = ar * br + ai * bi, pi = ai * br - ar * bi;      // a * conj(b)
+        float m = std::sqrt(pr * pr + pi * pi);
+        if (m > 1e-30f) { re = pr / m; im = pi / m; } else { re = 0.f; im = 0.f; }
+    };
+    auto sgn = [](float a, float b) { float v = a * b; return v > 0.f ? 1.f : (v < 0.f ? -1.f : 0.f); };
+    {
+        py::gil_scoped_release release;
+        cv::parallel_for_(cv::Range(0, M), [&](const cv::Range& rr) {
+            for (int r = rr.start; r < rr.end; ++r) {
+                const float* a = R + (size_t)r * N; const float* b = F + (size_t)r * N; float* o = P + (size_t)r * N;
+                for (int j = 1; j + 1 < N; j += 2) cmul(a[j], a[j + 1], b[j], b[j + 1], o[j], o[j + 1]);
+            }
+        });
+        for (int col : { 0, N - 1 }) {
+            P[col] = sgn(R[col], F[col]);
+            for (int r = 1; r + 1 < M; r += 2)
+                cmul(R[(size_t)r * N + col], R[(size_t)(r + 1) * N + col], F[(size_t)r * N + col], F[(size_t)(r + 1) * N + col],
+                     P[(size_t)r * N + col], P[(size_t)(r + 1) * N + col]);
+            P[(size_t)(M - 1) * N + col] = sgn(R[(size_t)(M - 1) * N + col], F[(size_t)(M - 1) * N + col]);
+        }
+    }
+    return out;
+}
+
+// C = kaanteis-DFT (reaalinen, ei fftShiftattu). Palauttaa (dx, dy) kuten cv2.phaseCorrelate.
+static py::tuple phase_peak(py::array_t<float, py::array::c_style | py::array::forcecast> C_arr)
+{
+    auto cb = C_arr.request();
+    if (cb.ndim != 2) throw std::runtime_error("phase_peak: C must be 2-D");
+    const int M = (int)cb.shape[0], N = (int)cb.shape[1];
+    cv::Mat C(M, N, CV_32F, (void*)cb.ptr);
+    cv::Point maxLoc;
+    cv::minMaxLoc(C, nullptr, nullptr, nullptr, &maxLoc);
+    int px = (maxLoc.x + N / 2) % N, py_ = (maxLoc.y + M / 2) % M;
+    int minr = std::max(py_ - 2, 0), maxr = std::min(py_ + 2, M - 1);
+    int minc = std::max(px - 2, 0), maxc = std::min(px + 2, N - 1);
+    double sum_i = 0, cx = 0, cy = 0;
+    for (int y = minr; y <= maxr; ++y)
+        for (int x = minc; x <= maxc; ++x) {
+            double v = (double)C.at<float>((y + M / 2) % M, (x + N / 2) % N);
+            sum_i += v; cx += (double)x * v; cy += (double)y * v;
+        }
+    return py::make_tuple((double)(N / 2) - cx / sum_i, (double)(M / 2) - cy / sum_i);
+}
+
+static void prof_reset() { for (int i = 0; i < P_COUNT; ++i) { g_prof_ns[i] = 0; g_prof_n[i] = 0; } }
+static py::list prof_snapshot() {
+    py::list L;
+    for (int i = 0; i < P_COUNT; ++i)
+        L.append(py::make_tuple(std::string(PROF_NAMES[i]), (double)g_prof_ns[i].load() / 1e6, (long long)g_prof_n[i].load()));
+    return L;
+}
+
 PYBIND11_MODULE(stone_tracker, m)
 {
+    m.def("suppress_shadow_background", &suppress_shadow_background,
+          py::arg("frame"), py::arg("reference"), py::arg("gains"), py::arg("biases"),
+          py::arg("diff_threshold"), py::arg("v_drop_min"), py::arg("v_drop_max"), py::arg("ice_s_max"), py::arg("ice_v_min"));
+    m.def("phase_window", &phase_window);
+    m.def("phase_mulnorm", &phase_mulnorm);
+    m.def("phase_peak", &phase_peak);
+    m.def("prof_reset", &prof_reset);
+    m.def("prof_snapshot", &prof_snapshot);
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";
 
     m.def("track_stone_update", &track_stone_update,
@@ -2833,7 +4374,7 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("track_half_range_x_cm"), py::arg("track_half_range_y_cm"),
           py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
-          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"), py::arg("handle_r_frac"),
           py::arg("max_backward_cm"),
           py::arg("diff_threshold") = 30.0);
 
@@ -2846,10 +4387,43 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("K"), py::arg("R"), py::arg("t"),
           py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
-          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"), py::arg("handle_r_frac"),
           py::arg("max_backward_cm"),
           py::arg("diff_threshold") = 30.0,
-          py::arg("reserved_threads") = 0);
+          py::arg("locate_mode") = 0, py::arg("ms_gain") = 1.0, py::arg("ms_max_iter") = 10,
+          py::arg("ms_tol_px") = 0.10, py::arg("ms_inner_weight") = 2.0,
+          py::arg("ms_margin_scale") = HULL_MARGIN_SCALE,
+          py::arg("ms_tau") = 0.0, py::arg("ms_polish_step_cm") = 0.0,
+          py::arg("pred_dx") = py::none(), py::arg("pred_dy") = py::none(),
+          py::arg("ms_edge_fallback") = false, py::arg("ms_back_allow_cm") = 1e9,
+          py::arg("ms_prior_bias") = 0.0, py::arg("ms_ring_weight") = 1.0,
+          py::arg("ens_back_tol_cm") = 2.0, py::arg("ens_back_pen") = 0.15, py::arg("ens_pred_pen") = 0.02);
+
+    m.def("ms_debug", &ms_debug,
+          "Diagnostiikka: seurantamaski + mean-shift-signaalit annetuissa pisteissa",
+          py::arg("frame_u"), py::arg("background_reference"), py::arg("local_pts_search"),
+          py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("X0"), py::arg("Y0"), py::arg("roi_half_cm"), py::arg("R_max_cm"), py::arg("H_total_cm"),
+          py::arg("diff_threshold"), py::arg("evalX"), py::arg("evalY"),
+          py::arg("inner_weight") = 2.0, py::arg("margin_scale") = HULL_MARGIN_SCALE, py::arg("tau") = 0.0);
+
+    m.def("ms_response_table", [](double w_in, double margin, double tau) {
+              auto lut = getResponseLUT(w_in, margin, tau);
+              return py::make_tuple(lut->dd, lut->f, lut->imax);
+          },
+          py::arg("inner_weight") = 2.0, py::arg("margin_scale") = HULL_MARGIN_SCALE, py::arg("tau") = 0.0,
+          "Mean-shift-vastefunktion f(delta) taulukkona (dd, f[], imax)");
+
+    m.def("search_new_stones", &search_new_stones,
+          "Kuten search_new_stone, mutta palauttaa kaikki kelvolliset ehdokkaat (lista)",
+          py::arg("frame_u"), py::arg("background_reference"),
+          py::arg("local_pts_body"), py::arg("local_pts_search"),
+          py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("x_center"), py::arg("x_half_width"),
+          py::arg("y_center"), py::arg("y_half_range"),
+          py::arg("coarse_step_cm"), py::arg("fine_step_cm"), py::arg("score_threshold"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"), py::arg("handle_r_frac"),
+          py::arg("diff_threshold") = 30.0, py::arg("max_results") = 4, py::arg("max_attempts") = 8);
 
     m.def("search_new_stone", &search_new_stone,
           "Uuden kiven haku kiinteältä vyohykkeelta (HAKU), koko frame",
@@ -2860,10 +4434,8 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("y_center"), py::arg("y_half_range"),
           py::arg("coarse_step_cm"), py::arg("fine_step_cm"),
           py::arg("score_threshold"),
-          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"),
-          py::arg("diff_threshold") = 30.0,
-          py::arg("parallel_grid_search") = true,
-          py::arg("max_grid_workers") = 0);
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("ring_r_frac_guess"), py::arg("handle_r_frac"),
+          py::arg("diff_threshold") = 30.0);
 
     m.def("scan_stone_candidates", &scan_stone_candidates,
           "Kivikandidaattien skannaus yhdesta framesta (3D-kiviprofiilin "
