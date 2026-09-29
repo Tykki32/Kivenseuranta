@@ -56,11 +56,14 @@ k8 = _load_kamera8_01()
 # alkuarvauksena (lahtokohta hienosaadolle) ja jarkevyystarkistukseen.
 # Seka sade etta korkeus RATKAISTAAN oikeasti havainnoista - katso
 # fit_stone_profile ja sen ylla oleva kommentti kovakoodatusta
-# karkeasta 3D-mallista.
+# karkeasta 3D-mallista. STONE_HEIGHT_CM/STONE_HEIGHT_MAX_CM ovat
+# korkeuden ALA-/YLARAJA (WCF-vahimmaiskorkeus ... kayttajan antama
+# 15cm katto) - itse H_total SOVITETAAN naiden valiin, ei kiinniteta.
 # ============================================================
 
 STONE_NOMINAL_RADIUS_CM = 91.44 / math.pi / 2.0
 STONE_HEIGHT_CM = 11.43
+STONE_HEIGHT_MAX_CM = 15.0
 
 
 # ============================================================
@@ -571,31 +574,65 @@ def _candidates_in_frame(frame_bgr, calib, pose, H_final,
 # kivi kuvattuna tasan sivulta poydalla). Mitattu kuvankasittelylla:
 # graniitin aariviiva segmentoitiin (rajattu keltaisesta kahvasta ja
 # taustasta), leveys mitattiin joka rivilla, normalisoitu leveimman
-# kohdan (max leveys) suhteen. Tama KORVAA aiemman kasin-arvatun
-# mallin (joka oletti leveimman kohdan lahella pohjaa - VAARIN, katso
-# git-historia) - todellisuudessa leveimmillaan LAHELLA KESKIKORKEUTTA
-# (n. 45-60% korkeudesta), ja profiili on suht. SYMMETRINEN ylhaalta
-# alas (poikkeuksena aivan ylin reuna, jossa kahvan kiinnityslevy
-# peittaa/rajaa nakyvan graniitin jyrkasti - sama efekti nakyy myos
-# ylhaaltapain-kuvissa, koska sielläkin kahva rajataan pois
-# saturaatiolla, joten tama on OIKEA vertailukohta). Pohjan (z=0)
-# tarkka arvo on arvio (poydan/varjon reunalla vaikea mitata tarkasti
-# kuvasta - katso git-historia), muu on suoraan mitattua.
-STONE_PROFILE_TEMPLATE_NORM = [
+# kohdan (max leveys) suhteen. Vain ALAPUOLISKO (pohjasta puoliväliin)
+# on mitattua dataa - YLAPUOLISKO PAKOTETAAN taman PEILIKUVAKSI
+# (kayttajan pyynnosta): oikea curling-kivi on fyysisesti symmetrinen
+# puolivalikorkeuden suhteen (kivi kaannetaan ymparí kun toinen
+# juoksurengas kuluu, joten graniittirunko on valmistettu symmetriseksi
+# - alkuperaisessa kuvassa nakyva ylareunan jyrkka kavennys EI ole
+# graniitin oma muoto vaan kahvan kiinnityslevyn AIHEUTTAMA rajaus,
+# katso HANDLE_PLATE_R_FRAC_GUESS alempana talle eri, ei-symmetriselle
+# ominaisuudelle). Pohjan (z=0) tarkka arvo on arvio (poydan/varjon
+# reunalla vaikea mitata tarkasti kuvasta - katso git-historia), muu on
+# suoraan mitattua.
+_HALF_PROFILE_TEMPLATE_NORM = [
     (0.00, 0.75),   # pohja (arvioitu - kovera alusta, ei tarkkaan mitattavissa kuvasta)
     (0.18, 0.94),   # levenee nopeasti
     (0.30, 0.98),
-    (0.45, 1.00),   # "paiva" - leveimmillaan
-    (0.60, 1.00),   # pysyy leveimmillaan (loiva huippu, ei terava)
-    (0.75, 0.97),
-    (0.88, 0.90),
-    (0.96, 0.81),
-    (1.00, 0.37),   # kahvan kiinnityslevyn reuna - jyrkka rajaus
+    (0.45, 1.00),
+    (0.50, 1.00),   # puolivali - "paiva", leveimmillaan (symmetria-akseli)
 ]
 
-_TEMPLATE_Z_FRAC = np.array([p[0] for p in STONE_PROFILE_TEMPLATE_NORM])
-_TEMPLATE_R_FRAC = np.array([p[1] for p in STONE_PROFILE_TEMPLATE_NORM])
-_TEMPLATE_EQUATOR_IDX = int(np.argmax(_TEMPLATE_R_FRAC))
+
+def _mirror_half_profile(half_profile):
+    """
+    Rakentaa taydet (z_frac, r_frac) -taulukot puoliskosta peilaamalla
+    puolivalin (viimeinen piste, r_frac=1.0) ylapuolelle - katso
+    _HALF_PROFILE_TEMPLATE_NORM:in kommentti symmetriaoletuksesta.
+    """
+
+    z_half = np.array([p[0] for p in half_profile], dtype=np.float64)
+    r_half = np.array([p[1] for p in half_profile], dtype=np.float64)
+
+    z_top = 1.0 - z_half[-2::-1]
+    r_top = r_half[-2::-1]
+
+    return np.concatenate([z_half, z_top]), np.concatenate([r_half, r_top])
+
+
+_TEMPLATE_Z_FRAC, _TEMPLATE_R_FRAC = _mirror_half_profile(_HALF_PROFILE_TEMPLATE_NORM)
+_TEMPLATE_HALF_LEN = len(_HALF_PROFILE_TEMPLATE_NORM)
+_TEMPLATE_EQUATOR_IDX = _TEMPLATE_HALF_LEN - 1
+STONE_PROFILE_TEMPLATE_NORM = list(zip(_TEMPLATE_Z_FRAC.tolist(), _TEMPLATE_R_FRAC.tolist()))
+
+# Kahvan (muovi+kiinnitys) aiheuttaman kolon sade suhteessa R_max:iin.
+# Kolon SIJAINTI on kayttajan pyynnosta MAARITELTY (ei sovitettu):
+# KESKITETTY kiven pystyakselille (X0,Y0), korkeudella z=H_total - ei
+# siirretty sivuun, koska kahvan tarkka atsimuuttikulma vaihtelee
+# heitosta toiseen (kivi pyorii liu'un aikana) eika ole taten
+# luotettavasti paateltavissa. SADE SEN SIJAAN ON (kayttajan pyynnosta,
+# katso keskusteluhistoria - yhden kiven koko liu'un kattava seuranta
+# antaa riittavasti kulmavaihtelua/dataa taman luotettavaan
+# ratkaisuun) fit_stone_profile:in vapaa, sovitettu parametri - tama
+# HANDLE_NOTCH_R_FRAC-vakio toimii enaa VAIN (1) sovituksen
+# alkuarvauksena ja (2) stone_tracker.cpp:n elavan seurannan KIINTEANA
+# arvona (C++-puolen notch-vahennysta EI ole viela tehty ajonaikaisesti
+# parametroitavaksi - katso stone_tracker.cpp:n oma HANDLE_NOTCH_R_FRAC-
+# kommentti). Sovitettu arvo on kaytannossa havaittu hyvin lahella
+# tata (~0.68-0.70), joten ero on pieni.
+HANDLE_NOTCH_R_FRAC = 0.70
+HANDLE_NOTCH_R_FRAC_MIN = 0.30
+HANDLE_NOTCH_R_FRAC_MAX = 0.95
 
 # Kuinka voimakkaasti muotoa (kontrollipisteiden sateet) rangaistaan
 # poikkeamasta kovakoodattuun mallinnukseen nahden (yksikko: "pikselia
@@ -605,11 +642,15 @@ _TEMPLATE_EQUATOR_IDX = int(np.argmax(_TEMPLATE_R_FRAC))
 #
 # HUOM (paivitetty - katso git-historia): kun profiilin KAIKKI
 # kontrollipisteet vapautettiin (ei enaa vain "paivan ylapuoliset"),
-# vapaita muotoparametreja on 5 - reilusti enemman kuin ennen (2-3).
+# vapaita muotoparametreja oli 5 - reilusti enemman kuin ennen (2-3).
 # Alkuperainen 25 (viritetty vanhalle, suppeammalle mallille) antoi
 # 3 kiven aineistolla epatasaisia, lievasti epafyysisia tuloksia
 # (pieni "olkapaa"-kohouma profiilissa) - nostettu 60:een, joka pitaa
 # muodon sileampana/uskottavampana samalla kun sallii aidon korjauksen.
+# (Symmetriapakon jalkeen vapaita muotoparametreja on enaa PUOLET
+# taman verran - vain alapuoliskon kontrollipisteet, paiva pois lukien
+# - ylapuolisko peilataan, ei sovita erikseen. Painoa ei ole viritetty
+# uudelleen taman muutoksen jalkeen.)
 STONE_SHAPE_REG_WEIGHT = 60.0
 
 
@@ -742,6 +783,52 @@ def _predicted_stone_hull(pose, X0, Y0, R_max, H_total, shape_deltas, n_theta=28
     return hull
 
 
+def _handle_notch_hull(pose, X0, Y0, R_max, H_total, r_frac=HANDLE_NOTCH_R_FRAC, n_theta=28):
+    """
+    Kahvan aiheuttaman kolon projisoitu 2D-ääriviiva: MAARITELTY
+    litteä kiekko kiven pystyakselin KESKELLA (X0,Y0), korkeudella
+    z=H_total, sateella r_frac*R_max - katso HANDLE_NOTCH_R_FRAC:in
+    kommentti. Palauttaa cv2.convexHull-muotoisen polygonin (float32)
+    tai None jos projektio epaonnistuu.
+    """
+
+    r_cm = abs(r_frac) * abs(R_max)
+    theta = np.linspace(0.0, 2.0 * np.pi, n_theta, endpoint=False)
+    xs = X0 + r_cm * np.cos(theta)
+    ys = Y0 + r_cm * np.sin(theta)
+    zs = np.full(n_theta, H_total)
+    points_3d = np.column_stack([xs, ys, zs])
+
+    u, v = _project_3d(pose["K"], pose["R"], pose["t"], points_3d)
+    points_2d = np.column_stack([u, v]).astype(np.float32)
+
+    if not np.all(np.isfinite(points_2d)):
+        return None
+
+    return cv2.convexHull(points_2d)
+
+
+def _signed_dist_with_notch(hull, notch_hull, point):
+    """
+    Etumerkillinen etaisyys graniittirungon (hull) MIINUS kahvan kolon
+    (notch_hull) reunaan - positiivinen SISALLA todellisessa (kolollisessa)
+    muodossa, negatiivinen ULKOPUOLELLA (joko kokonaan hullin ulkopuolella
+    TAI kolon SISALLA, koska kolo on POIS LEIKATTU alue).
+    """
+
+    d_outer = cv2.pointPolygonTest(hull, point, True)
+
+    if notch_hull is None or d_outer <= 0:
+        return d_outer
+
+    d_notch = cv2.pointPolygonTest(notch_hull, point, True)
+
+    if d_notch > 0:
+        return -d_notch
+
+    return min(d_outer, -d_notch)
+
+
 def _sample_contour_points(contour, n_sample):
     """Tasavalisesti alinaytetty kontuuri - koko kontuuria (satoja
     pisteita) ei tarvita, muutama kymmenen riittaa sovitukseen ja
@@ -757,7 +844,8 @@ def _sample_contour_points(contour, n_sample):
     return points[idx]
 
 
-def _profile_residuals_for_stone(pose, X0, Y0, R_max, H_total, shape_deltas, contour, n_sample):
+def _profile_residuals_for_stone(pose, X0, Y0, R_max, H_total, shape_deltas, contour, n_sample,
+                                  handle_r_frac=HANDLE_NOTCH_R_FRAC):
 
     hull = _predicted_stone_hull(pose, X0, Y0, R_max, H_total, shape_deltas)
     sampled = _sample_contour_points(contour, n_sample)
@@ -765,31 +853,74 @@ def _profile_residuals_for_stone(pose, X0, Y0, R_max, H_total, shape_deltas, con
     if hull is None:
         return np.full(len(sampled), 1000.0)
 
+    notch_hull = _handle_notch_hull(pose, X0, Y0, R_max, H_total, r_frac=handle_r_frac)
+
     return np.array([
-        cv2.pointPolygonTest(hull, (float(p[0]), float(p[1])), True)
+        _signed_dist_with_notch(hull, notch_hull, (float(p[0]), float(p[1])))
         for p in sampled
     ])
 
 
+def _sigmoid_bounded(x, lo, hi):
+    """Kuvaa rajoittamattoman x:n valille (lo, hi) - kayttaa LM-sovitin
+    (k8._levenberg_marquardt) EI tue rajoitettuja parametreja suoraan,
+    joten raja pakotetaan tallä logistisella uudelleenparametroinnilla
+    (LM nakee vain rajoittamattoman x:n, ei voi koskaan tuottaa lo/hi:n
+    ULKOPUOLELLA olevaa H_total:ia riippumatta askeleen koosta)."""
+
+    return lo + (hi - lo) / (1.0 + np.exp(-x))
+
+
+def _inverse_sigmoid_bounded(v, lo, hi):
+    p = np.clip((v - lo) / (hi - lo), 1e-6, 1.0 - 1e-6)
+    return math.log(p / (1.0 - p))
+
+
+def _expand_symmetric_shape_deltas(half_deltas):
+    """
+    half_deltas: korjaukset _HALF_PROFILE_TEMPLATE_NORM:in pisteisiin
+    PAIVAA (puolivalia) lukuunottamatta, siis pituus _TEMPLATE_HALF_LEN-1.
+    Palauttaa TAYDEN (molempien puoliskojen) delta-taulukon, jossa
+    ylapuolisko on PAKOTETUSTI sama kuin alapuolisko (peilattuna) -
+    katso _HALF_PROFILE_TEMPLATE_NORM:in kommentti symmetriaoletuksesta.
+    Jarjestys vastaa _mirror_half_profile:n rakentamaa tayden profiilin
+    jarjestysta.
+    """
+
+    full = np.zeros(len(_TEMPLATE_R_FRAC))
+    full[:len(half_deltas)] = half_deltas
+    full[_TEMPLATE_HALF_LEN:] = half_deltas[::-1]
+    return full
+
+
 def fit_stone_profile(pose, stones, n_sample_per_stone=40,
                        initial_radius_cm=STONE_NOMINAL_RADIUS_CM,
-                       height_cm=STONE_HEIGHT_CM,
-                       shape_reg_weight=STONE_SHAPE_REG_WEIGHT):
+                       height_min_cm=STONE_HEIGHT_CM,
+                       height_max_cm=STONE_HEIGHT_MAX_CM,
+                       shape_reg_weight=STONE_SHAPE_REG_WEIGHT,
+                       handle_r_frac_min=HANDLE_NOTCH_R_FRAC_MIN,
+                       handle_r_frac_max=HANDLE_NOTCH_R_FRAC_MAX):
     """
     HIENOSAATAA kovakoodatun karkean mallin (STONE_PROFILE_TEMPLATE_NORM)
     KAIKKIEN havaittujen kivien KOKO AARIVIIVAA vasten YHTEISESTI - katso
     taman osion alkupaan kommentti periaatteesta. Tuntemattomat: R_max
-    (paivan/juoksurenkaan sade) + pieni korjaus (delta) JOKAISEN
-    kontrollipisteen r_frac:iin (KOKO profiili, ei vain "paivan"
-    ylapuolinen osa - katso _predicted_stone_hull:in kommentti MIKSI:
-    matalasta kuvakulmasta nakyy aidosti myos paivan ALApuolista
+    (paivan/juoksurenkaan sade) + H_total (korkeus, katso alla) + pieni
+    korjaus (delta) JOKAISEN ALAPUOLISKON kontrollipisteen r_frac:iin
+    (paivaa lukuunottamatta - katso _predicted_stone_hull:in kommentti
+    MIKSI matalasta kuvakulmasta nakyy aidosti myos paivan ALApuolista
     kylkea, joten sekin voi tulla oikeasti sovitetuksi, ei vain
-    oletukseksi) + jokaisen kiven oma maa-asema (X0,Y0). Muotokorjaukset
-    ovat REGULOITUJA (shape_reg_weight, SKAALATTUNA havaintojen maaran
-    mukaan - katso alla) nollaa (=kovakoodattu malli) kohti, jotta
-    havainnot eivat ylisovita muotoa - vain skaala ja KARKEA muototrendi
-    (esim. onko malli hieman liian/liian vahan kupera) voi todella
-    muuttua.
+    oletukseksi) + jokaisen kiven oma maa-asema (X0,Y0). YLAPUOLISKON
+    deltat EIVAT OLE vapaita - ne PAKOTETAAN samoiksi kuin alapuoliskon
+    (peilattuna, katso _expand_symmetric_shape_deltas), koska kivi on
+    kayttajan pyynnosta oletettu fyysisesti symmetriseksi puolivali-
+    korkeuden suhteen (oikea curling-kivi kaannetaan ymparí kun toinen
+    juoksurengas kuluu, joten graniittirunko ON valmistettu symmetriseksi
+    - vain kahvan kiinnityslevy, joka EI kuulu tahan profiiliin, rikkoo
+    symmetrian oikeasti). Muotokorjaukset ovat REGULOITUJA (shape_reg_
+    weight, SKAALATTUNA havaintojen maaran mukaan - katso alla) nollaa
+    (=kovakoodattu malli) kohti, jotta havainnot eivat ylisovita muotoa -
+    vain skaala ja KARKEA muototrendi (esim. onko malli hieman liian/
+    liian vahan kupera) voi todella muuttua.
 
     HUOM regularisoinnin SKAALAUKSESTA (havaittu testatessa videosta
     seurattua 25+ pisteen aineistoa - katso git-historia): datan
@@ -804,29 +935,46 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
     shape_reg_weight=25 antoi jo hyvan tuloksen) - pitaa regularisoinnin
     SUHTEELLISEN vaikutuksen samana havaintomaarasta riippumatta.
 
-    HUOM height_cm EI OLE VAPAA PARAMETRI (kokeiltiin - katso git-
-    historia): RMS-jaannosvirhe on kaytannossa LITTEA H_total:in
-    suhteen valilla n. 6-12cm (kaikki n. 3.5px, ero vain kohinaa),
-    koska 3 kivea + n. 10-25 asteen korkeuskulma-alue ei riita
-    erottamaan "hieman pienempi R + suurempi H" ja "hieman suurempi R +
-    pienempi H" -ratkaisuja toisistaan (nailla on lahes SAMA siluetti).
-    Vapaana parametrina optimoija valitsi taman litean alueen SISALTA
-    mielivaltaisesti (esim. H~8cm), mika EI ole mittaus vaan kohinaa -
-    testattu antavan fysikaalisesti mahdottoman lyhyen kiven (WCF:n
-    minimikorkeus on 11.43cm). R_max SEN SIJAAN ON hyvin rajoitettu
-    (sama optimointi antaa R_max~14.0-14.6cm riippumatta kiinnitetysta
-    H:sta, tasmaa mitattua ~28cm halkaisijaa vasten) - siksi height_cm
-    KIINNITETAAN tunnettuun fysikaaliseen arvoon (WCF-vahimmaismitta
-    oletuksena) sen sijaan etta yritettaisiin "ratkaista" jotain mita
-    tama data ei yksinkertaisesti sisalla.
+    HUOM H_total (kayttajan pyynnosta, katso git-historia AIEMMASTA
+    kiinteasta versiosta): nyt VAPAA parametri, mutta RAJOITETTU
+    valille [height_min_cm, height_max_cm] (oletus: WCF-vahimmaiskorkeus
+    11.43cm ... kayttajan antama 15cm katto) _sigmoid_bounded:in kautta,
+    koska LM-sovitin itse ei tue rajoituksia. TAMA EI POISTA aiemmin
+    havaittua degeneraatiota (3 kivea + n. 10-25 asteen korkeuskulma-
+    alue ei riita erottamaan "hieman pienempi R + suurempi H" ja "hieman
+    suurempi R + pienempi H" -ratkaisuja toisistaan, koska nailla on
+    lahes SAMA siluetti - RMS oli litea valilla n. 6-12cm) - rajat vain
+    ESTAVAT sovitusta ajautumasta fysikaalisesti mahdottomaan arvoon
+    (esim. alle WCF-minimin) sen sijaan etta korjaisivat itse
+    tunnistettavuusongelman. Jos havaintoaineistossa ei ole aidosti
+    matalia (~alle 10 asteen) kuvakulmia, H_total voi silti asettua
+    lahes mielivaltaisesti rajojen sisalle - kayttajan kannattaa
+    tarkistaa residual_rms_px:n herkkyys H:lle tapauskohtaisesti.
+
+    HUOM handle_r_frac (kayttajan pyynnosta lisatty): kahvan aiheuttaman
+    kolon SADE (r_frac * R_max) on nyt MYOS vapaa parametri, rajoitettuna
+    valille [handle_r_frac_min, handle_r_frac_max] samalla _sigmoid_
+    bounded-periaatteella kuin H_total. Kolon SIJAINTI (keskitetty
+    X0,Y0-akselille, z=H_total:ssa) pysyy kuitenkin MAARITELTYNA, ei
+    vapaana - katso HANDLE_NOTCH_R_FRAC:in kommentti MIKSI atsimuutti-
+    kulmaa ei voi luotettavasti sovittaa. Sateen sovitus VAATII riittavan
+    laajan kulmavaihtelun toimiakseen luotettavasti - kayttajan mittaus
+    (yhden kiven KOKO liu'un kattava seuranta, ~25 tasavalisesti
+    naytteistettya havaintoa radan molemmista paista) antoi vakaan,
+    toistettavan tuloksen (~0.68-0.70) - paljon lyhyemmalla/suppeammalla
+    havaintojoukolla (esim. vain muutama lahekkainen frame) tulos voi
+    olla epaluotettava samasta syysta kuin H_total:in degeneraatio-huomio
+    ylla.
 
     stones: find_stone_candidates:in palauttamat dictit (tarvitaan seka
     "ellipse" etta "contour").
 
-    Palauttaa dictin: R_max_cm (sovitettu), H_total_cm (KIINTEA, =
-    height_cm), shape_deltas (hienosaadetut poikkeamat kovakoodattuun
-    malliin), positions_cm, residuals_px (VAIN aariviiva-jaannokset,
-    ilman regularisointitermeja), residual_rms_px.
+    Palauttaa dictin: R_max_cm (sovitettu), H_total_cm (sovitettu, katso
+    yllaoleva HUOM), handle_r_frac (sovitettu, katso yllaoleva HUOM),
+    shape_deltas (hienosaadetut poikkeamat kovakoodattuun malliin,
+    molemmat puoliskot, ylapuolisko peilattu alapuoliskosta),
+    positions_cm, residuals_px (VAIN aariviiva-jaannokset, ilman
+    regularisointitermeja), residual_rms_px.
     """
 
     if len(stones) < 2:
@@ -835,14 +983,21 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
             f"(saatiin {len(stones)})."
         )
 
-    # _TEMPLATE_EQUATOR_IDX:in delta EI OLE vapaa parametri - katso
-    # _predicted_stone_hull:in kommentti: se piste MAARITTELEE R_max:in
-    # (leveimman kohdan sade on R_max per maaritelma), joten oma vapaa
-    # delta sille olisi redundantti (ja aiheutti rappeutuneen, ei-
-    # monotonisen sovituksen - katso git-historia).
-    free_idx = [i for i in range(len(STONE_PROFILE_TEMPLATE_NORM)) if i != _TEMPLATE_EQUATOR_IDX]
-    n_shape = len(free_idx)
+    # Vain ALAPUOLISKON kontrollipisteet (paivaa lukuunottamatta) ovat
+    # vapaita - katso taman funktion docstring symmetriapakosta.
+    # _TEMPLATE_EQUATOR_IDX:in (=paivan) delta EI OLE vapaa parametri
+    # muutenkaan - katso _predicted_stone_hull:in kommentti: se piste
+    # MAARITTELEE R_max:in (leveimman kohdan sade on R_max per
+    # maaritelma), joten oma vapaa delta sille olisi redundantti (ja
+    # aiheutti rappeutuneen, ei-monotonisen sovituksen - katso git-
+    # historia).
+    n_shape = _TEMPLATE_HALF_LEN - 1
     effective_reg_weight = shape_reg_weight * (len(stones) / 3.0)
+
+    initial_height_cm = 0.5 * (height_min_cm + height_max_cm)
+    h_free0 = _inverse_sigmoid_bounded(initial_height_cm, height_min_cm, height_max_cm)
+
+    handle_free0 = _inverse_sigmoid_bounded(HANDLE_NOTCH_R_FRAC, handle_r_frac_min, handle_r_frac_max)
 
     positions0 = []
 
@@ -853,40 +1008,45 @@ def fit_stone_profile(pose, stones, n_sample_per_stone=40,
 
     def unpack(params):
         R_max = params[0]
-        shape_deltas = np.zeros(len(STONE_PROFILE_TEMPLATE_NORM))
-        shape_deltas[free_idx] = params[1:1 + n_shape]
-        positions = params[1 + n_shape:].reshape(-1, 2)
-        return R_max, shape_deltas, positions
+        H_total = _sigmoid_bounded(params[1], height_min_cm, height_max_cm)
+        handle_r_frac = _sigmoid_bounded(params[2], handle_r_frac_min, handle_r_frac_max)
+        half_deltas = params[3:3 + n_shape]
+        shape_deltas = _expand_symmetric_shape_deltas(half_deltas)
+        positions = params[3 + n_shape:].reshape(-1, 2)
+        return R_max, H_total, handle_r_frac, shape_deltas, positions
 
     def residuals(params, include_reg=True):
 
-        R_max, shape_deltas, positions = unpack(params)
+        R_max, H_total, handle_r_frac, shape_deltas, positions = unpack(params)
         parts = []
 
         for (X0, Y0), stone in zip(positions, stones):
             parts.append(_profile_residuals_for_stone(
-                pose, X0, Y0, R_max, height_cm, shape_deltas,
-                stone["contour"], n_sample_per_stone
+                pose, X0, Y0, R_max, H_total, shape_deltas,
+                stone["contour"], n_sample_per_stone,
+                handle_r_frac=handle_r_frac
             ))
 
         if include_reg:
-            parts.append(shape_deltas[free_idx] * effective_reg_weight)
+            half_deltas = params[3:3 + n_shape]
+            parts.append(half_deltas * effective_reg_weight)
 
         return np.concatenate(parts)
 
     params0 = np.concatenate([
-        [initial_radius_cm],
+        [initial_radius_cm, h_free0, handle_free0],
         np.zeros(n_shape),
         np.array(positions0, dtype=np.float64).ravel(),
     ])
 
     params_final = k8._levenberg_marquardt(residuals, params0, max_iterations=100)
-    R_max, shape_deltas, positions = unpack(params_final)
+    R_max, H_total, handle_r_frac, shape_deltas, positions = unpack(params_final)
     resid_contour_only = residuals(params_final, include_reg=False)
 
     return {
         "R_max_cm": float(abs(R_max)),
-        "H_total_cm": float(height_cm),
+        "H_total_cm": float(H_total),
+        "handle_r_frac": float(handle_r_frac),
         "shape_deltas": shape_deltas,
         "positions_cm": [(float(x), float(y)) for x, y in positions],
         "residuals_px": resid_contour_only,

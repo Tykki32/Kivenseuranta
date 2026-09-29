@@ -31,75 +31,26 @@ public:
     // CONSTRUCTOR
     // ========================================================
 
-    // ENABLE_HW_VIDEO_DECODE (Testi_03_01, ks. main.py:n lipun kommentti
-    // ja kayttajan profilointi: read(video) 11.65 ms/ruutu) - uusi
-    // use_hw_decode-parametri, OLETUS false = TASMALLEEN Testi_02_01:n
-    // kaytos. Kun true, vihjataan MSMF-taustajarjestelmalle D3D11-
-    // laitteistodekoodausta VideoCapture::open():in params-versiolla -
-    // jos ajuri/koodekki ei tue tata, open() palauttaa false (EI heita
-    // poikkeusta), jolloin palataan alla automaattisesti tavalliseen
-    // avaukseen.
-    //
-    // HUOM (TARKEA, kayttajalle): TATA EI OLE VOITU KAANTAA EIKA AJAA
-    // kehitysymparistossa (Linux-kontti, ei MSVC/vcpkg-tyokaluketjua
-    // saatavilla) - varmista ETTA CMake-kaannos onnistuu omalla
-    // Windows-koneellasi ENNEN kuin luotat tahan lippuun. cv::CAP_PROP_
-    // HW_ACCELERATION ja cv::VIDEO_ACCELERATION_D3D11 ovat OpenCV 4.5+:n
-    // vakio-enumeja (nayttaisivat olevan vcpkg:n opencv4-paketissa
-    // mukana), mutta itse ajurituki (Intel UHD:n D3D11VA-dekooderi)
-    // riippuu Windowsin/Intelin grafiikka-ajurista.
     ModeEngine(
         const std::string& video_file,
-        int tile_size = 128,
-        bool use_hw_decode = false
+        int tile_size = 128
     )
         : tile_size_(tile_size)
     {
-        bool opened = false;
+#ifdef _WIN32
+        cap_.open(
+            video_file,
+            cv::CAP_MSMF
+        );
+#else
+        // Testi_02_03: Linux-kaannos (MSMF on vain Windowsissa).
+        cap_.open(
+            video_file,
+            cv::CAP_ANY
+        );
+#endif
 
-        if (use_hw_decode)
-        {
-            opened = cap_.open(
-                video_file,
-                cv::CAP_MSMF,
-                {
-                    cv::CAP_PROP_HW_ACCELERATION,
-                    cv::VIDEO_ACCELERATION_D3D11
-                }
-            );
-
-            if (opened)
-            {
-                std::cout
-                    << "[ModeEngine] D3D11-laitteistodekoodaus "
-                    << "pyydetty (ENABLE_HW_VIDEO_DECODE) - "
-                    << "cap_.get(CAP_PROP_HW_ACCELERATION) = "
-                    << cap_.get(cv::CAP_PROP_HW_ACCELERATION)
-                    << " (VIDEO_ACCELERATION_D3D11 = "
-                    << static_cast<int>(cv::VIDEO_ACCELERATION_D3D11)
-                    << " - jos luku ei tasmaa, ajuri EI oikeasti "
-                    << "kiihdyttanyt dekoodausta vaikka avaus onnistui)."
-                    << std::endl;
-            }
-            else
-            {
-                std::cerr
-                    << "[ModeEngine] HUOM: D3D11-laitteistodekoodaus "
-                    << "epaonnistui (ENABLE_HW_VIDEO_DECODE), "
-                    << "palataan tavalliseen videon avaukseen."
-                    << std::endl;
-            }
-        }
-
-        if (!opened)
-        {
-            opened = cap_.open(
-                video_file,
-                cv::CAP_MSMF
-            );
-        }
-
-        if (!opened || !cap_.isOpened())
+        if (!cap_.isOpened())
         {
             throw std::runtime_error(
                 "Videon avaaminen epaonnistui."
@@ -1783,12 +1734,10 @@ PYBIND11_MODULE(
         .def(
             py::init<
             const std::string&,
-            int,
-            bool
+            int
             >(),
             py::arg("video_file"),
-            py::arg("tile_size") = 128,
-            py::arg("use_hw_decode") = false
+            py::arg("tile_size") = 128
         )
 
         .def(

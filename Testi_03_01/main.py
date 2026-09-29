@@ -928,168 +928,40 @@ GRANITE_DIFF_THRESHOLD = 10.0
 # ============================================================
 ENABLE_SHADOW_TOLERANT_STABILIZATION = True
 
-SHADOW_V_DROP_MAX = 30.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita taustaksi/varjoksi
+# Kayttajan kanssa kasin lasin 4:15/4:57-frameilla (MAH00014) testatut
+# raja-arvot - katso keskusteluhistoria: -3<v_drop<50 antoi hieman
+# paremman (pienemman fg-vuodon) tuloksen kuin alkuperainen 0<v_drop<=30
+# SAMALLA color_diff<10-arvolla molemmissa testatuissa frameissa.
+SHADOW_V_DROP_MIN = -3.0  # kuinka paljon V saa NOUSTA (negatiivinen pudotus) ja silti tulkita taustaksi
+SHADOW_V_DROP_MAX = 50.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita taustaksi/varjoksi
 
 # ============================================================
-# NOPEUTUSLIPUT (Testi_03_01, 2026-09, kayttajan mitatun profiloinnin
-# perusteella - terminaalitulostus: "varjosuodatus 46.29 ms/ruutu" oli
-# ylivoimaisesti suurin yksittainen kustannus elavassa seurannassa,
-# suurempi kuin HAKU+SEURANTA yhteensa (29.1 ms/ruutu) - katso
-# keskusteluhistoria). Testi_02_01:sta EI ole muutettu mitaan - taman
-# tiedoston kaytos on TASMALLEEN sama kuin Testi_02_01:ssa niin kauan
-# kuin KAIKKI alla olevat liput ovat False.
+# ABSOLUUTTINEN JAA-SUODATUS (S/V) - kayttajan pyynnosta, katso
+# keskusteluhistoria: moodikuvasta (VAIN rata-alueen pikselit, rajattu
+# sadetasoleikkauksella fyysisiin rajoihin k8.OUTPUT_X/Y_MIN/MAX_CM:aan,
+# EI koko kameranakymaa - laidat/katto/pesamainokset olisivat vaaris-
+# taneet jakaumaa) laskettu S/V-2D-histogrammi paljasti etta selva
+# enemmisto (~68%) radan omista jaapikseleista tayttaa S<22 & V>128:n.
 #
-# JOKA LIPPU KYTKETTAVISSA ITSENAISESTI PAALLE - suositeltu testijarjestys
-# (kannettava, Intel UHD Graphics), MITATTU tassa kehitysymparistossa
-# main.py:n OIKEALLA koodilla (ei vain erillisella testiskriptilla) ja
-# OIKEALLA testivideolla (0001.mp4, "Testivideo"-julkaisu, 1920x1080):
-#   1) ENABLE_SHADOW_CV_MASK_OPS (SUURIN YKSITTAINEN VAIKUTUS, EI viela
-#      GPU:ta - pelkka vektorointi CPU:lla. Testissa: 48.8 ms -> 8.7
-#      ms/ruutu YKSIN paallä, n. 5.6x). HUOM: ENABLE_SHADOW_REF_CACHE
-#      YKSIN (ilman tata) EI juuri auta (48.8 -> 49.0 ms) - alkuperaisen
-#      polun hitaus tulee paaosin numpyn fancy-index-sijoituksesta ja
-#      .astype(int16)-muunnoksista, EI referenssin uudelleenlaskennasta -
-#      testaa siis TAMA ensin, ei referenssicachea.
-#   2) ENABLE_SHADOW_REF_CACHE   PAALLE #1:n LISAKSI (yhdessa: 8.7 -> 6.3
-#      ms/ruutu) - halpa lisaparannus #1:n paalle, mutta vaatimaton yksin.
-#   3) ENABLE_SHADOW_UMAT        (VAATII #1:n; kokeilee OpenCL/Intel
-#      UHD:ta - epavarmin hyoty integroidulla GPU:lla, ks. HUOM alla:
-#      tassa kehitysymparistossa CPU-emuloitu OpenCL oli HITAAMPI kuin
-#      pelkka CPU-Mat-polku, koska pieni kuva + Mat<->UMat-siirrot eivat
-#      kata GPU:n etua - Intel UHD:lla siirtokustannus on erilainen
-#      [integroitu/jaettu muisti], joten TAMA ON NIMENOMAAN se lippu
-#      joka pitaa oikeasti mitata OMALLA koneella, ei olettaa)
-#   4) ENABLE_WARP_REMAP_UMAT    (VAATII OpenCL:n, kuten #3 - sama varaus)
-#   5) ENABLE_HW_VIDEO_DECODE    (C++-puoli, vaatii uudelleenkaannoksen
-#      - katso HUOM alla, EI testattu tassa ymparistossa)
-#
-# TESTAUSOHJE: aja sama videotiedosto lapi kerran per lippu-yhdistelma,
-# vertaa (a) konsoliin tulostettavaa "ms/ruutu"-erittelya (main.py
-# tulostaa nyt myos aktiiviset liput samaan riviin, ks. alempana) ja
-# (b) etta CSV-/debug-videotulos ei muutu (tools/review_tracks.py) -
-# kaikki alla olevat muutokset on suunniteltu/todennettu (ks. kunkin
-# lipun oma kommentti) tuottamaan PIKSELINTARKASTI sama tulos kuin
-# Testi_02_01, VAIN nopeus muuttuu.
-#
-# HUOM: taman lippukokoelman cv2-only-osuudet (#1-#2) on todennettu tassa
-# kehitysymparistossa (a) 200 satunnaisella testikuvalla ja (b) OIKEALLA
-# testivideolla (0001.mp4) - molemmissa PIKSELINTARKKA (0) vastaavuus
-# alkuperaiseen kaikilla lippuyhdistelmilla, myos UMAT-polulla (testattu
-# pocl-CPU-OpenCL-ajurilla, koska Linux-kontissa ei ole GPU:ta). #3-#5:n
-# NOPEUSVAIKUTUSTA (Intel UHD:lla) EI ole voitu mitata tassa (ei GPU:ta/
-# Windows-kaannosymparistoa kontissa) - testaa ne omalla koneellasi.
+# TARKISTETTU (kayttajan pyynnosta) etta tama EI syo kivea merkittavasti:
+# alkuperainen epailys (kiven kirkkaat pikselit osuisivat samaan
+# alueeseen) osoittautui SUURELTA OSIN oman rajausvirheen (liian valjan
+# kivimaskin, joka sisalsi kiven ymparilla olevaa sumeaa jaa/kiiltohaloa)
+# aiheuttamaksi - Canny-reunantunnistus vahvisti ettei kiven ja jaan
+# valilla ollut edes oikeaa gradienttia siina kohtaa, ja pikseliarvot
+# (~V170-186) vastasivat suoraan jaata (~V163), eivat kiven omaa tummaa
+# ydinta (~V50). Tiukalla, todelliseen reunaan sovitetulla kivimaskilla
+# haviota oli VAIN n. 0.1% kiven pikseleista (molemmat testikivet,
+# stone_check_frame.png) - tama on positio-RIIPPUMATON suodatus (ei
+# vertaa samaan pikseliin moodikuvassa kuten ylla olevat kaksi), joten
+# se auttaa NIMENOMAAN tapauksissa joissa valotasapaino/kirkkaus on jo
+# korjattu mutta yksittainen pikseli silti eroaa referenssista (esim.
+# heijastus/kiilto joka liikkuu framen mukana) - katso myos ylla oleva
+# valotasapainokorjaus, joka jo hoitaa suurimman osan hitaasta ajautu-
+# masta ETUKATEEN, joten tama on lisasuoja sen PAALLE, ei korvaa sita.
 # ============================================================
-
-ENABLE_SHADOW_REF_CACHE = True
-# _shadow_tolerant_background_mask laski Testi_02_01:ssa referenssikuvan
-# (reference_bgr - elavassa seurannassa calib["frame_undistorted"], joka
-# on VAKIO koko sen vaiheen ajan) HSV:n UUDESTAAN joka ruudulla, vaikka
-# tulos on aina sama. Kun True, referenssin HSV:n V-kanava lasketaan
-# kertaalleen ja cachetetaan (avaimena id(reference_bgr) - jos eri
-# referenssi-olio annetaan, esim. radan alkuskannauksen eri vaiheessa,
-# cache lasketaan automaattisesti uudestaan). ODOTETTU TULOS:
-# PIKSELINTARKASTI SAMA kuin False - vain harvemmin laskettu.
-
-ENABLE_SHADOW_CV_MASK_OPS = True
-# Testi_02_01:n maskilogiikka kayttaa NumPy:n boolean-fancy-index-
-# sijoitusta ("out[mask] = 255") ja ".astype(np.int16)"-muunnoksia koko
-# framelle - KUMMALLAKAAN ei ole cv2:n UMat/OpenCL-vastinetta (eivat siis
-# voi koskaan hyotya ENABLE_SHADOW_UMATista) eivatka ole nopeita CPU:llakaan
-# (fancy-indeksointi vaatii mask.nonzero()-tyylisen "tiivistyksen", ei
-# suoraa vektorioperaatiota). Kun True, korvataan: cv2.compare/cv2.inRange
-# vertailuille, cv2.subtract(..., dtype=cv2.CV_16S) int16-erotukselle, ja
-# "out = frame OR mask3ch" -bittitemppu fancy-indeksoinnin sijaan (OR
-# 0xFF -> aina 255, OR 0x00 -> ennallaan - TASMALLEEN sama tulos kuin
-# out[mask]=255). ODOTETTU TULOS: PIKSELINTARKASTI SAMA - todennettu 200
-# satunnaisella testikuvalla ennen kayttoonottoa (ks. ylla).
-
-ENABLE_SHADOW_UMAT = True
-# Ajaa (ENABLE_SHADOW_CV_MASK_OPS:in cv2-only) varjosuodatusputken
-# cv2.UMat-olioina Mat:in sijaan - OpenCV:n T-API ohjaa taman automaattisesti
-# Intel-ajurin OpenCL-toteutukseen, jos sellainen loytyy. VAATII
-# ENABLE_SHADOW_CV_MASK_OPS=True:n (numpy-operaatioilla ei ole UMat-
-# vastinetta - pelkka taman lipun paalle kytkeminen ilman edellista ei tee
-# mitaan, ks. suppress_static_background). Jos cv2.ocl.haveOpenCL() on
-# False (ajuria ei loydy), palataan automaattisesti CPU-polkuun ja
-# tulostetaan varoitus KERRAN. ODOTETTU TULOS: KAYTANNOSSA SAMA (kaikki
-# operaatiot ovat kokonaislukuvertailuja/bittioperaatioita - GPU:n
-# liukulukupyoristys ei paase vaikuttamaan tahan logiikkaan).
-
-ENABLE_WARP_REMAP_UMAT = True
-# Sama T-API/UMat-periaate elavan seurannan warpAffine+remap-ketjulle
-# (koko framelle, joka elavan seurannan ruutu - profiloinnissa 7.14
-# ms/ruutu) - cv2.warpAffine ja cv2.remap tukevat T-API:a natiivisti.
-# VAATII OpenCL:n (kuten ENABLE_SHADOW_UMAT). ODOTETTU TULOS: KAYTANNOSSA
-# SAMA (sama interpolointikaava; GPU:n liukulukutoteutus voi poiketa
-# viimeisessa desimaalissa, mika ei ole merkityksellista pikselikoordinaateille).
-
-ENABLE_HW_VIDEO_DECODE = True
-# Videon dekoodaus C++-puolella (mode_engine.cpp/ModeEngine) - lisaa
-# cv::CAP_PROP_HW_ACCELERATION=D3D11-vihjeen MSMF-taustajarjestelmalle
-# (profiloinnissa read(video) 11.65 ms/ruutu - tama on ERI ASIA kuin
-# CPU/GPU-LASKENTA: siirtaa H.264/H.265-dekoodauksen UHD:n omalle
-# kiintotoimintoiselle videopiirille, joka ei kilpaile CPU-ytimien EIKA
-# OpenCL-laskentayksikoiden kanssa). HUOM (TARKEA): TATA EI OLE VOITU
-# KAANTAA EIKA AJAA tassa kehitysymparistossa (Linux-kontti, ei MSVC/
-# vcpkg-tyokaluketjua) - VARMISTA ETTA CMake-kaannos onnistuu OMALLA
-# KONEELLASI ENNEN KUIN LUOTAT TAHAN (ks. mode_engine.cpp:n ModeEngine-
-# konstruktorin kommentti). Jos ajurituki puuttuu tai D3D11-avaus
-# epaonnistuu, ModeEngine palaa AUTOMAATTISESTI tavalliseen avaukseen
-# (ei kaadu). ODOTETTU TULOS: SAMA KUVASISALTO (H.264/H.265-dekoodaus on
-# haviotonta pikselintasolla riippumatta dekooderista), vain nopeampi.
-
-ENABLE_HAKU_PARALLEL_GRID = True
-# HAKU (stone_tracker.cpp:n search_new_stone) profiloitiin 102.9-167.3
-# ms/kutsu - TAYSIN exhaustiivinen ristikkohaku (kayttajan pyynnosta EI
-# early-stop/pienennetty ikkuna - "vasta viimeinen keino", ks. TRACK_
-# COARSE/FINE_STEP_CM:n kommentti), n. 465+121=586 riippumatonta (X,Y)-
-# pistetta HAKU:n oletusasetuksilla (SEARCH_X_HALF_WIDTH_CM=70,
-# SEARCH_Y-vali 300cm), aiemmin TAYSIN sarjallisena. Kun True, stone_
-# tracker.cpp:n gridSearchBest rinnakkaistaa nama pisteet TASMALLEEN
-# samalla, jo validoidulla kaavalla (atominen tyonvarastus-indeksi per
-# saie) kuin track_stones_batch (SEURANTA) jo kayttaa per-kivi - katso
-# stone_tracker.cpp:n oma kommentti. ODOTETTU TULOS: PARAS LOYDETTY
-# PISTEMAARA aina sama (haku on exhaustiivinen, ei early-stop) - VAIN
-# harvinaisessa TASAPELISSA (kaksi pistetta tasan sama pistemaara)
-# voittaja voi vaihtua, TASMALLEEN sama, jo hyvaksytty poikkeamaluokka
-# kuin SEURANNAN oma ring-search-tasapeliero. EI VOITU KAANTAA/TESTATA
-# TASSA (ei Windows/MSVC/vcpkg-ymparistoa) - VARMISTA ETTA KAANTYY.
-
-ENABLE_SEURANTA_HAKU_THREAD_SPLIT = True
-# Kun HAKU (search_new_stone) kaynnistetaan taustasaikeelle SAMALLA
-# ruudulla jolla SEURANTA (track_stones_batch) myos ajetaan (yleista -
-# molemmat voivat pyytaa TAYDEN hardware_concurrency()-ydinmaaran
-# YHTAAIKAA, koska kumpikaan ei tienny toisesta) - jakaa ydinmaaran
-# karkeasti PUOLIKSI niiden kesken sen sijaan etta molemmat riippu-
-# mattomasti ylikuormittaisivat kaikki ytimet samaan aikaan (main.py:n
-# _thread_split_budgets()). TAMA ON PUHDAS RESURSSIENJAKO-optimointi -
-# EI VAIKUTA MIHINKAAN LASKENTAAN, vain siihen KUINKA MONTA SAIETTA
-# kumpikin kutsu saa kayttoonsa. Kun False, HAKU ja SEURANTA pyytavat
-# molemmat oletusarvoisesti tayden ydinmaaran itsenaisesti (voi
-# ylikuormittaa, mutta EI ole vaarin - vain mahdollisesti hitaampi).
-# Kaytettavissa oleva ydinmaara (os.cpu_count()) on TARKEA tietaa taman
-# lipun kanssa - katso konsolin alkutulostus.
-
-_cpu_count = os.cpu_count() or 4
-
-
-def _thread_split_budgets():
-    """ENABLE_SEURANTA_HAKU_THREAD_SPLIT: HAKU (search_new_stone,
-    ENABLE_HAKU_PARALLEL_GRID) ja SEURANTA (track_stones_batch) jakavat
-    _cpu_count:in karkeasti puoliksi kun molemmat ajetaan samanaikaisesti
-    (HAKU omalla taustasaikeellaan, SEURANTA paasaikeessa) - palauttaa
-    (haku_max_grid_workers, seuranta_reserved_threads). KARKEA nyrkki-
-    saanto (tasan puolet, ei dynaamista kuormanmittausta) - jos toinen
-    puoli on selvasti kevyempi (esim. vain 1 kivi SEURANNASSA), tama
-    EI ole taydellinen, mutta on aina VAHINTAAN yhta hyva kuin ilman
-    jakoa (molemmat riippumattomasti koko ydinmaaraa pyytamassa)."""
-
-    half = max(1, _cpu_count // 2)
-    haku_max_grid_workers = half
-    seuranta_reserved_threads = half
-
-    return haku_max_grid_workers, seuranta_reserved_threads
-
+ICE_S_MAX = 22
+ICE_V_MIN = 128
 
 # ============================================================
 # JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
@@ -1107,7 +979,7 @@ def _thread_split_budgets():
 # huomio: kuvan pienentaminen tuhoaisi juuri sub-pikseli-tarkkuuden
 # jota haetaan). cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio)
 # laskee koko framen sub-pikseli-tarkan TRANSLAATION yhdella kutsulla -
-# ei enaa ristikkohakua eika kiertoa (katso estimate_subpixel_alignment).
+# ei enaa ristikkohakua eika kiertoa (katso _phase_correlate_full_frame).
 #
 # PAALLA (kayttajan pyynnosta): validoitu koko videon lapikaynnilla
 # (SUBPIXEL_ALIGN_CROP_FRACTION=0.67:lla) - ei enaa karkaavia haamuja,
@@ -1116,14 +988,25 @@ def _thread_split_budgets():
 # oma rivi. Kayttajan pyynnosta SUBPIXEL_ALIGN_CROP_FRACTION nostettu
 # takaisin 1.0:aan (koko rata) taman validoinnin jalkeen - EI VIELA
 # uudelleenvalidoitu koko videon lapikaynnilla taysikokoisena.
+#
+# ENABLE_SUBPIXEL_ALIGNMENT-LIPPU POISTETTU (kayttajan havainto + oma
+# empiirinen vahvistus, katso keskusteluhistoria "loppuvideon" PIKSELI-
+# TARKKA SUORA STABILOINTI -kommentin kohdalla): talla lipulla ohjattu
+# jalkikorjaus (estimate_subpixel_alignment alla) mittasi ALKUPERAISESTI
+# pienen residuaalin epatarkan paneilipohjaisen stabiloinnin PAALLE -
+# nyt kun paastabilointi TEKEE JO TASMALLEEN saman suoran moodikuva-
+# vertailun, jalkikorjaus vain toisti saman mittauksen ja kasvatti
+# virhetta (havaittu: taustanvaimennuksen reunavuoto +54% jalkikorjauksen
+# kanssa vs. ilman). estimate_subpixel_alignment/_phase_correlate_full_
+# frame jataan silti talteen - JALKIMMAINEN on edelleen KAYTOSSA "loppu-
+# videon" paastabiloinnin OMANA ytimena (katso sen kaytto alempana).
 # ============================================================
-ENABLE_SUBPIXEL_ALIGNMENT = True
 
-SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso estimate_subpixel_alignment (kayttajan pyynnosta 10x, oli 1.0)
+SUBPIXEL_ALIGN_RANGE_PX = 10.0  # turvaraja - katso _phase_correlate_full_frame (kayttajan pyynnosta 10x, oli 1.0)
 
 # Kuinka suuri, kuvan keskelle keskitetty osuus (leveys JA korkeus)
 # kaytetaan vaihekorrelaatioon - EI pienennys, vain RAJAUS (resoluutio
-# sailyy taysimittaisena) - katso estimate_subpixel_alignment. Kayttajan
+# sailyy taysimittaisena) - katso _phase_correlate_full_frame. Kayttajan
 # pyynnosta 1.0 (koko rata/koko kuva, EI vain keskustaa) - nopeuden
 # hillitsemiseksi aiemmin kokeiltu 0.67 (~38ms/ruutu) hylattiin, koska
 # stabiloinnin pitaa kattaa koko radan, ei vain kuvan keskiosaa. Koko
@@ -1398,6 +1281,22 @@ TRACK_MAX_SPEED_X_FRACTION_OF_Y = 0.10
 TRACK_MAX_SPEED_X_CM_S = TRACK_MAX_SPEED_Y_CM_S * TRACK_MAX_SPEED_X_FRACTION_OF_Y
 TRACK_MAX_BACKWARD_CM = 100.0
 
+# ============================================================
+# ABSOLUUTTINEN KESKIVIIVAETAISYYSRAJA (kayttajan pyynnosta, katso
+# keskusteluhistoria): kayttajan omaan kokemukseen perustuva havainto
+# tasta radasta/pelityylista - kivi joka on koskaan yli 1.2m
+# keskiviivasta (X=0) on hyvin todennakoisesti EI kivi (SEURANTA on
+# ajautunut pelaajaan/lakaisijaan tms.), koska aidot heitot pysyvat
+# tallä radalla kaytannossa aina tata lahempana keskiviivaa - HAKU:n
+# oma hakuvyohyke (kamera9_02.py:n SEARCH_X_HALF_WIDTH_CM=70cm) on jo
+# tatakin tiukempi UUDEN kiven loytohetkella, mutta SEURANNAN paikal-
+# linen haku (TRACK_HALF_RANGE_CM=35cm/frame) voi ajan mittaan ajautua
+# hakuvyohykkeen ulkopuolelle jos se tarttuu jatkuvasti sivuttain
+# liikkuvaan kohteeseen (esim. pyyhkija) - sama periaate kuin TRACK_
+# MAX_BACKWARD_CM:ssa ylla, mutta X-suunnassa ja molempiin suuntiin.
+# ============================================================
+MAX_ABS_X_FROM_CENTERLINE_CM = 120.0
+
 # YLARAJA nopeuspohjaiselle hakualueelle (havaittu VALTTAMATTOMAKSI
 # koko videon lapikaynnilla, katso keskusteluhistoria): half_range =
 # max_speed_cm_s * elapsed_s KASVAA RAJATTA pitkien miss-sarjojen
@@ -1448,6 +1347,113 @@ TRACK_HALF_RANGE_MAX_CM = 100.0
 # kallaan lepäävä kohde ei koskaan.
 MIN_CONFIRMED_THROW_DISPLACEMENT_CM = 25.0
 
+# HAVAITTU ONGELMA (kayttajan raportoima, katso keskusteluhistoria):
+# pelaaja/lakaisija HAKU-alueella (katso kamera9_02.py:n SEARCH_Y_MIN/
+# MAX_CM) voi silloin talloin TAYTTAA HAKU:n omankin tiukan hyvaksynta-
+# kriteerin (search_new_stone vaatii refined.tarkka:n - OIKEAN pyorean
+# reunan/rengasrakenteen LM-sovituksen, EI pelkkaa peitto-osuutta, katso
+# stone_tracker.cpp:n search_new_stone-kommentti) YHDELLA framella
+# esim. vaatteen/harjan reunan sattuessa hetkeksi ympyramaiseksi. Kun
+# tama tapahtuu, SEURANTA jatkaa sen jalkeen kandidaattia LOYSEMMALLA
+# per-frame-kynnyksella (TRACK_SCORE_THRESHOLD, katso kamera9_02.py -
+# EI vaadi tarkka:a joka framella, koska "jatkuvuus on jo vahva prior"
+# - jarkeva oletus AIDOLLE, jo vahvistetulle kivelle, joka voi hetkeksi
+# olla osittain peitossa). Tama sallii kandidaatin, joka EI OIKEASTI ole
+# kivi, "ajautua" pelaajan mukana useita sekunteja ja YLITTAA yllaolevan
+# siirtymakynnyksen, tullen vahvistetuksi VIRHEELLISESTI.
+#
+# Todellisella datalla (katso keskusteluhistoria, fullrun_positions.csv,
+# frame 4530 -> 4716, ihmiseksi silmamaarin vahvistettu): tama kandi-
+# daatti saavutti tarkka=1:n vain 3/8 (38%) ensimmaisesta 8 havain-
+# nostaan (ennen 25cm-vahvistuskynnysta), kun taas kaikki pitkaan
+# seuratut, selvasti aidot kivet (>=500 rivia koko elinajalta) olivat
+# 100% tarkka=1 samassa ikkunassa. Siksi: vaaditaan MYOS etta riittavan
+# pitkan (>=MIN_PRECONFIRM_TARKKA_OBSERVATIONS havaintoa - lyhyemmalla
+# otoksella tarkka-osuus on liian kohinainen yksittaisten aitojenkin
+# heittojen alkumetreilla hylattavaksi, katso keskusteluhistorian
+# tilastot) puskuroidun ikkunan tarkka-osuus ylittaa MIN_PRECONFIRM_
+# TARKKA_FRACTION:in ENNEN vahvistusta - muuten koko puskuroitu
+# havaintosarja hylataan (kuten "ei liikkunut riittavasti" -tapauksessa)
+# eika kandidaattia enaa seurata.
+MIN_PRECONFIRM_TARKKA_OBSERVATIONS = 8
+MIN_PRECONFIRM_TARKKA_FRACTION = 0.4
+
+# JATKUVA TARKKA-OSUUSTARKISTUS VAHVISTETUILLE KIVILLE (Testi_02_02,
+# kayttajan pyynnosta) - katso kayttokohdan kommentti. Eri (loyhempi)
+# kynnys kuin MIN_PRECONFIRM_*: vahvistettu kivi on jo läpaissyt
+# tiukemman esitarkistuksen kerran, joten tama on lisasuoja PITKAAN
+# kestavaa ajautumaa vastaan, ei alkuperainen suodatin.
+#
+# 50 -> 150 (kayttajan pyynnosta tehdyn SEURANNAN maskiyhdistelma-
+# korjauksen - stone_tracker.cpp:n createForegroundFromWhitened -
+# jalkeen havaittu tarve, katso myos confirmed_tarkka_window:in oma
+# kommentti kayttokohdassa): korjaus tekee findContourNear:ista
+# herkemman todelliselle, mutta LYHYTAIKAISELLE kosketukselle naapuri-
+# kohteeseen (esim. heittaja/lakaisija VIELA kiven vieressa muutaman
+# sekunnin ajan HETI heiton jalkeen, ennen kuin kivi jaa yksin) - tama
+# nakyy matalana tarkka-osuutena vain ENSIMMAISTEN havaintojen ajan.
+# Ikkuna (deque) sailyttaa vain VIIMEISIMMAT N havaintoa, mutta koska
+# ensimmainen tarkistus tapahtuu heti kun ikkuna on TAYTTYNYT ENSI
+# KERRAN (havainto N), lyhyt N (50 = 2s) tarkistaa VIELA TASMALLEEN
+# saman (kontaminoituneen) jakson kuin kumulatiivinen laskuri olisi -
+# ikkuna ei ehdi "unohtaa" mitaan ennen ensimmaista tarkistusta.
+# Mitattu oikealla datalla: aito kivi hylattiin virheellisesti N=50:n
+# kohdalla (19/50=38%), vaikka sen havainnot valilta t=622.68-623.12
+# (juuri se jakso jonka kayttaja alunperin liputti X-hyppimisongelmana)
+# olivat jo taydellisia (n_body 26-29, rms 0.5-0.9px) - lyhyt n. 1.5s
+# kontaminaatio heti heiton jalkeen ei ollut viela ehtinyt "laimentua"
+# lyhyessa ikkunassa, ja N=50 katkaisi seurannan JUURI TAMAN puhtaan
+# jakson keskella. N=150 (6s) antaa tallaiselle lyhyelle alkukonta-
+# minaatiolle tarpeeksi tilaa laimentua ENNEN ensimmaista tarkistusta -
+# uudella koko radan ajolla sama kivi sailyi nyt seurattuna KOKO sen
+# kayttajan alunperin liputtaman puhtaan jakson ajan (t=622.68-623.12,
+# rms edelleen 0.5-0.9px) ja viela n. 6 sekuntia sen ohi, ennen kuin
+# SEURANTA ajautui my­ohemmin (t~624.2+) toiseen, jo ERIKSEEN tunnet-
+# tuun ja kayttajan tietoisesti rajaamaan ei-kriittiseen harjaan-
+# ajautumis-ongelmaan (katso keskusteluhistoria - tata TOISTA ongelmaa
+# EI korjata tassa, kayttajan nimenomaisesta pyynnosta). Aidot ongel-
+# malliset kandidaatit (havaittu samasta ajosta: n_body 260-280, rms
+# 25-33px koko elinkaarensa ajan yhden ainoan alkuhavainnon jalkeen,
+# ei yhtaan pitkaa puhdasta jaksoa) jaavat silti selvasti alle 0.5:n
+# kynnyksen N=150:n kohdallakin - vain n. 100 ylimaaraista (vaaraa)
+# CSV-riviä ehtii kertya ennen hylkaysta lyhyemman N:n sijaan.
+#
+# 150 -> 650 (kayttajan huomio: "yli 20 heittoa pitaisi pystya
+# seuraamaan", mutta HAKU-korjauksen jalkeenkin vain n. 16 heittoa
+# sai "luotettavan" (disp>15m, tarkka>75%) leiman - juurisyy loytyi
+# TASTA kynnyksesta): HAKU-korjauksen (createForegroundFromWhitened)
+# jalkeen SEURANTA yhdistaa rakeisuus- ja etualamaskit - tama tekee
+# findContourNear:ista herkemman havaitsemaan MYOS PITKAKESTOISEN,
+# ihan tavallisen curling-tilanteen: lakaisija joka kavelee/lakaisee
+# JATKUVASTI aidon, juuri heitetyn kiven VIERELLA/PAALLA KOKO heiton
+# ajan (ei vain hetken alussa, kuten N=150:n oma tapaus ylla) - tama
+# EI ole sama tapaus kuin "SEURANTA ajautui kokonaan pois oikealta
+# kivelta johonkin toiseen kohteeseen" (jota tama tarkistus alunperin
+# yritti torjua), koska X/Y-sijainti itsessaan pysyy koko ajan
+# sileana ja fysikaalisesti jarkevana (Y vahenee tasaisesti/hidastuen
+# kohti pesaa, X pysyy lahella keskiviivaa) - VAIN tarkka/n_body/rms
+# nayttavat huonolta, koska loydetty yhtenainen kontuuri sisaltaa
+# seka kiven etta lakaisijan. Mitattu oikealla datalla (00014_0202_
+# fp5_positions.csv): AINAKIN 14 todennakoisesti aitoa heittoa (esim.
+# id=134: X=0.1-0.7m koko ajan, Y vahenee sileasti 33.4m->19.1m,
+# n_body vaihtelee 12:sta yli 500:aan mutta sijainti ei koskaan
+# hyppaa) katkaistiin TASAN N=150:n (tai N:n lahella) kohdalla, vaikka
+# muut, kokonaan puhtaat heitot samalla videolla kestivat luonnol-
+# lisesti 472-613 havaintoa (19-24s) ennen omaa "pysahtynyt"-
+# paattymistaan - N=150 (6s) ei siis riittanyt EDES YHDEN normaalin
+# heiton luonnolliseen kestoon, joten se katkaisi tehokkaasti LAHES
+# JOKAISEN lakaisijan saattaman heiton keskelta. N=650 (26s) on
+# reilusti pidempi kuin pisin havaittu aito heitto (613 havaintoa) -
+# antaa siis KAIKILLE aidoille heitoille (myos
+# koko ajan lakaistuille) tilaa kestaa luonnolliseen loppuunsa
+# ("pysahtynyt"-tarkistus tai videon loppu) asti, samalla kun aidosti
+# ongelmalliset kandidaatit (nolla-lahella tarkka-osuus koko elin-
+# kaarensa, ei koskaan puhdasta/liikkuvaa jaksoa) jaavat silti
+# selvasti alle 0.5:n kynnyksen - vain hieman my­ohemmin (26s vs 6s)
+# kuin ennen.
+MIN_CONFIRMED_TARKKA_OBSERVATIONS = 650
+MIN_CONFIRMED_TARKKA_FRACTION = 0.5
+
 # HAKU-valin PAIKALLINEN ylikirjoitus (kayttajan pyynnosta) - EI
 # muuteta kamera9_02.py:n omaa SEARCH_EVERY_N_FRAMES:ia (se tiedosto
 # on koskematon referenssi, katso taman tiedoston alkupaan kommentti).
@@ -1471,7 +1477,151 @@ HAKU_SEARCH_INTERVAL_FRAMES = 10
 # testivideolla havaittu poikkeama n. 66 cm yhden ja saman kiven
 # kahden eri hakumekanismin valilla, joten kynnys pidetaan reilusti
 # sen ylapuolella.
-NEW_STONE_DEDUP_CM = 100.0
+#
+# HUOM (kayttajan loytama bugi MAH-videolla, katso keskusteluhistoria):
+# tama vertailu koski AIEMMIN KAIKKIA active_stones-listan kiviä, myos
+# viela VAHVISTAMATTOMIA (s["confirmed"]==False) ehdokkaita. Jos HAKU
+# tunnisti pelaajan/lakaisijan jalan viereltä kiveksi (aito ongelma -
+# pelkkaan muotoon/kokoon perustuva sovitus ei tunne varia), tama
+# vahvistamaton "kivi" esti TAYSIN HILJAA (ei lokiviestia) sen VIERESSA
+# olevan OIKEAN kiven rekisteroitymisen niin kauan kuin vaara ehdokas
+# pysyi aktiivisena (jopa useita sekunteja) - koska etaisyys mitattiin
+# myos siihen. Korjaus: dedup-vertailu tehdaan nyt vain jo VAHVISTETTUIHIN
+# kiviin (s["confirmed"]) - kaksi AITOA, jo vahvistettua kiveä eivat
+# edelleenkaan voi saada duplikaatti-ID:ta, mutta viela vahvistamaton
+# (mahdollisesti vaara) ehdokas ei enaa voi tukkia vieressa olevan
+# oikean kiven havaitsemista.
+# Testi_02_03: HAKU palauttaa KAIKKI kelvolliset ehdokkaat (HAKU_MAX_RESULTS) eika vain ensimmaista -
+# muuten pelaaja/lakaisija voittaa kilpailun ja vieressa oleva oikea kivi jaa rekisteroimatta.
+# HAKU_MULTI=0 = alkuperainen (yksi ehdokas / kutsu).
+# HEITTOPORTTI (Testi_02_03): videon lopussa varsinaiseen CSV:hen kirjoitetaan vain radat jotka ovat
+# koko elinkaarensa perusteella HEITTOJA (ei pelaajia/lakaisijoita): matka eteenpain (Y pienenee)
+# >= GATE_TRAVEL_CM, >= GATE_MIN_ROWS riviä, rms-mediaani <= GATE_MAX_RMS, tarkka-osuus >= GATE_MIN_TARKKA;
+# duplikaattiradat yhdistetaan. RAAKA (portittamaton) CSV kirjoitetaan viereen tiedostoon *_raaka.csv.
+# THROW_GATE=0 = alkuperainen (vain yksi raaka CSV).
+THROW_GATE = os.environ.get("THROW_GATE", "1") == "1"
+GATE_TRAVEL_CM = float(os.environ.get("GATE_TRAVEL_CM", "1500"))
+GATE_MIN_ROWS = int(os.environ.get("GATE_MIN_ROWS", "300"))
+GATE_MAX_END_Y_CM = float(os.environ.get("GATE_MAX_END_Y_CM", "1100"))   # lahihogline 823 cm + marginaali
+GATE_MAX_SPEED_RATIO = float(os.environ.get("GATE_MAX_SPEED_RATIO", "0.6"))
+GATE_RESCUE_MAX_RMS = float(os.environ.get("GATE_RESCUE_MAX_RMS", "12.0"))
+GATE_RESCUE_MIN_TARKKA = float(os.environ.get("GATE_RESCUE_MIN_TARKKA", "0.1"))
+GATE_CROSS_DEDUP_FRAMES = float(os.environ.get("GATE_CROSS_DEDUP_FRAMES", "40"))
+GATE_HEAD_GAP_FRAMES = int(os.environ.get("GATE_HEAD_GAP_FRAMES", "30"))
+GATE_HEAD_MAX_ROWS = int(os.environ.get("GATE_HEAD_MAX_ROWS", "40"))
+GATE_CROSS_EXTRAPOLATE_MAX = float(os.environ.get("GATE_CROSS_EXTRAPOLATE_MAX", "60"))
+GATE_MAX_RMS = float(os.environ.get("GATE_MAX_RMS", "3.0"))
+GATE_MIN_TARKKA = float(os.environ.get("GATE_MIN_TARKKA", "0.3"))
+
+
+def _track_kinematics(rows):
+    """(matka, loppu-Y, hidastuvuussuhde, hogline-ylitysframe) radan riveista. Hidastuvuus =
+    loppuvaiheen (viimeiset 20 % rivista) nopeus / alkuvaiheen (ensimmaiset 20 %) nopeus:
+    aito kivi hidastuu (0.2-0.4), pelaajan/lakaisijan paa liikkuu tasaisella nopeudella (~1)."""
+    ys = np.array([r["Y_cm"] for _, _, r in rows])
+    fr = np.array([f for f, _, _ in rows])
+    n = len(rows)
+    a = max(2, n // 5)
+    va = (ys[0] - ys[a]) / max(1, fr[a] - fr[0])
+    vb = (ys[-a - 1] - ys[-1]) / max(1, fr[-1] - fr[-a - 1])
+    ratio = vb / va if va > 0.5 else 9.9
+    cross = None
+    hog = k8.FAR_HOGLINE_Y_CM
+    for i in range(n - 1):
+        if ys[i] > hog >= ys[i + 1]:
+            cross = float(fr[i])
+            break
+    if cross is None and ys[0] <= hog:
+        cross = float(fr[0])
+    return float(ys[0] - ys.min()), float(ys[-1]), float(ratio), cross
+
+
+def _trim_track_head(rows):
+    """Pudottaa radan alun, jos sen jalkeen on GATE_HEAD_GAP_FRAMES:ia pidempi rivitön aukko ja alku on lyhyt
+    (< GATE_HEAD_MAX_ROWS riviä): rata on alussa lukkiutunut vääraan kohteeseen (esim. pelaajan jalka)
+    ja löytänyt oikean kiven vasta aukon jalkeen. Havaittu: heitto #4 (rata 158)."""
+    for i in range(min(len(rows) - 1, GATE_HEAD_MAX_ROWS)):
+        if rows[i + 1][0] - rows[i][0] > GATE_HEAD_GAP_FRAMES:
+            return rows[i + 1:]
+    return rows
+
+
+def _estimate_crossing(rows):
+    """Kaukaisen hoglinen ylitysframe. Jos rata alkaa jo hoglinen ALAPUOLELTA (rekisteroity myohassa),
+    ylitys ekstrapoloidaan taaksepain radan alun nopeudesta (enintaan GATE_CROSS_EXTRAPOLATE_MAX ruutua)."""
+    cross = _track_kinematics(rows)[3]
+    ys = np.array([r["Y_cm"] for _, _, r in rows])
+    fr = np.array([f for f, _, _ in rows], dtype=float)
+    hog = k8.FAR_HOGLINE_Y_CM
+    if ys[0] <= hog and len(rows) >= 10:
+        m = min(len(rows), 30)
+        v = (ys[0] - ys[m - 1]) / max(1.0, fr[m - 1] - fr[0])   # cm/frame, Y pienenee -> v > 0
+        if v > 1.0:
+            back = min((hog - ys[0]) / v, GATE_CROSS_EXTRAPOLATE_MAX)
+            return float(fr[0] - back)
+    return cross
+
+
+def _track_throw_class(rows):
+    """0 = ei heitto, 2 = heitto hyvalla sovituksella, 1 = heitto heikolla sovituksella (esim. lakaisija
+    peittaa osan kivesta): kaikilla tarvitaan heittomainen liike (matka >= GATE_TRAVEL_CM, loppu-Y <=
+    GATE_MAX_END_Y_CM, hidastuvuus <= GATE_MAX_SPEED_RATIO, >= GATE_MIN_ROWS riviä)."""
+    if len(rows) < GATE_MIN_ROWS:
+        return 0
+    travel, yend, ratio, _ = _track_kinematics(rows)
+    if travel < GATE_TRAVEL_CM or yend > GATE_MAX_END_Y_CM or ratio > GATE_MAX_SPEED_RATIO:
+        return 0
+    rms = [r["rms_px"] for _, _, r in rows if r.get("rms_px") is not None]
+    if not rms:
+        return 0
+    med = float(np.median(rms))
+    tk = sum(1 for _, _, r in rows if r.get("tarkka")) / len(rows)
+    if med <= GATE_MAX_RMS and tk >= GATE_MIN_TARKKA:
+        return 2
+    if med <= GATE_RESCUE_MAX_RMS and tk >= GATE_RESCUE_MIN_TARKKA:
+        return 1
+    return 0
+
+
+def _select_throws(tracks):
+    """tracks: [(stone_id, rows)] -> vain heittoportin lapaisseet, yksi rata / hogline-ylitys:
+    kahden radan ylitysajat < GATE_CROSS_DEDUP_FRAMES toisistaan = sama heitto (kayttajan tieto: joka
+    kerta vain YKSI kivi ylittaa hoglinen) -> sailyy parempi (hyva sovitus ensin, sitten pienin rms)."""
+    cands = []
+    for sid, rows in tracks:
+        rows = _trim_track_head(rows)
+        cls = _track_throw_class(rows)
+        if cls == 0:
+            continue
+        rms = [r["rms_px"] for _, _, r in rows if r.get("rms_px") is not None]
+        cross = _estimate_crossing(rows)
+        cands.append((-cls, float(np.median(rms)), -len(rows), sid, rows, cross))
+    cands.sort(key=lambda c: c[:3])
+    kept = []
+    for c in cands:
+        cross = c[5]
+        if cross is not None and any(
+            k[5] is not None and abs(k[5] - cross) < GATE_CROSS_DEDUP_FRAMES for k in kept
+        ):
+            continue
+        kept.append(c)
+    return sorted(((k[3], k[4]) for k in kept), key=lambda t: t[1][0][0])
+
+
+HAKU_MULTI = os.environ.get("HAKU_MULTI", "1") == "1"
+HAKU_MAX_RESULTS = int(os.environ.get("HAKU_MAX_RESULTS", "4"))
+HAKU_MAX_ATTEMPTS = int(os.environ.get("HAKU_MAX_ATTEMPTS", "8"))
+NEW_STONE_SAME_SCAN_CM = float(os.environ.get("NEW_STONE_SAME_SCAN_CM", "30.0"))
+NEW_STONE_DEDUP_CM = float(os.environ.get("NEW_STONE_DEDUP_CM", "20.0"))
+
+# Testi_02_03: kaksi rataa jotka ovat DUP_MERGE_CM:n sisalla toisistaan SAMALLA
+# framella (molemmat loysivat kohteensa) tulkitaan samaksi kiveksi ja uudempi
+# (tai vahvistamaton) poistetaan. Tekee mahdolliseksi pienentaa NEW_STONE_DEDUP_CM:aa
+# (vahvistettu ROSKARATA ei enaa estä oikean kiven rekisteroitymista), koska
+# mahdolliset duplikaatit siivotaan tassa. 0 = pois. HUOM: Testi_02_03:n OLETUS on 30 (+ NEW_STONE_DEDUP_CM=20);
+# alkuperainen Testi_02_02-kayttaytyminen: NEW_STONE_DEDUP_CM=100 DUP_MERGE_CM=0.
+DUP_MERGE_CM = float(os.environ.get("DUP_MERGE_CM", "30"))
+DUP_MERGE_FRAMES = int(os.environ.get("DUP_MERGE_FRAMES", "3"))
 
 # Kayttajan pyynnosta: kun kivi on ollut lahes paikallaan (liikkunut
 # alle STOP_TRACKING_DISPLACEMENT_CM) STOP_TRACKING_SECONDS ajan,
@@ -2311,155 +2461,31 @@ def detect_panels_from_reference(gray, reference_panels, frame_bgr=None,
 # ============================================================
 
 def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
-                                      shadow_v_drop_max):
-    """ALKUPERAINEN (Testi_02_01) toteutus - kaytossa kun
-    ENABLE_SHADOW_CV_MASK_OPS=False. ENABLE_SHADOW_TOLERANT_
-    STABILIZATION:in ydinsaanto (katso sen kommentti): tausta =
-    (tavallinen pieni erotus) TAI (saturaatio lahes sama mutta V
-    pudonnut korkeintaan shadow_v_drop_max - eli varjo, ei aito
-    objekti). Palauttaa bool-arrayn (numpy-fancy-indeksointia varten).
-
-    ENABLE_SHADOW_REF_CACHE toimii TASSAKIN polussa itsenaisesti (ei
-    vaadi ENABLE_SHADOW_CV_MASK_OPS:ia) - vain referenssin HSV:n V-kanavan
-    laskenta cachetetaan, loppu (fancy-indeksointi, .astype(int16) koko
-    framelle jne.) pysyy TASMALLEEN ennallaan."""
+                                      shadow_v_drop_max, shadow_v_drop_min=0.0):
+    """ENABLE_SHADOW_TOLERANT_STABILIZATION:in ydinsaanto (katso sen
+    kommentti): tausta = (tavallinen pieni erotus) TAI (saturaatio
+    lahes sama mutta V-pudotus valilla (shadow_v_drop_min,
+    shadow_v_drop_max) - eli varjo, ei aito objekti) TAI (absoluuttinen
+    jaa-suodatus, katso ICE_S_MAX/ICE_V_MIN:in kommentti - positio-
+    riippumaton, toimii vaikka pikseli poikkeaisi referenssista).
+    shadow_v_drop_min voi olla negatiivinen (sallii pienen V:n NOUSUN
+    silti taustaksi - kayttajan kanssa kasin testattu, katso
+    SHADOW_V_DROP_MIN:in kommentti)."""
 
     diff = cv2.absdiff(frame_bgr, reference_bgr)
     diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
     background_mask = diff_gray < diff_threshold
 
     frame_hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV).astype(np.int16)
+    ref_hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV).astype(np.int16)
+    v_drop = ref_hsv[..., 2] - frame_hsv[..., 2]
+    shadow_mask = (v_drop > shadow_v_drop_min) & (v_drop < shadow_v_drop_max)
 
-    if ENABLE_SHADOW_REF_CACHE:
-        ref_v = _reference_v_channel(reference_bgr).astype(np.int16)
-    else:
-        ref_v = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV)[..., 2].astype(np.int16)
-
-    v_drop = ref_v - frame_hsv[..., 2]
-    shadow_mask = (v_drop > 0) & (v_drop <= shadow_v_drop_max)
-
-    return background_mask | shadow_mask
-
-
-_ref_v_channel_cache_key = None
-_ref_v_channel_cache_val = None
-
-
-def _reference_v_channel(reference_bgr):
-    """ENABLE_SHADOW_REF_CACHE (ks. lipun kommentti alussa): referenssin
-    HSV V-kanava lasketaan kertaalleen per referenssi-olio (avaimena
-    id(reference_bgr)) sen sijaan etta laskettaisiin joka ruudulla
-    uudestaan - referenssi (esim. calib["frame_undistorted"]) pysyy
-    vakiona koko sen vaiheen ajan jossa suppress_static_background:ia
-    kutsutaan. Jos eri referenssi-olio annetaan (esim. toinen vaihe),
-    cache lasketaan automaattisesti uudestaan (id() vaihtuu)."""
-
-    global _ref_v_channel_cache_key, _ref_v_channel_cache_val
-
-    key = id(reference_bgr)
-
-    if key != _ref_v_channel_cache_key:
-        ref_hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV)
-        _ref_v_channel_cache_val = cv2.split(ref_hsv)[2]
-        _ref_v_channel_cache_key = key
-
-    return _ref_v_channel_cache_val
-
-
-_opencl_warned = False
-
-
-def _shadow_umat_requested():
-    """ENABLE_SHADOW_UMAT: palauttaa True vain jos lippu on paalla JA
-    cv2 loytaa OpenCL-ajurin (cv2.ocl.haveOpenCL()) - muuten palataan
-    CPU-Mat-polkuun ja tulostetaan varoitus KERRAN (ei joka ruudulla)."""
-
-    global _opencl_warned
-
-    if not ENABLE_SHADOW_UMAT:
-        return False
-
-    if not ENABLE_SHADOW_CV_MASK_OPS:
-        if not _opencl_warned:
-            print(
-                "[Testi_03_01] HUOM: ENABLE_SHADOW_UMAT on paalla mutta "
-                "ENABLE_SHADOW_CV_MASK_OPS ei ole - UMat vaatii cv2-only-"
-                "polun (numpy-operaatioilla ei ole UMat-vastinetta), "
-                "joten palataan alkuperaiseen CPU-polkuun."
-            )
-            _opencl_warned = True
-        return False
-
-    if not cv2.ocl.haveOpenCL():
-        if not _opencl_warned:
-            print(
-                "[Testi_03_01] HUOM: ENABLE_SHADOW_UMAT on paalla mutta "
-                "cv2.ocl.haveOpenCL() = False (ei OpenCL-ajuria loytynyt) "
-                "- palataan CPU-Mat-polkuun."
-            )
-            _opencl_warned = True
-        return False
-
-    return True
-
-
-_warp_opencl_warned = False
-
-
-def _warp_umat_requested():
-    """ENABLE_WARP_REMAP_UMAT: sama periaate kuin _shadow_umat_requested
-    mutta warpAffine+remap-ketjulle - palauttaa True vain jos lippu on
-    paalla JA cv2.ocl.haveOpenCL() loytaa ajurin, muuten CPU-Mat-polkuun
-    ja varoitus KERRAN."""
-
-    global _warp_opencl_warned
-
-    if not ENABLE_WARP_REMAP_UMAT:
-        return False
-
-    if not cv2.ocl.haveOpenCL():
-        if not _warp_opencl_warned:
-            print(
-                "[Testi_03_01] HUOM: ENABLE_WARP_REMAP_UMAT on paalla mutta "
-                "cv2.ocl.haveOpenCL() = False (ei OpenCL-ajuria loytynyt) "
-                "- palataan CPU-Mat-polkuun."
-            )
-            _warp_opencl_warned = True
-        return False
-
-    return True
-
-
-def _shadow_tolerant_background_mask_cv(frame_bgr, reference_bgr, diff_threshold,
-                                         shadow_v_drop_max):
-    """ENABLE_SHADOW_CV_MASK_OPS: sama saanto kuin
-    _shadow_tolerant_background_mask, mutta PELKILLA cv2-primitiiveilla
-    (ei numpy boolean-vertailuja eika .astype(int16):a) - ks. lipun
-    kommentti tiedoston alussa. Toimii sellaisenaan seka numpy.ndarray-
-    etta cv2.UMat-syotteille (OpenCV:n T-API), joten samaa funktiota
-    kaytetaan myos ENABLE_SHADOW_UMAT:ille. Palauttaa uint8-maskin
-    (0 tai 255 per pikseli), EI bool-arrayta.
-
-    Todennettu (kehitysvaiheessa) pikselintarkasti samaksi kuin
-    _shadow_tolerant_background_mask 200 satunnaisella testikuvalla ja
-    oikealla testivideolla (0001.mp4, "Testivideo"-julkaisu)."""
-
-    diff_gray = cv2.cvtColor(
-        cv2.absdiff(frame_bgr, reference_bgr), cv2.COLOR_BGR2GRAY
+    ice_mask = (
+        (frame_hsv[..., 1] < ICE_S_MAX) & (frame_hsv[..., 2] > ICE_V_MIN)
     )
-    background_mask = cv2.compare(diff_gray, float(diff_threshold), cv2.CMP_LT)
 
-    frame_v = cv2.split(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV))[2]
-
-    if ENABLE_SHADOW_REF_CACHE:
-        ref_v = _reference_v_channel(reference_bgr)
-    else:
-        ref_v = cv2.split(cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV))[2]
-
-    v_drop = cv2.subtract(ref_v, frame_v, dtype=cv2.CV_16S)
-    shadow_mask = cv2.inRange(v_drop, 1, int(shadow_v_drop_max))
-
-    return cv2.bitwise_or(background_mask, shadow_mask)
+    return background_mask | shadow_mask | ice_mask
 
 
 def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
@@ -2467,64 +2493,135 @@ def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
     if reference_bgr is None or frame_bgr.shape != reference_bgr.shape:
         return frame_bgr
 
-    if not ENABLE_SHADOW_CV_MASK_OPS:
-
-        # ALKUPERAINEN (Testi_02_01) polku - numpy bool-maski +
-        # fancy-index-sijoitus. Muuttumaton kaytos.
-        if ENABLE_SHADOW_TOLERANT_STABILIZATION:
-            background_mask = _shadow_tolerant_background_mask(
-                frame_bgr, reference_bgr, diff_threshold, SHADOW_V_DROP_MAX
-            )
-        else:
-            diff = cv2.absdiff(frame_bgr, reference_bgr)
-            diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-            background_mask = diff_gray < diff_threshold
-
-        out = frame_bgr.copy()
-        out[background_mask] = (255, 255, 255)
-
-        return out
-
-    # ENABLE_SHADOW_CV_MASK_OPS=True: pelkkia cv2-primitiiveja, valinnaisesti
-    # UMat:ien (OpenCL) kautta (ENABLE_SHADOW_UMAT) - ks. suppress_static_
-    # background:in ja kummankin lipun kommentit.
-    use_umat = _shadow_umat_requested()
-
-    src_frame = cv2.UMat(frame_bgr) if use_umat else frame_bgr
-    src_ref = cv2.UMat(reference_bgr) if use_umat else reference_bgr
-
     if ENABLE_SHADOW_TOLERANT_STABILIZATION:
-        mask = _shadow_tolerant_background_mask_cv(
-            src_frame, src_ref, diff_threshold, SHADOW_V_DROP_MAX
+        background_mask = _shadow_tolerant_background_mask(
+            frame_bgr, reference_bgr, diff_threshold, SHADOW_V_DROP_MAX,
+            SHADOW_V_DROP_MIN
         )
     else:
-        diff_gray = cv2.cvtColor(cv2.absdiff(src_frame, src_ref), cv2.COLOR_BGR2GRAY)
-        mask = cv2.compare(diff_gray, float(diff_threshold), cv2.CMP_LT)
+        diff = cv2.absdiff(frame_bgr, reference_bgr)
+        diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        background_mask = diff_gray < diff_threshold
 
-    # "out = frame OR mask3ch" -bittitemppu korvaa numpyn
-    # "out[mask]=255"-fancy-indeksoinnin: OR 0xFF -> aina 255 riippumatta
-    # alkuperaisesta arvosta, OR 0x00 -> ennallaan - TASMALLEEN sama tulos.
-    mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-    out = cv2.bitwise_or(src_frame, mask_bgr)
-
-    if use_umat:
-        out = out.get()
+    out = frame_bgr.copy()
+    out[background_mask] = (255, 255, 255)
 
     return out
+
+
+# ============================================================
+# VALOTASAPAINO/KIRKKAUS-KORJAUS "LOPPUVIDEOLLE" (kayttajan pyynnosta,
+# katso keskusteluhistoria): pikselitarkka geometrinen stabilointi (katso
+# PIKSELITARKKA SUORA STABILOINTI) EI korjaa valon/kameran auto-
+# valotuksen/valkotasapainon HIDASTA ajautumista pitkan (>10 min) videon
+# aikana - kayttaja huomasi etta debug-videossa jaa/katto/seinat eivat
+# olleet TAYSIN valkoisia myohemmin videolla, vaikka geometrinen
+# kohdistus oli kunnossa (vahvistettu diff-heatmapilla: HAJA, ei terava,
+# ero - viittaa valotasapainoon/kirkkauteen, ei sijaintivirheeseen).
+#
+# ENSIMMAINEN yritys (histogrammin persentiilikohdistus koko framelle)
+# HUONONSI tulosta kaikilla testatuilla frameilla (+7% - +107% vuotoa) -
+# jaan lahes saturoitunut valkoisuus + etualan (pelaajien) poikkeavat
+# varit vaaristivat globaalin persentiilipohjaisen arvion.
+#
+# TOIMIVA ratkaisu (kayttajan ehdotuksesta): kayttaa SAMAA periaatetta
+# kuin stabiloinnin siirtymahaku - EI kiintea/analyyttinen kaava koko
+# kuvalle, vaan ROBUSTI ITEROITU pienimman neliosumman sovitus (per
+# BGR-kanava): sovitetaan lineaarinen gain+bias frame->referenssi,
+# poistetaan sovituksen JALKEEN suurimman jaannoksen pikselit (etuala:
+# pelaajat, kivet - niiden varit eivat mitenkaan liity valotasapainoon)
+# ja toistetaan - lahentyy nopeasti (3 kierrosta riittaa) taustan
+# TODELLISEEN foto­metriseen suhteeseen. Validoitu: n. sama parannus
+# kuin raaka ristikkohaku fg-pikselien maaralla mitattuna (esim. 194114
+# -> 92657 vs. haun 90738), mutta ~15x nopeampi (~250-750ms/kutsu vs.
+# 5-7s/kutsu) - silti liian hidas JOKA framelle (25fps-budjetti 40ms),
+# joten kaytetaan vain KERRAN SEKUNNISSA (katso kaytto run_pipeline:ssa)
+# - valotasapainon ajautuminen on hidasta, ei tarvitse paivittaa joka
+# framella kuten geometrinen siirtyma.
+# ============================================================
+
+def _robust_gain_bias_single_channel(frame_values, reference_values, n_iter=3):
+    """Palauttaa (gain,bias) joka minimoi (gain*frame_values+bias -
+    reference_values)**2:n, ROBUSTISTI - jokaisen kierroksen jalkeen
+    suurimman jaannoksen (80. persentiili ylittavat, tyypillisesti
+    etualan/pelaajien/kivien pikselit) pikselit poistetaan seuraavasta
+    kierroksesta."""
+
+    mask = np.ones(frame_values.shape, dtype=bool)
+    gain, bias = 1.0, 0.0
+
+    for _ in range(n_iter):
+
+        x = frame_values[mask]
+        y = reference_values[mask]
+
+        mean_x = x.mean()
+        mean_y = y.mean()
+        centered_x = x - mean_x
+
+        denom = np.dot(centered_x, centered_x)
+
+        if denom > 1e-6:
+            gain = float(np.dot(centered_x, y - mean_y) / denom)
+        else:
+            gain = 1.0
+
+        bias = float(mean_y - gain * mean_x)
+
+        residual = np.abs(
+            reference_values - (gain * frame_values + bias)
+        )
+        threshold = np.percentile(residual, 80)
+        mask = residual < threshold
+
+    return gain, bias
+
+
+def estimate_photometric_correction(frame_bgr, reference_bgr):
+    """Ajaa _robust_gain_bias_single_channel:in erikseen jokaiselle BGR-
+    kanavalle - palauttaa (gains,biases), molemmat 3-alkioisia listoja.
+    Kanavakohtaisuus kattaa seka yleisen KIRKKAUDEN (kaikki kanavat
+    samansuuntaisesti) etta VALKOTASAPAINON/varisavyn ajautumisen (kanavat
+    eri suuntiin) yhdella samalla mekanismilla."""
+
+    gains = []
+    biases = []
+
+    for channel in range(3):
+
+        gain, bias = _robust_gain_bias_single_channel(
+            frame_bgr[:, :, channel].astype(np.float64).ravel(),
+            reference_bgr[:, :, channel].astype(np.float64).ravel()
+        )
+
+        gains.append(gain)
+        biases.append(bias)
+
+    return gains, biases
+
+
+def apply_photometric_correction(frame_bgr, gains, biases):
+
+    out = frame_bgr.astype(np.float32).copy()
+
+    for channel in range(3):
+        out[:, :, channel] = (
+            out[:, :, channel] * gains[channel] + biases[channel]
+        )
+
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 _hann_window_cache = {}
 
 
-_ref_gray_cache = {}
-
-
 def _phase_correlate_full_frame(gray_a_full, gray_b_full):
     """Yhteinen vaihekorrelaatio-ydin (kayttaa SUBPIXEL_ALIGN_CROP_
     FRACTION-rajausta + valimuistitettua Hanning-ikkunaa) - kaytetaan
-    seka estimate_subpixel_alignment:issa (frame vs. moodikuva) etta
-    elavan seurannan KETJUTETYSSA framesta-frameen -stabiloinnissa
-    (katso PIKSELITARKKA STABILOINTI -kommentti run_pipeline:ssa).
+    "loppuvideon" (profiiliskannaus + elava seuranta) PIKSELITARKASSA
+    SUORASSA STABILOINNISSA (katso sen kommentti run_pipeline:ssa):
+    jokainen frame verrataan suoraan moodikuvareferenssiin taman
+    funktion kautta.
     gray_a_full/gray_b_full: TAYSRESOLUUTIOISET harmaasavykuvat (uint8
     tai float32). Palauttaa (dx,dy): siirto joka pitaa lisata jotta
     gray_b linjautuisi gray_a:n kanssa, SUBPIXEL_ALIGN_RANGE_PX:aan
@@ -2551,44 +2648,6 @@ def _phase_correlate_full_frame(gray_a_full, gray_b_full):
     dy = float(np.clip(dy, -SUBPIXEL_ALIGN_RANGE_PX, SUBPIXEL_ALIGN_RANGE_PX))
     return dx, dy
 
-
-def estimate_subpixel_alignment(frame_u, reference_u):
-    """ENABLE_SUBPIXEL_ALIGNMENT:in kohdistushaku - katso sen kommentti
-    taman tiedoston alkupaassa. TOINEN VERSIO (kayttajan pyynnosta,
-    katso keskusteluhistoria): ENSIMMAINEN versio hyodynsi vain pienta
-    paikallista aluetta, mika osoittautui EPAEDUSTAVAKSI koko kuvalle.
-    Kayttaja ehdotti koko naytön pikseleiden vertaamista moodikuvaan -
-    mutta ristikkohaku (satoja warpAffine-kutsuja) koko taysresoluutio-
-    kuvalle olisi liian hidas, ja kuvan PIENENTAMINEN tuhoaisi juuri
-    sen sub-pikseli-tarkkuuden jota haetaan (kayttajan huomio).
-    Ratkaisu: cv2.phaseCorrelate (FFT-pohjainen vaihekorrelaatio) laskee
-    TAYSRESOLUUTIOISEN kuvan sub-pikseli-tarkan KAANNON yhdella
-    kutsulla - ei tarvitse testata erikseen satoja ehdokkaita eika
-    pienentaa kuvaa. EI enaa kiertoa (angle) - alkuperainen kierto-
-    korjaus oli juuri se osa joka VAHVISTI virheen etaisyyden mukana
-    (katso ENABLE_SUBPIXEL_ALIGNMENT:in kommentti); paneiliseurannan
-    RANSAC-affiinimuunnos jo korjaa suurimman osan kierrosta, joten
-    jaljella oleva sub-pikseli-virhe on kaytannossa lahes pelkkaa
-    translaatiota."""
-
-    key = reference_u.shape[:2]
-    ref_gray = _ref_gray_cache.get(key)
-    if ref_gray is None:
-        ref_gray = cv2.cvtColor(reference_u, cv2.COLOR_BGR2GRAY)
-        _ref_gray_cache[key] = ref_gray
-
-    frame_gray = cv2.cvtColor(frame_u, cv2.COLOR_BGR2GRAY)
-
-    # Turvaraja (kayttajan alkuperaisen SUBPIXEL_ALIGN_RANGE_PX:n
-    # hengessa - katso _phase_correlate_full_frame): tama on tarkoitettu
-    # VAIN pieneksi jaljella olevaksi sub-pikseli-korjaukseksi, ei
-    # yleiseksi liikkeentunnistukseksi - jos koko kuvan vaihekorrelaatio
-    # jostain syysta antaisi ison arvon (esim. pelaaja peittaa suuren
-    # osan framesta), se rajataan pois sen sijaan etta sovelletaan
-    # virheellisen suurta kaantoa.
-    dx, dy = _phase_correlate_full_frame(ref_gray, frame_gray)
-
-    return (dx, dy, 0.0)
 
 def _scan_stone_candidates(frame_bgr, calib, pose, background_reference=None):
 
@@ -3199,6 +3258,297 @@ def color_match_median_diff(frame_u_f64, local_pts_body, pose, X0, Y0,
 # perusteella - kukin vaihe kaynnistyy vasta edellisen valmistuttua.
 # ============================================================
 
+
+# ============================================================
+# SEURANNAN HAKUVAIHEEN VALINTA (Testi_02_03)
+#
+# Ympäristömuuttujilla ohjattava. OLETUS TRACKER_MODE=meanshift (hybridi);
+# TRACKER_MODE=grid palauttaa TÄSMÄLLEEN Testi_02_02:n alkuperäisen käytöksen:
+#   TRACKER_MODE=grid            alkuperäinen laajeneva ristikkohaku
+#   TRACKER_MODE=meanshift       mean-shift + ristikkohaku varana (hybridi)
+#   TRACKER_MODE=meanshift_pure  pelkkä mean-shift (ei varahakua)
+#   TRACKER_MODE=ensemble        yhdistelmähaku: ristikkohaku (ennustetusta keskipisteestä) + mean-shift
+#                                (viimeisestä ja ennustetusta paikasta); valinta = pistemäärä - rangaistus
+#                                taaksepäin liikkumisesta (ENS_BACK_PEN) ja ennusteesta poikkeamisesta
+#                                (ENS_PRED_PEN). Käyttää kivikohtaista liike-ennustetta (PRED_LOOKBACK).
+#   TRACKER_MODE=compare         ajaa SEKÄ grid- ETTÄ mean-shift-haun samoilla
+#                                syötteillä joka framella ja kirjaa vertailun
+#                                CSV:hen (TRACKER_COMPARE_LOG). Tilaa ohjaa
+#                                COMPARE_DRIVER (grid|ms, oletus grid).
+#   TRACKER_GOLD=1               compare-tilassa lisäksi TYHJENTÄVÄ ristikkohaku
+#                                (kulta-standardi, hullOverlapScore-optimi).
+#   MS_VARIANT=meanshift|meanshift_pure   (compare-tilassa vertailtava variantti)
+#   MS_GAIN, MS_MAX_ITER, MS_TOL_PX, MS_INNER_WEIGHT, MS_MARGIN, MS_TAU, MS_POLISH
+#                          virityskertoimet (oletukset = offline-viritetyt: 0.8/6/0.3/2.0/1.10/0.5/4.0)
+#   MS_GAINS=0.8,1.0,1.2   compare-tilassa ajetaan lisäksi nämä gain-arvot
+#                          (sarakkeet ms<gain>_*) - painokertoimen optimointiin.
+# ============================================================
+
+TRACKER_MODE = os.environ.get("TRACKER_MODE", "ensemble")
+TRACKER_COMPARE_LOG = os.environ.get("TRACKER_COMPARE_LOG")
+TRACKER_GOLD = os.environ.get("TRACKER_GOLD", "0") == "1"
+COMPARE_DRIVER = os.environ.get("COMPARE_DRIVER", "grid")
+MS_VARIANT = os.environ.get("MS_VARIANT", "meanshift")
+MS_GAIN = float(os.environ.get("MS_GAIN", "0.8"))
+MS_MAX_ITER = int(os.environ.get("MS_MAX_ITER", "6"))
+MS_TOL_PX = float(os.environ.get("MS_TOL_PX", "0.30"))
+MS_TAU = float(os.environ.get("MS_TAU", "0.5"))
+MS_POLISH_CM = float(os.environ.get("MS_POLISH", "4.0"))
+MS_INNER_WEIGHT = float(os.environ.get("MS_INNER_WEIGHT", "2.0"))
+MS_MARGIN = float(os.environ.get("MS_MARGIN", "1.10"))
+ENS_BACK_TOL_CM = float(os.environ.get("ENS_BACK_TOL_CM", "2.0"))
+ENS_BACK_PEN = float(os.environ.get("ENS_BACK_PEN", "0.15"))
+ENS_PRED_PEN = float(os.environ.get("ENS_PRED_PEN", "0.02"))
+PRED_LOOKBACK = int(os.environ.get("PRED_LOOKBACK", "12"))
+PRED_MIN_SPAN = int(os.environ.get("PRED_MIN_SPAN", "4"))
+GOLD_COARSE_STEP_CM = 1.0
+GOLD_FINE_STEP_CM = 0.25
+GOLD_MAX_HALF_RANGE_CM = 30.0
+
+_TRACKER_MODE_ID = {"grid": 0, "meanshift": 1, "meanshift_pure": 2, "gold": 3, "ensemble": 5}
+_compare_state = {"file": None, "writer": None, "rows": 0, "parity": 0}
+_COMPARE_FIELDS = ["frame", "stone_id", "X0", "Y0", "hx", "hy"]
+MS_GAINS = [float(x) for x in os.environ.get("MS_GAINS", "").split(",") if x.strip()]
+_COMPARE_METHODS = ["grid", "ms", "gold"] + [f"ms{g:g}" for g in MS_GAINS]
+_COMPARE_PER = ["wall_ms", "found", "X", "Y", "rms_px", "tarkka", "score",
+                "loc_X", "loc_Y", "prep_ms", "locate_ms", "refine_ms", "iters",
+                "converged", "fallback"]
+for _m in _COMPARE_METHODS:
+    _COMPARE_FIELDS += [f"{_m}_{k}" for k in _COMPARE_PER]
+
+
+def _compare_log_row(frame_index, stone_id, X0, Y0, hx, hy, per_method):
+    if TRACKER_COMPARE_LOG is None:
+        return
+    if _compare_state["file"] is None:
+        _compare_state["file"] = open(TRACKER_COMPARE_LOG, "w", newline="")
+        _compare_state["writer"] = csv.DictWriter(
+            _compare_state["file"], fieldnames=_COMPARE_FIELDS
+        )
+        _compare_state["writer"].writeheader()
+    row = {"frame": frame_index, "stone_id": stone_id,
+           "X0": X0, "Y0": Y0, "hx": hx, "hy": hy}
+    for name, (r, wall_ms) in per_method.items():
+        row[f"{name}_wall_ms"] = wall_ms
+        row[f"{name}_found"] = int(bool(r.get("found")))
+        row[f"{name}_X"] = r.get("X_cm", "")
+        row[f"{name}_Y"] = r.get("Y_cm", "")
+        row[f"{name}_rms_px"] = r.get("rms_px", "")
+        row[f"{name}_tarkka"] = int(bool(r.get("tarkka", False)))
+        row[f"{name}_score"] = r.get("score", "")
+        row[f"{name}_loc_X"] = r.get("loc_X", "")
+        row[f"{name}_loc_Y"] = r.get("loc_Y", "")
+        row[f"{name}_prep_ms"] = r.get("prep_ms", "")
+        row[f"{name}_locate_ms"] = r.get("locate_ms", "")
+        row[f"{name}_refine_ms"] = r.get("refine_ms", "")
+        row[f"{name}_iters"] = r.get("iters", "")
+        row[f"{name}_converged"] = int(bool(r.get("converged", False)))
+        row[f"{name}_fallback"] = int(bool(r.get("used_fallback", False)))
+    _compare_state["writer"].writerow(row)
+    _compare_state["rows"] += 1
+    if _compare_state["rows"] % 200 == 0:
+        _compare_state["file"].flush()
+
+
+def _seuranta_dispatch(frame_index, stone_ids, base_args, X0_arr, Y0_arr,
+                       half_x, half_y, pred=None):
+    """Kutsuu stone_tracker.track_stones_batch:ia valitulla hakutavalla
+    (TRACKER_MODE). base_args = kaikki positioargumentit diff_threshold:iin
+    asti (X0/Y0/half_range-taulukot mukana indekseissä 2-5)."""
+
+    def call(mode_name, gold=False, gain=None, pred=None):
+        t0 = time.perf_counter()
+        kwargs = dict(
+            locate_mode=_TRACKER_MODE_ID[mode_name],
+            ms_gain=MS_GAIN if gain is None else gain, ms_max_iter=MS_MAX_ITER, ms_tol_px=MS_TOL_PX,
+            ms_inner_weight=MS_INNER_WEIGHT, ms_margin_scale=MS_MARGIN,
+            ms_tau=MS_TAU, ms_polish_step_cm=MS_POLISH_CM,
+            ens_back_tol_cm=ENS_BACK_TOL_CM, ens_back_pen=ENS_BACK_PEN, ens_pred_pen=ENS_PRED_PEN,
+        )
+        if pred is not None and mode_name in ("ensemble",):
+            kwargs["pred_dx"], kwargs["pred_dy"] = pred
+        args = list(base_args)
+        if gold:
+            # coarse/fine-askeleet kulta-standardille (indeksit 11, 12)
+            args[11] = GOLD_COARSE_STEP_CM
+            args[12] = GOLD_FINE_STEP_CM
+        res = stone_tracker.track_stones_batch(*args, **kwargs)
+        return res, (time.perf_counter() - t0) * 1000.0
+
+    # Virityskehyksen tallennus (TRACKER_DUMP_DIR + TRACKER_DUMP_RANGE=alku:loppu):
+    # tallentaa seurantaframen + syotteet .npz:ksi offline-kokeiluja varten.
+    if os.environ.get("TRACKER_DUMP_DIR"):
+        lo, hi = [int(x) for x in os.environ.get("TRACKER_DUMP_RANGE", "0:0").split(":")]
+        if lo <= frame_index <= hi:
+            np.savez_compressed(
+                os.path.join(os.environ["TRACKER_DUMP_DIR"], f"f{frame_index:06d}.npz"),
+                frame=base_args[0], X0=np.asarray(X0_arr), Y0=np.asarray(Y0_arr),
+                hx=np.asarray(half_x), hy=np.asarray(half_y),
+                stone_ids=np.asarray(stone_ids), diff_threshold=base_args[19]
+            )
+        elif frame_index > hi:
+            if _compare_state["file"] is not None:
+                _compare_state["file"].flush()
+            os._exit(0)
+
+    if TRACKER_MODE in ("grid", "meanshift", "meanshift_pure", "ensemble"):
+        res, _ = call(TRACKER_MODE, pred=pred)
+        # grid-tulokset talteen dumpin viereen (vertailukohta offline-kokeille)
+        if os.environ.get("TRACKER_DUMP_DIR"):
+            lo, hi = [int(x) for x in os.environ.get("TRACKER_DUMP_RANGE", "0:0").split(":")]
+            if lo <= frame_index <= hi:
+                import pickle as _pk
+                _pk.dump(res, open(os.path.join(os.environ["TRACKER_DUMP_DIR"], f"r{frame_index:06d}.pkl"), "wb"))
+        return res
+
+    # compare
+    order = ["grid", MS_VARIANT]
+    if _compare_state["parity"] % 2:
+        order.reverse()
+    _compare_state["parity"] += 1
+    out = {}
+    for name in order:
+        out[name] = call(name)
+    res_grid, wall_grid = out["grid"]
+    res_ms, wall_ms = out[MS_VARIANT]
+
+    res_gold = None
+    if TRACKER_GOLD and max(float(np.max(half_x)), float(np.max(half_y))) <= GOLD_MAX_HALF_RANGE_CM:
+        res_gold = call("gold", gold=True)
+
+    res_gain = {g: call(MS_VARIANT, gain=g) for g in MS_GAINS}
+
+    for i, sid in enumerate(stone_ids):
+        per = {"grid": (res_grid[i], wall_grid), "ms": (res_ms[i], wall_ms)}
+        if res_gold is not None:
+            per["gold"] = (res_gold[0][i], res_gold[1])
+        for g, (rg, wg) in res_gain.items():
+            per[f"ms{g:g}"] = (rg[i], wg)
+        _compare_log_row(frame_index, sid, float(X0_arr[i]), float(Y0_arr[i]),
+                         float(half_x[i]), float(half_y[i]), per)
+
+    return res_ms if COMPARE_DRIVER == "ms" else res_grid
+
+
+
+# HAKU-diagnostiikka (Testi_02_03): HAKU_LOG=polku.csv kirjaa jokaisen HAKU-kutsun
+# tuloksen ja sen, esikoko dedup/enimmaismaara tehtavaa uuden kiven rekisteroinnin.
+HAKU_LOG = os.environ.get("HAKU_LOG")
+_haku_log_state = {"file": None, "writer": None}
+
+
+def _haku_log(frame_index, n_active, called, found, bx, by, score, registered,
+              blocker_id, blocker_dist, blocker_confirmed):
+    if not HAKU_LOG:
+        return
+    if _haku_log_state["file"] is None:
+        _haku_log_state["file"] = open(HAKU_LOG, "w", newline="")
+        _haku_log_state["writer"] = csv.writer(_haku_log_state["file"])
+        _haku_log_state["writer"].writerow(
+            ["frame", "n_active", "called", "found", "X", "Y", "score",
+             "registered", "blocker_id", "blocker_dist_cm", "blocker_confirmed"])
+    _haku_log_state["writer"].writerow(
+        [frame_index, n_active, int(called), int(found),
+         "" if bx is None else f"{bx:.1f}", "" if by is None else f"{by:.1f}",
+         "" if score is None else f"{score:.3f}", int(registered),
+         "" if blocker_id is None else blocker_id,
+         "" if blocker_dist is None else f"{blocker_dist:.1f}",
+         "" if blocker_confirmed is None else int(blocker_confirmed)])
+    if frame_index % 100 == 0:
+        _haku_log_state["file"].flush()
+
+
+
+# Koko framejen tallennus simulaattoria varten (Testi_02_03): TRACKER_FRAME_DUMP_DIR +
+# TRACKER_FRAME_DUMP_RANGES="a:b,c:d" tallentaa JOKAISEN framen (frame_u_for_tracking)
+# valeilta g<frame>.npz ja lopettaa ajon viimeisen valin jalkeen.
+_FRAME_DUMP_DIR = os.environ.get("TRACKER_FRAME_DUMP_DIR")
+_FRAME_DUMP_RANGES = [
+    tuple(int(v) for v in part.split(":"))
+    for part in os.environ.get("TRACKER_FRAME_DUMP_RANGES", "").split(",") if part.strip()
+]
+
+
+def _frame_dump_hook(frame_index, frame_for_tracking):
+    if not _FRAME_DUMP_DIR or not _FRAME_DUMP_RANGES:
+        return
+    if any(lo <= frame_index <= hi for lo, hi in _FRAME_DUMP_RANGES):
+        np.savez_compressed(
+            os.path.join(_FRAME_DUMP_DIR, f"g{frame_index:06d}.npz"), frame=frame_for_tracking
+        )
+    elif frame_index > max(hi for _, hi in _FRAME_DUMP_RANGES):
+        os._exit(0)
+
+
+
+def _stone_prediction(seuranta_stones, frame_index, half_x, half_y):
+    """Kivikohtainen liike-ennuste (cm) edellisesta paikasta: vakionopeus viimeisista havainnoista
+    (position_history, PRED_LOOKBACK framea, vahintaan PRED_MIN_SPAN framea), skaalattuna
+    puuttuneilla frameilla (misses+1) ja rajattuna hakualueen sisaan."""
+    pdx, pdy = [], []
+    for i, s in enumerate(seuranta_stones):
+        hist = [h for h in s["position_history"] if frame_index - PRED_LOOKBACK <= h[0] <= frame_index - 1 - s["misses"]]
+        dx = dy = 0.0
+        if len(hist) >= 2:
+            (f0, x0, y0), (f1, x1, y1) = hist[0], hist[-1]
+            if f1 - f0 >= PRED_MIN_SPAN:
+                n = s["misses"] + 1
+                dx = (x1 - x0) / (f1 - f0) * n
+                dy = (y1 - y0) / (f1 - f0) * n
+                dx = max(-float(half_x[i]), min(float(half_x[i]), dx))
+                dy = max(-float(half_y[i]), min(float(half_y[i]), dy))
+        pdx.append(dx)
+        pdy.append(dy)
+    return np.array(pdx, dtype=np.float64), np.array(pdy, dtype=np.float64)
+
+
+# ------------------------------------------------------------------
+# AIKAMITTAUS (Testi_03_01): _PROF["nimi"] = [sekunnit, kutsut]. Kaytetaan
+# with-lohkona: `with _prof("x"): ...`. MAX_FRAME (ymparistomuuttuja)
+# lopettaa ajon N ruudun jalkeen, jotta mittaus kattaa vain muutaman kiven.
+# ------------------------------------------------------------------
+import contextlib as _ctxlib
+_PROF = {}
+MAX_FRAME = int(os.environ.get("MAX_FRAME", "0") or 0)
+
+
+@_ctxlib.contextmanager
+def _prof(name):
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        e = _PROF.setdefault(name, [0.0, 0])
+        e[0] += time.perf_counter() - t0
+        e[1] += 1
+
+
+def _print_prof_report(n_frames, n_seuranta_updates):
+    print()
+    print("=== VAIHEKOHTAINEN AIKAMITTAUS (Testi_03_01) ===")
+    print(f"ruutuja: {n_frames}, kivipaivityksia: {n_seuranta_updates}")
+    print("--- Python-puoli (ms/ruutu, kutsuja) ---")
+    tot = _PROF.get("FRAME_KOKO", [0.0, 1])[0]
+    for k, (sec, n) in sorted(_PROF.items(), key=lambda kv: -kv[1][0]):
+        print(f"{k:58s} {sec / n_frames * 1000:8.2f} ms/ruutu {100 * sec / max(tot, 1e-9):5.1f}%  n={n}")
+    try:
+        import stone_tracker as _st
+        snap = _st.prof_snapshot()
+    except Exception:
+        snap = []
+    if snap:
+        print("--- C++-puoli (summattu CPU-aika saikeiden yli) ---")
+        print(f"{'vaihe':58s} {'ms/ruutu':>9s} {'ms/kutsu':>9s} {'kutsuja':>8s}")
+        for name, ms, n in snap:
+            if n == 0:
+                continue
+            if "ulkoiteraatioita" in name:
+                print(f"{name:58s} {'':>9s} {'':>9s} {n:8d}   (ulkoiteraatioita / LM-tarkennus)")
+                continue
+            print(f"{name:58s} {ms / n_frames:9.2f} {ms / n:9.3f} {n:8d}")
+    print("================================================")
+
+
 def run_pipeline(
     video_file,
     panel_data,
@@ -3209,39 +3559,9 @@ def run_pipeline(
     debug_video_output=None
 ):
 
-    print(
-        f"[Testi_03_01] Nopeutusliput: "
-        f"ENABLE_SHADOW_REF_CACHE={ENABLE_SHADOW_REF_CACHE} "
-        f"ENABLE_SHADOW_CV_MASK_OPS={ENABLE_SHADOW_CV_MASK_OPS} "
-        f"ENABLE_SHADOW_UMAT={ENABLE_SHADOW_UMAT} "
-        f"ENABLE_WARP_REMAP_UMAT={ENABLE_WARP_REMAP_UMAT} "
-        f"ENABLE_HW_VIDEO_DECODE={ENABLE_HW_VIDEO_DECODE} "
-        f"ENABLE_HAKU_PARALLEL_GRID={ENABLE_HAKU_PARALLEL_GRID} "
-        f"ENABLE_SEURANTA_HAKU_THREAD_SPLIT={ENABLE_SEURANTA_HAKU_THREAD_SPLIT}"
-    )
-    print(f"[Testi_03_01] os.cpu_count() = {_cpu_count}")
-
-    if ENABLE_SHADOW_UMAT or ENABLE_WARP_REMAP_UMAT:
-
-        print(
-            f"[Testi_03_01] cv2.ocl.haveOpenCL() = "
-            f"{cv2.ocl.haveOpenCL()}"
-        )
-
-        if cv2.ocl.haveOpenCL():
-
-            cv2.ocl.setUseOpenCL(True)
-
-            print(
-                f"[Testi_03_01]   cv2.ocl.useOpenCL() = "
-                f"{cv2.ocl.useOpenCL()}, laite: "
-                f"{cv2.ocl.Device_getDefault().name()}"
-            )
-
     engine = mode_engine.ModeEngine(
         video_file,
-        TILE_SIZE,
-        ENABLE_HW_VIDEO_DECODE
+        TILE_SIZE
     )
 
     width = engine.width()
@@ -3346,6 +3666,7 @@ def run_pipeline(
         )
 
     active_stones = []
+    stone_registry = {}   # vahvistetut kivet (stone_id -> tila), portitus videon lopussa
     next_stone_id = 0
     # Lasketaan VAIN liikevahvistetut (katso MIN_CONFIRMED_THROW_
     # DISPLACEMENT_CM) kivet - EI raakoja HAKU-ehdokkaita, joista suurin
@@ -3368,11 +3689,33 @@ def run_pipeline(
         maxlen=STABILIZATION_MEDIAN_FRAMES
     )
 
-    # PIKSELITARKKA KETJUTETTU STABILOINTI (kayttajan pyynnosta, katso
-    # kommentti alempana kaytonkohdalla) - None kunnes "loppuvideo"-
-    # vaihe (calib_result valmis) alkaa.
-    pixel_align_matrix = None
-    pixel_align_prev_gray = None
+    # PIKSELITARKKA SUORA STABILOINTI (kayttajan pyynnosta, katso
+    # kommentti alempana kaytonkohdalla) - moodikuvan RAAKA (ei viela
+    # undistorted) harmaasavyreferenssi, jota vasten "loppuvideon" joka
+    # frame vaihekorrelaatiolla verrataan. Asetetaan heti kun calib_
+    # result tulee valmiiksi (katso alempana) - TAI HETI TASSA jos
+    # calib_result annettiin jo valmiiksi laskettuna (precomputed_calib_
+    # result, esim. testeissa): korjattu bugi, jossa loppuvideo_ref_gray
+    # jai koskaan asettamatta talla polulla ja _phase_correlate_full_
+    # frame kaatui "NoneType has no attribute shape" heti loppuvideo-
+    # vaiheen ensimmaisella framella.
+    loppuvideo_ref_gray = None
+
+    if calib_result is not None:
+        loppuvideo_ref_gray = cv2.cvtColor(
+            calib_result["calib"]["frame"], cv2.COLOR_BGR2GRAY
+        )
+
+    # VALOTASAPAINO/KIRKKAUS-KORJAUS (kayttajan pyynnosta, katso
+    # estimate_photometric_correction:in kommentti): xy-siirtyma haetaan
+    # JOKA framella, mutta valotasapaino/kirkkaus vain KERRAN SEKUNNISSA
+    # (hidas ajautuminen, liian hidas laskea joka framelle). photo_gain/
+    # photo_bias pysyvat viimeisimpana laskettuina arvoina niiden
+    # valissa olevilla frameilla.
+    photo_gain = None
+    photo_bias = None
+    next_photo_update_frame = 0
+    total_photometric_time = 0.0
 
     start_time = time.time()
 
@@ -3407,58 +3750,11 @@ def run_pipeline(
     total_stabilize_compute_time = 0.0
     total_warp_remap_time = 0.0
 
-    # ENABLE_SUBPIXEL_ALIGNMENT / ENABLE_SHADOW_TOLERANT_STABILIZATION
-    # (kayttajan huomio: nama EIVAT olleet mukana "Yhteensa mitattu"
-    # -summassa aiemmin, vaikka molemmat ajetaan joka elavan seurannan
-    # framella - raportti siis ALIARVIOI kokonaisajan kun jompikumpi on
-    # paalla).
-    total_subpixel_align_time = 0.0
+    # ENABLE_SHADOW_TOLERANT_STABILIZATION (kayttajan huomio: tama EI
+    # ollut mukana "Yhteensa mitattu" -summassa aiemmin, vaikka se
+    # ajetaan joka elavan seurannan framella - raportti siis ALIARVIOI
+    # kokonaisajan kun se on paalla).
     total_shadow_suppress_time = 0.0
-
-    # ks. t_iter_start:in kommentti ylla (silmukan alussa) -
-    # kokonaisseinakelloaika koko silmukan rungolle, "mittaamattoman"
-    # ajan laskemiseksi.
-    total_loop_time = 0.0
-
-    # LISAMITTARIT (kayttajan mittaaman "MITTAAMATON 106.06 ms/ruutu"
-    # -aukon jaljittamiseksi, ks. keskusteluhistoria) - KOKO RADAN
-    # SKANNAUS -vaiheen (3D-kiviprofiilin haku, "elif profile_result is
-    # None") omat kustannukset EIVAT olleet ollenkaan ajastettuja
-    # aiemmin: _scan_stone_candidates (kevyt, ajetaan joka stone_scan_
-    # interval_frames) JA erityisesti track_stone_in_video_windowed
-    # (RASKAS - avaa OMAN cv2.VideoCapturen JA dekoodaa+skannaa jopa
-    # +-30s ikkunan, STONE_TRACK_SAMPLE_STRIDE=1:lla JOKA framen siina
-    # ikkunassa - kutsutaan JOKAISELLE liikkuvalta nayttavalle
-    # kandidaatille, myos vaarille kuten pelaajille/lakaisijoille ennen
-    # kuin ne hylataan) - kayttajan pyynnosta epailty ISOIN yksittainen
-    # selittaja mittaamattomalle ajalle.
-    total_scan_candidates_time = 0.0
-    n_scan_candidates_calls = 0
-    total_windowed_track_time = 0.0
-    n_windowed_track_calls = 0
-    total_wait_mode_time = 0.0
-
-    # UUSI (Testi_02_01:sta yhdistetty "PIKSELITARKKA KETJUTETTU
-    # STABILOINTI" + "paneilistabiloinnin laatuskannaus + uudelleen-
-    # ankkurointi" -ominaisuus): kelaa videon ALUSTA ASTI uudestaan
-    # (OMA cv2.VideoCapture, EI ENABLE_HW_VIDEO_DECODEn piirissa) ja
-    # skannaa jopa calib_mode_max_frames (~CALIB_MODE_DURATION_SECONDS
-    # sekuntia) framea parhaan ankkuriframen loytamiseksi, KERTA-
-    # LUONTOISESTI heti kun moodikuva/kalibrointi valmistuu - EI ollut
-    # ajastettu ollenkaan. Toinen mahdollinen selittaja "MITTAAMATON"-
-    # ajalle taman lisayksen jalkeen.
-    total_reanchor_scan_time = 0.0
-    n_reanchor_scans = 0
-
-    # UUSI (kayttajan MITTAAMATON-jaljityksen jatko - 33.80 ms/ruutu jai
-    # jaljelle senkin jalkeen kun skannaus-/uudelleenankkurointivaiheet
-    # lisattiin ajastukseen): varitarkistus (color_match_median_diff,
-    # ks. sen kommentti) tekee JOKA elavan seurannan ruudulla, JOKAISELLE
-    # loytyneelle kivelle (nyt jopa MAX_CONCURRENT_STONES=8 asti) koko
-    # framen uint8->float64-muunnoksen (KERRAN per ruutu) + 3 vektoroitua
-    # bilineaarinaytteistysta (b/g/r) koko framen kokoisesta taulukosta -
-    # EI ollut ajastettu ollenkaan, epailty seuraava selittaja.
-    total_color_match_time = 0.0
 
     executor = ThreadPoolExecutor(
         max_workers=MAX_WORKERS
@@ -3479,24 +3775,24 @@ def run_pipeline(
 
     def _run_haku_timed(*args):
         t0 = time.time()
-        result = stone_tracker.search_new_stone(*args)
+        if HAKU_MULTI:
+            result = stone_tracker.search_new_stones(
+                *args, max_results=HAKU_MAX_RESULTS, max_attempts=HAKU_MAX_ATTEMPTS
+            )
+        else:
+            result = stone_tracker.search_new_stone(*args)
         return result, time.time() - t0
 
     try:
 
         while True:
 
-            # AGGRESSIIVISEMMAN OPTIMOINNIN DIAGNOSTIIKKA (Testi_03_01,
-            # kayttajan pyynnosta): koko silmukan seinakello-aika verrattuna
-            # kaikkien NIMETTYJEN mittarien summaan - erotus ("mittaamaton")
-            # paljastaa onko putkessa viela ISO ajastamaton kustannus (esim.
-            # CSV-kirjoitus, uuden kiven rekisterointi, DEBUG_SAVE_TRACKING_
-            # VIDEO-piirto/enkoodaus) jota GPU/UMat-optimointi EI koskettaisi.
-            t_iter_start = time.perf_counter()
-
+            t_frame_wall0 = time.perf_counter()
             t_read0 = time.perf_counter()
             frame = engine.read()
             total_read_time += time.perf_counter() - t_read0
+            _PROF.setdefault("py: read(video)", [0.0, 0])[0] += time.perf_counter() - t_read0
+            _PROF["py: read(video)"][1] += 1
 
             if frame is None or frame.size == 0:
                 break
@@ -3507,224 +3803,258 @@ def run_pipeline(
             )
             t1 = time.perf_counter()
             total_gray_time += t1 - t0
+            _e = _PROF.setdefault("py: gray cvtColor", [0.0, 0]); _e[0] += t1 - t0; _e[1] += 1
 
             # ------------------------------------------------
-            # PANEELIEN SEURANTA
+            # PANEELIEN SEURANTA + STABILOINTIMATRIISI - AJETAAN
+            # ENAA VAIN MOODIKUVAN RAKENTAMISEN AIKANA (kayttajan
+            # pyynnosta empiirisesti korjattu, katso PIKSELITARKKA
+            # SUORA STABILOINTI -kommentti alempana): panel_
+            # stabilization_matrix EI ENAA OLE KAYTOSSA "loppuvideon"
+            # stabilointiin kalibroinnin jalkeen (suora moodikuva-
+            # vertailu korvasi senkin), joten koko paneiliseuranta+
+            # RANSAC-laskenta (mitattu 37 ms/ruutu - lahes koko 25fps-
+            # reaaliaikabudjetti) ohitetaan silloin kokonaan sen sijaan
+            # etta laskettaisiin turhaan joka framella.
+            #
+            # HUOM (korjattu bugi): t_stab0 on asetettava TASSA, ENNEN
+            # if calib_result is None -haaraa, koska total_stabilize_
+            # compute_time += time.perf_counter() - t_stab0 lasketaan
+            # AINA (myos "loppuvideon" suoran stabiloinnin ajaksi) -
+            # jos t_stab0 asetettaisiin vain haaran SISALLA, se jaisi
+            # jaatyneeksi vanhaan arvoon heti kun calib_result valmistuu,
+            # ja mittari kasvaisi rajattomasti (havaittu: 50000 ms/ruutu).
             # ------------------------------------------------
 
-            t2 = time.perf_counter()
-            futures = []
+            t_stab0 = time.perf_counter()
 
-            for panel_index in range(
-                len(panel_data)
-            ):
+            if calib_result is None:
 
-                if histories[panel_index]:
+                # ------------------------------------------------
+                # PANEELIEN SEURANTA
+                # ------------------------------------------------
+
+                t2 = time.perf_counter()
+                futures = []
+
+                for panel_index in range(
+                    len(panel_data)
+                ):
+
+                    if histories[panel_index]:
+
+                        previous_center = (
+                            histories[
+                                panel_index
+                            ][-1]
+                        )
+
+                    else:
+
+                        previous_center = (
+                            reference_centers[
+                                panel_index
+                            ]
+                        )
+
+                    futures.append(
+                        executor.submit(
+                            track_panel,
+                            gray,
+                            previous_center
+                        )
+                    )
+
+                current_centers = []
+
+                for panel_index, future in enumerate(
+                    futures
+                ):
+
+                    result = future.result()
+
+                    if result is None:
+
+                        current_centers.append(
+                            None
+                        )
+
+                        continue
+
+                    center = np.asarray(
+                        result["center"],
+                        dtype=np.float32
+                    )
 
                     previous_center = (
                         histories[
                             panel_index
                         ][-1]
-                    )
-
-                else:
-
-                    previous_center = (
-                        reference_centers[
+                        if histories[
+                            panel_index
+                        ]
+                        else reference_centers[
                             panel_index
                         ]
                     )
 
-                futures.append(
-                    executor.submit(
-                        track_panel,
-                        gray,
+                    error = np.linalg.norm(
+                        center -
                         previous_center
                     )
-                )
 
-            current_centers = []
-
-            for panel_index, future in enumerate(
-                futures
-            ):
-
-                result = future.result()
-
-                if result is None:
-
-                    current_centers.append(
-                        None
-                    )
-
-                    continue
-
-                center = np.asarray(
-                    result["center"],
-                    dtype=np.float32
-                )
-
-                previous_center = (
-                    histories[
-                        panel_index
-                    ][-1]
-                    if histories[
-                        panel_index
-                    ]
-                    else reference_centers[
-                        panel_index
-                    ]
-                )
-
-                error = np.linalg.norm(
-                    center -
-                    previous_center
-                )
-
-                if error <= MAX_POSITION_ERROR:
-
-                    histories[
-                        panel_index
-                    ].append(
-                        center.copy()
-                    )
-
-                    if len(
-                        histories[
-                            panel_index
-                        ]
-                    ) > HISTORY_LENGTH:
+                    if error <= MAX_POSITION_ERROR:
 
                         histories[
                             panel_index
-                        ].pop(0)
+                        ].append(
+                            center.copy()
+                        )
 
-                    current_centers.append(
-                        center
-                    )
+                        if len(
+                            histories[
+                                panel_index
+                            ]
+                        ) > HISTORY_LENGTH:
 
-                else:
+                            histories[
+                                panel_index
+                            ].pop(0)
 
-                    current_centers.append(
-                        None
-                    )
+                        current_centers.append(
+                            center
+                        )
 
-            t3 = time.perf_counter()
-            total_tracking_time += t3 - t2
-            # ------------------------------------------------
-            # STABILOINTIMATRIISI
-            # ------------------------------------------------
+                    else:
 
-            t_stab0 = time.perf_counter()
+                        current_centers.append(
+                            None
+                        )
 
-            valid_reference = []
-            valid_current = []
+                t3 = time.perf_counter()
+                total_tracking_time += t3 - t2
+                # ------------------------------------------------
+                # STABILOINTIMATRIISI
+                # ------------------------------------------------
 
-            for i in range(
-                len(reference_centers)
-            ):
+                t_stab0 = time.perf_counter()
 
-                if current_centers[i] is not None:
+                valid_reference = []
+                valid_current = []
 
-                    valid_reference.append(
-                        reference_centers[i]
-                    )
+                for i in range(
+                    len(reference_centers)
+                ):
 
-                    valid_current.append(
-                        current_centers[i]
-                    )
+                    if current_centers[i] is not None:
 
-            panel_stabilization_matrix = (
-                previous_stabilization_matrix.copy()
-            )
+                        valid_reference.append(
+                            reference_centers[i]
+                        )
 
-            if len(valid_reference) >= 2:
+                        valid_current.append(
+                            current_centers[i]
+                        )
 
-                reference = np.asarray(
-                    valid_reference,
-                    dtype=np.float32
+                panel_stabilization_matrix = (
+                    previous_stabilization_matrix.copy()
                 )
 
-                current = np.asarray(
-                    valid_current,
-                    dtype=np.float32
-                )
+                if len(valid_reference) >= 2:
 
-                M, inliers = (
-                    cv2.estimateAffinePartial2D(
-                        reference,
-                        current,
-                        method=cv2.RANSAC,
-                        ransacReprojThreshold=3.0,
-                        maxIters=2000,
-                        confidence=0.99
+                    reference = np.asarray(
+                        valid_reference,
+                        dtype=np.float32
                     )
-                )
 
-                if M is not None:
+                    current = np.asarray(
+                        valid_current,
+                        dtype=np.float32
+                    )
 
-                    panel_stabilization_matrix = (
-                        cv2.invertAffineTransform(
-                            M
+                    M, inliers = (
+                        cv2.estimateAffinePartial2D(
+                            reference,
+                            current,
+                            method=cv2.RANSAC,
+                            ransacReprojThreshold=3.0,
+                            maxIters=2000,
+                            confidence=0.99
                         )
                     )
 
-            # ------------------------------------------------
-            # STABILOINNIN MEDIAANISUODATUS
-            #
-            # Käytetään peräkkäisten ruutujen mediaania.
-            # Tämä poistaa pientä värinää, mutta seuraa
-            # edelleen hidasta driftia.
-            # ------------------------------------------------
+                    if M is not None:
 
-            stabilization_history.append(
-                panel_stabilization_matrix.copy()
-            )
+                        panel_stabilization_matrix = (
+                            cv2.invertAffineTransform(
+                                M
+                            )
+                        )
 
-            panel_stabilization_matrix = np.median(
-                np.stack(
-                    stabilization_history,
+                # ------------------------------------------------
+                # STABILOINNIN MEDIAANISUODATUS
+                #
+                # Käytetään peräkkäisten ruutujen mediaania.
+                # Tämä poistaa pientä värinää, mutta seuraa
+                # edelleen hidasta driftia.
+                # ------------------------------------------------
+
+                stabilization_history.append(
+                    panel_stabilization_matrix.copy()
+                )
+
+                panel_stabilization_matrix = np.median(
+                    np.stack(
+                        stabilization_history,
+                        axis=0
+                    ),
                     axis=0
-                ),
-                axis=0
-            )
+                )
 
-            panel_stabilization_matrix = np.asarray(
-                panel_stabilization_matrix,
-                dtype=np.float64
-            )
+                panel_stabilization_matrix = np.asarray(
+                    panel_stabilization_matrix,
+                    dtype=np.float64
+                )
 
 
-            previous_stabilization_matrix = (
-                panel_stabilization_matrix.copy()
-            )
+                previous_stabilization_matrix = (
+                    panel_stabilization_matrix.copy()
+                )
 
             # ------------------------------------------------
-            # PIKSELITARKKA KETJUTETTU STABILOINTI "LOPPUVIDEOLLE"
-            # (kayttajan pyynnosta, katso keskusteluhistoria): kayttaja
-            # havaitsi TOISELLA videolla etta paneiliseuranta itse voi
-            # hyppia (paneelit vaikeasti seurattavissa juuri sina
-            # videona), mika nakyi koko lopun seurannan tarinana.
-            # Paneiliseurantaa/panel_stabilization_matrix:ia kaytetaan
-            # siis enaa VAIN moodikuvan rakentamiseen (calib_result is
-            # None) - sen jalkeen (profiiliskannaus + elava seuranta)
-            # KOKO frame vaihekorrelaatiolla (_phase_correlate_full_
-            # frame, sama ydin kuin estimate_subpixel_alignment:issa)
-            # KETJUTETTUNA: joka frame lisaa PIENEN deltan edellisen
-            # framen jo-vahvistettuun sijaintiin sen sijaan etta
-            # vertaisi suoraan moodikuvaan joka frame - "siina lahtee
-            # aina edeltavasta sijainnista" (kayttajan sanoin). Koska
-            # koko frame (tuhansia staattisia pikseleita, ei vain
-            # muutama paneelin kulmapiste) kaytetaan, oletetaan ettei
-            # tama voi enaa karata (kayttajan oma arvio) - EI periodista
-            # uudelleenankkurointia moodikuvaan.
+            # PIKSELITARKKA SUORA STABILOINTI "LOPPUVIDEOLLE" MOODIKUVAAN
+            # VERRATEN (kayttajan pyynnosta empiirisesti korjattu, katso
+            # keskusteluhistoria): AIEMPI versio KETJUTTI joka framen
+            # pienen deltan edellisen framen jo-vahvistettuun sijaintiin,
+            # olettaen etta koko framen kaytto (ei vain muutama paneelin
+            # kulmapiste) estaa karkaamisen. Kayttajan oma lyhyt testi
+            # osoitti etta kivi/tracking EI silti alkanut samasta nakymasta
+            # kuin moodikuva - oma diagnostiikka (Linux-ymparistossa, 65s
+            # klippi) VAHVISTI tarkan syyn: KETJUTUS ON KUMULATIIVINEN
+            # SUMMA jokaisen framen pienesta mittausvirheesta (klassinen
+            # "dead reckoning" -ongelma), ja vaikka yksittainen delta on
+            # pieni, se kertyy - samalla klipilla ajautui 60 sekunnissa yli
+            # 70 pikselia sivuun (fg-pikselien maara kasvoi 13186:sta
+            # 752325:een). SUORA vertailu joka framella KIINTEAAN
+            # moodikuvareferenssiin sen sijaan EI kerry - jokainen mittaus
+            # on itsenainen (ei riipu edellisesta framesta), joten
+            # yksittaisen framen mittausvirhe (esim. liikkuva pelaaja
+            # hairitsee vaihekorrelaatiota) EI jaa pysyvasti - seuraava
+            # frame korjaa itsensa taas suoraan referenssiin, ei edellisen
+            # (jo vaaran) framen pohjalta. SAMALLA klipilla mitattu siirtyma
+            # pysyi koko 60s ajan alle 1 pikselin (kamera on kaytannossa
+            # paikallaan) - katso diag_direct_ref_fix.py-tulokset.
             #
-            # SIIRTYMA: "loppuvideon" ENSIMMAINEN frame (pixel_align_
-            # matrix viela None) ankkuroidaan VIIMEISEEN paneilipohjaiseen
-            # matriisiin (jatkuvuus, ei hyppya) - sen jalkeen paneilia
-            # ei enaa kaytata stabilointiin (vain sen OMA laskenta jatkuu
-            # yllä, harmiton mutta turha CPU-kulu - ei poistettu tasta
-            # muutoksesta, jotta muutos pysyy suppeana).
+            # Vertailu tehdaan RAA'ASSA (ei viela vaannon/undistortin
+            # jalkeisessa) pikseliavaruudessa suoraan calib["frame"]:a
+            # (moodikuvan RAAKA, paneilistabiloitu mutta EI viela
+            # undistorted versio) vasten - loppuvideo_ref_gray on
+            # valimuistitettu heti kun calib_result tulee valmiiksi (katso
+            # sen laskenta ylempana). Paneiliseurantaa/panel_stabilization_
+            # matrix:ia kaytetaan siis enaa VAIN moodikuvan rakentamiseen
+            # (calib_result is None) - sen jalkeen (profiiliskannaus +
+            # elava seuranta) KOKO frame vaihekorrelaatiolla suoraan
+            # referenssiin, EI ketjutettuna.
             # ------------------------------------------------
 
             if calib_result is None:
@@ -3733,27 +4063,34 @@ def run_pipeline(
 
             else:
 
-                if pixel_align_matrix is None:
+                # HUOM (korjattu merkkivirhe, kayttajan "miksi viivat eivat
+                # haviaisi/miksi huononee" -kysymysten paljastama, katso
+                # keskusteluhistoria): _phase_correlate_full_frame(A,B)
+                # palauttaa siirtyman JOLLA A (referenssi) piti siirtaa
+                # jotta saadaan B (nykyinen frame) - EI siirtyma jolla B
+                # pitaa siirtaa jotta saadaan A. Nama ovat VASTAKKAISET
+                # (kaanteiset toisiinsa nahden) puhtaalle translaatiolle.
+                # Koska frame pitaa siirtaa PAIN referenssia (ei referenssi
+                # pain framea), oikea korjaus on -dx,-dy, EI dx,dy suoraan.
+                # Vahvistettu oikealla videodatalla (MAH00014, t=659s):
+                # vanha (suora dx,dy) merkki antoi taustanvaimennuksessa
+                # 266403 vuotanutta pikselia - HUONOMMIN kuin EI MITAAN
+                # korjausta (234413) - kun taas -dx,-dy antoi 194114
+                # (selvasti paras). Tama selittaa miksi reunaviivat eivat
+                # havinneet kokonaan eivatka pysyneet tasaisina ajan
+                # mukana: vaara suunta kasvatti virhetta sita enemman mita
+                # suurempi todellinen siirtyma oli.
+                dx, dy = _phase_correlate_full_frame(
+                    loppuvideo_ref_gray, gray
+                )
 
-                    pixel_align_matrix = (
-                        panel_stabilization_matrix.copy()
-                    )
-
-                else:
-
-                    ddx, ddy = _phase_correlate_full_frame(
-                        pixel_align_prev_gray, gray
-                    )
-
-                    pixel_align_matrix = pixel_align_matrix.copy()
-                    pixel_align_matrix[0, 2] += ddx
-                    pixel_align_matrix[1, 2] += ddy
-
-                pixel_align_prev_gray = gray
-
-                stabilization_matrix = pixel_align_matrix
+                stabilization_matrix = np.array(
+                    [[1.0, 0.0, -dx], [0.0, 1.0, -dy]],
+                    dtype=np.float64
+                )
 
             total_stabilize_compute_time += time.perf_counter() - t_stab0
+            _e = _PROF.setdefault("py: stabilointi (vaihekorrelaatio+paneelit)", [0.0, 0]); _e[0] += time.perf_counter() - t_stab0; _e[1] += 1
 
             # ------------------------------------------------
             # LÄHETÄ STABILOINNIN MATRIX C++:LLE
@@ -3764,6 +4101,7 @@ def run_pipeline(
             )
             t5 = time.perf_counter()
             total_transform_time += t5 - t4
+            _e = _PROF.setdefault("py: set_transform", [0.0, 0]); _e[0] += t5 - t4; _e[1] += 1
 
             # ------------------------------------------------
             # AUTOMAATTISEN KALIBROINNIN MOODINAYTTEET
@@ -3824,9 +4162,7 @@ def run_pipeline(
                         calib_mode_output
                     )
 
-                    t_wait_mode0 = time.perf_counter()
                     engine.wait_for_mode()
-                    total_wait_mode_time += time.perf_counter() - t_wait_mode0
 
                     print(
                         f"Moodikuva valmis: {calib_mode_output}"
@@ -3873,296 +4209,20 @@ def run_pipeline(
                     calib_result = {"calib": calib, "pose": pose}
 
                     # ------------------------------------------------
-                    # PANEELISTABILOINNIN LAATUSKANNAUS + UUDELLEEN-
-                    # ANKKUROINTI (kayttajan pyynnosta, katso keskustelu-
-                    # historia): "loppuvideon" pikselitarkan KETJUTETUN
-                    # stabiloinnin (katso PIKSELITARKKA KETJUTETTU
-                    # STABILOINTI -kommentti ylempana) ENSIMMAINEN
-                    # ankkuripiste oli aiemmin "mika tahansa frame joka
-                    # sattuu olemaan kesken juuri kun moodikuva/
-                    # kalibrointi valmistuu" - kayttaja havaitsi TOISELLA
-                    # videolla etta paneiliseuranta voi juuri silloin
-                    # sattua olemaan huonossa tilassa (paneelit hetkelli-
-                    # sesti vaikeasti seurattavissa), mika periytyy koko
-                    # lopun ketjutettuun stabilointiin virheena.
-                    #
-                    # Siksi: heti kun moodikuva on valmis, KELATAAN video
-                    # TAKAISIN ALKUUN ja TOISTETAAN paneiliseuranta
-                    # UUDELLEEN (oma tuore historia/RANSAC-tila - ei
-                    # kosketa paaajon tilaa) SAMALTA aikavalilta kuin
-                    # moodikuvan naytteenotto (0..calib_mode_max_frames).
-                    # JOKA 10. FRAMELLA mitataan kuinka monta pikselia
-                    # jaisi taustanvaimennuksen (suppress_static_
-                    # background:in ydin, _shadow_tolerant_background_
-                    # mask) LAPI (= EI tulkittu taustaksi) jos TAMAN
-                    # framen paneilistabilointia kaytettaisiin - mita
-                    # pienempi maara, sita paremmin frame osuu yhteen
-                    # juuri valmistuneen moodikuvan kanssa. Pienimman
-                    # arvon antava frame otetaan UUDEKSI ankkuriksi:
-                    # elavaa/profiiliskannausvaihetta jatketaan SIITA
-                    # (uusi mode_engine-instanssi kelataan tahan kohtaan
-                    # koska ModeEngine:lla ei ole seek-metodia), ja
-                    # pikselitarkka ketjutettu stabilointi ankkuroidaan
-                    # TAMAN framen paneilistabilointimatriisiin.
+                    # LOPPUVIDEON SUORAN STABILOINNIN REFERENSSI
+                    # (kayttajan pyynnosta empiirisesti korjattu, katso
+                    # PIKSELITARKKA SUORA STABILOINTI -kommentti alempana
+                    # kaytonkohdalla): valimuistitetaan moodikuvan RAAKA
+                    # (ei viela undistorted) harmaasavykuva heti kun
+                    # calib_result on valmis - jokainen "loppuvideon"
+                    # frame verrataan TASTA LAHTIEN suoraan tahan, EI
+                    # ketjutettuna edellisen framen sijaintiin (katso
+                    # miksi ketjutus hylattiin).
                     # ------------------------------------------------
 
-                    print()
-                    print(
-                        "Etsitaan parasta ankkuriframea 'loppuvideon' "
-                        "pikselitarkalle stabiloinnille (paneilistabiloinnin "
-                        "laatuskannaus, joka 10. frame 0.."
-                        f"{calib_mode_max_frames})..."
+                    loppuvideo_ref_gray = cv2.cvtColor(
+                        calib["frame"], cv2.COLOR_BGR2GRAY
                     )
-
-                    t_reanchor0 = time.perf_counter()
-
-                    scan_cap = cv2.VideoCapture(video_file)
-
-                    scan_histories = [
-                        [center.copy()] for center in reference_centers
-                    ]
-                    scan_previous_matrix = np.array(
-                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64
-                    )
-                    scan_stabilization_history = deque(
-                        maxlen=STABILIZATION_MEDIAN_FRAMES
-                    )
-
-                    scan_camera_matrix = calib["camera_matrix"]
-                    scan_dist_coeffs = np.array(
-                        [calib["best_k1"], 0.0, 0.0, 0.0, 0.0],
-                        dtype=np.float64
-                    )
-                    scan_map1, scan_map2 = k94._build_undistort_maps(
-                        scan_camera_matrix, scan_dist_coeffs, (width, height)
-                    )
-                    scan_ref_undist = calib["frame_undistorted"]
-
-                    best_scan_frame_index = None
-                    best_scan_matrix = None
-                    best_scan_gray = None
-                    best_scan_count = None
-
-                    scan_frame_index = 0
-
-                    while scan_frame_index < calib_mode_max_frames:
-
-                        scan_ok, scan_frame = scan_cap.read()
-
-                        if not scan_ok or scan_frame is None:
-                            break
-
-                        scan_gray = cv2.cvtColor(
-                            scan_frame, cv2.COLOR_BGR2GRAY
-                        )
-
-                        scan_futures = []
-
-                        for panel_index in range(len(panel_data)):
-
-                            previous_center = (
-                                scan_histories[panel_index][-1]
-                                if scan_histories[panel_index]
-                                else reference_centers[panel_index]
-                            )
-
-                            scan_futures.append(
-                                executor.submit(
-                                    track_panel, scan_gray, previous_center
-                                )
-                            )
-
-                        scan_current_centers = []
-
-                        for panel_index, future in enumerate(scan_futures):
-
-                            result = future.result()
-
-                            if result is None:
-                                scan_current_centers.append(None)
-                                continue
-
-                            center = np.asarray(
-                                result["center"], dtype=np.float32
-                            )
-
-                            previous_center = (
-                                scan_histories[panel_index][-1]
-                                if scan_histories[panel_index]
-                                else reference_centers[panel_index]
-                            )
-
-                            error = np.linalg.norm(center - previous_center)
-
-                            if error <= MAX_POSITION_ERROR:
-
-                                scan_histories[panel_index].append(
-                                    center.copy()
-                                )
-
-                                if (
-                                    len(scan_histories[panel_index])
-                                    > HISTORY_LENGTH
-                                ):
-                                    scan_histories[panel_index].pop(0)
-
-                                scan_current_centers.append(center)
-
-                            else:
-                                scan_current_centers.append(None)
-
-                        scan_valid_reference = []
-                        scan_valid_current = []
-
-                        for i in range(len(reference_centers)):
-                            if scan_current_centers[i] is not None:
-                                scan_valid_reference.append(
-                                    reference_centers[i]
-                                )
-                                scan_valid_current.append(
-                                    scan_current_centers[i]
-                                )
-
-                        scan_panel_matrix = scan_previous_matrix.copy()
-
-                        if len(scan_valid_reference) >= 2:
-
-                            scan_M, _scan_inliers = (
-                                cv2.estimateAffinePartial2D(
-                                    np.asarray(
-                                        scan_valid_reference, dtype=np.float32
-                                    ),
-                                    np.asarray(
-                                        scan_valid_current, dtype=np.float32
-                                    ),
-                                    method=cv2.RANSAC,
-                                    ransacReprojThreshold=3.0,
-                                    maxIters=2000,
-                                    confidence=0.99
-                                )
-                            )
-
-                            if scan_M is not None:
-                                scan_panel_matrix = cv2.invertAffineTransform(
-                                    scan_M
-                                )
-
-                        scan_stabilization_history.append(
-                            scan_panel_matrix.copy()
-                        )
-
-                        scan_panel_matrix = np.asarray(
-                            np.median(
-                                np.stack(
-                                    scan_stabilization_history, axis=0
-                                ),
-                                axis=0
-                            ),
-                            dtype=np.float64
-                        )
-
-                        scan_previous_matrix = scan_panel_matrix.copy()
-
-                        if scan_frame_index % 10 == 0:
-
-                            scan_stabilized = cv2.warpAffine(
-                                scan_frame, scan_panel_matrix, (width, height)
-                            )
-                            scan_frame_u = cv2.remap(
-                                scan_stabilized, scan_map1, scan_map2,
-                                interpolation=cv2.INTER_LINEAR
-                            )
-
-                            if ENABLE_SHADOW_TOLERANT_STABILIZATION:
-                                scan_bg_mask = (
-                                    _shadow_tolerant_background_mask(
-                                        scan_frame_u, scan_ref_undist,
-                                        GRANITE_DIFF_THRESHOLD,
-                                        SHADOW_V_DROP_MAX
-                                    )
-                                )
-                            else:
-                                scan_diff = cv2.absdiff(
-                                    scan_frame_u, scan_ref_undist
-                                )
-                                scan_diff_gray = cv2.cvtColor(
-                                    scan_diff, cv2.COLOR_BGR2GRAY
-                                )
-                                scan_bg_mask = (
-                                    scan_diff_gray < GRANITE_DIFF_THRESHOLD
-                                )
-
-                            scan_fg_count = int(
-                                np.count_nonzero(~scan_bg_mask)
-                            )
-
-                            if (
-                                best_scan_count is None
-                                or scan_fg_count < best_scan_count
-                            ):
-                                best_scan_count = scan_fg_count
-                                best_scan_frame_index = scan_frame_index
-                                best_scan_matrix = scan_panel_matrix.copy()
-                                best_scan_gray = scan_gray.copy()
-
-                        scan_frame_index += 1
-
-                    scan_cap.release()
-
-                    if best_scan_frame_index is not None:
-
-                        print(
-                            f"Paras ankkuriframe: {best_scan_frame_index} "
-                            f"(lapaisi suodatuksen {best_scan_count} "
-                            f"pikselia, aikaleima "
-                            f"{best_scan_frame_index / fps:.2f}s)."
-                        )
-
-                        engine = mode_engine.ModeEngine(
-                            video_file, TILE_SIZE, ENABLE_HW_VIDEO_DECODE
-                        )
-
-                        for _ in range(best_scan_frame_index):
-                            engine.read()
-
-                        frame_index = best_scan_frame_index
-                        pixel_align_matrix = best_scan_matrix.copy()
-                        pixel_align_prev_gray = best_scan_gray
-
-                        previous_stabilization_matrix = (
-                            best_scan_matrix.copy()
-                        )
-                        histories = [
-                            [center.copy()] for center in reference_centers
-                        ]
-                        stabilization_history.clear()
-                        stabilization_history.append(
-                            best_scan_matrix.copy()
-                        )
-
-                        total_reanchor_scan_time += (
-                            time.perf_counter() - t_reanchor0
-                        )
-                        n_reanchor_scans += 1
-
-                        # "continue" ohittaa silmukan lopun total_loop_
-                        # time-kertyman (ks. t_iter_start:in kommentti) -
-                        # lisataan se tassa ETUKATEEN jotta seinakello-
-                        # diagnostiikka pysyy oikeana myos taman (harvinaisen,
-                        # kertaluontoisen) haaran kohdalla.
-                        total_loop_time += time.perf_counter() - t_iter_start
-
-                        continue
-
-                    else:
-                        print(
-                            "Laatuskannaus ei loytanyt yhtaan kelvollista "
-                            "framea - jatketaan ilman uudelleenankkurointia."
-                        )
-                        total_reanchor_scan_time += (
-                            time.perf_counter() - t_reanchor0
-                        )
-                        n_reanchor_scans += 1
 
             # ------------------------------------------------
             # KOKO RADAN SKANNAUS LIIKKUVAN KIVEN LOYTAMISEKSI
@@ -4185,14 +4245,11 @@ def run_pipeline(
                         frame, stabilization_matrix, (width, height)
                     )
 
-                    t_scan0 = time.perf_counter()
                     curr_candidates = _scan_stone_candidates(
                         stabilized_scan_frame, calib_result["calib"],
                         calib_result["pose"],
                         background_reference=calib_result["calib"]["frame"]
                     )
-                    total_scan_candidates_time += time.perf_counter() - t_scan0
-                    n_scan_candidates_calls += 1
 
                     seed_pos = find_moving_candidate(
                         prev_scan_candidates, curr_candidates
@@ -4218,7 +4275,6 @@ def run_pipeline(
                             f"liu'un ajan..."
                         )
 
-                        t_windowed0 = time.perf_counter()
                         track = track_stone_in_video_windowed(
                             video_file, calib_result["calib"],
                             calib_result["pose"],
@@ -4228,13 +4284,9 @@ def run_pipeline(
                                 calib_result["calib"]["frame_undistorted"]
                             )
                         )
-                        t_windowed_dt = time.perf_counter() - t_windowed0
-                        total_windowed_track_time += t_windowed_dt
-                        n_windowed_track_calls += 1
 
                         print(
-                            f"  seuranta valmis: {len(track)} havaintoa "
-                            f"({t_windowed_dt:.2f}s taman kutsun kesto)."
+                            f"  seuranta valmis: {len(track)} havaintoa."
                         )
 
                         next_allowed_scan_track_frame = (
@@ -4369,14 +4421,22 @@ def run_pipeline(
                     )
 
                     # stone_tracker.cpp:n refine_position_joint-portin
-                    # ring_r_frac_guess - katso kamera9_04.py:n refine_
-                    # position_joint_fast:in oma laskenta, riippuu vain
-                    # profiilin muodosta (shape_deltas), ei framesta,
-                    # joten lasketaan kerran tanne kuten muukin live_
-                    # state.
-                    ring_r_frac_guess = float(
-                        (k9._TEMPLATE_R_FRAC + shape_deltas)[-1]
-                    )
+                    # ring_r_frac_guess - alkuarvaus ERILLISELLE saturaatio-
+                    # pohjaiselle "rengashaulle" (kahvan kiinnityslevyn reunan
+                    # etsintaan, katso stone_tracker.cpp:n oma kommentti) -
+                    # kaytetaan sovitettua handle_r_frac:ia myos taman haun
+                    # alkuarvauksena, koska se on parempi (datasta sovitettu)
+                    # lahtokohta kuin vanha kiintea HANDLE_NOTCH_R_FRAC-vakio.
+                    #
+                    # handle_r_frac - kahvan aiheuttaman kolon SADE, joka
+                    # VAHENNETAAN graniittirungon konveksista peitteesta
+                    # (predictedNotchHull/profileResiduals, katso kamera9_01.
+                    # py:n HANDLE_NOTCH_R_FRAC-kommentti). Kayttajan pyynnosta
+                    # fit_stone_profile SOVITTAA taman datasta, ja stone_
+                    # tracker.cpp:n elava seuranta kayttaa NYT samaa sovitettua
+                    # arvoa ajonaikaisena parametrina (EI enaa kiintea C++-vakio).
+                    ring_r_frac_guess = profile["handle_r_frac"]
+                    handle_r_frac = profile["handle_r_frac"]
 
                     print(
                         "Rakennetaan kiven pintavarireferenssia "
@@ -4389,7 +4449,11 @@ def run_pipeline(
                         accumulated_stones
                     )
 
-                    csv_file = open(csv_output, "w", newline="")
+                    raw_csv_path = (
+                        os.path.splitext(csv_output)[0] + "_raaka.csv"
+                        if THROW_GATE else csv_output
+                    )
+                    csv_file = open(raw_csv_path, "w", newline="")
                     csv_writer = csv.writer(csv_file)
                     csv_writer.writerow(CSV_HEADER)
 
@@ -4409,17 +4473,11 @@ def run_pipeline(
 
                     live_state = {
                         "map1": map1, "map2": map2,
-                        # ENABLE_WARP_REMAP_UMAT: map1/map2 ladataan UMat:iksi
-                        # KERTAALLEEN (eivat muutu elavan seurannan aikana) -
-                        # ei joka-ruutu-uudelleenlatausta. Lasketaan laiskasti
-                        # (None -> taytetaan alla ensimmaisella ruudulla jossa
-                        # lippu on paalla) jotta muistia ei varata jos lippu
-                        # on pois paalta.
-                        "map1_umat": None, "map2_umat": None,
                         "local_pts_body": local_pts_body,
                         "local_pts_search": local_pts_search,
                         "R_max": R_max, "H_total": H_total,
                         "ring_r_frac_guess": ring_r_frac_guess,
+                        "handle_r_frac": handle_r_frac,
                         "color_reference": stone_color_reference,
                     }
 
@@ -4436,34 +4494,15 @@ def run_pipeline(
                 # peraiseen kahteen erilliseen vaiheeseen - EI otettu
                 # kayttoon todentamatonta optimointia.
                 t_warp0 = time.perf_counter()
-
-                if _warp_umat_requested():
-
-                    if live_state["map1_umat"] is None:
-                        # Ladataan map1/map2 UMat:iksi vain kertaalleen -
-                        # ks. live_state:in kommentti.
-                        live_state["map1_umat"] = cv2.UMat(live_state["map1"])
-                        live_state["map2_umat"] = cv2.UMat(live_state["map2"])
-
-                    stabilized_u = cv2.warpAffine(
-                        cv2.UMat(frame), stabilization_matrix, (width, height)
-                    )
-                    frame_u = cv2.remap(
-                        stabilized_u, live_state["map1_umat"], live_state["map2_umat"],
-                        interpolation=cv2.INTER_LINEAR
-                    ).get()
-
-                else:
-
-                    stabilized = cv2.warpAffine(
-                        frame, stabilization_matrix, (width, height)
-                    )
-                    frame_u = cv2.remap(
-                        stabilized, live_state["map1"], live_state["map2"],
-                        interpolation=cv2.INTER_LINEAR
-                    )
-
+                stabilized = cv2.warpAffine(
+                    frame, stabilization_matrix, (width, height)
+                )
+                frame_u = cv2.remap(
+                    stabilized, live_state["map1"], live_state["map2"],
+                    interpolation=cv2.INTER_LINEAR
+                )
                 total_warp_remap_time += time.perf_counter() - t_warp0
+                _e = _PROF.setdefault("py: warpAffine+remap (koko frame)", [0.0, 0]); _e[0] += time.perf_counter() - t_warp0; _e[1] += 1
 
                 timestamp = frame_index / fps
                 pose = calib_result["pose"]
@@ -4471,48 +4510,67 @@ def run_pipeline(
                 local_pts_search = live_state["local_pts_search"]
 
                 # --------------------------------------------
-                # ENABLE_SUBPIXEL_ALIGNMENT / ENABLE_SHADOW_TOLERANT_
-                # STABILIZATION (katso niiden kommentit taman tiedoston
-                # alkupaassa) - kaksi ERILLISTA lippua, HELPPO POISTAA
-                # KUMPIKIN itsenaisesti. HUOM: frame_u ITSE (varitarkistus,
-                # debug-video) EI koskaan taustanvaimenneta tassa - vain
-                # erillinen frame_u_for_tracking-kopio, jota kaytetaan
+                # ENABLE_SHADOW_TOLERANT_STABILIZATION (katso sen kommentti
+                # taman tiedoston alkupaassa). HUOM: frame_u ITSE (vari-
+                # tarkistus, debug-video) EI koskaan taustanvaimenneta tassa
+                # - vain erillinen frame_u_for_tracking-kopio, jota kaytetaan
                 # VAIN HAKU/SEURANTA-kutsuissa alla.
+                #
+                # ENABLE_SUBPIXEL_ALIGNMENT:in erillinen jalkikorjaus (tama
+                # kommenttiblokki oli aiemmin tassa) POISTETTU (kayttajan
+                # havainto + oma empiirinen vahvistus, katso keskustelu-
+                # historia): kayttaja huomasi etta jaa/katto/seinat eivat
+                # olleet kaytannossa taysin valkoisia debug-videossa - oma
+                # testi paljasti etta tama jalkikorjaus (alunperin suunni-
+                # teltu PIENEKSI hienosaadoksi epatarkan paneilipohjaisen
+                # stabiloinnin paalle) on NYT TARPEETON JA HAITALLINEN, koska
+                # PAASTABILOINTI (stabilization_matrix, katso PIKSELITARKKA
+                # SUORA STABILOINTI ylempana) tekee jo TASMALLEEN saman
+                # suoran moodikuvavertailun - jalkikorjaus vain mittasi
+                # lahes saman asian UUDELLEEN ja lisasi sen PAALLE (havaittu:
+                # jalkikorjaus -1.7px samaan suuntaan kuin paastabiloinnin jo
+                # tekema -0.89px korjaus), mika KASVATTI reunapikselien
+                # vuotoa taustanvaimennuksessa 115599:sta 178113:een (+54%)
+                # samalla testiframella, ei pienentanyt sita.
                 # --------------------------------------------
                 ref_undist_live = calib_result["calib"]["frame_undistorted"]
 
-                if ENABLE_SUBPIXEL_ALIGNMENT:
-
-                    t_align0 = time.perf_counter()
-
-                    align_dx, align_dy, _align_angle = estimate_subpixel_alignment(
+                # VALOTASAPAINO/KIRKKAUS - vain kerran sekunnissa (katso
+                # estimate_photometric_correction:in kommentti) - ei
+                # kosketa frame_u:ta itsea (varitarkistus/debug-video),
+                # vain erillinen frame_u_photo-kopio taustanvaimennukselle.
+                if (
+                    photo_gain is None
+                    or frame_index >= next_photo_update_frame
+                ):
+                    t_photo0 = time.perf_counter()
+                    photo_gain, photo_bias = estimate_photometric_correction(
                         frame_u, ref_undist_live
                     )
-
-                    M_align = np.array(
-                        [[1.0, 0.0, align_dx], [0.0, 1.0, align_dy]],
-                        dtype=np.float64
-                    )
-                    frame_u = cv2.warpAffine(
-                        frame_u, M_align, (width, height),
-                        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+                    total_photometric_time += time.perf_counter() - t_photo0
+                    _e = _PROF.setdefault("py: valotasapaino", [0.0, 0]); _e[0] += time.perf_counter() - t_photo0; _e[1] += 1
+                    next_photo_update_frame = frame_index + max(
+                        1, int(round(fps))
                     )
 
-                    total_subpixel_align_time += time.perf_counter() - t_align0
+                frame_u_photo = apply_photometric_correction(
+                    frame_u, photo_gain, photo_bias
+                )
 
                 if ENABLE_SHADOW_TOLERANT_STABILIZATION:
                     t_shadow0 = time.perf_counter()
                     frame_u_for_tracking = suppress_static_background(
-                        frame_u, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
+                        frame_u_photo, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD
                     )
                     total_shadow_suppress_time += time.perf_counter() - t_shadow0
+                    _e = _PROF.setdefault("py: varjonsietoinen taustanvaimennus (koko frame)", [0.0, 0]); _e[0] += time.perf_counter() - t_shadow0; _e[1] += 1
                     # frame_u_for_tracking on jo taustanvaimennettu (myos
                     # varjonsietoisesti) - C++:n OMA sisainen vaimennus
                     # HAKU/SEURANTA-kutsuissa ohitetaan antamalla sille 0.0,
                     # jotta frame_u_for_tracking:ia ei vaimenneta uudelleen.
                     haku_seuranta_diff_threshold = 0.0
                 else:
-                    frame_u_for_tracking = frame_u
+                    frame_u_for_tracking = frame_u_photo
                     haku_seuranta_diff_threshold = GRANITE_DIFF_THRESHOLD
 
                 # --------------------------------------------
@@ -4541,26 +4599,21 @@ def run_pipeline(
                 # samanaikaisuuden ajaksi.
                 # --------------------------------------------
 
+                _frame_dump_hook(frame_index, frame_u_for_tracking)
+
                 haku_future = None
 
-                # ENABLE_SEURANTA_HAKU_THREAD_SPLIT: kumpikin nollaksi
-                # (=kaytä oletusta, tayden hardware_concurrency() per
-                # kutsu) jollei taman ruudun tiedeta kaynnistavan MOLEMPIA
-                # HAKUa JA SEURANTAa samanaikaisesti (ks. _thread_split_
-                # budgets:in kommentti). seuranta_reserved_threads valitetaan
-                # alempana SEURANTA-kutsulle.
-                haku_max_grid_workers = 0
-                seuranta_reserved_threads = 0
+                if (
+                    len(active_stones) >= MAX_CONCURRENT_STONES
+                    and frame_index % haku_interval_frames == 0
+                ):
+                    _haku_log(frame_index, len(active_stones), False, False,
+                              None, None, None, False, None, None, None)
 
                 if (
                     len(active_stones) < MAX_CONCURRENT_STONES
                     and frame_index % haku_interval_frames == 0
                 ):
-
-                    if ENABLE_SEURANTA_HAKU_THREAD_SPLIT and active_stones:
-                        haku_max_grid_workers, seuranta_reserved_threads = (
-                            _thread_split_budgets()
-                        )
 
                     x_center = 0.0
                     y_center = (
@@ -4570,6 +4623,7 @@ def run_pipeline(
                         k92.SEARCH_Y_MAX_CM - k92.SEARCH_Y_MIN_CM
                     ) / 2.0
 
+                    _t_hs = time.perf_counter()
                     haku_future = haku_executor.submit(
                         _run_haku_timed,
                         frame_u_for_tracking, ref_undist_live,
@@ -4579,11 +4633,12 @@ def run_pipeline(
                         k92.SEARCH_COARSE_STEP_CM, k92.SEARCH_FINE_STEP_CM,
                         k92.SEARCH_SCORE_THRESHOLD,
                         live_state["R_max"], live_state["H_total"],
-                        live_state["ring_r_frac_guess"],
-                        haku_seuranta_diff_threshold,
-                        ENABLE_HAKU_PARALLEL_GRID,
-                        haku_max_grid_workers
+                        live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
+                        haku_seuranta_diff_threshold
                     )
+                    _PROF.setdefault("py: HAKU submit (Python, saikeen kaynnistys)", [0.0, 0])
+                    _PROF["py: HAKU submit (Python, saikeen kaynnistys)"][0] += time.perf_counter() - _t_hs
+                    _PROF["py: HAKU submit (Python, saikeen kaynnistys)"][1] += 1
 
                 # --------------------------------------------
                 # SEURANTA: paivitetaan JOKAINEN aktiivinen kivi
@@ -4656,21 +4711,33 @@ def run_pipeline(
                     )
 
                     t_seuranta0 = time.time()
-                    batch_results = stone_tracker.track_stones_batch(
-                        frame_u_for_tracking, ref_undist_live,
-                        X0_arr, Y0_arr,
-                        half_range_x_arr, half_range_y_arr,
-                        local_pts_body, local_pts_search,
-                        pose["K"], pose["R"], pose["t"],
-                        k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
-                        k92.TRACK_SCORE_THRESHOLD,
-                        live_state["R_max"], live_state["H_total"],
-                        live_state["ring_r_frac_guess"],
-                        TRACK_MAX_BACKWARD_CM,
-                        haku_seuranta_diff_threshold,
-                        seuranta_reserved_threads
+                    batch_results = _seuranta_dispatch(
+                        frame_index, [s["stone_id"] for s in seuranta_stones],
+                        (
+                            frame_u_for_tracking, ref_undist_live,
+                            X0_arr, Y0_arr,
+                            half_range_x_arr, half_range_y_arr,
+                            local_pts_body, local_pts_search,
+                            pose["K"], pose["R"], pose["t"],
+                            k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
+                            k92.TRACK_SCORE_THRESHOLD,
+                            live_state["R_max"], live_state["H_total"],
+                            live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
+                            TRACK_MAX_BACKWARD_CM,
+                            haku_seuranta_diff_threshold
+                        ),
+                        X0_arr, Y0_arr, half_range_x_arr, half_range_y_arr,
+                        pred=(
+                            _stone_prediction(
+                                seuranta_stones, frame_index,
+                                half_range_x_arr, half_range_y_arr
+                            ) if TRACKER_MODE == "ensemble" else None
+                        )
                     )
                     total_seuranta_time += time.time() - t_seuranta0
+                    _e = _PROF.setdefault("py: SEURANTA dispatch+C++ seinakello", [0.0, 0])
+                    _e[0] += time.time() - t_seuranta0; _e[1] += 1
+                    _t_post0 = time.perf_counter()
                     n_seuranta_calls += 1
                     n_seuranta_stone_updates += len(seuranta_stones)
 
@@ -4702,20 +4769,15 @@ def run_pipeline(
 
                         if refined["found"] and color_ref is not None:
 
-                            t_color0 = time.perf_counter()
+                            with _prof("py: SEURANTA jalkeen: varidiagnostiikka (astype+median)"):
+                                if frame_u_f64 is None:
+                                    frame_u_f64 = frame_u.astype(np.float64)
 
-                            if frame_u_f64 is None:
-                                frame_u_f64 = frame_u.astype(np.float64)
-
-                            median_diff = color_match_median_diff(
-                                frame_u_f64, local_pts_body, pose,
-                                refined["X_cm"], refined["Y_cm"],
-                                color_ref, width, height
-                            )
-
-                            total_color_match_time += (
-                                time.perf_counter() - t_color0
-                            )
+                                median_diff = color_match_median_diff(
+                                    frame_u_f64, local_pts_body, pose,
+                                    refined["X_cm"], refined["Y_cm"],
+                                    color_ref, width, height
+                                )
 
                             if median_diff is not None:
 
@@ -4763,6 +4825,21 @@ def run_pipeline(
                             refined = dict(refined)
                             refined["found"] = False
 
+                        # --------------------------------
+                        # KESKIVIIVAETAISYYSTARKISTUS: katso ASETUKSET-
+                        # kommentti MAX_ABS_X_FROM_CENTERLINE_CM:in
+                        # kohdalla - hylataan (kuten TAAKSEPAIN-tarkistus
+                        # ylla) havainto joka veisi kiven liian kauas
+                        # keskiviivasta, todennakoisesti SEURANNAN
+                        # ajauduttua sivuttain liikkuvaan kohteeseen.
+                        # --------------------------------
+
+                        if refined["found"] and (
+                            abs(refined["X_cm"]) > MAX_ABS_X_FROM_CENTERLINE_CM
+                        ):
+                            refined = dict(refined)
+                            refined["found"] = False
+
                         if refined["found"]:
 
                             s["last_xy"] = (
@@ -4793,6 +4870,8 @@ def run_pipeline(
                             # sia, aitoja havaintoja.
                             # --------------------------------
 
+                            reject_low_tarkka = False
+
                             if not s["confirmed"]:
 
                                 s["pending_rows"].append(
@@ -4804,23 +4883,144 @@ def run_pipeline(
                                     >= MIN_CONFIRMED_THROW_DISPLACEMENT_CM
                                 ):
 
-                                    s["confirmed"] = True
-                                    n_confirmed_stones += 1
+                                    # --------------------------------
+                                    # TARKKA-OSUUSTARKISTUS: katso
+                                    # ASETUKSET-kommentti MIN_PRECONFIRM_
+                                    # TARKKA_OBSERVATIONS/FRACTION:in
+                                    # kohdalla - torjuu pelaajan/
+                                    # lakaisijan SEURANNAN loysemman
+                                    # per-frame-kynnyksen kautta
+                                    # "ajautumisen" virheellisesti
+                                    # vahvistetuksi kiveksi.
+                                    # --------------------------------
 
-                                    for pf, pt, prow in s["pending_rows"]:
-                                        _write_stone_csv_row(
-                                            csv_writer, pf, pt,
-                                            s["stone_id"], prow
+                                    n_pending = len(s["pending_rows"])
+                                    n_tarkka = sum(
+                                        1 for _, _, prow in s["pending_rows"]
+                                        if prow.get("tarkka")
+                                    )
+                                    tarkka_frac = (
+                                        n_tarkka / n_pending
+                                        if n_pending > 0 else 1.0
+                                    )
+
+                                    if (
+                                        n_pending >= MIN_PRECONFIRM_TARKKA_OBSERVATIONS
+                                        and tarkka_frac < MIN_PRECONFIRM_TARKKA_FRACTION
+                                    ):
+
+                                        reject_low_tarkka = True
+                                        s["pending_rows"] = []
+                                        print(
+                                            f"[frame {frame_index}] Ehdokas "
+                                            f"{s['stone_id']} hylatty (tarkka-"
+                                            f"osuus {n_tarkka}/{n_pending} "
+                                            f"({tarkka_frac:.0%}) liian "
+                                            "matala ennen liikevahvistusta "
+                                            "- todennakoisesti pelaaja/"
+                                            "lakaisija, ei aito kivi)."
                                         )
 
-                                    s["pending_rows"] = []
+                                    else:
+
+                                        s["confirmed"] = True
+                                        n_confirmed_stones += 1
+
+                                        stone_registry[s["stone_id"]] = s
+                                        for pf, pt, prow in s["pending_rows"]:
+                                            s.setdefault("all_rows", []).append((pf, pt, dict(prow)))
+                                            _write_stone_csv_row(
+                                                csv_writer, pf, pt,
+                                                s["stone_id"], prow
+                                            )
+                                            s["confirmed_tarkka_window"].append(
+                                                bool(prow.get("tarkka"))
+                                            )
+
+                                        s["pending_rows"] = []
 
                             else:
 
-                                _write_stone_csv_row(
-                                    csv_writer, frame_index, timestamp,
-                                    s["stone_id"], refined
+                                # --------------------------------
+                                # JATKUVA TARKKA-OSUUSTARKISTUS (Testi_
+                                # 02_02, kayttajan pyynnosta - katso
+                                # keskusteluhistoria): MIN_PRECONFIRM_
+                                # TARKKA_* tarkistaa tarkka-osuuden VAIN
+                                # kerran, liikevahvistushetkella. Havait-
+                                # tiin oikealla datalla (0001/MAH00014,
+                                # jaasuodatuksen jalkeen) etta muutama
+                                # kandidaatti (esim. pyyhkija joka kavelee
+                                # pitkan matkan aidon kiven vieressa)
+                                # lapaisee talla hetkella riittavan
+                                # tarkka-osuuden mutta putoaa sen jalkeen
+                                # pysyvasti matalaksi (esim. 9-28% n. 400
+                                # havainnon ajan) - vahentaa 400+ vaarin
+                                # CSV-riviä 50:aan. Kynnys (0.5, n>=50)
+                                # validoitu koko videoiden oikealla
+                                # datalla: kaikki selvasti aidot pitkaan
+                                # seuratut kivet pysyivat aina >=51.5%:ssa
+                                # (marginaali), kaikki selvasti ongelmal-
+                                # liset kandidaatit alittivat 0.5:n heti
+                                # ensimmaisen 50 havainnon jalkeen (13-48%).
+                                #
+                                # LIUKUVA IKKUNA (ei enaa kumulatiivinen
+                                # koko elinkaarelta, kayttajan pyynnosta
+                                # tehdyn maskiyhdistelma-korjauksen
+                                # (stone_tracker.cpp, createForeground-
+                                # FromWhitened) jalkeen havaittu tarve):
+                                # aito kivi voi olla hetken (esim. juuri
+                                # heiton jalkeen, heittaja/lakaisija viela
+                                # vierella) kosketuksissa pelaajaan JA
+                                # SEN JALKEEN seurata puhtaasti pitkan
+                                # matkaa yksin - kumulatiivinen koko-
+                                # elinkaaren osuus jaisi talloin PYSYVASTI
+                                # alle kynnyksen tuon alkuhetken takia,
+                                # vaikka loppuosa olisi taydellinen (havait-
+                                # tiin: n_body 26-29/rms 0.5-0.9px koko
+                                # lopun ajan, mutta silti hylattiin 49
+                                # havainnon kohdalla). Ikkuna (deque,
+                                # maxlen=MIN_CONFIRMED_TARKKA_OBSERVATIONS)
+                                # "unohtaa" vanhan kontaminaation automaat-
+                                # tisesti kun tarpeeksi uusia havaintoja on
+                                # kertynyt, mutta havaitsee silti PYSYVAN
+                                # ajautumisen (jolloin koko ikkuna on jat-
+                                # kuvasti matala) - sama kynnys (0.5,
+                                # n>=50) sailyy, koska se on jo validoitu.
+                                # --------------------------------
+
+                                s["confirmed_tarkka_window"].append(
+                                    bool(refined.get("tarkka"))
                                 )
+                                window = s["confirmed_tarkka_window"]
+
+                                if (
+                                    len(window) >= MIN_CONFIRMED_TARKKA_OBSERVATIONS
+                                    and (sum(window) / len(window))
+                                    < MIN_CONFIRMED_TARKKA_FRACTION
+                                ):
+
+                                    reject_low_tarkka = True
+                                    print(
+                                        f"[frame {frame_index}] Kivi "
+                                        f"{s['stone_id']} lopetetaan "
+                                        f"(tarkka-osuus (liukuva ikkuna) "
+                                        f"{sum(window)}/{len(window)} "
+                                        f"({100*sum(window)/len(window):.0f}%) "
+                                        "pudonnut pysyvasti liian matalaksi "
+                                        "- todennakoisesti SEURANTA ajautunut "
+                                        "pelaajaan/lakaisijaan aidon kiven "
+                                        "vierella)."
+                                    )
+
+                                else:
+
+                                    s.setdefault("all_rows", []).append(
+                                        (frame_index, timestamp, dict(refined))
+                                    )
+                                    _write_stone_csv_row(
+                                        csv_writer, frame_index, timestamp,
+                                        s["stone_id"], refined
+                                    )
 
                             # --------------------------------
                             # PYSAHTYMISTARKISTUS: katso taman
@@ -4903,7 +5103,7 @@ def run_pipeline(
                                             "ollut kohde, ei aito heitto)."
                                         )
 
-                            if not stopped:
+                            if not stopped and not reject_low_tarkka:
                                 still_active.append(s)
 
                         else:
@@ -4935,6 +5135,48 @@ def run_pipeline(
 
                 active_stones = still_active
 
+                if DUP_MERGE_CM > 0 and len(active_stones) > 1:
+                    # Duplikaattien yhdistaminen (katso DUP_MERGE_CM-kommentti).
+                    # Laskuri s["dup_frames"]: montako perakkaista framea rata
+                    # on ollut toisen radan DUP_MERGE_CM:n sisalla (molemmat found).
+                    losers = set()
+                    for ia in range(len(active_stones)):
+                        a = active_stones[ia]
+                        for ib in range(ia + 1, len(active_stones)):
+                            b = active_stones[ib]
+                            key = (b["stone_id"],)
+                            close = (
+                                a["misses"] == 0 and b["misses"] == 0
+                                and math.hypot(
+                                    a["last_xy"][0] - b["last_xy"][0],
+                                    a["last_xy"][1] - b["last_xy"][1]
+                                ) < DUP_MERGE_CM
+                            )
+                            cnt = a.setdefault("dup_counts", {})
+                            if close:
+                                cnt[b["stone_id"]] = cnt.get(b["stone_id"], 0) + 1
+                            else:
+                                cnt.pop(b["stone_id"], None)
+                            if close and cnt.get(b["stone_id"], 0) >= DUP_MERGE_FRAMES:
+                                # havioaja: vahvistamaton ensin, muuten uudempi id
+                                if a["confirmed"] != b["confirmed"]:
+                                    loser = a if not a["confirmed"] else b
+                                else:
+                                    loser = b if b["stone_id"] > a["stone_id"] else a
+                                losers.add(loser["stone_id"])
+                    if losers:
+                        for s_lose in active_stones:
+                            if s_lose["stone_id"] in losers:
+                                s_lose["pending_rows"] = []
+                                print(
+                                    f"[frame {frame_index}] Rata {s_lose['stone_id']} "
+                                    "yhdistetty toiseen (duplikaatti, "
+                                    f"< {DUP_MERGE_CM:.0f} cm)."
+                                )
+                        active_stones = [
+                            x for x in active_stones if x["stone_id"] not in losers
+                        ]
+
                 # --------------------------------------------
                 # HAKU:n tuloksen keraaminen - SEURANTA (ylla) ehti
                 # jo laskea RINNAN HAKU:n kanssa, joten odotus tassa
@@ -4949,65 +5191,133 @@ def run_pipeline(
 
                 if haku_future is not None:
 
-                    haku_result, haku_dt = haku_future.result()
+                    with _prof("py: HAKU odotus (result) - taakka SEURANNAN jalkeen"):
+                        haku_result_raw, haku_dt = haku_future.result()
+                    _e = _PROF.setdefault("py: HAKU taustasaikeen oma kesto (ei lisaa, ajaa rinnan)", [0.0, 0])
+                    _e[0] += haku_dt; _e[1] += 1
                     total_haku_time += haku_dt
                     n_haku_calls += 1
 
-                    if haku_result["found"]:
+                    haku_result_list = (
+                        haku_result_raw if isinstance(haku_result_raw, list)
+                        else [haku_result_raw]
+                    )
+                    new_this_scan = []
 
-                        refined = haku_result
-                        bx, by = refined["X_cm"], refined["Y_cm"]
+                    if not haku_result_list:
+                        _haku_log(frame_index, len(active_stones), True, False,
+                                  None, None, None, False, None, None, None)
 
-                        already_tracked = any(
-                            math.hypot(
-                                bx - s["last_xy"][0], by - s["last_xy"][1]
-                            ) < NEW_STONE_DEDUP_CM
-                            for s in active_stones
-                        )
+                    for haku_result in haku_result_list:
 
-                        if not already_tracked:
+                        if not haku_result["found"]:
+                            _haku_log(frame_index, len(active_stones), True, False,
+                                      None, None, haku_result.get("score"), False,
+                                      None, None, None)
 
-                            stone_id = next_stone_id
-                            next_stone_id += 1
+                        if haku_result["found"]:
 
-                            active_stones.append({
-                                "stone_id": stone_id,
-                                "last_xy": (
-                                    refined["X_cm"], refined["Y_cm"]
-                                ),
-                                "min_y_seen": refined["Y_cm"],
-                                "misses": 0,
-                                "color_diff_history": [],
-                                "position_history": [(
-                                    frame_index,
-                                    refined["X_cm"], refined["Y_cm"]
-                                )],
-                                # katso ASETUKSET-kommentti MIN_CONFIRMED_
-                                # THROW_DISPLACEMENT_CM:in kohdalla - ei
-                                # kirjoiteta CSV:hen ennen kuin liike on
-                                # vahvistettu (torjuu paikallaan-jo-olevien
-                                # kohteiden toistuvan uudelleenrekisterointi-
-                                # ongelman).
-                                "y0_first_cm": refined["Y_cm"],
-                                "confirmed": False,
-                                "pending_rows": [
-                                    (frame_index, timestamp, dict(refined))
-                                ],
-                            })
+                            refined = haku_result
+                            bx, by = refined["X_cm"], refined["Y_cm"]
 
-                            debug_draw_items.append((
-                                refined["X_cm"], refined["Y_cm"],
-                                stone_id, (0, 255, 255),
-                                f"{stone_id} UUSI"
-                            ))
+                            already_tracked = any(
+                                math.hypot(
+                                    bx - s["last_xy"][0], by - s["last_xy"][1]
+                                ) < NEW_STONE_DEDUP_CM
+                                for s in active_stones
+                                if s["confirmed"]
+                            ) or any(
+                                math.hypot(bx - nx, by - ny) < NEW_STONE_SAME_SCAN_CM
+                                for nx, ny in new_this_scan
+                            ) or len(active_stones) >= MAX_CONCURRENT_STONES
 
-                            print(
-                                f"[frame {frame_index}] Uusi kivi-ehdokas "
-                                f"{stone_id}: "
-                                f"({refined['X_cm']:.1f}, "
-                                f"{refined['Y_cm']:.1f}) cm "
-                                "(odottaa liikevahvistusta ennen CSV-kirjausta)"
-                            )
+                            if HAKU_LOG:
+                                near = min(
+                                    ((math.hypot(bx - s["last_xy"][0], by - s["last_xy"][1]), s)
+                                     for s in active_stones),
+                                    key=lambda x: x[0], default=(None, None)
+                                )
+                                _haku_log(frame_index, len(active_stones), True, True,
+                                          bx, by, haku_result.get("score"),
+                                          not already_tracked,
+                                          near[1]["stone_id"] if near[1] else None,
+                                          near[0],
+                                          near[1]["confirmed"] if near[1] else None)
+
+                            # --------------------------------------------
+                            # DIAGNOSTIIKKA (kayttajan raportoima bugi, katso
+                            # keskusteluhistoria): HAKU tunnisti PELAAJAN/
+                            # LAKAISIJAN kiveksi (pelkkaan muotoon/kokoon
+                            # perustuva C++-yhteissovitus ei tunne varia).
+                            # Tulostetaan TASSA vain diagnostiikkana (ei viela
+                            # hylkaa mitaan) uuden ehdokkaan varipoikkeama
+                            # kivivarireferenssiin - kaytetaan naiden lukujen
+                            # keraamiseen sopivan hylkayskynnyksen maarittamiseksi
+                            # (katso HAKU_COLOR_MAX_DIFF alempana taman
+                            # validoinnin jalkeen).
+                            # --------------------------------------------
+
+                            if os.environ.get("HAKU_COLOR_DEBUG") and live_state.get("color_reference") is not None:
+                                haku_frame_u_f64 = frame_u.astype(np.float64)
+                                haku_median_diff = color_match_median_diff(
+                                    haku_frame_u_f64, local_pts_body, pose,
+                                    bx, by, live_state["color_reference"],
+                                    width, height
+                                )
+                                print(
+                                    f"[HAKU_COLOR_DEBUG] frame={frame_index} "
+                                    f"ehdokas ({bx:.1f},{by:.1f}) "
+                                    f"varidiff={haku_median_diff}"
+                                )
+
+                            if not already_tracked:
+
+                                stone_id = next_stone_id
+                                next_stone_id += 1
+                                new_this_scan.append((bx, by))
+
+                                active_stones.append({
+                                    "stone_id": stone_id,
+                                    "last_xy": (
+                                        refined["X_cm"], refined["Y_cm"]
+                                    ),
+                                    "min_y_seen": refined["Y_cm"],
+                                    "misses": 0,
+                                    "color_diff_history": [],
+                                    "position_history": [(
+                                        frame_index,
+                                        refined["X_cm"], refined["Y_cm"]
+                                    )],
+                                    # katso ASETUKSET-kommentti MIN_CONFIRMED_
+                                    # THROW_DISPLACEMENT_CM:in kohdalla - ei
+                                    # kirjoiteta CSV:hen ennen kuin liike on
+                                    # vahvistettu (torjuu paikallaan-jo-olevien
+                                    # kohteiden toistuvan uudelleenrekisterointi-
+                                    # ongelman).
+                                    "y0_first_cm": refined["Y_cm"],
+                                    "confirmed": False,
+                                    "pending_rows": [
+                                        (frame_index, timestamp, dict(refined))
+                                    ],
+                                    "confirmed_tarkka_window": deque(
+                                        maxlen=MIN_CONFIRMED_TARKKA_OBSERVATIONS
+                                    ),
+                                })
+
+                                debug_draw_items.append((
+                                    refined["X_cm"], refined["Y_cm"],
+                                    stone_id, (0, 255, 255),
+                                    f"{stone_id} UUSI"
+                                ))
+
+                                print(
+                                    f"[frame {frame_index}] Uusi kivi-ehdokas "
+                                    f"{stone_id}: "
+                                    f"({refined['X_cm']:.1f}, "
+                                    f"{refined['Y_cm']:.1f}) cm "
+                                    "(odottaa liikevahvistusta ennen CSV-kirjausta)"
+                                )
+
 
                 # --------------------------------------------
                 # DEBUG_SAVE_TRACKING_VIDEO: piirretaan taman framen
@@ -5063,9 +5373,11 @@ def run_pipeline(
 
                     debug_video_writer.write(debug_frame)
 
+            _e = _PROF.setdefault("FRAME_KOKO", [0.0, 0])
+            _e[0] += time.perf_counter() - t_frame_wall0; _e[1] += 1
             frame_index += 1
-
-            total_loop_time += time.perf_counter() - t_iter_start
+            if MAX_FRAME and frame_index >= MAX_FRAME:
+                break
 
             # ------------------------------------------------
             # ETA
@@ -5155,63 +5467,10 @@ def run_pipeline(
                 print(
                     f"  muu (ei viela optimoitu): "
                     f"read(video) {(total_read_time / processed) * 1000:.2f} ms/ruutu | "
-                    f"stabilointi-RANSAC {(total_stabilize_compute_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"stabilointimatriisi {(total_stabilize_compute_time / processed) * 1000:.2f} ms/ruutu | "
                     f"warpAffine+remap(koko frame) {(total_warp_remap_time / processed) * 1000:.2f} ms/ruutu | "
-                    f"sub-pikseli-kohdistus {(total_subpixel_align_time / processed) * 1000:.2f} ms/ruutu | "
+                    f"valotasapaino {(total_photometric_time / processed) * 1000:.2f} ms/ruutu | "
                     f"varjosuodatus {(total_shadow_suppress_time / processed) * 1000:.2f} ms/ruutu"
-                )
-                print(
-                    f"  [Testi_03_01 liput] "
-                    f"REF_CACHE={ENABLE_SHADOW_REF_CACHE} "
-                    f"CV_MASK_OPS={ENABLE_SHADOW_CV_MASK_OPS} "
-                    f"SHADOW_UMAT={ENABLE_SHADOW_UMAT}"
-                    f"({'aktiivinen' if _shadow_umat_requested() else 'ei aktiivinen - ks. HUOM yllä'}) "
-                    f"WARP_REMAP_UMAT={ENABLE_WARP_REMAP_UMAT}"
-                    f"({'aktiivinen' if _warp_umat_requested() else 'ei aktiivinen'}) "
-                    f"HW_VIDEO_DECODE={ENABLE_HW_VIDEO_DECODE} "
-                    f"HAKU_PARALLEL_GRID={ENABLE_HAKU_PARALLEL_GRID} "
-                    f"SEURANTA_HAKU_THREAD_SPLIT={ENABLE_SEURANTA_HAKU_THREAD_SPLIT}"
-                )
-
-                accounted = (
-                    total_read_time + total_gray_time + total_tracking_time
-                    + total_transform_time + total_sample_time
-                    + total_stabilize_compute_time + total_warp_remap_time
-                    + total_subpixel_align_time + total_shadow_suppress_time
-                    + total_seuranta_time
-                    + total_scan_candidates_time + total_windowed_track_time
-                    + total_wait_mode_time + total_reanchor_scan_time
-                    + total_color_match_time
-                    # HAKU EI mukana - se ajetaan taustasaikeessa
-                    # SAMANAIKAISESTI SEURANNAN kanssa (ks. haku_executor
-                    # ylla), joten sen aika EI ole lisaa seinakelloaikaa
-                    # normaalisti (paitsi jos SEURANTA on jo nopeampi kuin
-                    # HAKU - silloinkin vain odotus HAKU:n tulokselle
-                    # nakyy tassa "mittaamattomana", ei koko HAKU-aikana).
-                )
-                unaccounted = (total_loop_time / processed) - (accounted / processed)
-
-                print(
-                    f"  [seinakello] koko silmukka ka "
-                    f"{(total_loop_time / processed) * 1000:.2f} ms/ruutu "
-                    f"(-> {processed / max(1e-9, total_loop_time):.1f} r/s teoreettinen) | "
-                    f"nimettyjen mittarien summa (pl. HAKU, rinnakkainen) "
-                    f"{(accounted / processed) * 1000:.2f} ms/ruutu | "
-                    f"MITTAAMATON (CSV/rekisterointi/debug-video/muu) "
-                    f"{unaccounted * 1000:.2f} ms/ruutu"
-                )
-                print(
-                    f"  [skannausvaihe] _scan_stone_candidates "
-                    f"{n_scan_candidates_calls} kutsua, "
-                    f"{total_scan_candidates_time:.2f}s yht | "
-                    f"track_stone_in_video_windowed "
-                    f"{n_windowed_track_calls} kutsua, "
-                    f"{total_windowed_track_time:.2f}s yht "
-                    f"(ka {total_windowed_track_time / max(1, n_windowed_track_calls):.2f} s/kutsu) | "
-                    f"wait_for_mode {total_wait_mode_time:.2f}s | "
-                    f"uudelleenankkurointi {n_reanchor_scans} kertaa, "
-                    f"{total_reanchor_scan_time:.2f}s yht | "
-                    f"varitarkistus {(total_color_match_time / processed) * 1000:.2f} ms/ruutu"
                 )
 
     finally:
@@ -5226,6 +5485,25 @@ def run_pipeline(
 
         if csv_file is not None:
             csv_file.close()
+
+        if THROW_GATE and stone_registry:
+            all_tr = [
+                (sid, st_["all_rows"]) for sid, st_ in stone_registry.items()
+                if st_.get("all_rows")
+            ]
+            n_before = sum(1 for _, rw in all_tr if _track_throw_class(rw) > 0)
+            gated = _select_throws(all_tr)
+            with open(csv_output, "w", newline="") as gf:
+                gw = csv.writer(gf)
+                gw.writerow(CSV_HEADER)
+                for sid, rows in gated:
+                    for rf, rt, rr in rows:
+                        _write_stone_csv_row(gw, rf, rt, sid, rr)
+            print(
+                f"Heittoportti: {len(stone_registry)} vahvistettua rataa -> "
+                f"{n_before} heittomaista rataa -> {len(gated)} heittoa (yksi / hogline-ylitys) "
+                f"({csv_output})"
+            )
 
         if debug_video_writer is not None:
             debug_video_writer.release()
@@ -5263,15 +5541,16 @@ def run_pipeline(
           "(koko videon yli keskiarvoistettuna)")
     print(f"read(video): {total_read_time:.2f}s yhteensa, "
           f"{(total_read_time / processed_frames) * 1000:.2f} ms/ruutu")
-    print(f"stabilointi-RANSAC (cv2.estimateAffinePartial2D+mediaani): "
+    print(f"stabilointimatriisin laskenta (paneili-RANSAC moodikuvavaiheessa, "
+          f"suora vaihekorrelaatio moodikuvaan loppuvideolla): "
           f"{total_stabilize_compute_time:.2f}s yhteensa, "
           f"{(total_stabilize_compute_time / processed_frames) * 1000:.2f} ms/ruutu")
     print(f"warpAffine+remap (KOKO frame, joka elavan seurannan ruutu): "
           f"{total_warp_remap_time:.2f}s yhteensa, "
           f"{(total_warp_remap_time / processed_frames) * 1000:.2f} ms/ruutu")
-    print(f"sub-pikseli-kohdistus (ENABLE_SUBPIXEL_ALIGNMENT): "
-          f"{total_subpixel_align_time:.2f}s yhteensa, "
-          f"{(total_subpixel_align_time / processed_frames) * 1000:.2f} ms/ruutu")
+    print(f"valotasapaino/kirkkaus-korjaus (kerran sekunnissa): "
+          f"{total_photometric_time:.2f}s yhteensa, "
+          f"{(total_photometric_time / processed_frames) * 1000:.2f} ms/ruutu")
     print(f"varjonsietoinen taustanvaimennus (ENABLE_SHADOW_TOLERANT_STABILIZATION): "
           f"{total_shadow_suppress_time:.2f}s yhteensa, "
           f"{(total_shadow_suppress_time / processed_frames) * 1000:.2f} ms/ruutu")
@@ -5279,65 +5558,14 @@ def run_pipeline(
         total_read_time + total_stabilize_compute_time
         + total_warp_remap_time + total_gray_time
         + total_tracking_time + total_transform_time
-        + total_subpixel_align_time + total_shadow_suppress_time
+        + total_photometric_time + total_shadow_suppress_time
     )
     print(f"Yhteensa HAKU+SEURANTA+muu mitattu: "
           f"{((total_haku_time + total_seuranta_time + muu_yhteensa) / processed_frames) * 1000:.2f} "
           "ms/ruutu keskimaarin (25fps-reaaliaikatavoite = 40.0 ms/ruutu, "
           "tiukempi tavoite hyvalla marginaalilla = 20.0 ms/ruutu)")
-
-    # KOKO RADAN SKANNAUS -vaiheen (3D-kiviprofiilin haku) omat, aiemmin
-    # TAYSIN ajastamattomat kustannukset - ks. total_windowed_track_time:in
-    # kommentti ylla. track_stone_in_video_windowed avaa OMAN cv2.
-    # VideoCapturen ja dekoodaa+skannaa jopa +-30s ikkunan JOKAISELLE
-    # liikkuvalta nayttavalle kandidaatille (myos vaarille, esim.
-    # pelaajat/lakaisijat, ennen kuin ne hylataan) - epailty ISOIN
-    # yksittainen selittaja "MITTAAMATON"-luvulle.
-    print(f"_scan_stone_candidates (KOKO RADAN SKANNAUS -vaihe): "
-          f"{n_scan_candidates_calls} kutsua, yhteensa "
-          f"{total_scan_candidates_time:.2f}s, "
-          f"{(total_scan_candidates_time / processed_frames) * 1000:.2f} ms/ruutu "
-          "(koko videon yli keskiarvoistettuna)")
-    print(f"track_stone_in_video_windowed (OMA cv2.VideoCapture, +-30s "
-          f"ikkuna JOKA liikkuvalta nayttavalle kandidaatille): "
-          f"{n_windowed_track_calls} kutsua, yhteensa "
-          f"{total_windowed_track_time:.2f}s, "
-          f"ka {(total_windowed_track_time / max(1, n_windowed_track_calls)):.2f} s/kutsu, "
-          f"{(total_windowed_track_time / processed_frames) * 1000:.2f} ms/ruutu "
-          "(koko videon yli keskiarvoistettuna)")
-    print(f"engine.wait_for_mode() (kertaluontoinen moodikuvan odotus): "
-          f"{total_wait_mode_time:.2f}s")
-    print(f"paneilistabiloinnin laatuskannaus + uudelleenankkurointi "
-          f"(kertaluontoinen, OMA cv2.VideoCapture, video alusta asti): "
-          f"{n_reanchor_scans} kertaa, yhteensa "
-          f"{total_reanchor_scan_time:.2f}s")
-    print(f"varitarkistus (color_match_median_diff, JOKA loytynyt kivi "
-          f"JOKA ruudulla): {total_color_match_time:.2f}s yhteensa, "
-          f"{(total_color_match_time / processed_frames) * 1000:.2f} ms/ruutu")
-
-    # AGGRESSIIVISEMMAN OPTIMOINNIN DIAGNOSTIIKKA (Testi_03_01, kayttajan
-    # pyynnosta): total_elapsed on OIKEA seinakelloaika (time.time():lla
-    # mitattu koko ajolle, ML mukaan lukien Python-tulkin/saikeiden
-    # skedulointiylikuorma, jota mikaan yksittainen mittari ei nae) -
-    # jos taman ja nimettyjen mittarien summan (HAKU pois lukien, koska
-    # se ajetaan SAMANAIKAISESTI SEURANNAN kanssa taustasaikeessa) valilla
-    # on iso ero, GPU/UMat-optimointi EI auta siihen - jotain muuta
-    # (CSV-kirjoitus, kiven rekisterointi, DEBUG_SAVE_TRACKING_VIDEO,
-    # saieskedulointi) vie sen ajan.
-    accounted_wall_clock = (
-        muu_yhteensa + total_seuranta_time
-        + total_scan_candidates_time + total_windowed_track_time
-        + total_wait_mode_time + total_reanchor_scan_time
-        + total_color_match_time
-    )
-    print(f"OIKEA seinakelloaika (time.time()): {total_elapsed:.2f}s yhteensa, "
-          f"{(total_elapsed / processed_frames) * 1000:.2f} ms/ruutu")
-    print(f"MITTAAMATON (seinakello - nimetyt mittarit, pl. rinnakkainen HAKU): "
-          f"{(total_elapsed - accounted_wall_clock):.2f}s yhteensa, "
-          f"{((total_elapsed - accounted_wall_clock) / processed_frames) * 1000:.2f} ms/ruutu "
-          "- jos tama on suuri, se on TODENNAKOISESTI seuraava optimointikohde, "
-          "EI GPU/UMat (ks. DEBUG_SAVE_TRACKING_VIDEO/CSV/rekisterointi)")
     print("===========================================================")
+    _print_prof_report(processed_frames, n_seuranta_stone_updates)
 
     if calib_result is None:
         raise RuntimeError(
@@ -5441,11 +5669,7 @@ def main(debug=None, start_time=None, end_time=None):
         f"Video: {input_file}"
     )
 
-    # -y: ylikirjoita video_file aina kysymatta - ilman tata ffmpeg
-    # pysahtyy odottamaan kayttajan y/n-vastausta stdin:ista jos
-    # samanniminen "_leikattu.mp4" on jo olemassa (kayttajan pyynnosta,
-    # tama on AINA haluttu kaytos taalla).
-    command = ["ffmpeg", "-y"]
+    command = ["ffmpeg"]
 
     if start_time is not None:
         command += ["-ss", start_time]
@@ -5598,6 +5822,8 @@ def main(debug=None, start_time=None, end_time=None):
         print(
             f"3D-kiviprofiili: R_max={profile['R_max_cm']:.2f} cm, "
             f"H_total={profile['H_total_cm']:.2f} cm, "
+            f"kahvan_r={profile['handle_r_frac']:.3f} "
+            f"({profile['handle_r_frac']*profile['R_max_cm']:.2f} cm), "
             f"RMS={profile['residual_rms_px']:.2f} px "
             f"({result['n_profile_observations']} havaintoa)"
         )
