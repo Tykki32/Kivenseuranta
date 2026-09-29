@@ -107,6 +107,8 @@ enum ProfId {
     P_REFINE_TOTAL, P_R_PAD, P_R_CONTOUR, P_R_BOUNDARY, P_R_LM1, P_R_MAD, P_R_LM2, P_R_FINAL, P_R_OUTER_ITER,
     P_HAKU_TOTAL, P_HAKU_SUPPRESS, P_HAKU_MASK, P_HAKU_SAT, P_HAKU_LOCATE, P_HAKU_REFINE, P_HAKU_FLOOD,
     P_BATCH_WALL, P_BATCH_SETUP, P_BATCH_RESULT,
+    P_LM_FALLBACK, P_LM_LIN, P_LM_VERIFY, P_LM_BUILD, P_LM_EVAL_ONLY,
+    P_C_NBODY, P_C_NRING, P_C_NHULL, P_C_LMITER, P_C_LMEVAL,
     P_COUNT
 };
 static const char* PROF_NAMES[P_COUNT] = {
@@ -117,7 +119,9 @@ static const char* PROF_NAMES[P_COUNT] = {
     "    LM: sovitus #2 (uusinta)", "    LM: lopullinen residuaali", "    LM: ulkoiteraatioita (lkm)",
     "HAKU yhteensa", "  HAKU: taustanvaimennus (koko frame)", "  HAKU: graniittimaski (koko frame)", "  HAKU: saturaatio (koko frame)",
     "  HAKU: ristikkohaku", "  HAKU: LM-tarkennus", "  HAKU: floodFill-poisto",
-    "SEURANTA-kutsu seinakello (track_stones_batch)", "  kutsun alustus (numpy->cv, GIL)", "  kutsun tulokset (dict)"
+    "SEURANTA-kutsu seinakello (track_stones_batch)", "  kutsun alustus (numpy->cv, GIL)", "  kutsun tulokset (dict)",
+    "    LM: TARKKA VARAKEINO-LM (linearisointi hylatty)", "    LM#1: lineaarinen LM", "    LM#1: tarkka varmistus", "    LM: linearisoinnin rakennus", "    LM: residuaali+jacobi evaluaatiot",
+    "LASKURI keskiarvo: runkopisteita/LM", "LASKURI keskiarvo: rengaspisteita/LM", "LASKURI keskiarvo: hull-kulmia/LM", "LASKURI keskiarvo: LM-iteraatioita/LM", "LASKURI keskiarvo: residuaalievaluaatioita/LM"
 };
 static std::atomic<long long> g_prof_ns[P_COUNT];
 static std::atomic<long long> g_prof_n[P_COUNT];
@@ -1522,6 +1526,10 @@ static bool solve3x3(double A[3][3], const double b[3], double x[3])
 // videoframelle) yhta valideiksi naissa tapauksissa.
 // ============================================================
 
+static const bool g_lm_notch = getenv("LM_NOTCH") ? atoi(getenv("LM_NOTCH")) != 0 : true;
+static const int g_body_stride = getenv("LM_BODY_STRIDE") ? atoi(getenv("LM_BODY_STRIDE")) : 2;
+static const double g_hull_eps = getenv("LM_HULL_EPS") ? atof(getenv("LM_HULL_EPS")) : 0.0;
+
 struct LinearizedHull {
     bool valid = false;
     std::vector<cv::Point2f> ref_pts;
@@ -1561,6 +1569,27 @@ static LinearizedHull buildLinearizedHull(
 
     cv::Vec3d kx = K * cv::Vec3d(R(0, 0), R(1, 0), R(2, 0));
     cv::Vec3d ky = K * cv::Vec3d(R(0, 1), R(1, 1), R(2, 1));
+
+    if (g_hull_eps > 0.0) {
+        // Poistetaan karjet joiden etaisyys naapurien valiseen janaan < eps px (kupera kayra
+        // ylitarkasti diskretoitu) - LM:n reunatestin hinta on suoraan verrannollinen karkien maaraan.
+        std::vector<int> idx(hull_idx.begin(), hull_idx.end());
+        bool removed = true;
+        while (removed && idx.size() > 12) {
+            removed = false;
+            for (size_t k = 0; k < idx.size() && idx.size() > 12; ) {
+                const cv::Point2f& a = proj_f[(size_t)idx[(k + idx.size() - 1) % idx.size()]];
+                const cv::Point2f& b = proj_f[(size_t)idx[k]];
+                const cv::Point2f& c = proj_f[(size_t)idx[(k + 1) % idx.size()]];
+                double abx = c.x - a.x, aby = c.y - a.y;
+                double L = std::sqrt(abx * abx + aby * aby);
+                double dist = L < 1e-9 ? 0.0 : std::abs((b.x - a.x) * aby - (b.y - a.y) * abx) / L;
+                if (dist < g_hull_eps) { idx.erase(idx.begin() + (long)k); removed = true; k += 1; }
+                else ++k;
+            }
+        }
+        hull_idx.assign(idx.begin(), idx.end());
+    }
 
     size_t n = hull_idx.size();
     result.ref_pts.resize(n);
@@ -1660,6 +1689,7 @@ struct LinearizedResidualContext {
     const std::vector<cv::Point2f>* body_pts_f;
     const std::vector<cv::Point2f>* ring_pts_f;
     double X0_ref, Y0_ref, R0_ref;
+    const LinearizedRing* notch_lin = nullptr;   // kahvan loveus (signedDistWithNotch), nullptr = ei kaytossa
 };
 
 static std::vector<double> jointResidualsLinearized(const LinearizedResidualContext& ctx, const cv::Vec3d& params)
@@ -1804,6 +1834,97 @@ static ResidualWithGrad polygonResidualWithGrad(
 }
 
 
+// ------------------------------------------------------------------
+// NOPEA polygonietaisyys (LM-optimointi, Testi_03_01): sama tulos kuin
+// polygonResidualWithGrad, mutta reunojen vakiosuureet (dx,dy,1/len2,
+// seuraavan karjen y) lasketaan KERRAN polygonia kohti (ei jokaiselle
+// pisteelle), ei modulo-operaatiota eika jakolaskua reunasilmukassa.
+// ------------------------------------------------------------------
+struct PolyEdges {
+    std::vector<double> x1, y1, dx, dy, y2, inv_len2;
+    mutable std::vector<double> d2buf, tbuf;
+    size_t n = 0;
+    void build(const std::vector<cv::Point2f>& pts) {
+        n = pts.size();
+        x1.resize(n); y1.resize(n); dx.resize(n); dy.resize(n); y2.resize(n); inv_len2.resize(n);
+        d2buf.resize(n); tbuf.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            size_t j = (i + 1 == n) ? 0 : i + 1;
+            double v1x = pts[i].x, v1y = pts[i].y, v2x = pts[j].x, v2y = pts[j].y;
+            x1[i] = v1x; y1[i] = v1y; y2[i] = v2y;
+            dx[i] = v2x - v1x; dy[i] = v2y - v1y;
+            double len2 = dx[i] * dx[i] + dy[i] * dy[i];
+            inv_len2[i] = (len2 < 1e-12) ? 0.0 : 1.0 / len2;
+        }
+    }
+};
+
+static inline ResidualWithGrad polygonResidualFast(
+    const PolyEdges& E,
+    const float* jac_ux, const float* jac_uy, const float* jac_ur,
+    const float* jac_vx, const float* jac_vy, const float* jac_vr,
+    double px, double py)
+{
+    ResidualWithGrad out;
+    const size_t n = E.n;
+    if (n < 3) { out.value = 1000.0; return out; }
+
+    const double* X1 = E.x1.data(); const double* Y1 = E.y1.data();
+    const double* DX = E.dx.data(); const double* DY = E.dy.data();
+    const double* Y2 = E.y2.data(); const double* IL = E.inv_len2.data();
+    double* D2 = E.d2buf.data(); double* TT = E.tbuf.data();
+
+    // Vaihe 1: etaisyys jokaiseen reunaan - ei haaroja, kaantajan vektoroitavissa.
+    for (size_t i = 0; i < n; ++i) {
+        const double dx = DX[i], dy = DY[i];
+        const double wx = px - X1[i], wy = py - Y1[i];
+        double t = (wx * dx + wy * dy) * IL[i];
+        t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        const double ex = wx - t * dx, ey = wy - t * dy;
+        D2[i] = ex * ex + ey * ey;
+        TT[i] = t;
+    }
+
+    // Vaihe 2: lahin reuna + sisapuolitesti (risteykset).
+    bool inside = false;
+    double best_d2 = std::numeric_limits<double>::max();
+    size_t best_i = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (D2[i] < best_d2) { best_d2 = D2[i]; best_i = i; }
+        const double v1y = Y1[i];
+        if ((v1y > py) != (Y2[i] > py)) {
+            double x_cross = X1[i] + (py - v1y) / DY[i] * DX[i];
+            if (px < x_cross) inside = !inside;
+        }
+    }
+    const double best_t = TT[best_i];
+
+    const double sign = inside ? 1.0 : -1.0;
+    const double D = std::sqrt(best_d2);
+    out.value = sign * D;
+    if (D < 1e-9) return out;
+
+    const size_t i1 = best_i, i2 = (best_i + 1 == n) ? 0 : best_i + 1;
+    const double t = best_t;
+    const double qx = X1[i1] + t * DX[i1];
+    const double qy = Y1[i1] + t * DY[i1];
+    const double ux = (qx - px) / D, uy = (qy - py) / D;
+
+    const double dQx_dX = (1.0 - t) * jac_ux[i1] + t * jac_ux[i2];
+    const double dQx_dY = (1.0 - t) * jac_uy[i1] + t * jac_uy[i2];
+    const double dQy_dX = (1.0 - t) * jac_vx[i1] + t * jac_vx[i2];
+    const double dQy_dY = (1.0 - t) * jac_vy[i1] + t * jac_vy[i2];
+    out.dX = sign * (ux * dQx_dX + uy * dQy_dX);
+    out.dY = sign * (ux * dQx_dY + uy * dQy_dY);
+    if (jac_ur != nullptr) {
+        const double dQx_dR = (1.0 - t) * jac_ur[i1] + t * jac_ur[i2];
+        const double dQy_dR = (1.0 - t) * jac_vr[i1] + t * jac_vr[i2];
+        out.dR = sign * (ux * dQx_dR + uy * dQy_dR);
+    }
+    return out;
+}
+
+
 struct ResidualsAndJacobian {
     std::vector<double> residuals;
     std::vector<std::array<double, 3>> J;
@@ -1816,14 +1937,37 @@ static ResidualsAndJacobian jointResidualsAndJacobianLinearized(
     double dX = params[0] - ctx.X0_ref;
     double dY = params[1] - ctx.Y0_ref;
     double dR = params[2] - ctx.R0_ref;
+    out.residuals.reserve(ctx.body_pts_f->size() + ctx.ring_pts_f->size());
+    out.J.reserve(ctx.body_pts_f->size() + ctx.ring_pts_f->size());
 
     if (!ctx.body_pts_f->empty()) {
         if (ctx.hull_lin->valid) {
             auto hull = evalLinearizedHull(*ctx.hull_lin, dX, dY);
+            PolyEdges E; E.build(hull);
+            PolyEdges NE; bool notch_built = false;
+            std::vector<cv::Point2f> notch_poly;
             for (auto& p : *ctx.body_pts_f) {
-                auto rg = polygonResidualWithGrad(
-                    hull, ctx.hull_lin->jac_ux.data(), ctx.hull_lin->jac_uy.data(), nullptr,
-                    ctx.hull_lin->jac_vx.data(), ctx.hull_lin->jac_vy.data(), nullptr, p);
+                auto rg = polygonResidualFast(
+                    E, ctx.hull_lin->jac_ux.data(), ctx.hull_lin->jac_uy.data(), nullptr,
+                    ctx.hull_lin->jac_vx.data(), ctx.hull_lin->jac_vy.data(), nullptr,
+                    (double)p.x, (double)p.y);
+                // signedDistWithNotch: ulkopuolella tai ilman loveusta -> d_outer sellaisenaan
+                if (ctx.notch_lin != nullptr && rg.value > 0.0) {
+                    if (!notch_built) {
+                        notch_poly = evalLinearizedRing(*ctx.notch_lin, dX, dY, 0.0);
+                        NE.build(notch_poly);
+                        notch_built = true;
+                    }
+                    auto rn = polygonResidualFast(
+                        NE, ctx.notch_lin->jac_ux.data(), ctx.notch_lin->jac_uy.data(), nullptr,
+                        ctx.notch_lin->jac_vx.data(), ctx.notch_lin->jac_vy.data(), nullptr,
+                        (double)p.x, (double)p.y);
+                    if (rn.value > 0.0) {
+                        rg.value = -rn.value; rg.dX = -rn.dX; rg.dY = -rn.dY;
+                    } else if (-rn.value < rg.value) {
+                        rg.value = -rn.value; rg.dX = -rn.dX; rg.dY = -rn.dY;
+                    }
+                }
                 out.residuals.push_back(rg.value);
                 out.J.push_back({ rg.dX, rg.dY, 0.0 });
             }
@@ -1837,10 +1981,12 @@ static ResidualsAndJacobian jointResidualsAndJacobianLinearized(
 
     if (!ctx.ring_pts_f->empty()) {
         auto ring = evalLinearizedRing(*ctx.ring_lin, dX, dY, dR);
+        PolyEdges E; E.build(ring);
         for (auto& p : *ctx.ring_pts_f) {
-            auto rg = polygonResidualWithGrad(
-                ring, ctx.ring_lin->jac_ux.data(), ctx.ring_lin->jac_uy.data(), ctx.ring_lin->jac_ur.data(),
-                ctx.ring_lin->jac_vx.data(), ctx.ring_lin->jac_vy.data(), ctx.ring_lin->jac_vr.data(), p);
+            auto rg = polygonResidualFast(
+                E, ctx.ring_lin->jac_ux.data(), ctx.ring_lin->jac_uy.data(), ctx.ring_lin->jac_ur.data(),
+                ctx.ring_lin->jac_vx.data(), ctx.ring_lin->jac_vy.data(), ctx.ring_lin->jac_vr.data(),
+                (double)p.x, (double)p.y);
             out.residuals.push_back(rg.value);
             out.J.push_back({ rg.dX, rg.dY, rg.dR });
         }
@@ -1850,16 +1996,31 @@ static ResidualsAndJacobian jointResidualsAndJacobianLinearized(
 }
 
 
+static const double g_lm_rel_tol = getenv("LM_REL_TOL") ? atof(getenv("LM_REL_TOL")) : 1e-6;
+static const double g_lm_step_tol = getenv("LM_STEP_TOL") ? atof(getenv("LM_STEP_TOL")) : 0.0;
+
 static cv::Vec3d levenbergMarquardt3Linearized(
     const ResidualContext& ctx, cv::Vec3d params0,
     int max_iterations = 30, double lambda_init = 1e-3, double rel_tol = 1e-10)
 {
+    PT bpt2;
     LinearizedHull hull_lin = buildLinearizedHull(*ctx.local_pts_body, params0[0], params0[1], *ctx.K, *ctx.R, *ctx.t);
     LinearizedRing ring_lin;
     if (!ctx.ring_pts_f->empty())
         ring_lin = buildLinearizedRing(params0[0], params0[1], params0[2], ctx.ring_height_cm, *ctx.K, *ctx.R, *ctx.t);
+    profAdd(P_LM_BUILD, bpt2.lap());
 
-    LinearizedResidualContext lctx{ &hull_lin, &ring_lin, ctx.body_pts_f, ctx.ring_pts_f, params0[0], params0[1], params0[2] };
+    LinearizedRing notch_lin;
+    if (g_lm_notch && !ctx.body_pts_f->empty() && ctx.handle_r_frac > 0.0)
+        notch_lin = buildLinearizedRing(params0[0], params0[1], ctx.handle_r_frac * ctx.R_max_cm, ctx.ring_height_cm, *ctx.K, *ctx.R, *ctx.t, 28);
+    LinearizedResidualContext lctx{ &hull_lin, &ring_lin, ctx.body_pts_f, ctx.ring_pts_f, params0[0], params0[1], params0[2],
+                                    (g_lm_notch && !ctx.body_pts_f->empty() && ctx.handle_r_frac > 0.0) ? &notch_lin : nullptr };
+    profAdd(P_C_NBODY, (long long)ctx.body_pts_f->size() * 1000000LL);
+    profAdd(P_C_NRING, (long long)ctx.ring_pts_f->size() * 1000000LL);
+    profAdd(P_C_NHULL, (long long)hull_lin.ref_pts.size() * 1000000LL);
+    long long lm_iters = 0, lm_evals = 1;
+    double last_step_max = 1e9;
+    rel_tol = std::max(rel_tol, g_lm_rel_tol);
 
     auto sumsq = [](const std::vector<double>& v) {
         double s = 0.0;
@@ -1876,6 +2037,7 @@ static cv::Vec3d levenbergMarquardt3Linearized(
     double lam = lambda_init;
 
     for (int iter = 0; iter < max_iterations; ++iter) {
+        ++lm_iters;
 
         size_t m = residuals.size();
 
@@ -1919,15 +2081,18 @@ static cv::Vec3d levenbergMarquardt3Linearized(
             // vain KERRAN hyvaksytylle askeleelle (alla) - katso
             // taman lohkon alun kommentti.
             cv::Vec3d trial = params + cv::Vec3d(delta[0], delta[1], delta[2]);
-            auto trial_res = jointResidualsLinearized(lctx, trial);
-            double trial_cost = sumsq(trial_res);
+            lm_evals += 1;
+            PT ept;
+            auto rj_new = jointResidualsAndJacobianLinearized(lctx, trial);
+            profAdd(P_LM_EVAL_ONLY, ept.lap());
+            double trial_cost = sumsq(rj_new.residuals);
 
             if (trial_cost < cost) {
                 rel_improvement = (cost - trial_cost) / std::max(cost, 1e-12);
                 params = trial;
-                auto rj_new = jointResidualsAndJacobianLinearized(lctx, params);
-                residuals = rj_new.residuals;
-                J = rj_new.J;
+                last_step_max = std::max(std::abs(delta[0]), std::max(std::abs(delta[1]), std::abs(delta[2])));
+                residuals = std::move(rj_new.residuals);
+                J = std::move(rj_new.J);
                 cost = trial_cost;
                 lam = std::max(lam / 5.0, 1e-12);
                 step_taken = true;
@@ -1937,9 +2102,11 @@ static cv::Vec3d levenbergMarquardt3Linearized(
             lam *= 5.0;
         }
 
-        if (!step_taken || rel_improvement < rel_tol)
+        if (!step_taken || rel_improvement < rel_tol || last_step_max < g_lm_step_tol)
             break;
     }
+    profAdd(P_C_LMITER, lm_iters * 1000000LL);
+    profAdd(P_C_LMEVAL, lm_evals * 1000000LL);
 
     return params;
 }
@@ -2070,7 +2237,9 @@ static cv::Vec3d levenbergMarquardt3LinearizedVerified(
     const ResidualContext& ctx, cv::Vec3d params0,
     int max_iterations = 30, double lambda_init = 1e-3, double rel_tol = 1e-10)
 {
+    PT vpt;
     cv::Vec3d params_lin = levenbergMarquardt3Linearized(ctx, params0, max_iterations, lambda_init, rel_tol);
+    profAdd(P_LM_LIN, vpt.lap());
 
     auto sumsq = [](const std::vector<double>& v) {
         double s = 0.0;
@@ -2081,10 +2250,23 @@ static cv::Vec3d levenbergMarquardt3LinearizedVerified(
     double exact_cost_start = sumsq(jointResiduals(ctx, params0));
     double exact_cost_lin = sumsq(jointResiduals(ctx, params_lin));
 
+    profAdd(P_LM_VERIFY, vpt.lap());
+    static const bool g_lm_debug = getenv("LM_DEBUG") != nullptr;
+    if (g_lm_debug) {
+        static std::atomic<int> dbg(0);
+        if (dbg++ < 60)
+            fprintf(stderr, "[LMDBG] %s start=(%.1f,%.1f,%.2f) lin=(%.1f,%.1f,%.2f) cost0=%.1f costLin=%.1f nb=%zu nr=%zu\n",
+                exact_cost_lin <= exact_cost_start * (1.0 + 1e-9) ? "OK  " : "FAIL",
+                params0[0], params0[1], params0[2], params_lin[0], params_lin[1], params_lin[2],
+                exact_cost_start, exact_cost_lin, ctx.body_pts_f->size(), ctx.ring_pts_f->size());
+    }
     if (exact_cost_lin <= exact_cost_start * (1.0 + 1e-9))
         return params_lin;
 
-    return levenbergMarquardt3(ctx, params0, max_iterations, lambda_init, rel_tol);
+    PT fpt;
+    auto res_exact = levenbergMarquardt3(ctx, params0, max_iterations, lambda_init, rel_tol);
+    profAdd(P_LM_FALLBACK, fpt.lap());
+    return res_exact;
 }
 
 
@@ -2190,6 +2372,11 @@ static RefineResult refinePositionJoint(
         body_pts.resize(body_pts_crop.size());
         for (size_t i = 0; i < body_pts_crop.size(); ++i)
             body_pts[i] = cv::Point2d(body_pts_crop[i].x + off_x, body_pts_crop[i].y + off_y);
+    }
+    if (g_body_stride > 1 && body_pts.size() > 40) {
+        std::vector<cv::Point2d> dec;
+        for (size_t i = 0; i < body_pts.size(); i += (size_t)g_body_stride) dec.push_back(body_pts[i]);
+        body_pts.swap(dec);
     }
     int n_body = (int)body_pts.size();
     profAdd(P_R_CONTOUR, rpt.lap());
