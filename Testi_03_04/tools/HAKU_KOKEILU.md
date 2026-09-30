@@ -49,7 +49,7 @@ karkea (virhe >100 cm, kun ollaan >40 ruutua ennen CSV:n ensimmäistä riviä) �
 "Väärät" = ehdokkaat jotka eivät osu seurattuun heittoon (mukana myös muut alueella olevat kivet/pelaajat, ei pelkästään roskaa).
 Live ajaa HAKUn vain joka 10. ruudulla → kivi 17 löytyy 2760, vaikka se on löydettävissä jo 2756.
 
-## Siluettitarkennus (valinnainen, `HAKU_SILHOUETTE=1`)
+## Siluettitarkennus (oletuksena PÄÄLLÄ; `HAKU_SILHOUETTE=0` kytkee pois)
 
 HAKUn löytämän ehdokkaan paikka tarkennetaan kiven 3D-mallin siluetilla graniittimaskista (`haku_silhouette.py`, ~7 ms/ehdokas):
 sisäpuoli palkitaan, ylitulo rangaistaan (paino 1) paitsi kiven yläpuolella (kuvassa OIKEALLA, kuva on kierretty), lisäksi pieni keskitysbonus (λ = 0,1)
@@ -58,3 +58,13 @@ maskin ja siluetin massakeskipisteiden etäisyydestä. `HAKU_SIL_LOG=polku.csv` 
 Koko video (MAH00014, precomputed profiili), ilman / kanssa: 27 / 27 heittoa; rivejä 14621 / 15082; 448 tarkennusta, siirto mediaani 24 cm (p90 126 cm),
 pisteet −0,78 → −0,28. Radat ovat samat alkua/loppua lukuun ottamatta: 10 heittoa alkaa aikaisemmin (Y > +0,3 m), 5 myöhemmin; 12 rataa pitenee, 5 lyhenee.
 Kuvat: `tulokset/koko_muutokset_radat.png`, `tulokset/koko_muutokset_2.png`.
+
+### Miksi joidenkin heittojen alusta "puuttuu" 3 m (heitot #10 ja #12)
+
+Syy ei ole tarkennus vaan radan **alkupään heikko seuranta**: lähes kaikkien heittojen 40 ensimmäisellä rivillä (kiven ollessa kaukana, 30–33 m, lakaisijoiden vieressä)
+sovituksen rms on **noin 8–9 px ja tarkka-osuus 0,03–0,3**, kun koko radan rms-mediaani on 0,7–0,8 px (molemmissa ajoissa, ks. taulukko alla).
+Heitoissa #10 ja #12 alkupään seuranta jää tarkennuksen kanssa paikoilleen (liikkuu < 20 cm / 1 s -> "pysähtynyt"-sääntö katkaisee radan ruuduilla 5943 ja 6484),
+ja sama kivi rekisteröidään uudelleen seuraavalla HAKU-löydöllä (5940 / 6490), jossa kivi on siisti (rms 0,5–0,9). Ilman tarkennusta samat alkurivit jäivät voimaan,
+mutta niiden laatu on yhtä huono (rms 7,7 / 8,9, tarkka-osuus 0,03) ja sijainti jäljessä oikeasta (#10: 5940 rata Y 3127 vs oikea ~3024 cm).
+Alku- ja loppupään ±20–40 ruudun erot (#1, #4, #5, #9: aikaisempi alku) ovat siis pääosin sitä, sisältyykö huonosti sovitettu alkupätkä CSV:hen.
+Todellinen ongelma: kaukaisen pään seuranta (rms ~9 px ensimmäisellä 1,5 s:lla) – tarkastellaan erikseen.

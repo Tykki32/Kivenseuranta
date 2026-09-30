@@ -1,4 +1,4 @@
-"""HAKU:n siluettitarkennus (Testi_03_04, valinnainen: HAKU_SILHOUETTE=1).
+"""HAKU:n siluettitarkennus (Testi_03_04, oletuksena PAALLA; HAKU_SILHOUETTE=0 kytkee pois).
 
 HAKU loytaa ehdokkaan (X,Y). Tarkennus hakee kiven 3D-mallin siluetille paremman paikan GRANIITTIMASKISTA (HAKU-ruutu, tausta vaimennettu):
   + sisalla:  maskipikselit siluetin (kupera peite MINUS kahvan lovi) sisalla / siluetin ala            (palkinto)

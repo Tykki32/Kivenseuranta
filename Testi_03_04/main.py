@@ -3146,9 +3146,9 @@ def _fit_stone_profile(pose, stones):
 # (kuvassa nakyva kiven reuna ilman varjoa). Tarkastellaan kun kaydaan seurantaa lapi. Alfa-laskenta on C++:ssa
 # (stone_tracker.alpha_observation_cpp / alpha_contour_cpp, ~7 ms/havainto, tulos identtinen numpy/cv2-versioon (ALPHA_CPP=0)); tarkempi optimointi myohemmin.
 # ============================================================
-# HAKU:n SILUETTITARKENNUS (valinnainen, oletus POIS): HAKUn loytaman ehdokkaan paikka tarkennetaan kiven 3D-mallin siluetilla graniittimaskista
-# (katso haku_silhouette.py). HAKU_SILHOUETTE=1 kytkee paalle, HAKU_SIL_LOG=polku.csv kirjaa jokaisen tarkennuksen.
-HAKU_SILHOUETTE = os.environ.get("HAKU_SILHOUETTE", "0") == "1"
+# HAKU:n SILUETTITARKENNUS (oletus PAALLA, HAKU_SILHOUETTE=0 kytkee pois): HAKUn loytaman ehdokkaan paikka tarkennetaan kiven 3D-mallin siluetilla graniittimaskista
+# (katso haku_silhouette.py). HAKU_SIL_LOG=polku.csv kirjaa jokaisen tarkennuksen.
+HAKU_SILHOUETTE = os.environ.get("HAKU_SILHOUETTE", "1") == "1"   # Testi_03_04: oletuksena PAALLA (0 = pois)
 HAKU_SIL_LOG = os.environ.get("HAKU_SIL_LOG")
 PROFILE_ALPHA = os.environ.get("PROFILE_ALPHA", "1") == "1"   # 0 = vanha (seurannan oma aariviiva)
 ALPHA_LEVEL_DEFAULT = 0.434
@@ -3944,7 +3944,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_03_04 v4.1 alfa-aariviiva C++ (alipikselireuna) + hylkayssaannot (2026-09-30)"
+SOFTWARE_VERSION = "Testi_03_04 v4.2 alfa-aariviiva C++ + HAKU-siluettitarkennus (2026-09-30)"
 
 
 def _version_string():
