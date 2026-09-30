@@ -48,3 +48,13 @@ karkea (virhe >100 cm, kun ollaan >40 ruutua ennen CSV:n ensimmäistä riviä) �
 
 "Väärät" = ehdokkaat jotka eivät osu seurattuun heittoon (mukana myös muut alueella olevat kivet/pelaajat, ei pelkästään roskaa).
 Live ajaa HAKUn vain joka 10. ruudulla → kivi 17 löytyy 2760, vaikka se on löydettävissä jo 2756.
+
+## Siluettitarkennus (valinnainen, `HAKU_SILHOUETTE=1`)
+
+HAKUn löytämän ehdokkaan paikka tarkennetaan kiven 3D-mallin siluetilla graniittimaskista (`haku_silhouette.py`, ~7 ms/ehdokas):
+sisäpuoli palkitaan, ylitulo rangaistaan (paino 1) paitsi kiven yläpuolella (kuvassa OIKEALLA, kuva on kierretty), lisäksi pieni keskitysbonus (λ = 0,1)
+maskin ja siluetin massakeskipisteiden etäisyydestä. `HAKU_SIL_LOG=polku.csv` kirjaa jokaisen tarkennuksen.
+
+Koko video (MAH00014, precomputed profiili), ilman / kanssa: 27 / 27 heittoa; rivejä 14621 / 15082; 448 tarkennusta, siirto mediaani 24 cm (p90 126 cm),
+pisteet −0,78 → −0,28. Radat ovat samat alkua/loppua lukuun ottamatta: 10 heittoa alkaa aikaisemmin (Y > +0,3 m), 5 myöhemmin; 12 rataa pitenee, 5 lyhenee.
+Kuvat: `tulokset/koko_muutokset_radat.png`, `tulokset/koko_muutokset_2.png`.
