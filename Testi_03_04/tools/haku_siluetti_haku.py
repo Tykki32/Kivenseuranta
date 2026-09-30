@@ -5,6 +5,9 @@ Pisteytys (maski = graniittimaski HAKU-ruudusta):
   - ylitulo: maskipikselit siluetin (kupera peite) ULKOPUOLELLA / siluetin ala, PAITSI siluetin ylapuolella   (rangaistus, paino w)
   siluetin ylapuolinen alue -> ei rangaistusta. HUOM: kuva on kierretty - kiven YLAPUOLI (z kasvaa, kahva) on kuvassa OIKEALLA:
   vapaa alue = samojen rivien pikselit siluetin oikean reunan oikealla puolella.
+  + keskitys (lam_center > 0): pieni lisapiste lam * exp(-(d/sigma)^2), d = maskin (siluetin kuperan peitteen sisalla olevan osan) massakeskipisteen
+    etaisyys siluetin (peite miinus lovi) massakeskipisteesta (px), sigma = sigma_frac * sqrt(siluetin ala). Jos maski on kokonaan siluetin sisalla,
+    tama maaraa paikan (keskittaa).
 Haku: karkea (3 cm) + hieno (1 cm) ristikko HAKU-loydon ymparilla (X +-40 cm, Y +-80 cm).
 """
 import sys, os, pickle
@@ -16,8 +19,8 @@ UP = 2
 
 
 class SilhouetteSearch:
-    def __init__(self, lab, w_leak=1.0):
-        self.lab = lab; self.w = w_leak
+    def __init__(self, lab, w_leak=1.0, lam_center=0.1, sigma_frac=0.3):
+        self.lab = lab; self.w = w_leak; self.lam = lam_center; self.sigfrac = sigma_frac
         self.k9 = lab.M.k9; self.k94 = lab.M.k94
         self.pose = lab.pose
         self.K, self.R, self.t = (np.asarray(lab.pose[k], float) for k in ("K", "R", "t"))
@@ -52,6 +55,13 @@ class SilhouetteSearch:
         above = (~(np.cumsum(mh[:, ::-1], axis=1)[:, ::-1] > 0)) & rows[:, None]
         inside = int((mask2 & sil).sum()); leak = int((mask2 & ~mh & ~above).sum())
         sc = inside / a - self.w * leak / a
+        if self.lam > 0.0:
+            mi = mask2 & mh
+            if mi.any():
+                ym, xm = np.nonzero(mi); ys_, xs_ = np.nonzero(sil)
+                d = np.hypot(xm.mean() - xs_.mean(), ym.mean() - ys_.mean()) / UP            # natiivi px
+                sig = self.sigfrac * np.sqrt(a / (UP * UP))
+                sc += self.lam * np.exp(-(d / sig) ** 2)
         return (sc, inside / a, leak / a, sil, mh, above) if detail else sc
 
     def search(self, mask_crop, ox, oy, X0, Y0, dx=40.0, dy=80.0, coarse=3.0, fine=1.0):
