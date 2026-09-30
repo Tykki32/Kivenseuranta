@@ -4184,6 +4184,31 @@ static py::dict ms_debug(
 
 
 
+// ------------------------------------------------------------------
+// Rivijako omilla std::thread-saikeilla (Testi_03_01): cv::parallel_for_ EI sovi ajettavaksi samanaikaisesti
+// track_stones_batch:in ScopedSingleThreadedOpenCV-vartijan (cv::setNumThreads(1), globaali) kanssa -
+// liukuhihnan tuottajasaie kutsuu naita samaan aikaan kun paasaie seuraa kiveia, ja OpenCV:n oma
+// saikeepooli jumittui (havaittu: koko ajo jaa odottamaan). Omat saikeet eivat riipu OpenCV:n poolista.
+// ------------------------------------------------------------------
+struct RowRange { int start, end; };
+
+template <class F>
+static void parallelRowsStd(int rows, F fn)
+{
+    unsigned hw = std::thread::hardware_concurrency();
+    int nt = (int)std::max(1u, std::min(4u, hw == 0 ? 2u : hw));
+    if (nt <= 1 || rows < 64) { fn(RowRange{ 0, rows }); return; }
+    int chunk = (rows + nt - 1) / nt;
+    std::vector<std::thread> th;
+    for (int i = 1; i < nt; ++i) {
+        int a = i * chunk, b = std::min(rows, a + chunk);
+        if (a >= b) break;
+        th.emplace_back([&fn, a, b]() { fn(RowRange{ a, b }); });
+    }
+    fn(RowRange{ 0, std::min(rows, chunk) });
+    for (auto& t : th) t.join();
+}
+
 // ============================================================
 // VARJONSIETOINEN TAUSTANVAIMENNUS + VALOTASAPAINON SOVELLUS YHDELLA LAPIKAYNNILLA
 // (Testi_03_01, nopeusoptimointi). Korvaa Pythonin apply_photometric_correction +
@@ -4233,7 +4258,7 @@ static py::array_t<uint8_t> suppress_shadow_background(
 
     {
         py::gil_scoped_release release;
-        cv::parallel_for_(cv::Range(0, H), [&](const cv::Range& rr) {
+        parallelRowsStd(H, [&](const RowRange& rr) {
             for (int y = rr.start; y < rr.end; ++y) {
                 const uint8_t* sp = src + (size_t)y * W * 3;
                 const uint8_t* rp = ref + (size_t)y * W * 3;
@@ -4264,6 +4289,7 @@ static py::array_t<uint8_t> suppress_shadow_background(
 }
 
 
+
 // ============================================================
 // NOPEA VAIHEKORRELAATIO MOODIKUVAA VASTEN (Testi_03_01, nopeusoptimointi). cv::phaseCorrelate
 // laskee JOKA kutsulla molempien kuvien FFT:n uudelleen (~30 ms/ruutu 1280x720:lla). Referenssin
@@ -4288,7 +4314,7 @@ static py::array_t<float> phase_window(
     const uint8_t* g = (const uint8_t*)gb.ptr; const float* w = (const float*)wb.ptr;
     {
         py::gil_scoped_release release;
-        cv::parallel_for_(cv::Range(0, H), [&](const cv::Range& r) {
+        parallelRowsStd(H, [&](const RowRange& r) {
             for (int y = r.start; y < r.end; ++y)
                 for (int x = 0; x < W; ++x) o[(size_t)y * W + x] = (float)g[(size_t)y * W + x] * w[(size_t)y * W + x];
         });
@@ -4315,7 +4341,7 @@ static py::array_t<float> phase_mulnorm(
     auto sgn = [](float a, float b) { float v = a * b; return v > 0.f ? 1.f : (v < 0.f ? -1.f : 0.f); };
     {
         py::gil_scoped_release release;
-        cv::parallel_for_(cv::Range(0, M), [&](const cv::Range& rr) {
+        parallelRowsStd(M, [&](const RowRange& rr) {
             for (int r = rr.start; r < rr.end; ++r) {
                 const float* a = R + (size_t)r * N; const float* b = F + (size_t)r * N; float* o = P + (size_t)r * N;
                 for (int j = 1; j + 1 < N; j += 2) cmul(a[j], a[j + 1], b[j], b[j + 1], o[j], o[j + 1]);
