@@ -3,7 +3,8 @@
 Pisteytys (maski = graniittimaski HAKU-ruudusta):
   + sisalla: maskipikselit siluetin (kupera peite MIINUS kahvan lovi) sisalla / siluetin ala        (palkinto)
   - ylitulo: maskipikselit siluetin (kupera peite) ULKOPUOLELLA / siluetin ala, PAITSI siluetin ylapuolella   (rangaistus, paino w)
-  siluetin ylapuolinen alue = samojen sarakkeiden pikselit jotka ovat siluetin ylareunan ylapuolella -> ei rangaistusta.
+  siluetin ylapuolinen alue -> ei rangaistusta. HUOM: kuva on kierretty - kiven YLAPUOLI (z kasvaa, kahva) on kuvassa OIKEALLA:
+  vapaa alue = samojen rivien pikselit siluetin oikean reunan oikealla puolella.
 Haku: karkea (3 cm) + hieno (1 cm) ristikko HAKU-loydon ymparilla (X +-40 cm, Y +-80 cm).
 """
 import sys, os, pickle
@@ -46,8 +47,9 @@ class SilhouetteSearch:
         mh = self.raster(hull, mask2.shape, ox, oy); mn = self.raster(notch, mask2.shape, ox, oy)
         sil = mh & ~mn
         a = max(int(sil.sum()), 1)
-        cols = sil.any(axis=0)
-        above = (~(np.cumsum(mh, axis=0) > 0)) & cols[None, :]            # siluetin (hull) ylapuolella samoissa sarakkeissa
+        rows = sil.any(axis=1)
+        # kuva on kierretty: kiven ylapuoli = kuvassa oikealla -> vapaa alue = siluetin oikealla puolella samoilla riveilla
+        above = (~(np.cumsum(mh[:, ::-1], axis=1)[:, ::-1] > 0)) & rows[:, None]
         inside = int((mask2 & sil).sum()); leak = int((mask2 & ~mh & ~above).sum())
         sc = inside / a - self.w * leak / a
         return (sc, inside / a, leak / a, sil, mh, above) if detail else sc
