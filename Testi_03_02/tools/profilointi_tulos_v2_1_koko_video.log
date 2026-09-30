@@ -1,0 +1,78 @@
+=== VAIHEKOHTAINEN AIKAMITTAUS (Testi_03_01) ===
+ruutuja: 16501, kivipaivityksia: 31864
+--- Python-puoli (ms/ruutu, kutsuja) ---
+FRAME_KOKO                                                    26.67 ms/ruutu 100.0%  n=16501
+pipe A: stabilointi (vaihekorrelaatio)                        21.30 ms/ruutu  79.8%  n=16500
+py: SEURANTA dispatch+C++ seinakello                          19.18 ms/ruutu  71.9%  n=12772
+pipe B: warpAffine+remap (koko frame)                         12.67 ms/ruutu  47.5%  n=16500
+pipe B: varjonsietoinen taustanvaimennus (koko frame)          5.48 ms/ruutu  20.5%  n=16500
+py: read(video)                                                5.26 ms/ruutu  19.7%  n=16502
+bg: valotasapaino taustasaikeessa (rinnan, ei lisaa)           5.25 ms/ruutu  19.7%  n=660
+pipe C: paasaie odottaa hihnaa (sisaltyy py: read(video)-riviin)     5.24 ms/ruutu  19.6%  n=16501
+pipe B: odottaa paasaiketta (jono taynna)                      4.92 ms/ruutu  18.5%  n=16501
+py: HAKU taustasaikeen oma kesto (ei lisaa, ajaa rinnan)       3.66 ms/ruutu  13.7%  n=1651
+pipe B: odottaa vaihetta A                                     3.52 ms/ruutu  13.2%  n=16501
+pipe A: odottaa vaihetta B (jono taynna)                       3.25 ms/ruutu  12.2%  n=16501
+py: HAKU odotus (result) - taakka SEURANNAN jalkeen            2.08 ms/ruutu   7.8%  n=1651
+pipe A: gray cvtColor                                          1.88 ms/ruutu   7.1%  n=16500
+pipe A: read(video)                                            0.18 ms/ruutu   0.7%  n=16501
+py: MUU / JAANNOS (ei mitattu: FRAME_KOKO - mitatut sarjavaiheet)     0.08 ms/ruutu   0.3%  n=16501
+py: SEURANTA jalkeen: tulossilmukka yht. (sis. varidiagn., CSV, portti)     0.07 ms/ruutu   0.3%  n=12772
+pipe A: set_transform                                          0.03 ms/ruutu   0.1%  n=16500
+py: HAKU submit (Python, saikeen kaynnistys)                   0.01 ms/ruutu   0.0%  n=1651
+py: stabilointi (vaihekorrelaatio+paneelit)                    0.00 ms/ruutu   0.0%  n=16501
+py: valotasapaino (alkuestimaatti, synkroninen)                0.00 ms/ruutu   0.0%  n=1
+py: gray cvtColor                                              0.00 ms/ruutu   0.0%  n=16501
+py: varjonsietoinen taustanvaimennus (koko frame)              0.00 ms/ruutu   0.0%  n=1
+py: set_transform                                              0.00 ms/ruutu   0.0%  n=16501
+py: warpAffine+remap (koko frame)                              0.00 ms/ruutu   0.0%  n=1
+--- C++-puoli (summattu CPU-aika saikeiden yli) ---
+vaihe                                                       ms/ruutu  ms/kutsu  kutsuja
+seuranta/kivi-paivitys yhteensa (CPU)                          35.59    18.429    31864
+  prep: rajaus + taustanvaimennus                               0.00     0.001    31864
+  prep: saturaatio                                              1.00     0.516    31864
+  prep: graniittimaski (GaussianBlur)                           2.64     1.365    31864
+  prep: etualamaski (whitened)                                  0.66     0.341    31864
+  haku: mean-shift (viimeisesta)                                3.57     1.847    31864
+  haku: mean-shift (ennustetusta)                               3.12     1.935    26635
+  haku: ristikko (yhdistelma, ennustettu keskipiste)            4.82     2.497    31864
+  haku yhteensa                                                11.51     5.962    31864
+  LM-tarkennus yhteensa                                        19.76    11.184    29160
+    LM: reunustus (copyMakeBorder)                              1.42     0.778    30160
+    LM: runkokontuuri + jaasuodatus                             2.05     1.124    30160
+    LM: reunapisteet (detectBoundaryPoints)                     2.24     0.462    80002
+    LM: sovitus #1                                             10.00     2.154    76618
+    LM: MAD-poikkeamat                                          1.10     0.238    76618
+    LM: sovitus #2 (uusinta)                                    2.32     1.570    24372
+    LM: lopullinen residuaali                                   0.99     0.212    76618
+    LM: ulkoiteraatioita (lkm)                                                    80002   (ulkoiteraatioita / LM-tarkennus)
+  HAKU: taustanvaimennus (koko frame)                           0.38     3.833     1651
+  HAKU: graniittimaski (koko frame)                             1.56    15.549     1651
+  HAKU: saturaatio (koko frame)                                 0.36     3.601     1651
+  HAKU: ristikkohaku                                            0.90     5.621     2651
+  HAKU: LM-tarkennus                                            0.37     6.180     1000
+  HAKU: floodFill-poisto                                        0.03     0.469     1000
+SEURANTA-kutsu seinakello (track_stones_batch)                 19.04    24.594    12772
+  kutsun alustus (numpy->cv, GIL)                               0.02     0.022    12772
+  kutsun tulokset (dict)                                        0.02     0.027    12772
+HAKU: spawn-suodatin HYLKASI ehdokkaan (kpl)                    0.00     0.000      400
+HAKU: spawn-suodatin hyvaksyi ehdokkaan (kpl)                   0.00     0.000      448
+    granite: cvtColor x2 + convert                              1.09     0.537    33515
+    granite: GaussianBlur                                       1.67     0.821    33515
+    granite: kynnys-silmukka                                    0.74     0.364    33515
+    granite: morfologia                                         0.67     0.327    33515
+    ristikko: predictedHull                                     0.97     0.011  1437042
+    ristikko: hullOverlapScore                                  1.18     0.014  1437042
+    LM: TARKKA VARAKEINO-LM (linearisointi hylatty)             1.66     5.205     5253
+    LM#1: lineaarinen LM                                        7.74     1.264   100990
+    LM#1: tarkka varmistus                                      2.92     0.477   100990
+    LM: linearisoinnin rakennus                                 1.16     0.189   100990
+    LM: residuaali+jacobi evaluaatiot                           6.02     0.063  1588481
+LASKURI keskiarvo: runkopisteita/LM                           439.17    71.757   100990
+LASKURI keskiarvo: rengaspisteita/LM                          100.51    16.422   100990
+LASKURI keskiarvo: hull-kulmia/LM                             477.35    77.995   100990
+LASKURI keskiarvo: LM-iteraatioita/LM                          41.60     6.797   100990
+LASKURI keskiarvo: residuaalievaluaatioita/LM                 102.39    16.729   100990
+Versio: Testi_03_02 v2.1 roskasuodatin + seurannan kevennykset (2026-09-30) | git 569aeb4+muokattu | stone_tracker kaannetty Sep 30 2026 07:48:06 | mode_engine kaannetty Sep 30 2026 07:24:10
+================================================
+DONE 440.347829580307
