@@ -57,6 +57,7 @@ class HakuLab:
         self.handle = prof["handle_r_frac"]
         self.ref = calib["frame_undistorted"]
         self.dump_dir = dump_dir
+        self.pkl_path = pkl_path
         self.match_cm = match_cm
         self._cache = {}
         self.rows = collections.defaultdict(dict)             # kivi -> {frame: (x_cm, y_cm)}
