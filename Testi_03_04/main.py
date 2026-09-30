@@ -13,6 +13,7 @@ from tkinter import filedialog
 from concurrent.futures import ThreadPoolExecutor
 import mode_engine
 import stone_tracker
+import haku_silhouette   # Testi_03_04: HAKU:n siluettitarkennus (valinnainen)
 from collections import deque
 import subprocess
 
@@ -3145,6 +3146,10 @@ def _fit_stone_profile(pose, stones):
 # (kuvassa nakyva kiven reuna ilman varjoa). Tarkastellaan kun kaydaan seurantaa lapi. Alfa-laskenta on C++:ssa
 # (stone_tracker.alpha_observation_cpp / alpha_contour_cpp, ~7 ms/havainto, tulos identtinen numpy/cv2-versioon (ALPHA_CPP=0)); tarkempi optimointi myohemmin.
 # ============================================================
+# HAKU:n SILUETTITARKENNUS (oletus PAALLA, HAKU_SILHOUETTE=0 kytkee pois): HAKUn loytaman ehdokkaan paikka tarkennetaan kiven 3D-mallin siluetilla graniittimaskista
+# (katso haku_silhouette.py). HAKU_SIL_LOG=polku.csv kirjaa jokaisen tarkennuksen.
+HAKU_SILHOUETTE = os.environ.get("HAKU_SILHOUETTE", "1") == "1"   # Testi_03_04: oletuksena PAALLA (0 = pois)
+HAKU_SIL_LOG = os.environ.get("HAKU_SIL_LOG")
 PROFILE_ALPHA = os.environ.get("PROFILE_ALPHA", "1") == "1"   # 0 = vanha (seurannan oma aariviiva)
 ALPHA_LEVEL_DEFAULT = 0.434
 ALPHA_RATIO_MIN = 0.2
@@ -3843,12 +3848,16 @@ _FRAME_DUMP_RANGES = [
 ]
 
 
-def _frame_dump_hook(frame_index, frame_for_tracking):
+def _frame_dump_hook(frame_index, frame_for_tracking, frame_raw=None):
     if not _FRAME_DUMP_DIR or not _FRAME_DUMP_RANGES:
         return
     if any(lo <= frame_index <= hi for lo, hi in _FRAME_DUMP_RANGES):
+        extra = {}
+        # Testi_03_04: TRACKER_FRAME_DUMP_RAW=1 tallentaa myos vaimentamattoman (stabiloidun+oikaistun) ruudun taustanvaimennuskokeisiin
+        if frame_raw is not None and os.environ.get("TRACKER_FRAME_DUMP_RAW") == "1":
+            extra["raw"] = frame_raw
         np.savez_compressed(
-            os.path.join(_FRAME_DUMP_DIR, f"g{frame_index:06d}.npz"), frame=frame_for_tracking
+            os.path.join(_FRAME_DUMP_DIR, f"g{frame_index:06d}.npz"), frame=frame_for_tracking, **extra
         )
     elif frame_index > max(hi for _, hi in _FRAME_DUMP_RANGES):
         os._exit(0)
@@ -3935,7 +3944,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_03_04 v4.1 alfa-aariviiva C++ (alipikselireuna) + hylkayssaannot (2026-09-30)"
+SOFTWARE_VERSION = "Testi_03_04 v4.2 alfa-aariviiva C++ + HAKU-siluettitarkennus (2026-09-30)"
 
 
 def _version_string():
@@ -4334,6 +4343,8 @@ def run_pipeline(
     next_stone_scan_frame = 0
     prev_scan_candidates = None
     accumulated_stones = []
+    haku_refiner = None
+    haku_sil_log_file = None
     n_accepted_stones = 0
     best_sufficient_profile = None
     profile_result = precomputed_profile_result
@@ -5191,6 +5202,12 @@ def run_pipeline(
                     ring_r_frac_guess = profile["handle_r_frac"]
                     handle_r_frac = profile["handle_r_frac"]
 
+                    if HAKU_SILHOUETTE:
+                        haku_refiner = haku_silhouette.SilhouetteRefiner(
+                            k9, calib_result["pose"], R_max, H_total, shape_deltas, handle_r_frac
+                        )
+                        print("HAKU siluettitarkennus PAALLA (haku_silhouette.py)")
+
                     print(
                         "Rakennetaan kiven pintavarireferenssia "
                         f"({len(accumulated_stones)} havainnosta)..."
@@ -5301,7 +5318,7 @@ def run_pipeline(
                 # --------------------------------------------
                 ref_undist_live = calib_result["calib"]["frame_undistorted"]
 
-                _frame_dump_hook(frame_index, frame_u_for_tracking)
+                _frame_dump_hook(frame_index, frame_u_for_tracking, frame_u)
 
                 haku_future = None
 
@@ -5927,6 +5944,26 @@ def run_pipeline(
                         else [haku_result_raw]
                     )
                     new_this_scan = []
+
+                    if haku_refiner is not None:
+                        for _hr in haku_result_list:
+                            if not _hr.get("found"):
+                                continue
+                            _x1, _y1, _info = haku_refiner.refine(
+                                frame_u_for_tracking, _hr["X_cm"], _hr["Y_cm"]
+                            )
+                            if _info.get("ok"):
+                                if HAKU_SIL_LOG:
+                                    if haku_sil_log_file is None:
+                                        haku_sil_log_file = open(HAKU_SIL_LOG, "w", newline="")
+                                        haku_sil_log_file.write("frame,X_haku,Y_haku,X_new,Y_new,shift_cm,shift_px,score0,score1\n")
+                                    haku_sil_log_file.write(
+                                        f"{frame_index},{_hr['X_cm']:.2f},{_hr['Y_cm']:.2f},{_x1:.2f},{_y1:.2f},"
+                                        f"{_info['shift_cm']:.2f},{_info['shift_px']:.2f},{_info['score0']:.3f},{_info['score1']:.3f}\n"
+                                    )
+                                    haku_sil_log_file.flush()
+                                _hr["X_haku"], _hr["Y_haku"] = _hr["X_cm"], _hr["Y_cm"]
+                                _hr["X_cm"], _hr["Y_cm"] = _x1, _y1
 
                     if not haku_result_list:
                         _haku_log(frame_index, len(active_stones), True, False,

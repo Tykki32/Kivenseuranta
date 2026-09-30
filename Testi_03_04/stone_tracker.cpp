@@ -3667,6 +3667,7 @@ static const int MAX_HAKU_ATTEMPTS_PER_SCAN = 5;
 // perusteella - tama funktio ei siis ole ainoa suoja vaaria kandidaatteja
 // vastaan.
 static const double HAKU_ACCEPT_SCORE_THRESHOLD = 0.20;
+static double g_haku_accept_score = HAKU_ACCEPT_SCORE_THRESHOLD;   // Testi_03_04: ajonaikainen ylikirjoitus kokeiluihin (set_haku_accept_score)
 
 
 // ------------------------------------------------------------------
@@ -3779,7 +3780,7 @@ static StoneUpdateResult searchNewStoneOne(
         // k92.py:n TRACK_SCORE_THRESHOLD) - katso sen oma kommentti.
         auto refined_hull = predictedHull(local_pts_body, refined.X_cm, refined.Y_cm, K, R, t);
         double refined_score = hullOverlapScore(mask_search, refined_hull, 0, 0);
-        bool accept = !refined.oversized_reject && refined_score >= HAKU_ACCEPT_SCORE_THRESHOLD
+        bool accept = !refined.oversized_reject && refined_score >= g_haku_accept_score
             && spawnFilterPass(refined, out.score);
 
 #ifdef STONE_TRACKER_DEBUG_TIMING
@@ -5064,6 +5065,8 @@ static py::tuple alpha_contour_cpp(
 PYBIND11_MODULE(stone_tracker, m)
 {
     m.def("build_info", []() { return std::string("stone_tracker kaannetty ") + __DATE__ + " " + __TIME__; });
+    m.def("set_haku_accept_score", [](double v) { g_haku_accept_score = v; }, py::arg("accept_score"));   // kokeiluihin (oletus 0.20)
+    m.def("get_haku_accept_score", []() { return g_haku_accept_score; });
     m.def("alpha_observation_cpp", &alpha_observation_cpp,
           py::arg("frame"), py::arg("reference"), py::arg("gains"), py::arg("biases"), py::arg("cx"), py::arg("cy"),
           py::arg("diff_threshold"), py::arg("v_drop_min"), py::arg("v_drop_max"), py::arg("ice_s_max"), py::arg("ice_v_min"),
