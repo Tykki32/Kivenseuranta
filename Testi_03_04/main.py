@@ -5213,13 +5213,13 @@ def run_pipeline(
 
                     if HAKU_SILHOUETTE:
                         haku_refiner = haku_silhouette.SilhouetteRefiner(
-                            k9, calib_result["pose"], R_max, H_total, shape_deltas, handle_r_frac
+                            k9, calib_result["pose"], R_max, H_total, shape_deltas, handle_r_frac, k94=k94
                         )
-                        print("HAKU siluettitarkennus PAALLA (haku_silhouette.py)")
+                        print("HAKU siluettitarkennus PAALLA (haku_silhouette.py, C++: %s)" % (haku_refiner.body_pts is not None))
                     if SEURANTA_SILHOUETTE:
                         track_refiner = haku_silhouette.SilhouetteRefiner(
                             k9, calib_result["pose"], R_max, H_total, shape_deltas, handle_r_frac,
-                            max_shift_px=SEURANTA_SIL_SHIFT_PX
+                            max_shift_px=SEURANTA_SIL_SHIFT_PX, k94=k94
                         )
                         print(f"SEURANTA maskituki PAALLA (inside >= {SEURANTA_MIN_INSIDE}, siluettitarkennus +-{SEURANTA_SIL_SHIFT_PX} px)")
 

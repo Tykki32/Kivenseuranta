@@ -28,3 +28,11 @@ Offline-toisto (virhe HAKU-pisteisiin): kivi 3: 32 -> 4 cm; kivi 51: 285 cm -> 1
 
 Ratojen loppupäät (heitot #24–#27) vastaavat aiemmin validoituja (Testi_03_03) pysähtymispaikkoja: 2,2 / 3,7 / 3,8 / 2,8 m (ilman: −1,3 / 5,8 / 4,6 / 8,6 m).
 HUOM: CSV:n `rms_px`-sarake on LM-sovituksen rms eikä siluetin laatu, joten alkupään rms (~9 px) pysyy, vaikka paikka on nyt tarkempi.
+
+## C++ (silhouette_refine_cpp)
+
+Siluettitarkennus on C++:ssa (`stone_tracker.silhouette_refine_cpp`, Python-kääre `haku_silhouette.SilhouetteRefiner`, `k94` annettava konstruktorille): ~0,7–0,9 ms/kutsu
+(numpy/cv2-versio ~4,6–5,2 ms); siluetin siirtokorrelaatiot lasketaan rivikohtaisilla kumulatiivisilla summilla (ei FFT:tä). Tulos on sama kuin numpy-versiolla
+(paikkaero 0,000 cm, pisteet samat; tasapelissä valitaan pienin siirto molemmissa). Varapolku: ilman `k94`:ää numpy/cv2-versio (`refine_py`).
+Koko video: SEURANNAN maskituki 4,66 -> 0,63 ms/ruutu (15,8 % -> 2,4 %), ajoaika 438,6 s / 16 501 ruutua (37,6 r/s), 26 heittoa.
+(C++-versio käyttää HAKUn/SEURANNAN tavallista graniittimaskia (sumennus pienennetyllä kuvalla), joten radat eroavat marginaalisesti numpy-ajosta.)

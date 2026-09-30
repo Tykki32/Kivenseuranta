@@ -10,6 +10,10 @@ maatasoon (X,Y) Jacobin avulla. Yksi ehdokas ~ muutama ms. Kayttaa samaa profiil
 """
 import numpy as np
 import cv2
+try:
+    import stone_tracker as _st
+except Exception:          # pragma: no cover
+    _st = None
 
 UP = 2
 W_LEAK = 1.0
@@ -22,8 +26,13 @@ MASK_MARGIN = 75     # graniittimaskin sumennuksen reunus (px)
 
 class SilhouetteRefiner:
     def __init__(self, k9, pose, R_max, H_total, shape_deltas, handle_r_frac, w_leak=W_LEAK, lam=LAM, sigma_frac=SIGMA_FRAC,
-                 max_shift_px=MAX_SHIFT_PX):
+                 max_shift_px=MAX_SHIFT_PX, k94=None, use_cpp=True):
         self.k9 = k9; self.pose = pose
+        self.max_shift_px = max_shift_px; self.w_leak, self.lam_c, self.sigfrac_c = w_leak, lam, sigma_frac
+        # C++-versio (stone_tracker.silhouette_refine_cpp): tarvitsee mallin pisteet (k94.build_local_stone_rings, sama kuin HAKUn runko)
+        self.body_pts = None
+        if use_cpp and k94 is not None and _st is not None and hasattr(_st, "silhouette_refine_cpp"):
+            self.body_pts = np.ascontiguousarray(k94.build_local_stone_rings(R_max, H_total, np.asarray(shape_deltas), n_theta=28, n_per_segment=5), dtype=np.float64)
         self.R_max, self.H_total, self.sd, self.lovi = R_max, H_total, np.asarray(shape_deltas), handle_r_frac
         self.w, self.lam, self.sigfrac, self.S = w_leak, lam, sigma_frac, int(max_shift_px * UP)
         self.K, self.R, self.t = (np.asarray(pose[k], float) for k in ("K", "R", "t"))
@@ -46,7 +55,15 @@ class SilhouetteRefiner:
         return m
 
     def refine(self, frame_bgr, X0, Y0):
-        """Palauttaa (X, Y, info) - info: dict(score0, score1, shift_px, shift_cm, ok). Epaonnistuessa (X0, Y0, info ok=False)."""
+        """Palauttaa (X, Y, info) - info: dict(score0, score1, inside0, inside1, shift_px, shift_cm, ok). Epaonnistuessa (X0, Y0, info ok=False).
+        C++-polku jos k94 annettu ja stone_tracker.silhouette_refine_cpp olemassa (muuten numpy/cv2-versio refine_py)."""
+        if self.body_pts is not None:
+            return _st.silhouette_refine_cpp(np.ascontiguousarray(frame_bgr), self.body_pts, self.K, self.R, self.t,
+                                             float(self.R_max), float(self.H_total), float(self.lovi), float(X0), float(Y0),
+                                             float(self.w), float(self.lam), float(self.sigfrac), int(self.max_shift_px), int(HALF), int(MASK_MARGIN))
+        return self.refine_py(frame_bgr, X0, Y0)
+
+    def refine_py(self, frame_bgr, X0, Y0):
         H_img, W_img = frame_bgr.shape[:2]
         cx, cy = self.proj(X0, Y0, self.H_total / 2)
         cxi, cyi = int(round(cx)), int(round(cy))
@@ -88,8 +105,10 @@ class SilhouetteRefiner:
             d = np.hypot(mcx - xs_.mean(), mcy - ys_.mean()) / UP
             sig = self.sigfrac * np.sqrt(a / (UP * UP))
             bonus = np.where(cnt > 0.5, self.lam * np.exp(-(d / sig) ** 2), 0.0)
-        score = inside - self.w * leak + bonus
-        iy, ix = np.unravel_index(int(np.argmax(score)), score.shape)
+        score = (inside - self.w * leak + bonus).astype(np.float64)
+        # tasapeli (plateau): pienin siirto (vakaa tulos, ei riipu lukutarkkuudesta) - sama kuin C++-versiossa
+        cand = np.argwhere(score >= score.max() - 1e-7)
+        iy, ix = min(cand, key=lambda q: (q[1] - S) ** 2 + (q[0] - S) ** 2)
         du, dv = (ix - S) / UP, (iy - S) / UP                      # siluetin siirto kuvassa (px)
         s0, s1 = float(score[S, S]), float(score[iy, ix])
         ins0, ins1 = float(inside[S, S]), float(inside[iy, ix])
