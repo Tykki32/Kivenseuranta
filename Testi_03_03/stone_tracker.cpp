@@ -4672,7 +4672,8 @@ static py::dict fit_stone_profile_cpp(
     py::list contours,
     py::array_t<double, py::array::c_style | py::array::forcecast> positions0_arr,
     int n_sample, double initial_radius, double height_min, double height_max,
-    double handle_min, double handle_max, double handle_init, double reg_weight, int max_iterations)
+    double handle_min, double handle_max, double handle_init, double reg_weight, int max_iterations,
+    double r_fixed = -1.0)
 {
     using namespace pfit;
     Ctx c;
@@ -4712,7 +4713,7 @@ static py::dict fit_stone_profile_cpp(
 
     auto pos0 = positions0_arr.unchecked<2>();
     std::vector<double> params((size_t)np, 0.0);
-    params[0] = initial_radius;
+    params[0] = (r_fixed > 0.0) ? r_fixed : initial_radius;   // r_fixed > 0: R pidetaan kiinteana (ei Jacobian-saraketta)
     params[1] = inverseSigmoidBounded(0.5 * (height_min + height_max), height_min, height_max);
     params[2] = inverseSigmoidBounded(handle_init, handle_min, handle_max);
     for (int i = 0; i < ns; ++i) { params[(size_t)(3 + N_SHAPE + 2 * i)] = pos0(i, 0); params[(size_t)(3 + N_SHAPE + 2 * i + 1)] = pos0(i, 1); }
@@ -4744,6 +4745,7 @@ static py::dict fit_stone_profile_cpp(
         for (int it = 0; it < max_iterations; ++it) {
             std::fill(J.begin(), J.end(), 0.0);
             for (int j = 0; j < np; ++j) {
+                if (j == 0 && r_fixed > 0.0) continue;      // kiinteä R: sarake nolla
                 double step = eps * std::max(1.0, std::abs(params[(size_t)j]));
                 std::vector<double> pp = params;
                 pp[(size_t)j] += step;
@@ -4845,7 +4847,7 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("K"), py::arg("R"), py::arg("t"), py::arg("contours"), py::arg("positions0"),
           py::arg("n_sample") = 40, py::arg("initial_radius") = 14.55, py::arg("height_min") = 11.43, py::arg("height_max") = 15.0,
           py::arg("handle_min") = 0.30, py::arg("handle_max") = 0.95, py::arg("handle_init") = 0.70,
-          py::arg("reg_weight") = 60.0, py::arg("max_iterations") = 100);
+          py::arg("reg_weight") = 60.0, py::arg("max_iterations") = 100, py::arg("r_fixed") = -1.0);
     m.def("prof_reset", &prof_reset);
     m.def("prof_snapshot", &prof_snapshot);
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";
