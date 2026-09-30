@@ -2885,7 +2885,8 @@ STONE_TRACK_SAMPLE_STRIDE = 1
 
 def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
                                    seed_pos_cm, window_seconds=STONE_TRACK_WINDOW_SECONDS,
-                                   background_reference_undistorted=None):
+                                   background_reference_undistorted=None,
+                                   skip_precheck=False):
 
     max_jump_cm = k9.STONE_TRACK_MAX_JUMP_CM * STONE_TRACK_SAMPLE_STRIDE
     max_misses = k9.STONE_TRACK_MAX_MISSES
@@ -3049,7 +3050,7 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
     precheck_cache = scan_indices(precheck_indices)
     precheck_track = build_track_from_cache(precheck_cache, precheck_half_frames)
 
-    if len(precheck_track) >= STONE_TRACK_PRECHECK_MIN_SAMPLES:
+    if (not skip_precheck) and len(precheck_track) >= STONE_TRACK_PRECHECK_MIN_SAMPLES:
 
         idxs = sorted(set(
             np.linspace(
