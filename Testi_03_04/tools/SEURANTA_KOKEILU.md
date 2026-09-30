@@ -44,3 +44,10 @@ Koko video: SEURANNAN maskituki 4,66 -> 0,63 ms/ruutu (15,8 % -> 2,4 %), ajoaika
 * Koko video (26 heittoa): sivusuunnan sileys y > 26 m 1.83 -> 0.81 cm, syvyys 7.65 -> 5.97 cm; y > 20 m: ei yhtaan ulkolaisrivia (|rx| > 6 cm tai |ry| > 30 cm), suurin |rx| 4.9 cm.
 * Uusi ongelma: heitto 181 (uusi id 183) katoaa y ~ 11 m:ssa (f12705-12709 seuranta hyppaa 26 cm sivuun, inside0 0.54-0.60) eika palaa; aiemmin rata jatkui y = 3.7 m:iin.
 * Debug: SEURANTA_SIL_DEBUG=a:b tulostaa [SILDBG]-rivit (siluetin siirto, inside, min_y).
+
+### v4.5-koe: siluettiportti myos tarkoille ruuduille lahella (Y < 20 m), raja 0.65
+Heitto 181 (id 183) katosi v4.4:ssa y ~ 11 m: ruuduissa 12705-12708 (tarkka=1!) seuranta hyppasi lakaisijan kateen (~26 cm sivuun), inside0 vain 0.54-0.60 (lakaisijakin on graniittimaskissa).
+Koe: portti (inside0 >= 0.65) myos tarkoille ruuduille lahella -> heitto 181 pysyy kiinni (594 riviä, loppu 3.7 m), MUTTA: rivit 14640 -> 14028, heitto 127 katoaa y=10.3 m (v4.4: 4.9 m),
+heitot 72/157/147/191 loppuvat 1.3-1.9 m aiemmin. Syy: oikeankin kiven inside0 on y ~ 6-8.4 m:ssa usein 0.55-0.60 (tarkka-ruuduilla 5 %:lla < 0.42, 7 % valissa 0.55-0.65) -> absoluuttinen raja
+ei erota lakaisijaan tarttumista. Oletus palautettu (SEURANTA_MIN_INSIDE_NEAR = 0 = ei porttia tarkoille lahella). Vaihtoehdot: suhteellinen pudotus oman mediaanin alle tai hyppytesti
+(sivuttaishyppy/ruutu) - tutkimatta.

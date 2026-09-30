@@ -3162,6 +3162,11 @@ SEURANTA_SIL_SHIFT_PX = int(os.environ.get("SEURANTA_SIL_SHIFT_PX", "3"))
 # leveä ja heittajan tumma vartalo on kiinni kivessa -> LM:n rms/tarkka-lippu ei kerro paikan laadusta, siluetti (oma 3x3-avaus-maski + kaistarajattu ylitysrangaistus)
 # tasoittaa rataa (sileys 1.4-1.7 -> 0.5-0.8 cm sivusuunnassa). Tarkassa ruudussa maskiton tulos (inside0 < SEURANTA_MIN_INSIDE) EI hylkaa ruutua vaan jaa LM-paikka.
 SEURANTA_SIL_ALL_Y_CM = float(os.environ.get("SEURANTA_SIL_ALL_Y_CM", "2000"))
+# Lahella (Y <= SEURANTA_SIL_ALL_Y_CM) siluettiporttia sovelletaan MYOS tarkkoihin ruutuihin (LM:n tarkka-lippu ei suojaa: heitto 181 hyppasi ruuduissa 12705-12708 lakaisijan kateen
+# tarkka=1-ruuduilla) ja raja on korkeampi (SEURANTA_MIN_INSIDE_NEAR 0.65: oikean kiven inside0 ~0.8-0.9, lakaisijan 0.54-0.60). Tarkassa ruudussa siluetti EI siirra paikkaa lahella.
+# Testi_03_04 v4.5-koe: raja 0.65 lahella TOIMI heitolle 181 (rata pysyi kiinni, 594 riviä), mutta hylkasi liikaa oikeita kivia (y ~ 6-8 m inside0 ~ 0.55-0.60 myos oikealle kivelle;
+# rivit 14640 -> 14028, useita heittoja loppuu 1-2 m aiemmin, heitto 127 katoaa y=10.3 m) -> OLETUS 0 = ei porttia tarkoille ruuduille lahella (kuten v4.4). Ks. SEURANTA_KOKEILU.md.
+SEURANTA_MIN_INSIDE_NEAR = float(os.environ.get("SEURANTA_MIN_INSIDE_NEAR", "0"))
 PROFILE_ALPHA = os.environ.get("PROFILE_ALPHA", "1") == "1"   # 0 = vanha (seurannan oma aariviiva)
 ALPHA_LEVEL_DEFAULT = 0.434
 ALPHA_RATIO_MIN = 0.2
@@ -5540,23 +5545,29 @@ def run_pipeline(
                                         f"diff={median_diff:.3f}"
                                     )
 
-                        if (
-                            track_refiner is not None and refined["found"]
-                            and (not refined.get("tarkka") or refined["Y_cm"] > SEURANTA_SIL_ALL_Y_CM)
-                        ):
+                        if track_refiner is not None and refined["found"]:
+                            _far = refined["Y_cm"] > SEURANTA_SIL_ALL_Y_CM
                             with _prof("py: SEURANTA maskituki + siluettitarkennus"):
                                 _tx, _ty, _tinfo = track_refiner.refine(
                                     frame_u_for_tracking, refined["X_cm"], refined["Y_cm"]
                                 )
-                            refined = dict(refined)
-                            _sil_ok = _tinfo.get("ok") and _tinfo.get("inside0", 0.0) >= SEURANTA_MIN_INSIDE
                             if os.environ.get("SEURANTA_SIL_DEBUG") and int(os.environ.get("SEURANTA_SIL_DEBUG").split(":")[0]) <= frame_index <= int(os.environ.get("SEURANTA_SIL_DEBUG").split(":")[1]):
                                 print(f"[SILDBG] f={frame_index} id={s['stone_id']} tarkka={refined.get('tarkka')} X,Y=({refined['X_cm']:.1f},{refined['Y_cm']:.1f}) -> ({_tx:.1f},{_ty:.1f}) "
                                       f"ok={_tinfo.get('ok')} in0={_tinfo.get('inside0')} in1={_tinfo.get('inside1')} sh={_tinfo.get('shift_px')} min_y={s['min_y_seen']:.1f}")
-                            if _sil_ok:
-                                refined["X_cm"], refined["Y_cm"] = _tx, _ty
-                            elif not refined.get("tarkka"):
-                                refined["found"] = False
+                            refined = dict(refined)
+                            _min_in = SEURANTA_MIN_INSIDE if (_far or not refined.get("tarkka")) else SEURANTA_MIN_INSIDE_NEAR
+                            _sil_ok = _tinfo.get("ok") and _tinfo.get("inside0", 0.0) >= _min_in
+                            if _far:
+                                # kaukana: tarkka ruutu ei hylkaydy, ei-tarkka hylataan jos ei maskitukea
+                                if _sil_ok:
+                                    refined["X_cm"], refined["Y_cm"] = _tx, _ty
+                                elif not refined.get("tarkka"):
+                                    refined["found"] = False
+                            else:
+                                if not _sil_ok:
+                                    refined["found"] = False          # lahella portti koskee myos tarkkoja ruutuja
+                                elif not refined.get("tarkka"):
+                                    refined["X_cm"], refined["Y_cm"] = _tx, _ty
 
                         # --------------------------------
                         # KUMULATIIVINEN "EI TAAKSEPAIN" -TARKISTUS
