@@ -31,8 +31,11 @@ import numpy as np, cv2
 CODE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, CODE)
 
-# kivien saapumiskohdat (ensimmainen live-loyto, stones.csv): (kivi, ensimmainen_loytoruutu, Y_cm) ja tallennettu ruutuvali
-ENTRIES = {"17": (2760, range(2710, 2771)), "3": (2280, range(2230, 2291)), "51": (3500, range(3450, 3511))}
+# kivien saapumiskohdat: (kivi: (live-HAKU:n ensimmainen ehdokas-ruutu, tallennettu ruutuvali)). Live alkoi ruudulla 2227 (profiilin opettelun jalkeen).
+#  17: HAKU loytaa kiven kerralla heti kun se tulee alueelle (Y<=3317 cm) -> "siisti" saapuminen
+#   3: live-HAKU loysi 2240 (ehdokas 69), seuranta katkesi ("pysahtynyt" 2295) ja sama kivi rekisteroitiin uudelleen 2260/2270/2280 (ehdokkaat 70-72, osa "duplikaatti")
+#  51: ensimmainen ehdokas 3430 (121), "duplikaatti" 3465, uusi ehdokas 3480 (122) - CSV:n ensimmainen rivi 3500
+ENTRIES = {"17": (2760, range(2710, 2771)), "3": (2240, range(2227, 2291)), "51": (3430, range(3400, 3511))}
 
 
 class HakuLab:
