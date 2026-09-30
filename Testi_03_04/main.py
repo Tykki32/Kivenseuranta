@@ -3843,12 +3843,16 @@ _FRAME_DUMP_RANGES = [
 ]
 
 
-def _frame_dump_hook(frame_index, frame_for_tracking):
+def _frame_dump_hook(frame_index, frame_for_tracking, frame_raw=None):
     if not _FRAME_DUMP_DIR or not _FRAME_DUMP_RANGES:
         return
     if any(lo <= frame_index <= hi for lo, hi in _FRAME_DUMP_RANGES):
+        extra = {}
+        # Testi_03_04: TRACKER_FRAME_DUMP_RAW=1 tallentaa myos vaimentamattoman (stabiloidun+oikaistun) ruudun taustanvaimennuskokeisiin
+        if frame_raw is not None and os.environ.get("TRACKER_FRAME_DUMP_RAW") == "1":
+            extra["raw"] = frame_raw
         np.savez_compressed(
-            os.path.join(_FRAME_DUMP_DIR, f"g{frame_index:06d}.npz"), frame=frame_for_tracking
+            os.path.join(_FRAME_DUMP_DIR, f"g{frame_index:06d}.npz"), frame=frame_for_tracking, **extra
         )
     elif frame_index > max(hi for _, hi in _FRAME_DUMP_RANGES):
         os._exit(0)
@@ -5301,7 +5305,7 @@ def run_pipeline(
                 # --------------------------------------------
                 ref_undist_live = calib_result["calib"]["frame_undistorted"]
 
-                _frame_dump_hook(frame_index, frame_u_for_tracking)
+                _frame_dump_hook(frame_index, frame_u_for_tracking, frame_u)
 
                 haku_future = None
 

@@ -95,7 +95,8 @@ class HakuLab:
         return out
 
     # ---- HAKU ----
-    def run(self, f, **over):
+    def run(self, f, frame=None, **over):
+        """frame: halutessa oma (esim. eri tavalla vaimennettu) ruutu tallennetun sijaan."""
         p = dict(self.DEFAULTS); p.update(over)
         k92 = self.k92
         y_min = p["y_min"] if p["y_min"] is not None else k92.SEARCH_Y_MIN_CM
@@ -104,7 +105,7 @@ class HakuLab:
         if hasattr(self.st, "set_haku_accept_score"):
             self.st.set_haku_accept_score(float(p["accept"]))
         res = self.st.search_new_stones(
-            self.frame(f), self.ref, self.body, self.search, self.pose["K"], self.pose["R"], self.pose["t"],
+            self.frame(f) if frame is None else frame, self.ref, self.body, self.search, self.pose["K"], self.pose["R"], self.pose["t"],
             0.0, float(p["x_half"]), (y_min + y_max) / 2.0, (y_max - y_min) / 2.0, float(p["coarse"]), float(p["fine"]),
             float(p["score_thr"]), self.R_max, self.H_total, self.ring, self.handle, float(p["diff_threshold"]),
             int(p["max_results"]), int(p["max_attempts"]))
