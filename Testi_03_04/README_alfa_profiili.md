@@ -37,3 +37,13 @@ Tarkempi optimointi myöhemmin.
 
 `python tools/alfa_profiili_testi.py <video> <calib_profile.pkl> <stones.csv> <ulos>` – jokaiselle kivelle erikseen profiilin opettelu
 julkaistulla koodilla (alfa-ääriviiva, yhteinen taso) + vertailu seurannan omaan ääriviivaan. Tulokset: `tulokset/`.
+
+## Muistiinpanot / tutkittavaa
+
+* **Graniittimaski tummien kohteiden vieressä (seuraava tutkimus).** Maski arvioi taustan kirkkauden sumentamalla harmaakuvan (σ = 25 px) ja vaatii pikselin olevan
+  vähintään 15 harmaasävyä tummempi. Kiven vieressä oleva iso tumma kohde (lakaisijan takki, harja, pelaaja) laskee sumennettua taustaa, jolloin kiven "tummuus"
+  pienenee ja kiven reunapikseleitä voi pudota pois maskista. Lisäksi C++-maski (`createGraniteMask`, sumennus 4× pienennetyllä kuvalla, `GRANITE_DOWN=4`) ja Python-maski
+  (täysi resoluutio) eroavat taustan arviossa jopa 14 harmaasävyä juuri jyrkkien reunojen (tummien kohteiden) vieressä. Kivien kohdalla ero ei näkynyt (maskin pikselit
+  eroavat 0,24 %, IoU mallin siluettiin täsmälleen sama 119 HAKU-osumalla), mutta tummien kohteiden vieressä käytöstä ei ole vielä tutkittu erikseen.
+* Alfa-maski (peittävyys, paikallinen taustataso) ja yhteinen alfa-taso parantaisivat todennäköisesti luottamusta myös SEURANNASSA (ks. kommentti main.py:ssä).
+* Alkupään LM-tarkennus epäonnistuu lähes aina (`tarkka = 0`, rms ~9 px): syy tutkimatta (ks. tools/SEURANTA_KOKEILU.md).

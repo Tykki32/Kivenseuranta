@@ -872,6 +872,9 @@ static cv::Mat satU8FromBgr(const cv::Mat& bgr)
 static const int g_granite_open = getenv("GRANITE_OPEN") ? atoi(getenv("GRANITE_OPEN")) : 5;
 static const int g_granite_close = getenv("GRANITE_CLOSE") ? atoi(getenv("GRANITE_CLOSE")) : 3;
 
+// MUISTIINPANO (Testi_03_04, tutkittava): tausta (sumennus sigma=25) arvioidaan 4x PIENENNETYLLA kuvalla (g_granite_down) -> ero tarkkaan sumennukseen on keskimaarin 0.035, mutta
+// jopa ~14 harmaasavya jyrkkien reunojen (isojen tummien kohteiden, esim. lakaisijan takki) vieressa. Kivien kohdalla ero ei nayttanyt (IoU mallin siluettiin sama 119 HAKU-osumalla),
+// mutta maskin kayttaytymista tummien kohteiden vieressa (taustan arvio laskee -> kiven tummuus pienenee -> reunapikselit putoavat) ei ole tutkittu. Katso README_alfa_profiili.md.
 static cv::Mat createGraniteMask(const cv::Mat& frame_bgr, const cv::Mat* sat_in = nullptr)
 {
     cv::Mat sat_ch, gray, gray_f, bg, darkness;
