@@ -1,0 +1,47 @@
+167: seuranta 442 hav -> 40 otosta -> 35 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 2, 'tumma': 3, 'ala': 0, 'koko': 0}  (16 s)
+176: seuranta 383 hav -> 40 otosta -> 40 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 0, 'tumma': 0, 'ala': 0, 'koko': 0}  (15 s)
+181: seuranta 323 hav -> 40 otosta -> 39 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 0, 'tumma': 0, 'ala': 0, 'koko': 1}  (16 s)
+191: seuranta 429 hav -> 40 otosta -> 33 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 4, 'tumma': 2, 'ala': 0, 'koko': 1}  (16 s)
+195: seuranta 422 hav -> 40 otosta -> 34 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 6, 'tumma': 0, 'ala': 0, 'koko': 0}  (16 s)
+203: seuranta 371 hav -> 40 otosta -> 39 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 0, 'tumma': 0, 'ala': 0, 'koko': 1}  (15 s)
+205: seuranta 376 hav -> 40 otosta -> 39 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 0, 'tumma': 0, 'ala': 0, 'koko': 1}  (15 s)
+214: seuranta 355 hav -> 40 otosta -> 39 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 1, 'tumma': 0, 'ala': 0, 'koko': 0}  (16 s)
+222: seuranta 181 hav -> 40 otosta -> 0 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 11, 'tumma': 29, 'ala': 0, 'koko': 0}  (17 s)
+244: seuranta 442 hav -> 40 otosta -> 21 hyvaksytty  {'in': 40, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 5, 'tumma': 9, 'ala': 0, 'koko': 5}  (17 s)
+263: seuranta 8 hav -> 8 otosta -> 0 hyvaksytty  {'in': 8, 'ei_kuvaa': 0, 'ei_graniittia': 0, 'suhde': 5, 'tumma': 3, 'ala': 0, 'koko': 0}  (9 s)
+
+YHTEINEN ALFA-TASO (kaikkien 815 hyvaksytyn havainnon mediaani): 0.439
+
+
+KIVI KERRALLAAN (portti: rms <= 1.5 px, R 12.5..15.0 cm):
+  E1_heitto1810  t=  72.4  hav 40/40  UUSI R= 13.46 H=13.48 lovi=0.64 rms=0.69 OK | VANHA R= 13.42 H=13.17 rms=1.10 OK
+  E2_heitto2025  t=  81.0  hav 38/40  UUSI R= 13.53 H=13.40 lovi=0.65 rms=0.78 OK | VANHA R= 12.98 H=13.10 rms=1.73 EI
+  3              t=  91.2  hav 39/40  UUSI R= 13.42 H=13.70 lovi=0.56 rms=0.67 OK | VANHA R= 14.72 H=13.23 rms=1.98 EI
+  6              t=  97.8  hav 39/40  UUSI R= 14.33 H=13.38 lovi=0.64 rms=0.89 OK | VANHA R= 13.57 H=12.79 rms=0.96 OK
+  17             t= 110.4  hav 35/40  UUSI R= 14.10 H=13.48 lovi=0.64 rms=0.82 OK | VANHA R=186.57 H=11.62 rms=7.21 EI
+  31             t= 118.0  hav 36/40  UUSI R= 13.52 H=13.33 lovi=0.68 rms=0.75 OK | VANHA R= 18.97 H=12.92 rms=2.15 EI
+  38             t= 128.8  hav 18/40  UUSI R= 13.75 H=13.73 lovi=0.56 rms=0.85 OK | VANHA R= 14.66 H=13.23 rms=1.46 OK
+  51             t= 140.0  hav  2/40  UUSI R=   nan H=  nan lovi=nan rms=nan EI | VANHA R= 14.93 H=13.19 rms=1.66 EI
+  107            t= 237.6  hav 23/40  UUSI R= 14.15 H=13.58 lovi=0.61 rms=0.86 OK | VANHA R= 30.16 H=13.10 rms=2.32 EI
+  112            t= 244.0  hav 39/40  UUSI R= 13.88 H=13.83 lovi=0.52 rms=0.65 OK | VANHA R= 13.43 H=13.33 rms=0.86 OK
+  130            t= 259.6  hav 34/40  UUSI R= 13.17 H=13.32 lovi=0.69 rms=0.39 OK | VANHA R= 46.99 H=13.91 rms=3.67 EI
+  133            t= 267.6  hav 39/40  UUSI R= 13.22 H=13.31 lovi=0.65 rms=0.47 OK | VANHA R= 13.69 H=13.14 rms=0.75 OK
+  146            t= 292.8  hav 37/40  UUSI R= 13.60 H=13.47 lovi=0.63 rms=0.74 OK | VANHA R= 13.76 H=13.27 rms=1.29 OK
+  154            t= 304.0  hav 38/40  UUSI R= 13.60 H=13.52 lovi=0.59 rms=0.79 OK | VANHA R= 15.05 H=13.19 rms=1.66 EI
+  159            t= 330.0  hav 39/40  UUSI R= 13.69 H=13.55 lovi=0.61 rms=0.76 OK | VANHA R= 14.35 H=11.90 rms=1.36 OK
+  167            t= 343.6  hav 35/40  UUSI R= 13.82 H=13.45 lovi=0.62 rms=0.84 OK | VANHA R= 22.77 H=13.81 rms=2.92 EI
+  176            t= 368.8  hav 40/40  UUSI R= 13.57 H=13.45 lovi=0.67 rms=0.88 OK | VANHA R= 14.05 H=13.42 rms=1.39 OK
+  181            t= 382.4  hav 39/40  UUSI R= 13.67 H=13.47 lovi=0.59 rms=0.76 OK | VANHA R= 14.84 H=13.15 rms=1.60 EI
+  191            t= 407.6  hav 33/40  UUSI R= 13.62 H=13.57 lovi=0.61 rms=0.71 OK | VANHA R= 30.82 H=12.28 rms=3.25 EI
+  195            t= 417.6  hav 34/40  UUSI R= 13.78 H=13.31 lovi=0.64 rms=0.73 OK | VANHA R= 65.32 H=13.79 rms=3.97 EI
+  203            t= 445.2  hav 39/40  UUSI R= 13.67 H=13.49 lovi=0.63 rms=0.78 OK | VANHA R= 13.40 H=13.28 rms=1.14 OK
+  205            t= 453.2  hav 39/40  UUSI R= 13.49 H=13.55 lovi=0.62 rms=0.71 OK | VANHA R= 13.54 H=13.09 rms=1.08 OK
+  214            t= 478.8  hav 39/40  UUSI R= 13.55 H=13.40 lovi=0.62 rms=0.71 OK | VANHA R= 14.36 H=13.34 rms=1.59 EI
+  222            t= 494.0  hav  0/40  UUSI R=   nan H=  nan lovi=nan rms=nan EI | VANHA R= 35.97 H=12.80 rms=6.35 EI
+  244            t= 557.6  hav 21/40  UUSI R= 13.56 H=13.31 lovi=0.68 rms=0.83 OK | VANHA R= 45.38 H=12.34 rms=4.50 EI
+  263            t= 619.6  hav  0/8  UUSI R=   nan H=  nan lovi=nan rms=nan EI | VANHA R=   nan H=  nan rms=nan EI
+
+UUSI (alfa): 23 kivea, portti OK 23/26 | R ka 13.66 hajonta 0.26 (min 13.17, max 14.33) | H ka 13.48 hajonta 0.13 | rms ka 0.74 (max 0.89) | R>14.55: 0
+VANHA (seuranta): 25 kivea, portti OK 10/26 | R ka 28.31 hajonta 34.93 (min 12.98, max 186.57) | H ka 13.05 hajonta 0.53 | rms ka 2.32 (max 7.21) | R>14.55: 14
+
+[exited with code 0]
