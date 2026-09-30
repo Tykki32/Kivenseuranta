@@ -4831,9 +4831,246 @@ static py::list prof_snapshot() {
     return L;
 }
 
+
+// ============================================================
+// ALFA-AARIVIIVA (Testi_03_04): alpha_observation_cpp + alpha_contour_cpp
+// 1:1 main.py:n alpha_observation / alpha_contour (numpy/cv2-versio, tarkistettu numeerisesti). Ks. main.py:n ALFA-AARIVIIVA-kommentti.
+//   alpha_observation_cpp: varjonvaimennus (pikselikohtainen, sama kaava kuin suppress_shadow_background) + granittimaski (TARKKA
+//                          sigma=25 -sumennus, avaus 5x5, sulkeminen 3x3 - ei GRANITE_DOWN-approksimaatiota) rajatulla alueella
+//                          (kiven ymparilla +-160 px) -> alfa-kartta + laatumitat (suhde, tumma alue).
+//   alpha_contour_cpp:     4x bicubic ylinaytteistys, tasa-arvokayra, kuminauha, rajaus graniittimaskiin, liukulukukoordinaatit.
+// ============================================================
+static double medianOfFloats(std::vector<float>& v)
+{
+    const size_t n = v.size();
+    if (n == 0) return 0.0;
+    const size_t m = n / 2;
+    std::nth_element(v.begin(), v.begin() + (std::ptrdiff_t)m, v.end());
+    const float hi = v[m];
+    if (n % 2 == 1) return (double)hi;
+    const float lo = *std::max_element(v.begin(), v.begin() + (std::ptrdiff_t)m);
+    return 0.5 * ((double)lo + (double)hi);
+}
+
+static py::object alpha_observation_cpp(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> reference,
+    py::array_t<double, py::array::c_style | py::array::forcecast> gains,
+    py::array_t<double, py::array::c_style | py::array::forcecast> biases,
+    int cx, int cy, double diff_threshold, double v_drop_min, double v_drop_max, int ice_s_max, int ice_v_min,
+    int crop_half, int a_dilate, int dark_v_max)
+{
+    auto fb = frame.request(); auto rb = reference.request();
+    if (fb.ndim != 3 || fb.shape[2] != 3 || rb.ndim != 3 || rb.shape[2] != 3 || fb.shape[0] != rb.shape[0] || fb.shape[1] != rb.shape[1])
+        throw std::runtime_error("alpha_observation_cpp: frame/reference must be HxWx3 uint8 of equal size");
+    const int H = (int)fb.shape[0], W = (int)fb.shape[1];
+    cv::Mat fullF(H, W, CV_8UC3, (void*)fb.ptr), fullR(H, W, CV_8UC3, (void*)rb.ptr);
+    double g[3] = {1, 1, 1}, bi[3] = {0, 0, 0};
+    if (gains.size() >= 3 && biases.size() >= 3) { auto gu = gains.unchecked<1>(); auto bu = biases.unchecked<1>(); for (int c = 0; c < 3; ++c) { g[c] = gu(c); bi[c] = bu(c); } }
+    uint8_t lut[3][256];
+    for (int c = 0; c < 3; ++c)
+        for (int v = 0; v < 256; ++v) {
+            float x = (float)v * (float)g[c] + (float)bi[c];
+            if (x < 0.f) x = 0.f; if (x > 255.f) x = 255.f;
+            lut[c][v] = (uint8_t)x;
+        }
+
+    // --- aluerajaus: kiven ymparilla +-160 px (sumennuksen reunavaikutus hyvin pieni, tausta vaimennettu valkoiseksi)
+    const int RM = 160;
+    const int rx0 = std::max(0, cx - RM), ry0 = std::max(0, cy - RM), rx1 = std::min(W, cx + RM), ry1 = std::min(H, cy + RM);
+    if (rx1 - rx0 < 16 || ry1 - ry0 < 16) return py::none();
+    const cv::Rect region(rx0, ry0, rx1 - rx0, ry1 - ry0);
+    cv::Mat fR = fullF(region), rR = fullR(region);
+    const int h = region.height, w = region.width;
+
+    // varjonvaimennus (sama kaava kuin suppress_shadow_background) sekä korjattu ruutu (valotasapaino)
+    static int sdiv[256]; static bool sdiv_init = false;
+    if (!sdiv_init) { sdiv[0] = 0; for (int i = 1; i < 256; ++i) sdiv[i] = (int)std::lround((255 << 12) / (1.0 * i)); sdiv_init = true; }
+    cv::Mat sup(h, w, CV_8UC3), corr(h, w, CV_8UC3);
+    for (int y = 0; y < h; ++y) {
+        const uint8_t* sp = fR.ptr<uint8_t>(y); const uint8_t* rp = rR.ptr<uint8_t>(y);
+        uint8_t* dp = sup.ptr<uint8_t>(y); uint8_t* cp = corr.ptr<uint8_t>(y);
+        for (int x = 0; x < w; ++x, sp += 3, rp += 3, dp += 3, cp += 3) {
+            const int b = lut[0][sp[0]], gg = lut[1][sp[1]], r = lut[2][sp[2]];
+            cp[0] = (uint8_t)b; cp[1] = (uint8_t)gg; cp[2] = (uint8_t)r;
+            const int db = std::abs(b - rp[0]), dg = std::abs(gg - rp[1]), dr = std::abs(r - rp[2]);
+            const int gray = (db * 1868 + dg * 9617 + dr * 4899 + 8192) >> 14;
+            bool bg = (double)gray < diff_threshold;
+            if (!bg) {
+                const int vmax = std::max(b, std::max(gg, r)), vmin = std::min(b, std::min(gg, r));
+                const int rv = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2]));
+                const double vdrop = (double)(rv - vmax);
+                if (vdrop > v_drop_min && vdrop < v_drop_max) bg = true;
+                else { const int sat = ((vmax - vmin) * sdiv[vmax] + 2048) >> 12; if (sat < ice_s_max && vmax > ice_v_min) bg = true; }
+            }
+            if (bg) { dp[0] = dp[1] = dp[2] = 255; } else { dp[0] = (uint8_t)b; dp[1] = (uint8_t)gg; dp[2] = (uint8_t)r; }
+        }
+    }
+
+    // granittimaski (tarkka): sat < 60 & tummuus > 15, avaus 5x5, sulkeminen 3x3
+    cv::Mat gray8, gray_f, bgb, darkness;
+    cv::cvtColor(sup, gray8, cv::COLOR_BGR2GRAY);
+    gray8.convertTo(gray_f, CV_32F);
+    cv::GaussianBlur(gray_f, bgb, cv::Size(0, 0), STONE_DARKNESS_SIGMA);
+    darkness = bgb - gray_f;
+    cv::Mat satc = satU8FromBgr(sup);
+    cv::Mat gm(h, w, CV_8UC1);
+    for (int y = 0; y < h; ++y) {
+        const uint8_t* sp = satc.ptr<uint8_t>(y); const float* dk = darkness.ptr<float>(y); uint8_t* mp = gm.ptr<uint8_t>(y);
+        for (int x = 0; x < w; ++x) mp[x] = (sp[x] < STONE_MAX_SATURATION && dk[x] > (float)STONE_MIN_DARKNESS) ? 255 : 0;
+    }
+    cv::morphologyEx(gm, gm, cv::MORPH_OPEN, cv::Mat::ones(5, 5, CV_8U));
+    cv::morphologyEx(gm, gm, cv::MORPH_CLOSE, cv::Mat::ones(3, 3, CV_8U));
+
+    // kiveä lahin yhtenainen alue (pinta-ala >= 60)
+    const double lcx0 = (double)(cx - rx0), lcy0 = (double)(cy - ry0);
+    cv::Mat lab, cst, cen;
+    const int ncc = cv::connectedComponentsWithStats(gm > 0, lab, cst, cen, 8, CV_32S);
+    int best = -1; double bestd = 0;
+    for (int i = 1; i < ncc; ++i) {
+        if (cst.at<int>(i, cv::CC_STAT_AREA) < 60) continue;
+        const double d = std::hypot(cen.at<double>(i, 0) - lcx0, cen.at<double>(i, 1) - lcy0);
+        if (best < 0 || d < bestd) { best = i; bestd = d; }
+    }
+    if (best < 0) return py::none();
+    cv::Mat A = (lab == best);        // 0/255
+    A.convertTo(A, CV_8U, 1.0 / 255.0);
+
+    // --- alfa-kartta kiven ymparistossa (crop_half)
+    const int x0 = std::max(0, cx - crop_half), y0 = std::max(0, cy - crop_half), x1 = std::min(W, cx + crop_half), y1 = std::min(H, cy + crop_half);
+    const cv::Rect crop(x0 - rx0, y0 - ry0, x1 - x0, y1 - y0);
+    const int ch = crop.height, cw = crop.width;
+    cv::Mat Ac = A(crop).clone();
+    cv::Mat vf(ch, cw, CV_32F), k(ch, cw, CV_32F);
+    for (int y = 0; y < ch; ++y) {
+        const uint8_t* cp = corr(crop).ptr<uint8_t>(y); const uint8_t* rp = rR(crop).ptr<uint8_t>(y);
+        float* vfp = vf.ptr<float>(y); float* kp = k.ptr<float>(y);
+        for (int x = 0; x < cw; ++x, cp += 3, rp += 3) {
+            const float v = (float)std::max(cp[0], std::max(cp[1], cp[2]));
+            const float vr = (float)std::max(rp[0], std::max(rp[1], rp[2]));
+            vfp[x] = v; kp[x] = v / std::max(vr, 1.0f);
+        }
+    }
+    cv::Mat core; cv::erode(Ac, core, cv::Mat::ones(3, 3, CV_8U));
+    if (cv::countNonZero(core) < 5) core = Ac;
+    std::vector<float> tmp;
+    for (int y = 0; y < ch; ++y) { const uint8_t* cr = core.ptr<uint8_t>(y); const float* kp = k.ptr<float>(y); for (int x = 0; x < cw; ++x) if (cr[x]) tmp.push_back(kp[x]); }
+    const double kg = medianOfFloats(tmp);
+    cv::Mat excl, nearm;
+    cv::dilate(Ac, excl, cv::Mat::ones(15, 15, CV_8U)); cv::dilate(Ac, nearm, cv::Mat::ones(45, 45, CV_8U));
+    cv::Mat wgt(ch, cw, CV_32F, cv::Scalar(0)); int n_bg = 0;
+    std::vector<float> vbg;
+    for (int y = 0; y < ch; ++y) {
+        const uint8_t* ex = excl.ptr<uint8_t>(y); const uint8_t* nr = nearm.ptr<uint8_t>(y); const float* kp = k.ptr<float>(y);
+        const float* vfp = vf.ptr<float>(y); float* wp = wgt.ptr<float>(y);
+        for (int x = 0; x < cw; ++x) {
+            if (ex[x] == 0 && nr[x] > 0) {
+                if (kp[x] > 0.6f) { ++n_bg; vbg.push_back(vfp[x]); }
+                if (kp[x] > (float)(kg + 0.25)) wp[x] = 1.0f;
+            }
+        }
+    }
+    if (n_bg < 50) return py::none();
+    cv::Mat kw, num, den;
+    cv::multiply(k, wgt, kw);
+    cv::GaussianBlur(kw, num, cv::Size(0, 0), 5); cv::GaussianBlur(wgt, den, cv::Size(0, 0), 5);
+    cv::Mat alpha(ch, cw, CV_32F);
+    const float klo = (float)(kg + 0.25);
+    for (int y = 0; y < ch; ++y) {
+        const float* nm = num.ptr<float>(y); const float* dn = den.ptr<float>(y); const float* kp = k.ptr<float>(y); float* ap = alpha.ptr<float>(y);
+        for (int x = 0; x < cw; ++x) {
+            float ks = (dn[x] > 1e-3f) ? nm[x] / std::max(dn[x], 1e-3f) : 1.0f;
+            ks = std::min(std::max(ks, klo), 1.05f);
+            float a = (ks - kp[x]) / std::max(ks - (float)kg, 0.15f);
+            ap[x] = std::min(std::max(a, 0.0f), 1.0f);
+        }
+    }
+    // laatumitat
+    std::vector<float> vcore;
+    for (int y = 0; y < ch; ++y) { const uint8_t* cr = core.ptr<uint8_t>(y); const float* vfp = vf.ptr<float>(y); for (int x = 0; x < cw; ++x) if (cr[x]) vcore.push_back(vfp[x]); }
+    const double ratio = medianOfFloats(vcore) / std::max(medianOfFloats(vbg), 1.0);
+    cv::Mat d31, d9;
+    cv::dilate(Ac, d31, cv::Mat::ones(31, 31, CV_8U)); cv::dilate(Ac, d9, cv::Mat::ones(9, 9, CV_8U));
+    int dark_px = 0;
+    for (int y = 0; y < ch; ++y) {
+        const uint8_t* a31 = d31.ptr<uint8_t>(y); const uint8_t* a9 = d9.ptr<uint8_t>(y); const float* vfp = vf.ptr<float>(y);
+        for (int x = 0; x < cw; ++x) if (a31[x] > 0 && a9[x] == 0 && vfp[x] < (float)dark_v_max) ++dark_px;
+    }
+    cv::Mat adil; cv::dilate(Ac, adil, cv::Mat::ones(a_dilate, a_dilate, CV_8U));
+
+    py::array_t<float> alpha_out({ (py::ssize_t)ch, (py::ssize_t)cw });
+    std::memcpy(alpha_out.mutable_data(), alpha.ptr<float>(0), (size_t)ch * (size_t)cw * sizeof(float));
+    py::array_t<uint8_t> adil_out({ (py::ssize_t)ch, (py::ssize_t)cw });
+    std::memcpy(adil_out.mutable_data(), adil.ptr<uint8_t>(0), (size_t)ch * (size_t)cw);
+    py::dict d;
+    d["alpha"] = alpha_out; d["adil"] = adil_out;
+    d["origin"] = py::make_tuple(x0, y0); d["center"] = py::make_tuple(cx - x0, cy - y0);
+    d["ratio"] = ratio; d["dark_px"] = dark_px; d["a_area"] = cv::countNonZero(Ac);
+    return d;
+}
+
+static py::tuple alpha_contour_cpp(
+    py::array_t<float, py::array::c_style | py::array::forcecast> alpha_arr,
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> adil_arr,
+    double lcx_native, double lcy_native, int ox, int oy, double level, int up)
+{
+    auto ab = alpha_arr.request(); auto db = adil_arr.request();
+    const int ch = (int)ab.shape[0], cw = (int)ab.shape[1];
+    cv::Mat alpha(ch, cw, CV_32F, (void*)ab.ptr), adil(ch, cw, CV_8U, (void*)db.ptr);
+    cv::Mat au, adu;
+    cv::resize(alpha, au, cv::Size(), up, up, cv::INTER_CUBIC);
+    cv::resize(adil, adu, cv::Size(), up, up, cv::INTER_NEAREST);
+    const double lcx = lcx_native * up, lcy = lcy_native * up;
+    cv::Mat reg(au.size(), CV_8U, cv::Scalar(0));
+    for (int y = 0; y < au.rows; ++y) {
+        if (!(std::abs((double)y - lcy) < 50.0 * up)) continue;
+        const float* ap = au.ptr<float>(y); uint8_t* rp = reg.ptr<uint8_t>(y);
+        for (int x = 0; x < au.cols; ++x)
+            if (ap[x] > (float)level && std::abs((double)x - lcx) < 45.0 * up) rp[x] = 1;
+    }
+    cv::Mat lab, cst, cen;
+    const int n = cv::connectedComponentsWithStats(reg, lab, cst, cen, 8, CV_32S);
+    std::vector<int> keep;
+    for (int i = 1; i < n; ++i)
+        if (cst.at<int>(i, cv::CC_STAT_AREA) >= 6 * up * up && std::hypot(cen.at<double>(i, 0) - lcx, cen.at<double>(i, 1) - lcy) < 28.0 * up) keep.push_back(i);
+    if (keep.empty()) return py::make_tuple(py::none(), 0.0);
+    cv::Mat comp(au.size(), CV_8U, cv::Scalar(0));
+    {
+        std::vector<uint8_t> is_keep((size_t)n, 0); for (int i : keep) is_keep[(size_t)i] = 1;
+        for (int y = 0; y < lab.rows; ++y) { const int* lp = lab.ptr<int>(y); uint8_t* cp = comp.ptr<uint8_t>(y); for (int x = 0; x < lab.cols; ++x) if (lp[x] > 0 && is_keep[(size_t)lp[x]]) cp[x] = 1; }
+    }
+    std::vector<cv::Point> pts; cv::findNonZero(comp, pts);
+    std::vector<cv::Point> hull; cv::convexHull(pts, hull);
+    cv::Mat hm(au.size(), CV_8U, cv::Scalar(0));
+    cv::fillConvexPoly(hm, hull, cv::Scalar(1));
+    cv::Mat fin(au.size(), CV_8U, cv::Scalar(0));
+    for (int y = 0; y < fin.rows; ++y) { const uint8_t* hp = hm.ptr<uint8_t>(y); const uint8_t* ap = adu.ptr<uint8_t>(y); uint8_t* fp = fin.ptr<uint8_t>(y); for (int x = 0; x < fin.cols; ++x) fp[x] = (hp[x] > 0 && ap[x] > 0) ? 1 : 0; }
+    std::vector<std::vector<cv::Point>> cs;
+    cv::Mat fin_c = fin.clone();
+    cv::findContours(fin_c, cs, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+    if (cs.empty()) return py::make_tuple(py::none(), 0.0);
+    size_t bi = 0; double ba = -1;
+    for (size_t i = 0; i < cs.size(); ++i) { const double a = cv::contourArea(cs[i]); if (a > ba) { ba = a; bi = i; } }
+    const auto& c = cs[bi];
+    py::array_t<double> out({ (py::ssize_t)c.size(), (py::ssize_t)2 });
+    double* o = out.mutable_data();
+    for (size_t i = 0; i < c.size(); ++i) {
+        o[2 * i] = ((double)c[i].x + 0.5) / up - 0.5 + (double)ox;
+        o[2 * i + 1] = ((double)c[i].y + 0.5) / up - 0.5 + (double)oy;
+    }
+    return py::make_tuple(out, (double)cv::countNonZero(fin) / (double)(up * up));
+}
+
 PYBIND11_MODULE(stone_tracker, m)
 {
     m.def("build_info", []() { return std::string("stone_tracker kaannetty ") + __DATE__ + " " + __TIME__; });
+    m.def("alpha_observation_cpp", &alpha_observation_cpp,
+          py::arg("frame"), py::arg("reference"), py::arg("gains"), py::arg("biases"), py::arg("cx"), py::arg("cy"),
+          py::arg("diff_threshold"), py::arg("v_drop_min"), py::arg("v_drop_max"), py::arg("ice_s_max"), py::arg("ice_v_min"),
+          py::arg("crop_half"), py::arg("a_dilate"), py::arg("dark_v_max"));
+    m.def("alpha_contour_cpp", &alpha_contour_cpp,
+          py::arg("alpha"), py::arg("adil"), py::arg("center_x"), py::arg("center_y"), py::arg("origin_x"), py::arg("origin_y"),
+          py::arg("level"), py::arg("up"));
     m.def("suppress_shadow_background", &suppress_shadow_background,
           py::arg("frame"), py::arg("reference"), py::arg("gains"), py::arg("biases"),
           py::arg("diff_threshold"), py::arg("v_drop_min"), py::arg("v_drop_max"), py::arg("ice_s_max"), py::arg("ice_v_min"));
