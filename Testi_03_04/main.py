@@ -3157,7 +3157,11 @@ HAKU_SIL_LOG = os.environ.get("HAKU_SIL_LOG")
 # maskituella 17 cm; kivi 3: virhe 32 cm -> 4 cm).
 SEURANTA_SILHOUETTE = os.environ.get("SEURANTA_SILHOUETTE", "1") == "1"
 SEURANTA_MIN_INSIDE = float(os.environ.get("SEURANTA_MIN_INSIDE", "0.4"))
-SEURANTA_SIL_SHIFT_PX = int(os.environ.get("SEURANTA_SIL_SHIFT_PX", "2"))
+SEURANTA_SIL_SHIFT_PX = int(os.environ.get("SEURANTA_SIL_SHIFT_PX", "3"))
+# Testi_03_04 v4.4: kaukana (Y > SEURANTA_SIL_ALL_Y_CM, heittopaa) siluettitarkennus ajetaan KAIKILLE loydetyille ruuduille (myos tarkka=1): kiekko on siella vain 5-6 px
+# leveä ja heittajan tumma vartalo on kiinni kivessa -> LM:n rms/tarkka-lippu ei kerro paikan laadusta, siluetti (oma 3x3-avaus-maski + kaistarajattu ylitysrangaistus)
+# tasoittaa rataa (sileys 1.4-1.7 -> 0.5-0.8 cm sivusuunnassa). Tarkassa ruudussa maskiton tulos (inside0 < SEURANTA_MIN_INSIDE) EI hylkaa ruutua vaan jaa LM-paikka.
+SEURANTA_SIL_ALL_Y_CM = float(os.environ.get("SEURANTA_SIL_ALL_Y_CM", "2000"))
 PROFILE_ALPHA = os.environ.get("PROFILE_ALPHA", "1") == "1"   # 0 = vanha (seurannan oma aariviiva)
 ALPHA_LEVEL_DEFAULT = 0.434
 ALPHA_RATIO_MIN = 0.2
@@ -3952,7 +3956,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_03_04 v4.2 alfa-aariviiva C++ + HAKU-siluettitarkennus (2026-09-30)"
+SOFTWARE_VERSION = "Testi_03_04 v4.4 siluettitarkennus: 3x3-maski + kaista, SEURANTA y>20 m kaikille (2026-09-30)"
 
 
 def _version_string():
@@ -5221,7 +5225,7 @@ def run_pipeline(
                             k9, calib_result["pose"], R_max, H_total, shape_deltas, handle_r_frac,
                             max_shift_px=SEURANTA_SIL_SHIFT_PX, k94=k94
                         )
-                        print(f"SEURANTA maskituki PAALLA (inside >= {SEURANTA_MIN_INSIDE}, siluettitarkennus +-{SEURANTA_SIL_SHIFT_PX} px)")
+                        print(f"SEURANTA maskituki PAALLA (inside >= {SEURANTA_MIN_INSIDE}, siluettitarkennus +-{SEURANTA_SIL_SHIFT_PX} px, kaikille ruuduille kun Y > {SEURANTA_SIL_ALL_Y_CM:.0f} cm)")
 
                     print(
                         "Rakennetaan kiven pintavarireferenssia "
@@ -5538,17 +5542,21 @@ def run_pipeline(
 
                         if (
                             track_refiner is not None and refined["found"]
-                            and not refined.get("tarkka")
+                            and (not refined.get("tarkka") or refined["Y_cm"] > SEURANTA_SIL_ALL_Y_CM)
                         ):
                             with _prof("py: SEURANTA maskituki + siluettitarkennus"):
                                 _tx, _ty, _tinfo = track_refiner.refine(
                                     frame_u_for_tracking, refined["X_cm"], refined["Y_cm"]
                                 )
                             refined = dict(refined)
-                            if (not _tinfo.get("ok")) or _tinfo.get("inside0", 0.0) < SEURANTA_MIN_INSIDE:
-                                refined["found"] = False
-                            else:
+                            _sil_ok = _tinfo.get("ok") and _tinfo.get("inside0", 0.0) >= SEURANTA_MIN_INSIDE
+                            if os.environ.get("SEURANTA_SIL_DEBUG") and int(os.environ.get("SEURANTA_SIL_DEBUG").split(":")[0]) <= frame_index <= int(os.environ.get("SEURANTA_SIL_DEBUG").split(":")[1]):
+                                print(f"[SILDBG] f={frame_index} id={s['stone_id']} tarkka={refined.get('tarkka')} X,Y=({refined['X_cm']:.1f},{refined['Y_cm']:.1f}) -> ({_tx:.1f},{_ty:.1f}) "
+                                      f"ok={_tinfo.get('ok')} in0={_tinfo.get('inside0')} in1={_tinfo.get('inside1')} sh={_tinfo.get('shift_px')} min_y={s['min_y_seen']:.1f}")
+                            if _sil_ok:
                                 refined["X_cm"], refined["Y_cm"] = _tx, _ty
+                            elif not refined.get("tarkka"):
+                                refined["found"] = False
 
                         # --------------------------------
                         # KUMULATIIVINEN "EI TAAKSEPAIN" -TARKISTUS

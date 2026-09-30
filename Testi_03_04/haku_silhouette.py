@@ -5,6 +5,7 @@ HAKU loytaa ehdokkaan (X,Y). Tarkennus hakee kiven 3D-mallin siluetille paremman
   - ylitulo:  maskipikselit siluetin kuperan peitteen ULKOPUOLELLA / siluetin ala * W_LEAK, PAITSI kiven YLAPUOLELLA
               (kuva on kierretty: kiven ylapuoli = kuvassa OIKEALLA -> samoilla riveilla siluetin oikealla puolella ei rangaistusta)
   + keskitys: LAM * exp(-(d/sigma)^2), d = maskin (peitteen sisalla) ja siluetin massakeskipisteiden etaisyys (px), sigma = SIGMA_FRAC*sqrt(ala)
+Ylitysrangaistus lasketaan vain siluetin ymparilla olevalla BAND_PX-kaistalla; maski on oma (3x3-avaus).
 Siluetti siirretaan KUVATASOSSA (+-MAX_SHIFT_PX, 0.5 px askel, korrelaatiot cv2.matchTemplate:lla) ja paras siirto muutetaan
 maatasoon (X,Y) Jacobin avulla. Yksi ehdokas ~ muutama ms. Kayttaa samaa profiilia/mallia kuin HAKU.
 """
@@ -22,11 +23,14 @@ SIGMA_FRAC = 0.3
 MAX_SHIFT_PX = 6
 HALF = 26            # ikkunan puolikas (px)
 MASK_MARGIN = 75     # graniittimaskin sumennuksen reunus (px)
+OPEN_SIZE = 3        # siluettitarkennuksen oma maski: 3x3-avaus (5x5 poisti kaukaisen, 5-6 px leveän kiven)
+BAND_PX = 3          # ylitysrangaistus vain siluetin ymparilla olevalla kaistalla (px): kaukainen tumma kohde (heittaja) ei vedä siluettia
 
 
 class SilhouetteRefiner:
     def __init__(self, k9, pose, R_max, H_total, shape_deltas, handle_r_frac, w_leak=W_LEAK, lam=LAM, sigma_frac=SIGMA_FRAC,
-                 max_shift_px=MAX_SHIFT_PX, k94=None, use_cpp=True):
+                 max_shift_px=MAX_SHIFT_PX, k94=None, use_cpp=True, open_size=OPEN_SIZE, band_px=BAND_PX):
+        self.open_size, self.band_px = int(open_size), int(band_px)
         self.k9 = k9; self.pose = pose
         self.max_shift_px = max_shift_px; self.w_leak, self.lam_c, self.sigfrac_c = w_leak, lam, sigma_frac
         # C++-versio (stone_tracker.silhouette_refine_cpp): tarvitsee mallin pisteet (k94.build_local_stone_rings, sama kuin HAKUn runko)
@@ -37,6 +41,17 @@ class SilhouetteRefiner:
         self.w, self.lam, self.sigfrac, self.S = w_leak, lam, sigma_frac, int(max_shift_px * UP)
         self.K, self.R, self.t = (np.asarray(pose[k], float) for k in ("K", "R", "t"))
         self.R = self.R.reshape(3, 3); self.t = self.t.reshape(3)
+
+    def _granite_mask(self, frame):
+        """Kuten k9.create_granite_mask (sat<60 & tummuus>15, sigma=25), mutta avaus open_size x open_size (oletus 3; k9:ssa 5)."""
+        k9 = self.k9
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        dark = cv2.GaussianBlur(gray, (0, 0), sigmaX=k9.STONE_DARKNESS_SIGMA) - gray
+        m = ((hsv[:, :, 1] < k9.STONE_MAX_SATURATION) & (dark > k9.STONE_MIN_DARKNESS)).astype(np.uint8) * 255
+        if self.open_size > 1:
+            m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((self.open_size, self.open_size), np.uint8))
+        return cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
 
     def proj(self, x, y, z):
         p = self.K @ (self.R @ np.array([x, y, z]) + self.t)
@@ -60,7 +75,8 @@ class SilhouetteRefiner:
         if self.body_pts is not None:
             return _st.silhouette_refine_cpp(np.ascontiguousarray(frame_bgr), self.body_pts, self.K, self.R, self.t,
                                              float(self.R_max), float(self.H_total), float(self.lovi), float(X0), float(Y0),
-                                             float(self.w), float(self.lam), float(self.sigfrac), int(self.max_shift_px), int(HALF), int(MASK_MARGIN))
+                                             float(self.w), float(self.lam), float(self.sigfrac), int(self.max_shift_px), int(HALF), int(MASK_MARGIN),
+                                             int(self.open_size), int(self.band_px))
         return self.refine_py(frame_bgr, X0, Y0)
 
     def refine_py(self, frame_bgr, X0, Y0):
@@ -72,7 +88,7 @@ class SilhouetteRefiner:
         x1c, y1c = min(W_img, ox + 2 * HALF + MASK_MARGIN), min(H_img, oy + 2 * HALF + MASK_MARGIN)
         if x1c - x0c < 40 or y1c - y0c < 40 or ox < 0 or oy < 0 or ox + 2 * HALF > W_img or oy + 2 * HALF > H_img:
             return X0, Y0, dict(ok=False)
-        gm = self.k9.create_granite_mask(np.ascontiguousarray(frame_bgr[y0c:y1c, x0c:x1c]))
+        gm = self._granite_mask(np.ascontiguousarray(frame_bgr[y0c:y1c, x0c:x1c]))
         mask = gm[oy - y0c:oy - y0c + 2 * HALF, ox - x0c:ox - x0c + 2 * HALF] > 0
         if not mask.any():
             return X0, Y0, dict(ok=False)
@@ -88,7 +104,8 @@ class SilhouetteRefiner:
             return X0, Y0, dict(ok=False)
         rows = sil.any(axis=1)
         free = (~(np.cumsum(mh[:, ::-1], axis=1)[:, ::-1] > 0)) & rows[:, None]
-        out = (~mh) & (~free)
+        kb = 2 * self.band_px * UP + 1
+        out = (~mh) & (~free) & (cv2.dilate(mh.astype(np.uint8), np.ones((kb, kb), np.uint8)) > 0)
         yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
         big = np.zeros((shape[0] + 2 * S, shape[1] + 2 * S), np.float32)
         big[S:S + shape[0], S:S + shape[1]] = m2

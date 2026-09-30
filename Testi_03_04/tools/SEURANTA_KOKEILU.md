@@ -36,3 +36,11 @@ Siluettitarkennus on C++:ssa (`stone_tracker.silhouette_refine_cpp`, Python-kä�
 (paikkaero 0,000 cm, pisteet samat; tasapelissä valitaan pienin siirto molemmissa). Varapolku: ilman `k94`:ää numpy/cv2-versio (`refine_py`).
 Koko video: SEURANNAN maskituki 4,66 -> 0,63 ms/ruutu (15,8 % -> 2,4 %), ajoaika 438,6 s / 16 501 ruutua (37,6 r/s), 26 heittoa.
 (C++-versio käyttää HAKUn/SEURANNAN tavallista graniittimaskia (sumennus pienennetyllä kuvalla), joten radat eroavat marginaalisesti numpy-ajosta.)
+
+## v4.4 (siluettitarkennus: 3x3-maski + kaista, SEURANTA kaikille ruuduille kun Y > 20 m)
+* Siluettitarkennuksella on OMA maski (3x3-avaus; `create_granite_mask`:n 5x5 poisti 5-6 px leveän kaukaisen kiven) ja ylitysrangaistus lasketaan vain 3 px:n kaistalla siluetin
+  ympärillä (kaukainen tumma kohde, esim. heittäjä, ei vedä siluettia). C++ = Python (290 ruutua, paikkaero 0.00 cm), C++ ~1.4 ms, numpy ~4 ms.
+* SEURANTA: kun Y > `SEURANTA_SIL_ALL_Y_CM` (2000) siluetti ajetaan myos tarkoille ruuduille (siirto max ±3 px); tarkassa ruudussa inside0 < 0.4 ei hylkaa ruutua. Lähempänä vanha saanto.
+* Koko video (26 heittoa): sivusuunnan sileys y > 26 m 1.83 -> 0.81 cm, syvyys 7.65 -> 5.97 cm; y > 20 m: ei yhtaan ulkolaisrivia (|rx| > 6 cm tai |ry| > 30 cm), suurin |rx| 4.9 cm.
+* Uusi ongelma: heitto 181 (uusi id 183) katoaa y ~ 11 m:ssa (f12705-12709 seuranta hyppaa 26 cm sivuun, inside0 0.54-0.60) eika palaa; aiemmin rata jatkui y = 3.7 m:iin.
+* Debug: SEURANTA_SIL_DEBUG=a:b tulostaa [SILDBG]-rivit (siluetin siirto, inside, min_y).
