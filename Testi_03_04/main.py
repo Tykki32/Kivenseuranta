@@ -3142,8 +3142,8 @@ def _fit_stone_profile(pose, stones):
 #   Sovituksen oma poikkeamakarsinta sailyy.
 #
 # TODO (seuranta, ei viela tehty): alfa-kartta + yhteinen alfa-taso parantaisi todennakoisesti LUOTTAMUSTA myos live-seurannassa
-# (kuvassa nakyva kiven reuna ilman varjoa). Tarkastellaan kun kaydaan seurantaa lapi. Alfa-aariviivan laskenta on nyt numpy/cv2:lla
-# (~0.3 s/havainto) - nopeutetaan C++:ssa myohemmin.
+# (kuvassa nakyva kiven reuna ilman varjoa). Tarkastellaan kun kaydaan seurantaa lapi. Alfa-laskenta on C++:ssa
+# (stone_tracker.alpha_observation_cpp / alpha_contour_cpp, ~7 ms/havainto, tulos identtinen numpy/cv2-versioon (ALPHA_CPP=0)); tarkempi optimointi myohemmin.
 # ============================================================
 PROFILE_ALPHA = os.environ.get("PROFILE_ALPHA", "1") == "1"   # 0 = vanha (seurannan oma aariviiva)
 ALPHA_LEVEL_DEFAULT = 0.434
@@ -3171,7 +3171,7 @@ def _alpha_pick_component(mask, cx, cy, min_px=60):
     return (lab == best[1]).astype(np.uint8) if best is not None else None
 
 
-def alpha_observation(frame_u, ref_u, cx, cy):
+def _alpha_observation_py(frame_u, ref_u, cx, cy):
     """Alfa-kartta + laatumitat yhdelle havainnolle (frame_u = korjattu/vaantamaton ruutu, ref_u = moodikuva).
     Palauttaa dict (alpha, adil, origin, center, ratio, dark_px, a_area) tai None."""
     gain, bias = estimate_photometric_correction(frame_u, ref_u)
@@ -3218,7 +3218,7 @@ def alpha_observation(frame_u, ref_u, cx, cy):
             "ratio": ratio, "dark_px": dark_px, "a_area": int(Ac.sum())}
 
 
-def alpha_contour(ao, level):
+def _alpha_contour_py(ao, level):
     """Kuminauha-aariviiva (liukuluku, natiivit pikselikoordinaatit) + pinta-ala (px) tasolta level, tai (None, 0)."""
     up = ALPHA_UP
     alpha = ao["alpha"]
@@ -3244,6 +3244,30 @@ def alpha_contour(ao, level):
     c = max(cs, key=cv2.contourArea).reshape(-1, 2).astype(np.float64)
     c = (c + 0.5) / up - 0.5 + np.array(ao["origin"], dtype=np.float64)        # 4x-hila -> natiivit pikselikoordinaatit
     return c, float(fin.sum()) / float(up * up)
+
+
+ALPHA_CPP = os.environ.get("ALPHA_CPP", "1") == "1" and hasattr(stone_tracker, "alpha_observation_cpp")   # 0 = numpy/cv2-versio
+
+
+def alpha_observation(frame_u, ref_u, cx, cy):
+    """Alfa-kartta + laatumitat yhdelle havainnolle (C++: stone_tracker.alpha_observation_cpp; varapolku numpy/cv2). Palauttaa dict tai None."""
+    if not ALPHA_CPP:
+        return _alpha_observation_py(frame_u, ref_u, cx, cy)
+    gain, bias = estimate_photometric_correction(frame_u, ref_u)
+    return stone_tracker.alpha_observation_cpp(
+        frame_u, ref_u, np.asarray(gain, dtype=np.float64), np.asarray(bias, dtype=np.float64), int(cx), int(cy),
+        float(GRANITE_DIFF_THRESHOLD), float(SHADOW_V_DROP_MIN), float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN),
+        int(ALPHA_CROP_HALF_PX), int(ALPHA_A_DILATE_PX), int(ALPHA_DARK_V_MAX))
+
+
+def alpha_contour(ao, level):
+    """Kuminauha-aariviiva (liukuluku, natiivit pikselikoordinaatit) + pinta-ala (px) tasolta level, tai (None, 0)."""
+    if not ALPHA_CPP:
+        return _alpha_contour_py(ao, level)
+    c, area = stone_tracker.alpha_contour_cpp(
+        ao["alpha"], ao["adil"], float(ao["center"][0]), float(ao["center"][1]),
+        int(ao["origin"][0]), int(ao["origin"][1]), float(level), int(ALPHA_UP))
+    return c, float(area)
 
 
 def attach_alpha_observations(video_path, calib, observations):
@@ -3911,7 +3935,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_03_04 v4.0 alfa-aariviiva (alipikselireuna) + hylkayssaannot (2026-09-30)"
+SOFTWARE_VERSION = "Testi_03_04 v4.1 alfa-aariviiva C++ (alipikselireuna) + hylkayssaannot (2026-09-30)"
 
 
 def _version_string():

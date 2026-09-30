@@ -1,4 +1,4 @@
-# Testi_03_04 v4.0 – alfa-ääriviiva profiilin opetteluun
+# Testi_03_04 v4.1 – alfa-ääriviiva profiilin opetteluun
 
 Pohja: Testi_03_03 (pelialue X ±2 m / Y 4–20 m, tiukat rms/R-rajat, C++-profiilisovitus). Tässä versiossa muutetaan **vain profiilin opettelua**,
 ei live-seurantaa.
@@ -21,7 +21,7 @@ Syy jälkimmäiseen: kiven reunapikselit ovat graniitin ja jään sekoituksia (a
    Yksittäisen havainnon suhde hylätään, jos se on välillä 0,2–0,8 ulkopuolella.
 4. **Hylkäyssäännöt**: (1) tumma alue kiven ympärillä (> 100 px, V < 60, rengas 9–31 px A:sta) – lakaisija/harja/kenkä;
    (2) ääriviivan pinta-ala poikkeaa > 30 % lähiruutujen (±4) liukuvasta mediaanista – esim. kiveen liittyvä maalattu keskiviiva.
-5. **C++**: `fit_stone_profile_cpp` ottaa ääriviivat liukulukuina (`double`; kokonaisluvut kelpaavat edelleen).
+5. **C++**: `fit_stone_profile_cpp` ottaa ääriviivat liukulukuina (`double`; kokonaisluvut kelpaavat edelleen); alfa-kartta ja -ääriviiva lasketaan C++:ssa (ks. Nopeus).
 6. `PROFILE_SAMPLES_PER_STONE` 25 → 40 (hylkäykset vähentävät havaintoja; min 15).
 7. Muistiinpano live-seurannan kommentteihin: alfa-kartta parantaisi todennäköisesti luottamusta myös seurannassa – tarkastellaan, kun seuranta käydään läpi.
 
@@ -29,7 +29,9 @@ Portti ennallaan (rms ≤ 1,5 px, R 12,5–15 cm), `PROFILE_MIN_ACCEPTED_STONES 
 
 ## Nopeus
 
-Alfa-ääriviivan laskenta on vielä numpy/cv2:lla (~0,3 s/havainto, 40 havaintoa/kivi). Nopeutetaan C++:ssa myöhemmin.
+Alfa-laskenta on C++:ssa (`stone_tracker.alpha_observation_cpp` / `alpha_contour_cpp`): ~7 ms/havainto (numpy/cv2-versio ~190 ms), tulos **bitti bitiltä sama**
+(alfa-kartan ero 0, ääriviivat identtiset – tarkistettu 42 havainnolla). Valotasapainon estimointi on vielä Pythonissa (~7 ms). Varapolku: `ALPHA_CPP=0`.
+Tarkempi optimointi myöhemmin.
 
 ## Testi
 
