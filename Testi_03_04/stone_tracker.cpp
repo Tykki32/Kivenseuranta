@@ -872,6 +872,9 @@ static cv::Mat satU8FromBgr(const cv::Mat& bgr)
 static const int g_granite_open = getenv("GRANITE_OPEN") ? atoi(getenv("GRANITE_OPEN")) : 5;
 static const int g_granite_close = getenv("GRANITE_CLOSE") ? atoi(getenv("GRANITE_CLOSE")) : 3;
 
+// MUISTIINPANO (Testi_03_04, tutkittava): tausta (sumennus sigma=25) arvioidaan 4x PIENENNETYLLA kuvalla (g_granite_down) -> ero tarkkaan sumennukseen on keskimaarin 0.035, mutta
+// jopa ~14 harmaasavya jyrkkien reunojen (isojen tummien kohteiden, esim. lakaisijan takki) vieressa. Kivien kohdalla ero ei nayttanyt (IoU mallin siluettiin sama 119 HAKU-osumalla),
+// mutta maskin kayttaytymista tummien kohteiden vieressa (taustan arvio laskee -> kiven tummuus pienenee -> reunapikselit putoavat) ei ole tutkittu. Katso README_alfa_profiili.md.
 static cv::Mat createGraniteMask(const cv::Mat& frame_bgr, const cv::Mat* sat_in = nullptr)
 {
     cv::Mat sat_ch, gray, gray_f, bg, darkness;
@@ -5062,11 +5065,178 @@ static py::tuple alpha_contour_cpp(
     return py::make_tuple(out, (double)cv::countNonZero(fin) / (double)(up * up));
 }
 
+
+// ============================================================
+// SILUETTITARKENNUS (Testi_03_04): silhouette_refine_cpp - 1:1 haku_silhouette.py:n SilhouetteRefiner.refine (numpy/cv2-versio, tarkistettu).
+// HAKUn/SEURANNAN paikka tarkennetaan kiven 3D-mallin siluetilla graniittimaskista: sisapuoli palkitaan, ylitulo rangaistaan
+// (paitsi kiven YLAPUOLELLA = kuvassa OIKEALLA, kuva on kierretty), pieni massakeskipisteen keskitysbonus. Siluettia siirretaan
+// kuvatasossa (+-max_shift_px, 0.5 px askel) cv::matchTemplate-korrelaatioilla ja paras siirto muutetaan maatasoon Jacobilla.
+// ============================================================
+static cv::Mat graniteMaskExactCrop(const cv::Mat& bgr)
+{
+    cv::Mat gray8, gray_f, bgb, darkness;
+    cv::cvtColor(bgr, gray8, cv::COLOR_BGR2GRAY);
+    gray8.convertTo(gray_f, CV_32F);
+    cv::GaussianBlur(gray_f, bgb, cv::Size(0, 0), STONE_DARKNESS_SIGMA);
+    darkness = bgb - gray_f;
+    cv::Mat satc = satU8FromBgr(bgr);
+    cv::Mat gm(bgr.rows, bgr.cols, CV_8UC1);
+    for (int y = 0; y < bgr.rows; ++y) {
+        const uint8_t* sp = satc.ptr<uint8_t>(y); const float* dk = darkness.ptr<float>(y); uint8_t* mp = gm.ptr<uint8_t>(y);
+        for (int x = 0; x < bgr.cols; ++x) mp[x] = (sp[x] < STONE_MAX_SATURATION && dk[x] > (float)STONE_MIN_DARKNESS) ? 255 : 0;
+    }
+    cv::morphologyEx(gm, gm, cv::MORPH_OPEN, cv::Mat::ones(5, 5, CV_8U));
+    cv::morphologyEx(gm, gm, cv::MORPH_CLOSE, cv::Mat::ones(3, 3, CV_8U));
+    return gm;
+}
+
+static void silFillPoly(cv::Mat& m, const std::vector<cv::Point2f>& poly, int ox, int oy, int up)
+{
+    std::vector<cv::Point> pts; pts.reserve(poly.size());
+    for (const auto& p : poly) {
+        const double x = ((double)p.x - ox + 0.5) * up - 0.5, y = ((double)p.y - oy + 0.5) * up - 0.5;
+        pts.emplace_back((int)std::nearbyint(x), (int)std::nearbyint(y));      // np.round (puolet parilliseen)
+    }
+    cv::fillPoly(m, std::vector<std::vector<cv::Point>>{pts}, cv::Scalar(1));
+}
+
+static py::tuple silhouette_refine_cpp(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+    double R_max_cm, double H_total_cm, double handle_r_frac, double X0, double Y0,
+    double w_leak, double lam, double sigma_frac, int max_shift_px, int half, int margin)
+{
+    auto fb = frame.request();
+    if (fb.ndim != 3 || fb.shape[2] != 3) throw std::runtime_error("silhouette_refine_cpp: frame must be HxWx3 uint8");
+    const int H = (int)fb.shape[0], W = (int)fb.shape[1];
+    cv::Mat img(H, W, CV_8UC3, (void*)fb.ptr);
+    auto body = parsePts3(local_pts_body_arr);
+    auto K = parseMat33(K_arr); auto R = parseMat33(R_arr); auto t = parseVec3(t_arr);
+    const int UPS = 2;
+    const int S = max_shift_px * UPS;
+    auto fail = [&]() { py::dict d; d["ok"] = false; return py::make_tuple(X0, Y0, d); };
+
+    auto proj = [&](double x, double y, double z) {
+        cv::Vec3d pc = R * cv::Vec3d(x, y, z) + t; cv::Vec3d pi = K * pc;
+        return cv::Point2d(pi[0] / pi[2], pi[1] / pi[2]);
+    };
+    const cv::Point2d c0 = proj(X0, Y0, H_total_cm / 2.0);
+    const int cxi = (int)std::nearbyint(c0.x), cyi = (int)std::nearbyint(c0.y);
+    const int ox = cxi - half, oy = cyi - half;
+    if (ox < 0 || oy < 0 || ox + 2 * half > W || oy + 2 * half > H) return fail();
+    const int x0c = std::max(0, ox - margin), y0c = std::max(0, oy - margin);
+    const int x1c = std::min(W, ox + 2 * half + margin), y1c = std::min(H, oy + 2 * half + margin);
+    if (x1c - x0c < 40 || y1c - y0c < 40) return fail();
+
+    std::vector<float> dummy;
+    cv::Mat gm = createGraniteMask(img(cv::Rect(x0c, y0c, x1c - x0c, y1c - y0c)).clone());   // sama maski kuin HAKU/SEURANTA (sumennus pienennetylla kuvalla)
+    cv::Mat maskw = gm(cv::Rect(ox - x0c, oy - y0c, 2 * half, 2 * half)) > 0;
+    if (cv::countNonZero(maskw) == 0) return fail();
+    cv::Mat m2u, m2;
+    cv::resize(maskw, m2u, cv::Size(), UPS, UPS, cv::INTER_NEAREST);
+    m2u.convertTo(m2, CV_32F, 1.0 / 255.0);
+    const int sh = m2.rows, sw = m2.cols;
+
+    auto hull = predictedHull(body, X0, Y0, K, R, t);
+    auto notch = predictedNotchHull(X0, Y0, R_max_cm, H_total_cm, handle_r_frac, K, R, t, 28);
+    if (hull.size() < 3 || notch.size() < 3) return fail();
+    cv::Mat mh8 = cv::Mat::zeros(sh, sw, CV_8U), mn8 = cv::Mat::zeros(sh, sw, CV_8U);
+    silFillPoly(mh8, hull, ox, oy, UPS); silFillPoly(mn8, notch, ox, oy, UPS);
+    // --- siluetin rivit: kupera peite = yksi vali / rivi, siluetti (peite miinus lovi) = 0..2 valia / rivi (run-length)
+    struct Run { int x1, x2; };
+    std::vector<int> h1(sh, -1), h2(sh, -1);
+    std::vector<std::vector<Run>> sil_runs((size_t)sh);
+    double a = 0.0, sx_sum = 0.0, sy_sum = 0.0;
+    for (int y = 0; y < sh; ++y) {
+        const uint8_t* hp = mh8.ptr<uint8_t>(y); const uint8_t* np_ = mn8.ptr<uint8_t>(y);
+        for (int x = 0; x < sw; ++x) if (hp[x]) { if (h1[y] < 0) h1[y] = x; h2[y] = x; }
+        int run_start = -1;
+        for (int x = 0; x <= sw; ++x) {
+            const bool insil = (x < sw) && hp[x] && !np_[x];
+            if (insil) { if (run_start < 0) run_start = x; a += 1.0; sx_sum += x; sy_sum += y; }
+            else if (run_start >= 0) { sil_runs[(size_t)y].push_back({ run_start, x - 1 }); run_start = -1; }
+        }
+    }
+    if (a < 10) return fail();
+    const double sil_cx = sx_sum / a, sil_cy = sy_sum / a;
+    // --- maski (nollatayte S reunoilla) + rivikohtaiset kumulatiiviset summat: PR = sum M, PX = sum x*M; II = 2D-integraalikuva
+    const int BH = sh + 2 * S, BW = sw + 2 * S;
+    std::vector<double> PR((size_t)BH * (BW + 1), 0.0), PX((size_t)BH * (BW + 1), 0.0), II((size_t)(BH + 1) * (BW + 1), 0.0);
+    for (int r = 0; r < BH; ++r) {
+        const bool in_m = (r >= S && r < S + sh);
+        double acc = 0.0, accx = 0.0, rowsum_prev = 0.0;
+        for (int x = 0; x < BW; ++x) {
+            const double v = (in_m && x >= S && x < S + sw) ? (double)m2.at<float>(r - S, x - S) : 0.0;
+            PR[(size_t)r * (BW + 1) + x] = acc; PX[(size_t)r * (BW + 1) + x] = accx;
+            acc += v; accx += v * (double)x;
+        }
+        PR[(size_t)r * (BW + 1) + BW] = acc; PX[(size_t)r * (BW + 1) + BW] = accx;
+        (void)rowsum_prev;
+    }
+    for (int r = 0; r < BH; ++r)
+        for (int x = 0; x < BW; ++x) {
+            const double v = PR[(size_t)r * (BW + 1) + x + 1] - PR[(size_t)r * (BW + 1) + x];
+            II[(size_t)(r + 1) * (BW + 1) + x + 1] = v + II[(size_t)r * (BW + 1) + x + 1] + II[(size_t)(r + 1) * (BW + 1) + x] - II[(size_t)r * (BW + 1) + x];
+        }
+    auto rowint = [&](const std::vector<double>& P, int r, int xa, int xb) { return P[(size_t)r * (BW + 1) + xb] - P[(size_t)r * (BW + 1) + xa]; };   // [xa, xb)
+    const double sig = sigma_frac * std::sqrt(a / (double)(UPS * UPS));
+    const int NS = 2 * S + 1;
+    double best = -1e300; int bix = S, biy = S;
+    std::vector<double> ins_map((size_t)NS * NS), score_map((size_t)NS * NS);
+    for (int iy = 0; iy < NS; ++iy) {
+        for (int ix = 0; ix < NS; ++ix) {
+            double ins = 0.0, cnt = 0.0, mx = 0.0, my = 0.0, fr = 0.0;
+            for (int y = 0; y < sh; ++y) {
+                if (h1[y] < 0) continue;
+                const int r = y + iy;
+                const double ci = rowint(PR, r, h1[y] + ix, h2[y] + 1 + ix);
+                cnt += ci; my += (double)y * ci;
+                mx += rowint(PX, r, h1[y] + ix, h2[y] + 1 + ix) - (double)ix * ci;
+                for (const Run& ru : sil_runs[(size_t)y]) ins += rowint(PR, r, ru.x1 + ix, ru.x2 + 1 + ix);
+                if (!sil_runs[(size_t)y].empty()) fr += rowint(PR, r, h2[y] + 1 + ix, sw + ix);          // vapaa alue: siluetin oikealla puolella samalla rivilla
+            }
+            const double rect = II[(size_t)(iy + sh) * (BW + 1) + ix + sw] - II[(size_t)iy * (BW + 1) + ix + sw] - II[(size_t)(iy + sh) * (BW + 1) + ix] + II[(size_t)iy * (BW + 1) + ix];
+            const double inside = ins / a, leak = (rect - cnt - fr) / a;
+            double bonus = 0.0;
+            if (cnt > 0.5) {
+                const double d = std::hypot(mx / cnt - sil_cx, my / cnt - sil_cy) / (double)UPS;
+                bonus = lam * std::exp(-(d / sig) * (d / sig));
+            }
+            const double sc = inside - w_leak * leak + bonus;
+            ins_map[(size_t)iy * NS + ix] = inside; score_map[(size_t)iy * NS + ix] = sc;
+            if (sc > best + 1e-7) { best = sc; bix = ix; biy = iy; }
+            else if (sc >= best - 1e-7) {           // tasapeli: valitaan pienin siirto (vakaa, ei riipu lukutarkkuudesta)
+                const int dd = (ix - S) * (ix - S) + (iy - S) * (iy - S), db = (bix - S) * (bix - S) + (biy - S) * (biy - S);
+                if (dd < db) { best = std::max(best, sc); bix = ix; biy = iy; }
+            }
+        }
+    }
+    const double du = (double)(bix - S) / UPS, dv = (double)(biy - S) / UPS;
+    const double s0 = score_map[(size_t)S * NS + S], s1 = score_map[(size_t)biy * NS + bix];
+    const double in0 = ins_map[(size_t)S * NS + S], in1 = ins_map[(size_t)biy * NS + bix];
+    py::dict d; d["ok"] = true; d["score0"] = s0; d["score1"] = s1; d["inside0"] = in0; d["inside1"] = in1;
+    if (du == 0.0 && dv == 0.0) { d["shift_px"] = 0.0; d["shift_cm"] = 0.0; return py::make_tuple(X0, Y0, d); }
+    const cv::Point2d p0 = c0, px = proj(X0 + 1.0, Y0, H_total_cm / 2.0), py_ = proj(X0, Y0 + 1.0, H_total_cm / 2.0);
+    const double j00 = px.x - p0.x, j01 = py_.x - p0.x, j10 = px.y - p0.y, j11 = py_.y - p0.y;
+    const double det = j00 * j11 - j01 * j10;
+    if (std::abs(det) < 1e-12) return fail();
+    const double dX = (du * j11 - j01 * dv) / det, dY = (j00 * dv - j10 * du) / det;
+    d["shift_px"] = std::hypot(du, dv); d["shift_cm"] = std::hypot(dX, dY);
+    return py::make_tuple(X0 + dX, Y0 + dY, d);
+}
+
 PYBIND11_MODULE(stone_tracker, m)
 {
     m.def("build_info", []() { return std::string("stone_tracker kaannetty ") + __DATE__ + " " + __TIME__; });
     m.def("set_haku_accept_score", [](double v) { g_haku_accept_score = v; }, py::arg("accept_score"));   // kokeiluihin (oletus 0.20)
     m.def("get_haku_accept_score", []() { return g_haku_accept_score; });
+    m.def("silhouette_refine_cpp", &silhouette_refine_cpp,
+          py::arg("frame"), py::arg("local_pts_body"), py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("handle_r_frac"), py::arg("X0"), py::arg("Y0"),
+          py::arg("w_leak"), py::arg("lam"), py::arg("sigma_frac"), py::arg("max_shift_px"), py::arg("half"), py::arg("margin"));
     m.def("alpha_observation_cpp", &alpha_observation_cpp,
           py::arg("frame"), py::arg("reference"), py::arg("gains"), py::arg("biases"), py::arg("cx"), py::arg("cy"),
           py::arg("diff_threshold"), py::arg("v_drop_min"), py::arg("v_drop_max"), py::arg("ice_s_max"), py::arg("ice_v_min"),
