@@ -1005,6 +1005,11 @@ ICE_V_MIN = 128
 
 # HAKU:n SPAWN-SUODATIN (Testi_03_02): roskaehdokkaat hylataan jo rekisteroinnissa (katso stone_tracker.cpp
 # set_spawn_filter). SPAWN_FILTER=0 kytkee pois. Kynnykset johdettu MAH-videon 673 ehdokkaasta (26 oikeaa).
+# PAIKANVARAUS (Testi_03_02): kun MAX_CONCURRENT_STONES on taynna, HAKU ajetaan silti ja uusi ehdokas saa
+# paikan poistamalla huonoimman aktiivisen radan (ensin vahvistamattomat, sitten vahvistetut joiden sovitus on
+# huono, rms >= EVICT_MIN_RMS). Oikea heitto ei saa jaada rekisteroimatta siksi etta roskaratoja on taysi maara.
+EVICT_AT_CAP = os.environ.get("EVICT_AT_CAP", "1") == "1"
+EVICT_MIN_RMS = float(os.environ.get("EVICT_MIN_RMS", "8.0"))
 SPAWN_FILTER = os.environ.get("SPAWN_FILTER", "1") == "1"
 SPAWN_RMS_MAX = float(os.environ.get("SPAWN_RMS_MAX", "3.5"))
 SPAWN_NB_MIN = int(os.environ.get("SPAWN_NB_MIN", "14"))
@@ -3621,7 +3626,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_03_02 v2.0 roskasuodatin (2026-09-30)"
+SOFTWARE_VERSION = "Testi_03_02 v2.1 roskasuodatin + seurannan kevennykset + paikanvaraus (2026-09-30)"
 
 
 def _version_string():
@@ -3655,6 +3660,21 @@ def _estimate_photo_timed(frame_bgr, ref_bgr):
     _e = _PROF.setdefault("bg: valotasapaino taustasaikeessa (rinnan, ei lisaa)", [0.0, 0])
     _e[0] += time.perf_counter() - t0; _e[1] += 1
     return res
+
+
+def _pick_eviction_victim(active_stones):
+    """Palauttaa poistettavan radan (huonoin) tai None. Suojaa hyvin sovittuja vahvistettuja ratoja."""
+    def med_rms(st):
+        h = list(st.get("rms_hist", []))
+        return float(np.median(h)) if h else 1e9
+    unconfirmed = [st for st in active_stones if not st["confirmed"]]
+    if unconfirmed:
+        # huonoin sovitus (tai ei sovitusta) ensin; tasatilanteessa vanhin (pienin id)
+        return max(unconfirmed, key=lambda st: (med_rms(st), -st["stone_id"]))
+    bad = [st for st in active_stones if med_rms(st) >= EVICT_MIN_RMS]
+    if bad:
+        return max(bad, key=lambda st: med_rms(st))
+    return None
 
 
 class _LivePrep:
@@ -4940,13 +4960,14 @@ def run_pipeline(
 
                 if (
                     len(active_stones) >= MAX_CONCURRENT_STONES
+                    and not EVICT_AT_CAP
                     and frame_index % haku_interval_frames == 0
                 ):
                     _haku_log(frame_index, len(active_stones), False, False,
                               None, None, None, False, None, None, None)
 
                 if (
-                    len(active_stones) < MAX_CONCURRENT_STONES
+                    (len(active_stones) < MAX_CONCURRENT_STONES or EVICT_AT_CAP)
                     and frame_index % haku_interval_frames == 0
                 ):
 
@@ -5182,6 +5203,9 @@ def run_pipeline(
 
                             s["last_xy"] = (
                                 refined["X_cm"], refined["Y_cm"]
+                            )
+                            s.setdefault("rms_hist", deque(maxlen=10)).append(
+                                refined.get("rms_px") if refined.get("rms_px") is not None else 1e9
                             )
                             s["min_y_seen"] = min(
                                 s["min_y_seen"], refined["Y_cm"]
@@ -5582,7 +5606,27 @@ def run_pipeline(
                             ) or any(
                                 math.hypot(bx - nx, by - ny) < NEW_STONE_SAME_SCAN_CM
                                 for nx, ny in new_this_scan
-                            ) or len(active_stones) >= MAX_CONCURRENT_STONES
+                            )
+                            if (
+                                not already_tracked
+                                and EVICT_AT_CAP
+                                and len(active_stones) >= MAX_CONCURRENT_STONES
+                            ):
+                                _victim = _pick_eviction_victim(active_stones)
+                                if _victim is not None:
+                                    _victim["pending_rows"] = []
+                                    active_stones = [
+                                        x for x in active_stones
+                                        if x["stone_id"] != _victim["stone_id"]
+                                    ]
+                                    print(
+                                        f"[frame {frame_index}] Rata {_victim['stone_id']} "
+                                        "poistettu (paikanvaraus uudelle ehdokkaalle, huonoin sovitus)."
+                                    )
+                            already_tracked = (
+                                already_tracked
+                                or len(active_stones) >= MAX_CONCURRENT_STONES
+                            )
 
                             if HAKU_LOG:
                                 near = min(

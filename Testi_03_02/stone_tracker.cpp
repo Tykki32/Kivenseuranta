@@ -220,7 +220,7 @@ static const double BOUNDARY_MIN_PREDICTED_RADIUS_PX = 4.0;
 static const int BOUNDARY_MIN_VALID_POINTS = 12;
 static const double BOUNDARY_MIN_ANGULAR_SPREAD_DEG = 180.0;
 static const int BOUNDARY_MAX_ITERATIONS = 5;
-static const double BOUNDARY_CONVERGENCE_CM = 0.05;
+static const double BOUNDARY_CONVERGENCE_CM = getenv("BOUNDARY_CONVERGENCE_CM") ? atof(getenv("BOUNDARY_CONVERGENCE_CM")) : 0.5;
 static const double BOUNDARY_MAX_SHIFT_FROM_APPROX_CM = 25.0;
 
 static const double BODY_CONTOUR_MIN_AREA_PX = 15.0;
@@ -841,15 +841,46 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
 
 static const int g_granite_down = getenv("GRANITE_DOWN") ? atoi(getenv("GRANITE_DOWN")) : 4;
 
+
+// ------------------------------------------------------------------
+// SATURAATIO suoraan BGR:sta (Testi_03_02): cvtColor(BGR2HSV) laskee myos savyn (H), jota tassa ei
+// tarvita. S = (max-min)*sdiv[max] pyoristettyna, TASMALLEEN OpenCV:n uint8-kaava
+// (sdiv[i] = round(255*4096/i), s = (diff*sdiv[v] + 2048) >> 12), tarkistettu cvtColor-tulosta vastaan.
+// ------------------------------------------------------------------
+static cv::Mat satU8FromBgr(const cv::Mat& bgr)
+{
+    static int sdiv[256];
+    static const bool init = []() {
+        sdiv[0] = 0;
+        for (int i = 1; i < 256; ++i) sdiv[i] = (int)std::lround((255 << 12) / (1.0 * i));
+        return true;
+    }();
+    (void)init;
+    cv::Mat sat(bgr.rows, bgr.cols, CV_8UC1);
+    for (int y = 0; y < bgr.rows; ++y) {
+        const uint8_t* p = bgr.ptr<uint8_t>(y);
+        uint8_t* o = sat.ptr<uint8_t>(y);
+        for (int x = 0; x < bgr.cols; ++x, p += 3) {
+            const int b = p[0], g = p[1], r = p[2];
+            const int mx = std::max(b, std::max(g, r)), mn = std::min(b, std::min(g, r));
+            o[x] = (uint8_t)(((mx - mn) * sdiv[mx] + 2048) >> 12);
+        }
+    }
+    return sat;
+}
+
 static const int g_granite_open = getenv("GRANITE_OPEN") ? atoi(getenv("GRANITE_OPEN")) : 5;
 static const int g_granite_close = getenv("GRANITE_CLOSE") ? atoi(getenv("GRANITE_CLOSE")) : 3;
 
-static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
+static cv::Mat createGraniteMask(const cv::Mat& frame_bgr, const cv::Mat* sat_in = nullptr)
 {
-    cv::Mat hsv, gray, gray_f, bg, darkness;
+    cv::Mat sat_ch, gray, gray_f, bg, darkness;
     PT gpt;
 
-    cv::cvtColor(frame_bgr, hsv, cv::COLOR_BGR2HSV);
+    if (sat_in != nullptr && !sat_in->empty())
+        sat_ch = *sat_in;                  // Testi_03_02: saturaatio laskettu jo kerran (jaettu computeSat:n kanssa)
+    else
+        sat_ch = satU8FromBgr(frame_bgr);
     cv::cvtColor(frame_bgr, gray, cv::COLOR_BGR2GRAY);
     gray.convertTo(gray_f, CV_32F);
     profAdd(P_GM_CVT, gpt.lap());
@@ -866,9 +897,6 @@ static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
     darkness = bg - gray_f;
     profAdd(P_GM_BLUR, gpt.lap());
 
-    std::vector<cv::Mat> hsv_ch;
-    cv::split(hsv, hsv_ch);
-    const cv::Mat& sat_ch = hsv_ch[1];
 
     cv::Mat mask = cv::Mat::zeros(frame_bgr.size(), CV_8UC1);
 
@@ -901,12 +929,8 @@ static cv::Mat createGraniteMask(const cv::Mat& frame_bgr)
 
 static cv::Mat computeSat(const cv::Mat& frame_bgr)
 {
-    cv::Mat hsv;
-    cv::cvtColor(frame_bgr, hsv, cv::COLOR_BGR2HSV);
-    std::vector<cv::Mat> ch;
-    cv::split(hsv, ch);
     cv::Mat sat_f;
-    ch[1].convertTo(sat_f, CV_32F);
+    satU8FromBgr(frame_bgr).convertTo(sat_f, CV_32F);
     return sat_f;
 }
 
@@ -3096,14 +3120,22 @@ static StoneUpdateResult trackStoneUpdateOneEx(
     if (!background_reference.empty() && background_reference.size() == frame_mat.size()
         && background_reference.type() == frame_mat.type()) {
         cv::Mat ref_crop = background_reference(roi);
-        crop_filtered = suppressStaticBackground(crop, ref_crop, diff_threshold);
+        // Testi_03_02: kynnys <= 0 (kuva on jo taustanvaimennettu Pythonissa) -> suppress palauttaisi
+        // saman sisallon kopiona (absdiff+gray+clone ~0.6 ms/kivi turhaan) - kaytetaan crop:ia sellaisenaan.
+        if (diff_threshold <= 0.0)
+            crop_filtered = crop;
+        else
+            crop_filtered = suppressStaticBackground(crop, ref_crop, diff_threshold);
         have_bg_reference = true;
     }
 
     profAdd(P_PREP_CROP_SUPPRESS, pt.lap());
-    cv::Mat sat_crop = computeSat(crop);
+    cv::Mat sat_u8_crop = satU8FromBgr(crop);
+    cv::Mat sat_crop;
+    sat_u8_crop.convertTo(sat_crop, CV_32F);
+    const bool same_image = (crop_filtered.data == crop.data);
     profAdd(P_PREP_SAT, pt.lap());
-    cv::Mat mask_crop = createGraniteMask(crop_filtered);
+    cv::Mat mask_crop = createGraniteMask(crop_filtered, same_image ? &sat_u8_crop : nullptr);
     profAdd(P_PREP_GRANITE, pt.lap());
 
     // Kayttajan ehdottama korjaus (katso keskusteluhistoria ja
