@@ -92,8 +92,9 @@ class SilhouetteRefiner:
         iy, ix = np.unravel_index(int(np.argmax(score)), score.shape)
         du, dv = (ix - S) / UP, (iy - S) / UP                      # siluetin siirto kuvassa (px)
         s0, s1 = float(score[S, S]), float(score[iy, ix])
+        ins0, ins1 = float(inside[S, S]), float(inside[iy, ix])
         if du == 0 and dv == 0:
-            return X0, Y0, dict(ok=True, score0=s0, score1=s1, shift_px=0.0, shift_cm=0.0)
+            return X0, Y0, dict(ok=True, score0=s0, score1=s1, shift_px=0.0, shift_cm=0.0, inside0=ins0, inside1=ins1)
         # kuvasiirto -> maatason siirto (Jacobi numeerisesti)
         u0, v0 = self.proj(X0, Y0, self.H_total / 2)
         ux, vx = self.proj(X0 + 1.0, Y0, self.H_total / 2)
@@ -104,4 +105,4 @@ class SilhouetteRefiner:
         except np.linalg.LinAlgError:
             return X0, Y0, dict(ok=False)
         return X0 + float(dXY[0]), Y0 + float(dXY[1]), dict(ok=True, score0=s0, score1=s1, shift_px=float(np.hypot(du, dv)),
-                                                          shift_cm=float(np.hypot(*dXY)))
+                                                          shift_cm=float(np.hypot(*dXY)), inside0=ins0, inside1=ins1)

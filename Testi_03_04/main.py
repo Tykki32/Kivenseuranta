@@ -3150,6 +3150,14 @@ def _fit_stone_profile(pose, stones):
 # (katso haku_silhouette.py). HAKU_SIL_LOG=polku.csv kirjaa jokaisen tarkennuksen.
 HAKU_SILHOUETTE = os.environ.get("HAKU_SILHOUETTE", "1") == "1"   # Testi_03_04: oletuksena PAALLA (0 = pois)
 HAKU_SIL_LOG = os.environ.get("HAKU_SIL_LOG")
+# SEURANNAN MASKITUKI + SILUETTITARKENNUS (Testi_03_04, oletus PAALLA, SEURANTA_SILHOUETTE=0 kytkee pois): kun LM-tarkennus epaonnistuu (tarkka=0, tyypillisesti radan alkupaa,
+# rms ~9 px), paikka tarkistetaan graniittimaskista: kiven 3D-mallin siluetin SISALLA pitaa olla vahintaan SEURANTA_MIN_INSIDE (0.4) maskipikselien osuus, muuten ruutu
+# hylataan (miss) - esim. pelaajan paa (kiven kokoinen, pyorea, mutta ei graniittia) ei voi enaa vieda seurantaa. Hyvaksytty paikka tarkennetaan siluetilla
+# (max SEURANTA_SIL_SHIFT_PX). Tarkat (tarkka=1) LM-paikat jatetaan ennalleen. Katso haku_silhouette.py ja tulokset/seuranta_*.png (kivi 51: seuranta seurasi paata 80 ruutua, virhe ~285 cm ->
+# maskituella 17 cm; kivi 3: virhe 32 cm -> 4 cm).
+SEURANTA_SILHOUETTE = os.environ.get("SEURANTA_SILHOUETTE", "1") == "1"
+SEURANTA_MIN_INSIDE = float(os.environ.get("SEURANTA_MIN_INSIDE", "0.4"))
+SEURANTA_SIL_SHIFT_PX = int(os.environ.get("SEURANTA_SIL_SHIFT_PX", "2"))
 PROFILE_ALPHA = os.environ.get("PROFILE_ALPHA", "1") == "1"   # 0 = vanha (seurannan oma aariviiva)
 ALPHA_LEVEL_DEFAULT = 0.434
 ALPHA_RATIO_MIN = 0.2
@@ -4344,6 +4352,7 @@ def run_pipeline(
     prev_scan_candidates = None
     accumulated_stones = []
     haku_refiner = None
+    track_refiner = None
     haku_sil_log_file = None
     n_accepted_stones = 0
     best_sufficient_profile = None
@@ -5207,6 +5216,12 @@ def run_pipeline(
                             k9, calib_result["pose"], R_max, H_total, shape_deltas, handle_r_frac
                         )
                         print("HAKU siluettitarkennus PAALLA (haku_silhouette.py)")
+                    if SEURANTA_SILHOUETTE:
+                        track_refiner = haku_silhouette.SilhouetteRefiner(
+                            k9, calib_result["pose"], R_max, H_total, shape_deltas, handle_r_frac,
+                            max_shift_px=SEURANTA_SIL_SHIFT_PX
+                        )
+                        print(f"SEURANTA maskituki PAALLA (inside >= {SEURANTA_MIN_INSIDE}, siluettitarkennus +-{SEURANTA_SIL_SHIFT_PX} px)")
 
                     print(
                         "Rakennetaan kiven pintavarireferenssia "
@@ -5520,6 +5535,20 @@ def run_pipeline(
                                         f"stone={s['stone_id']} "
                                         f"diff={median_diff:.3f}"
                                     )
+
+                        if (
+                            track_refiner is not None and refined["found"]
+                            and not refined.get("tarkka")
+                        ):
+                            with _prof("py: SEURANTA maskituki + siluettitarkennus"):
+                                _tx, _ty, _tinfo = track_refiner.refine(
+                                    frame_u_for_tracking, refined["X_cm"], refined["Y_cm"]
+                                )
+                            refined = dict(refined)
+                            if (not _tinfo.get("ok")) or _tinfo.get("inside0", 0.0) < SEURANTA_MIN_INSIDE:
+                                refined["found"] = False
+                            else:
+                                refined["X_cm"], refined["Y_cm"] = _tx, _ty
 
                         # --------------------------------
                         # KUMULATIIVINEN "EI TAAKSEPAIN" -TARKISTUS
@@ -5952,6 +5981,9 @@ def run_pipeline(
                             _x1, _y1, _info = haku_refiner.refine(
                                 frame_u_for_tracking, _hr["X_cm"], _hr["Y_cm"]
                             )
+                            if _info.get("ok") and _info.get("inside1", 1.0) < SEURANTA_MIN_INSIDE:
+                                _hr["found"] = False          # ei maskitukea (esim. pelaajan paa) -> ei kivi
+                                continue
                             if _info.get("ok"):
                                 if HAKU_SIL_LOG:
                                     if haku_sil_log_file is None:

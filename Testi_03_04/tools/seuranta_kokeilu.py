@@ -72,7 +72,9 @@ class TrackLab:
                 kw.get("score_thr", self.k92.TRACK_SCORE_THRESHOLD), self.R_max, self.H_total, self.ring, self.ring, M.TRACK_MAX_BACKWARD_CM, 0.0]
         return self.st.track_stones_batch(*args, **kwargs)[0]
 
-    def replay(self, start_frame, start_xy, last_frame, use_stop=True, pred=True, **kw):
+    def replay(self, start_frame, start_xy, last_frame, use_stop=True, pred=True, sil=None, min_inside=0.4, sil_refine=True, gate_on="inside1", **kw):
+        """sil: haku_silhouette.SilhouetteRefiner -> maskituki: paikan siluetin sisalla pitaa olla >= min_inside maskipikselia, muuten ruutu on 'miss';
+        sil_refine=True: hyvaksytty paikka korvataan siluettitarkennetulla."""
         M = self.M
         vy = kw.get("max_speed_y", M.TRACK_MAX_SPEED_Y_CM_S); vx = vy * M.TRACK_MAX_SPEED_X_FRACTION_OF_Y; hmax = kw.get("half_max", M.TRACK_HALF_RANGE_MAX_CM)
         lost_max = max(self.k92.TRACK_LOST_MAX_MISSES, int(round(FPS * M.TRACK_LOST_GRACE_SECONDS)))
@@ -90,12 +92,19 @@ class TrackLab:
                     pr = (max(-hx, min(hx, dx)), max(-hy, min(hy, dy)))
             r = self._step(f, last[0], last[1], hx, hy, kw, pr)
             found = bool(r["found"])
+            sil_info = None
+            if found and sil is not None:
+                X1, Y1, sil_info = sil.refine(self.frame(f), r["X_cm"], r["Y_cm"])
+                if not sil_info.get("ok") or sil_info.get(gate_on, 0.0) < min_inside:
+                    found = False
+                elif sil_refine:
+                    r = dict(r); r["X_cm"], r["Y_cm"] = X1, Y1
             if found and (r["Y_cm"] - min_y > M.TRACK_MAX_BACKWARD_CM): found = False
             if found and abs(r["X_cm"]) > M.MAX_ABS_X_FROM_CENTERLINE_CM: found = False
             nz = lambda v: np.nan if v is None else v
             recs[f] = dict(X=nz(r.get("X_cm")), Y=nz(r.get("Y_cm")), found=found, rms=nz(r.get("rms_px")), tarkka=int(bool(r.get("tarkka"))),
                            score=nz(r.get("score")), locX=nz(r.get("loc_X")), locY=nz(r.get("loc_Y")), n_body=r.get("n_body") or 0, hx=hx, hy=hy, misses=misses,
-                           pred=pr)
+                           pred=pr, inside=(sil_info or {}).get("inside1", np.nan))
             if found:
                 last = (r["X_cm"], r["Y_cm"]); min_y = min(min_y, r["Y_cm"]); misses = 0
                 pos_hist.append((f, last[0], last[1])); hist.append((f, last[0], last[1]))
