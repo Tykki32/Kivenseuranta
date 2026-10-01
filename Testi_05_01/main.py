@@ -1657,12 +1657,12 @@ def _hog_check(s, frame_index, fps, near_hog, far_hog, overlays, results, frame_
     if y is None:
         return
     if "hog_result" not in s and y <= near_hog + hog_analyysi.NEAR_MARGIN_CM:
-        res = hog_analyysi.analyze_hog(rows, near_hog, far_hog)
+        res = hog_analyysi.analyze_hog(rows, near_hog, far_hog, tee_cm=k8.NEAR_HOUSE_Y_CM)
         res["stone_id"] = s["stone_id"]; res["frame"] = frame_index
         s["hog_result"] = res
-        if res.get("ok"):
+        if res.get("ok"):                 # TULOSTETAAN VAIN jos R_y > 0.99, R_x > 0.99 ja R_y * R_x > 0.99 (muuten ei mitaan)
             results.append(res)
-        print(f"[frame {frame_index}] " + " | ".join(hog_analyysi.format_lines(res, s["stone_id"])))
+            print(f"[frame {frame_index}] " + " | ".join(hog_analyysi.format_lines(res, s["stone_id"])))
     r = s.get("hog_result")
     if r and r.get("ok") and not s.get("hog_overlay_started") and y <= near_hog:
         s["hog_overlay_started"] = True
@@ -1681,7 +1681,8 @@ def _hog_write_csv(results, csv_output):
     if not results:
         return
     path = os.path.splitext(csv_output)[0] + "_hog.csv"
-    cols = ["stone_id", "frame", "R", "R_ennen_suodatusta", "n_kaytetty", "n_pudotettu", "v_far_hog_ms", "decel_ms2", "hog_hog_s", "t_far_hog_s", "t_near_hog_s", "v_near_hog_ms", "a", "b", "c"]
+    cols = ["stone_id", "frame", "R", "R_ennen_suodatusta", "n_kaytetty", "n_pudotettu", "v_far_hog_ms", "decel_ms2", "hog_hog_s", "t_far_hog_s", "t_near_hog_s", "v_near_hog_ms", "a", "b", "c",
+            "R_x", "R_x_ennen_suodatusta", "R_tulo", "x_far_hog_cm", "dir_far_hog_deg", "slope_dxdy", "x_straight_at_tee_cm", "px", "qx", "rx"]
     with open(path, "w", newline="") as hf:
         w = csv.writer(hf); w.writerow(cols)
         for r in results:
