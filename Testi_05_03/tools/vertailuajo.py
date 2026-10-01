@@ -1,0 +1,254 @@
+"""GPU-ristikkohaun vertailuajo: ajaa main.py:n kolmesti peräkkäin ja kokoaa raportit TIEDOSTOON (terminaali ei riitä).
+
+  python tools/vertailuajo.py                       # valitsee videon tiedostovalitsimella
+  python tools/vertailuajo.py --video D:\\Tikku\\Suorita\\MAH00014.MP4
+  python tools/vertailuajo.py --video ... --start 00:10:00 --end 00:21:00 --outdir D:\\Tikku\\Suorita\\vertailu
+
+Ajot (kaikki samalla videolla/aikavälillä, oletuksena debug-video päällä):
+  1) verify : GPU_GRID=1 GPU_GRID_VERIFY=1  (oikeellisuus: vertaa CPU-pistemääriin; hitaampi)
+  2) gpu    : GPU_GRID=1                    (nopeus GPU:lla)
+  3) cpu    : GPU_GRID pois                 (vertailu)
+Tulokset kansioon --outdir (oletus: videon kansio / vertailuajo_<aikaleima>):
+  ajo_<nimi>_loki.txt          koko terminaalitulostus
+  ajo_<nimi>_sijainnit.csv     kivien sijainnit (+ _hog.csv)
+  vertailu_yhteenveto.txt      pullonkaularaportit, GPU-tilasto, nopeudet ja CSV-vertailu (tulostetaan myös lopuksi)
+"""
+import argparse
+import csv
+import datetime
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+RUNS = [
+    ("verify", {"GPU_GRID": "1", "GPU_GRID_VERIFY": "1"}),
+    ("gpu", {"GPU_GRID": "1"}),
+    ("cpu", {}),
+]
+
+
+def pick_video():
+    try:
+        import tkinter
+        import tkinter.filedialog
+        tkinter.Tk().withdraw()
+        return tkinter.filedialog.askopenfilename(
+            title="Valitse (alkuperäinen) video",
+            filetypes=[("Videot", "*.mts *.MTS *.mp4 *.MP4 *.mov *.MOV *.avi *.AVI"), ("Kaikki", "*.*")])
+    except Exception:
+        return ""
+
+
+def run_main(name, env_extra, video, start, end, debug, extra, log_path):
+    env = dict(os.environ)
+    for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_GRID_DEVICE"):
+        if k not in env_extra and k != "GPU_GRID_DEVICE":
+            env.pop(k, None)
+    env.update(env_extra)
+    env["PYTHONUNBUFFERED"] = "1"
+    cmd = [sys.executable, os.path.join(CODE_DIR, "main.py"), "--video", video]
+    if debug:
+        cmd.append("-d")
+    if start:
+        cmd += ["--start", start]
+    if end:
+        cmd += ["--end", end]
+    cmd += extra
+    print(f"\n===== AJO '{name}': {' '.join(cmd)}  env={env_extra} =====", flush=True)
+    t0 = datetime.datetime.now()
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+        log.write(f"# {' '.join(cmd)}\n# env={env_extra}\n")
+        p = subprocess.Popen(cmd, cwd=CODE_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, encoding="utf-8", errors="replace")
+        for line in p.stdout:
+            log.write(line)
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        rc = p.wait()
+    dt = (datetime.datetime.now() - t0).total_seconds()
+    print(f"===== AJO '{name}' valmis (paluukoodi {rc}, {dt:.0f} s) =====", flush=True)
+    return rc, dt
+
+
+def read_text(path):
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def extract_blocks(text):
+    """Poimii lokista pullonkaula- ja nopeusraportit sekä muut avainrivit."""
+    lines = text.replace("\r", "\n").split("\n")
+    out = []
+    keys = ("GPU-ristikkohaku", "Debug-video:", "Heittoportti", "Hog-hog -analyysi", "Versio:")
+    seen = set()
+    for ln in lines:
+        if ln.startswith(keys) and ln not in seen:
+            seen.add(ln)
+            out.append(ln)
+    for header, end_marker in (("=== NOPEUSSEURANTA", "=========="), ("=== PULLONKAULA-ANALYYSI", "==========")):
+        i = None
+        for k, ln in enumerate(lines):
+            if ln.startswith(header):
+                i = k
+        if i is None:
+            continue
+        blk = [lines[i]]
+        for ln in lines[i + 1:]:
+            blk.append(ln)
+            if ln.startswith(end_marker):
+                break
+        out.append("")
+        out += blk
+    last_progress = [ln for ln in lines if ln.startswith("Ruutu ") and "nopeus:" in ln]
+    if last_progress:
+        out.append("")
+        out.append("Viimeinen etenemisrivi: " + last_progress[-1])
+    return "\n".join(out)
+
+
+def summarize_numbers(text):
+    d = {}
+    m = re.search(r"Koko ajo: ([\d.]+)s / (\d+) ruutua \(([\d.]+) r/s", text)
+    if m:
+        d["aika_s"], d["ruutuja"], d["rs"] = float(m.group(1)), int(m.group(2)), float(m.group(3))
+    for st in ("A", "B", "C"):
+        m = re.search(r"^%s\s+.*?\s([\d.]+)\s+([\d.]+)\s+[\d.]+\s+[\d.]+\s+(\d+)\s*$" % st, text, re.M)
+        if m:
+            d["ms_" + st] = float(m.group(1))
+    m = re.search(r"SEURANTA: (\d+) kutsua, yhteensa ([\d.]+)s, ka ([\d.]+) ms/kutsu .*?, ([\d.]+) ms/ruutu", text)
+    if m:
+        d["seuranta_ms_ruutu"] = float(m.group(4))
+    m = re.search(r"ristikko: GPU-polku \(hieno ristikko, yhteensa\)\s+([\d.]+)\s+([\d.]+)", text)
+    if m:
+        d["gpu_ristikko_ms_ruutu"], d["gpu_ristikko_ms_kutsu"] = float(m.group(1)), float(m.group(2))
+    m = re.search(r"haku: ristikko \(yhdistelma[^)]*\)\s+([\d.]+)\s+([\d.]+)", text)
+    if m:
+        d["cpu_ristikko_ms_ruutu"], d["cpu_ristikko_ms_kutsu"] = float(m.group(1)), float(m.group(2))
+    m = re.search(r"Heittoportti: (\d+) vahvistettua rataa -> (\d+) heittomaista rataa -> (\d+) heittoa", text)
+    if m:
+        d["heitot"] = int(m.group(3))
+    m = re.search(r"Hog-hog -analyysi: (\d+) heittoa", text)
+    if m:
+        d["hog"] = int(m.group(1))
+    return d
+
+
+def sha(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def compare_csv(a, b):
+    """Palauttaa tekstin: identtinen vai mitkä rivit eroavat."""
+    if not (os.path.exists(a) and os.path.exists(b)):
+        return "puuttuva tiedosto"
+    if sha(a) == sha(b):
+        return "IDENTTINEN (tavutasolla)"
+
+    def load(p):
+        rows = {}
+        with open(p, newline="", encoding="utf-8", errors="replace") as f:
+            for r in csv.DictReader(f):
+                rows[(r.get("frame"), r.get("stone_id"))] = r
+        return rows
+    ra, rb = load(a), load(b)
+    only_a = len(set(ra) - set(rb))
+    only_b = len(set(rb) - set(ra))
+    n_diff, mx_x, mx_y = 0, 0.0, 0.0
+    for k in set(ra) & set(rb):
+        try:
+            dx = abs(float(ra[k]["x_m"]) - float(rb[k]["x_m"])) * 100
+            dy = abs(float(ra[k]["y_m"]) - float(rb[k]["y_m"])) * 100
+        except Exception:
+            continue
+        if dx > 1e-9 or dy > 1e-9:
+            n_diff += 1
+            mx_x, mx_y = max(mx_x, dx), max(mx_y, dy)
+    return (f"EROAA: rivejä {len(ra)} vs {len(rb)}, vain ensimmäisessä {only_a}, vain toisessa {only_b}, "
+            f"eri sijainti {n_diff} riviä (max ero X {mx_x:.3f} cm, Y {mx_y:.3f} cm)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--video", default=None, help="alkuperäinen videotiedosto (ei valitsinta)")
+    ap.add_argument("--start", default="00:10:00")
+    ap.add_argument("--end", default="00:21:00")
+    ap.add_argument("--outdir", default=None)
+    ap.add_argument("--no-debug", action="store_true", help="aja ilman debug-videota")
+    ap.add_argument("--runs", default="verify,gpu,cpu", help="ajettavat ajot pilkuilla (verify,gpu,cpu)")
+    ap.add_argument("--main-args", default="", help="lisäargumentit main.py:lle lainausmerkeissä, esim. \"--max-frame 3000\"")
+    args = ap.parse_args()
+
+    video = args.video or pick_video()
+    if not video or not os.path.exists(video):
+        sys.exit("Videota ei annettu / ei löydy.")
+    stem = os.path.splitext(os.path.basename(video))[0]
+    vdir = os.path.dirname(os.path.abspath(video))
+    outdir = args.outdir or os.path.join(vdir, "vertailuajo_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(outdir, exist_ok=True)
+    csv_src = os.path.join(vdir, f"{stem}_leikattu_kivien_sijainnit.csv")
+    hog_src = os.path.join(vdir, f"{stem}_leikattu_kivien_sijainnit_hog.csv")
+    wanted = [r.strip() for r in args.runs.split(",") if r.strip()]
+    extra = args.main_args.split() if args.main_args else []
+
+    results = {}
+    try:
+        for name, env_extra in RUNS:
+            if name not in wanted:
+                continue
+            log_path = os.path.join(outdir, f"ajo_{name}_loki.txt")
+            rc, dt = run_main(name, env_extra, video, args.start, args.end, not args.no_debug, extra, log_path)
+            text = read_text(log_path)
+            if os.path.exists(csv_src):
+                shutil.copy2(csv_src, os.path.join(outdir, f"ajo_{name}_sijainnit.csv"))
+            if os.path.exists(hog_src):
+                shutil.copy2(hog_src, os.path.join(outdir, f"ajo_{name}_sijainnit_hog.csv"))
+            results[name] = {"rc": rc, "wall_s": dt, "text": text, "nums": summarize_numbers(text)}
+    except KeyboardInterrupt:
+        print("\nKeskeytetty - kootaan yhteenveto valmistuneista ajoista.")
+
+    out = []
+    out.append(f"VERTAILUAJO {datetime.datetime.now():%Y-%m-%d %H:%M}  video={video}  {args.start}..{args.end}  debug={'ei' if args.no_debug else 'kyllä'}")
+    out.append("")
+    out.append("== YHTEENVETO ==")
+    cols = ["aika_s", "rs", "heitot", "hog", "ms_A", "ms_B", "ms_C", "seuranta_ms_ruutu", "gpu_ristikko_ms_kutsu", "cpu_ristikko_ms_kutsu"]
+    head = ["ajo", "paluukoodi"] + cols
+    out.append("  ".join(f"{h:>14s}" for h in head))
+    for name, r in results.items():
+        row = [name, str(r["rc"])] + [(f"{r['nums'][c]:.2f}" if isinstance(r["nums"].get(c), float) else str(r["nums"].get(c, "-"))) for c in cols]
+        out.append("  ".join(f"{v:>14s}" for v in row))
+    out.append("(rs = ruutua/s; ms_A/B/C = pullonkaularaportin vaiheiden palveluaika; ristikko-ms/kutsu: GPU-polku vs. CPU-ristikkohaku)")
+    out.append("")
+    out.append("== CSV-VERTAILU ==")
+    pairs = [("gpu", "cpu"), ("verify", "cpu"), ("verify", "gpu")]
+    for a, b in pairs:
+        pa = os.path.join(outdir, f"ajo_{a}_sijainnit.csv")
+        pb = os.path.join(outdir, f"ajo_{b}_sijainnit.csv")
+        if a in results and b in results:
+            out.append(f"{a} vs {b}: {compare_csv(pa, pb)}")
+        pa = os.path.join(outdir, f"ajo_{a}_sijainnit_hog.csv")
+        pb = os.path.join(outdir, f"ajo_{b}_sijainnit_hog.csv")
+        if a in results and b in results and os.path.exists(pa) and os.path.exists(pb):
+            out.append(f"{a} vs {b} (hog): {compare_csv(pa, pb)}")
+    for name, r in results.items():
+        out.append("")
+        out.append(f"=================== AJO {name} (paluukoodi {r['rc']}, seinakello {r['wall_s']:.0f} s) ===================")
+        out.append(extract_blocks(r["text"]))
+    summary = "\n".join(out)
+    path = os.path.join(outdir, "vertailu_yhteenveto.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(summary)
+    print("\n" + summary)
+    print(f"\nYhteenveto tallennettu: {path}\nLähetä tämä tiedosto (vertailu_yhteenveto.txt) minulle.")
+
+
+if __name__ == "__main__":
+    main()
