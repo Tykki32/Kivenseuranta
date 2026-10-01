@@ -58,3 +58,6 @@ Uusi: varjo vain jos referenssipikseli on jaata (S < 22 ja V >= 0.92 * paikallin
 Koko video v4.4 -> tama: heittoja 26 -> 25, rivejä 14640 -> 13484, tarkka 0.81 -> 0.77, rms med 0.78 -> 0.96, kaukana (y>26 m) rms ka 6.0 -> 10.5 ja 6-9 m sileys 0.4/2 -> 2.5/5 cm.
 Syy: viivan/mainoksen jaannokset jaavat etualaksi (diff-kynnys 10 ei poista niita, varjokriteeri ei enaa) -> LM-sovitus huononee. Kiven sailyminen paranee mutta kokonaisuus ei -> oletus pois.
 Seuraavaksi (jos jatketaan): poistetaan jaannokset viivamaskilla (referenssin ei-jaa-alueet: ref_ok == 0 ja pikseli ~ referenssi) - vain kiven kohdalla tehtava tayttö siluettitarkennuksen maskiin.
+
+Jaa-raja V > 128 (sama kuin jaamaskissa) referenssin jaa-ehtona (SHADOW_STRICT=1 SHADOW_STRICT_RATIO=0): kuvissa kivipikselit viivan kohdalla 162 -> 73 (heitto 43 f2200), mutta koko video kuten suhteellisella kynnyksella:
+heittoja 26 -> 25, rivejä 14640 -> 13570, tarkka 0.81 -> 0.76, rms med 0.78 -> 0.96, rms kaukana 5.9 -> 11.6. Oletus edelleen POIS.

@@ -986,7 +986,10 @@ def _ref_ice_ok(reference_bgr):
     if _REF_ICE_CACHE["key"] != key:
         hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV)
         med = cv2.medianBlur(np.ascontiguousarray(hsv[..., 2]), SHADOW_STRICT_MED_K)
-        ok = (hsv[..., 1] < ICE_S_MAX) & (hsv[..., 2] >= SHADOW_STRICT_RATIO * med)
+        if SHADOW_STRICT_RATIO > 0:
+            ok = (hsv[..., 1] < ICE_S_MAX) & (hsv[..., 2] >= SHADOW_STRICT_RATIO * med)
+        else:
+            ok = (hsv[..., 1] < ICE_S_MAX) & (hsv[..., 2] > ICE_V_MIN)       # sama jaan raja kuin jaamaskissa (S < 22, V > 128)
         _REF_ICE_CACHE["key"], _REF_ICE_CACHE["ok"] = key, ok
         if hasattr(stone_tracker, "set_shadow_ref_ok"):
             stone_tracker.set_shadow_ref_ok(np.ascontiguousarray(ok.astype(np.uint8)))
