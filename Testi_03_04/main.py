@@ -963,39 +963,6 @@ SHADOW_V_DROP_MAX = 50.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 # masta ETUKATEEN, joten tama on lisasuoja sen PAALLE, ei korvaa sita.
 # ============================================================
 ICE_S_MAX = 22
-# Testi_03_04 v4.5: tarkempi varjokriteeri (taustanvaimennus poisti kiven ja keltaisen kahvan viivan/mainoksen kohdalta: tausta jo tumma -> V-pudotus pieni -> "varjo").
-# Varjo hyvaksytaan vain jos referenssi on jaata (S < ICE_S_MAX, V >= SHADOW_STRICT_RATIO * paikallinen mediaani-V, katso _ref_ice_ok) JA kylläisyys ei muutu (|dS| < SHADOW_STRICT_DS_MAX). SHADOW_STRICT=0 -> vanha.
-# KOKEILU (koko video, v4.4 vs tama): tarkempi kriteeri sailytti kiven viivan/mainoksen kohdalla (heitto 43: poistetut kivipikselit 162 -> 70), MUTTA viivan/mainoksen jaannokset jaavat
-# etualaksi (valotasapainon pieni ero > diff-kynnys, ja varjokriteeri ei enaa poista niita) -> LM:n rms nousi (kaukana 6.0 -> 10.5), tarkka-osuus 0.81 -> 0.77, 6-9 m sileys 0.4/2 -> 2.5/5 cm,
-# rivit 14640 -> 13484, heittoja 26 -> 25. OLETUS POIS (SHADOW_STRICT=0 = vanha kriteeri). Katso tools/SEURANTA_KOKEILU.md.
-SHADOW_STRICT = os.environ.get("SHADOW_STRICT", "0") == "1"
-SHADOW_STRICT_RATIO = float(os.environ.get("SHADOW_STRICT_RATIO", "0.92"))   # referenssin V >= RATIO * paikallinen mediaani-V (viiva V~0.83, jaa ~1.0; kaukana jaa on V~140, joten ei absoluuttista kynnysta)
-SHADOW_STRICT_MED_K = int(os.environ.get("SHADOW_STRICT_MED_K", "61"))
-SHADOW_STRICT_DS_MAX = int(os.environ.get("SHADOW_STRICT_DS_MAX", "20")) if SHADOW_STRICT else 256
-if hasattr(stone_tracker, "set_shadow_strict"):
-    stone_tracker.set_shadow_strict(SHADOW_STRICT_DS_MAX)
-_REF_ICE_CACHE = {"key": None, "ok": None}
-
-
-def _ref_ice_ok(reference_bgr):
-    """Referenssipikselit jotka ovat jaata (S < ICE_S_MAX ja V >= RATIO * paikallinen mediaani-V): ei viivaa/mainosta/hoglinea. Laskettu kerran referenssia kohden (valimuisti) ja
-    annetaan myos C++:lle (set_shadow_ref_ok). None jos SHADOW_STRICT=0."""
-    if not SHADOW_STRICT:
-        return None
-    key = (reference_bgr.ctypes.data, reference_bgr.shape, int(reference_bgr[::61, ::67].sum()))
-    if _REF_ICE_CACHE["key"] != key:
-        hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV)
-        med = cv2.medianBlur(np.ascontiguousarray(hsv[..., 2]), SHADOW_STRICT_MED_K)
-        if SHADOW_STRICT_RATIO > 0:
-            ok = (hsv[..., 1] < ICE_S_MAX) & (hsv[..., 2] >= SHADOW_STRICT_RATIO * med)
-        else:
-            ok = (hsv[..., 1] < ICE_S_MAX) & (hsv[..., 2] > ICE_V_MIN)       # sama jaan raja kuin jaamaskissa (S < 22, V > 128)
-        _REF_ICE_CACHE["key"], _REF_ICE_CACHE["ok"] = key, ok
-        if hasattr(stone_tracker, "set_shadow_ref_ok"):
-            stone_tracker.set_shadow_ref_ok(np.ascontiguousarray(ok.astype(np.uint8)))
-    return _REF_ICE_CACHE["ok"]
-
-
 ICE_V_MIN = 128
 
 # ============================================================
@@ -2533,9 +2500,6 @@ def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
     ref_hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV).astype(np.int16)
     v_drop = ref_hsv[..., 2] - frame_hsv[..., 2]
     shadow_mask = (v_drop > shadow_v_drop_min) & (v_drop < shadow_v_drop_max)
-    if SHADOW_STRICT:
-        # Testi_03_04 v4.5: varjo vain jaan paalla (ei viivaa/mainosta, katso _ref_ice_ok) ja kylläisyys ei muutu (|dS| < SHADOW_STRICT_DS_MAX)
-        shadow_mask &= _ref_ice_ok(reference_bgr) & (np.abs(frame_hsv[..., 1] - ref_hsv[..., 1]) < SHADOW_STRICT_DS_MAX)
 
     ice_mask = (
         (frame_hsv[..., 1] < ICE_S_MAX) & (frame_hsv[..., 2] > ICE_V_MIN)
@@ -3235,7 +3199,6 @@ def _alpha_observation_py(frame_u, ref_u, cx, cy):
     gain, bias = estimate_photometric_correction(frame_u, ref_u)
     gain = np.asarray(gain, dtype=np.float64)
     bias = np.asarray(bias, dtype=np.float64)
-    _ref_ice_ok(ref_u)
     sup = stone_tracker.suppress_shadow_background(
         frame_u, ref_u, gain, bias, float(GRANITE_DIFF_THRESHOLD), float(SHADOW_V_DROP_MIN),
         float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN))
@@ -3313,7 +3276,6 @@ def alpha_observation(frame_u, ref_u, cx, cy):
     if not ALPHA_CPP:
         return _alpha_observation_py(frame_u, ref_u, cx, cy)
     gain, bias = estimate_photometric_correction(frame_u, ref_u)
-    _ref_ice_ok(ref_u)
     return stone_tracker.alpha_observation_cpp(
         frame_u, ref_u, np.asarray(gain, dtype=np.float64), np.asarray(bias, dtype=np.float64), int(cx), int(cy),
         float(GRANITE_DIFF_THRESHOLD), float(SHADOW_V_DROP_MIN), float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN),
@@ -3999,7 +3961,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_03_04 v4.5 siluettitarkennus + valinnainen tarkempi varjokriteeri (SHADOW_STRICT, oletus pois) (2026-10-01)"
+SOFTWARE_VERSION = "Testi_03_04 v4.4 siluettitarkennus: 3x3-maski + kaista, SEURANTA y>20 m kaikille (2026-09-30)"
 
 
 def _version_string():
@@ -4119,7 +4081,6 @@ class _LivePrep:
         if ENABLE_SHADOW_TOLERANT_STABILIZATION:
             t_shadow0 = time.perf_counter()
             if _fast_shadow:
-                _ref_ice_ok(ref_undist_live)
                 frame_u_for_tracking = stone_tracker.suppress_shadow_background(
                     frame_u, ref_undist_live,
                     np.asarray(self.photo_gain, dtype=np.float64),

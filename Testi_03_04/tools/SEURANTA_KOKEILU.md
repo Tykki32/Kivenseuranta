@@ -61,3 +61,6 @@ Seuraavaksi (jos jatketaan): poistetaan jaannokset viivamaskilla (referenssin ei
 
 Jaa-raja V > 128 (sama kuin jaamaskissa) referenssin jaa-ehtona (SHADOW_STRICT=1 SHADOW_STRICT_RATIO=0): kuvissa kivipikselit viivan kohdalla 162 -> 73 (heitto 43 f2200), mutta koko video kuten suhteellisella kynnyksella:
 heittoja 26 -> 25, rivejä 14640 -> 13570, tarkka 0.81 -> 0.76, rms med 0.78 -> 0.96, rms kaukana 5.9 -> 11.6. Oletus edelleen POIS.
+
+**PALAUTETTU:** tarkemman varjokriteerin koodi (SHADOW_STRICT, `_ref_ice_ok`, C++ `set_shadow_ref_ok`/`shadowRefOk`) poistettu (main.py ja stone_tracker.cpp palautettu tilaan v4.4 + "siluettiportti lahella oletus pois"),
+koska se ei parantanut koko videota (kokeilukoodi oli commitissa 313856d/5108111; kokeilu- ja kuvaskriptit jäävät tools/-kansioon).
