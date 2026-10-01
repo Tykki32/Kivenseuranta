@@ -296,6 +296,72 @@ class DebugComposer:
         return self.canvas
 
 
+# ------------------------------------------------------------------
+# Debug-videon koodaus laitteistolla (Intel Quick Sync, h264_qsv) ffmpeg-putken kautta: koodaus siirtyy CPU:lta grafiikkapiirin
+# media-moottorille. DEBUG_ENCODER = auto (qsv -> opencv mp4v) | qsv | x264 | opencv. Pelkka debug-video, ei vaikuta seurantaan.
+# ------------------------------------------------------------------
+import os as _os
+import subprocess as _sp
+
+_ENCODER_ARGS = {
+    "qsv": ["-vf", "format=nv12", "-c:v", "h264_qsv", "-global_quality", "26", "-look_ahead", "0", "-preset", "veryfast"],
+    "x264": ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p"],
+}
+
+
+def _ffmpeg_cmd(w, h, fps, encoder, out_path):
+    return (["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+             "-s", f"{int(w)}x{int(h)}", "-r", f"{float(fps):.4f}", "-i", "-", "-an"] + _ENCODER_ARGS[encoder] + [out_path])
+
+
+def probe_encoder(encoder, w, h, fps):
+    """Kokeilee koodausta 3 mustalla ruudulla (-f null). Palauttaa (ok, virheteksti)."""
+    cmd = _ffmpeg_cmd(w, h, fps, encoder, "-")
+    cmd = cmd[:-1] + ["-f", "null", "-"]
+    try:
+        p = _sp.run(cmd, input=bytes(int(w) * int(h) * 3 * 3), stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=30)
+        return p.returncode == 0, p.stderr.decode("utf-8", "replace").strip()[-300:]
+    except Exception as e:                      # ffmpeg puuttuu / aikakatkaisu
+        return False, repr(e)
+
+
+class FfmpegPipeWriter:
+    """cv2.VideoWriter-yhteensopiva (write/release): raakaruudut ffmpeg-prosessin stdiniin."""
+
+    def __init__(self, path, fps, size, encoder):
+        self._dead = False
+        self._p = _sp.Popen(_ffmpeg_cmd(size[0], size[1], fps, encoder, path), stdin=_sp.PIPE, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+
+    def write(self, img):
+        if self._dead:
+            return
+        try:
+            self._p.stdin.write(np.ascontiguousarray(img).data)
+        except Exception as e:                  # ffmpeg kuoli -> ei kaadeta seurantaa
+            self._dead = True
+            print(f"VAROITUS: debug-videon ffmpeg-koodaus keskeytyi ({e!r}); loput ruudut jatetaan kirjoittamatta.")
+
+    def release(self):
+        try:
+            self._p.stdin.close()
+        except Exception:
+            pass
+        self._p.wait()
+
+
+def open_debug_writer(path, fps, size):
+    """Valitsee debug-videon kirjoittajan: laitteisto-QSV jos kaytettavissa, muuten cv2.VideoWriter (mp4v)."""
+    mode = _os.environ.get("DEBUG_ENCODER", "auto").lower()
+    order = {"auto": ["qsv"], "qsv": ["qsv"], "x264": ["x264"], "opencv": []}.get(mode, ["qsv"])
+    for enc in order:
+        ok, err = probe_encoder(enc, size[0], size[1], fps)
+        if ok:
+            print(f"Debug-video: koodaus ffmpeg/{enc} ({'Intel Quick Sync, grafiikkapiiri' if enc == 'qsv' else 'CPU'})")
+            return FfmpegPipeWriter(path, fps, size, enc)
+        print(f"Debug-video: ffmpeg/{enc} ei kaytettavissa ({err or 'tuntematon virhe'}) -> cv2.VideoWriter (mp4v, CPU)")
+    return cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+
+
 class AsyncVideoWriter:
     """cv2.VideoWriter kahdessa taustasaikeessa: (1) piirto/kokoonpano, (2) kirjoitus (koodaus). Pääsäie vain jonottaa tyon (submit)
     tai valmiin kuvan (write); jono taynna -> odottaa."""

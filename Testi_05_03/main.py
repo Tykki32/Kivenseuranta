@@ -5465,10 +5465,8 @@ def run_pipeline(
                     if debug_video_output is not None:
 
                         _dbg_vw, _dbg_vh, _dbg_scale, _dbg_total_w = hog_analyysi.debug_layout(width, height)
-                        debug_video_writer = hog_analyysi.AsyncVideoWriter(cv2.VideoWriter(
-                            debug_video_output,
-                            cv2.VideoWriter_fourcc(*"mp4v"),
-                            fps, (_dbg_total_w, _dbg_vh)
+                        debug_video_writer = hog_analyysi.AsyncVideoWriter(hog_analyysi.open_debug_writer(
+                            debug_video_output, fps, (_dbg_total_w, _dbg_vh)
                         ))
                         debug_composer = hog_analyysi.DebugComposer(width, height)
                         print(f"Debug-video: stabiloitu+korjattu, ei maskeja, kaannetty 90 astetta vastapaivaan, {_dbg_total_w}x{_dbg_vh} (video {_dbg_vw}x{_dbg_vh} + paneelit {hog_analyysi.PANEL_W} px/puoli)")

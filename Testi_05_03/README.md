@@ -103,3 +103,10 @@ Keskitetyn rajauksen testi (ei pienennystä): 1024x576…800x450 -rajaus nopeutt
 - OpenCL/UHD: 15,5 ms/ruutu eli hitaampi kuin CPU -> ei käyttöön (tulos identtinen).
 - Putkessa vaihe A kestää silti 29–41 ms vs. 11,5 ms yksin -> ero johtuu kilpailusta muiden säikeiden kanssa (SEURANTA:n C++-säikeet, B), ei laskennasta.
 - Koeajoon `CV_THREADS=n` (cv2.setNumThreads) ja bench-työkalun kohta 5 (warpAffine+remap CPU vs OpenCL).
+
+### Debug-videon laitteistokoodaus (Intel Quick Sync)
+`hog_analyysi.open_debug_writer`: debug-video koodataan ffmpeg-putken kautta `h264_qsv`-enkooderilla (grafiikkapiirin media-moottori) CPU:n sijaan.
+`DEBUG_ENCODER=auto|qsv|x264|opencv` (oletus auto: kokeilee QSV:tä 3 mustalla ruudulla, muuten cv2.VideoWriter mp4v). Käytetty enkooderi tulostuu ajon alussa.
+Perustelu: GPU ei auta DFT:ssä (15,5 vs 11,5 ms) eikä SEURANNASSA; koodaus on sen sijaan laskentaa jonka media-moottori tekee CPU:ta kuormittamatta,
+ja debug-video hidasti kaikkia vaiheita ~20 % (26,0 → 20,5 r/s). Sandbox (ei QSV:tä): putki toimii (x264) ja varapolku (mp4v) toimii.
+Tarkista oma ffmpeg: `ffmpeg -hide_banner -encoders | findstr qsv`.
