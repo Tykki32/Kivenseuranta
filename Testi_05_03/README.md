@@ -136,3 +136,9 @@ Lisäksi `main.py --video <polku>` ohittaa tiedostovalitsimen.
   - Rajapinta: `gpu_b_init(map1, map2, ref, ...)`, `gpu_b_warp(frame, M)`, `gpu_b_suppress(gains, biases, H, W)`; `main.py` käyttää niitä `_LivePrep.process`:ssa, virheessä palataan CPU-polkuun.
   - GPU-polku siirtää kuvat GPU:lle ja takaisin (frame_u ja frame_for_tracking ladataan takaisin, koska pääsäie, debug-video ja muu koodi käyttävät niitä).
 - `tools/vertailuajo.py`: oletus nyt `cpu,gpub,gpuall` (muut: `gpu`, `verify`).
+
+### v5.5: liukuhihnan rinnakkaisuus (`STAB_WORKERS`, `PIPE_DEPTH`)
+Perustelu (Windows-vertailuajo, GPU-vaihe B): B 37,7 -> 18,7 ms, CPU-kuorma ja lämpö laskivat (4,64 -> 3,64 ydintä), mutta nopeus pysyi 22,1–22,9 r/s, koska stabilointi (A, 34–37 ms) ja pääsäie (C, 38–40 ms) ovat nyt yhtä hitaat ja aikavaihtelu hukkaa kapasiteettia pienillä jonoilla.
+- `STAB_WORKERS=n`: stabilointi (vaihekorrelaatio) n ruudulle rinnan; ruudut ovat toisistaan riippumattomia (kukin vs. moodikuva), tulokset jonoon alkuperäisessä järjestyksessä -> tulos identtinen (sandbox 2900 ruutua: CSV identtinen, 31,1 -> 34,1 r/s kun STAB_WORKERS=3, PIPE_DEPTH=6). Oletus 1 (ennallaan). A:n palveluaika raportissa = A-säikeen oma kierto; työntekijöiden yhteenlaskettu aika "bg: stabilointi tyoaika"-rivillä.
+- `PIPE_DEPTH=n`: vaiheiden välisten jonojen koko (oletus 3).
+- `tools/vertailuajo.py`: uudet ajot `par` (GPU_B + 2 rinnakkaista + jonot 6), `par3`, `parcpu`; oletus `cpu,gpub,par,par3`.
