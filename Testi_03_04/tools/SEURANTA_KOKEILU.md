@@ -36,3 +36,57 @@ Siluettitarkennus on C++:ssa (`stone_tracker.silhouette_refine_cpp`, Python-kä�
 (paikkaero 0,000 cm, pisteet samat; tasapelissä valitaan pienin siirto molemmissa). Varapolku: ilman `k94`:ää numpy/cv2-versio (`refine_py`).
 Koko video: SEURANNAN maskituki 4,66 -> 0,63 ms/ruutu (15,8 % -> 2,4 %), ajoaika 438,6 s / 16 501 ruutua (37,6 r/s), 26 heittoa.
 (C++-versio käyttää HAKUn/SEURANNAN tavallista graniittimaskia (sumennus pienennetyllä kuvalla), joten radat eroavat marginaalisesti numpy-ajosta.)
+
+## v4.4 (siluettitarkennus: 3x3-maski + kaista, SEURANTA kaikille ruuduille kun Y > 20 m)
+* Siluettitarkennuksella on OMA maski (3x3-avaus; `create_granite_mask`:n 5x5 poisti 5-6 px leveän kaukaisen kiven) ja ylitysrangaistus lasketaan vain 3 px:n kaistalla siluetin
+  ympärillä (kaukainen tumma kohde, esim. heittäjä, ei vedä siluettia). C++ = Python (290 ruutua, paikkaero 0.00 cm), C++ ~1.4 ms, numpy ~4 ms.
+* SEURANTA: kun Y > `SEURANTA_SIL_ALL_Y_CM` (2000) siluetti ajetaan myos tarkoille ruuduille (siirto max ±3 px); tarkassa ruudussa inside0 < 0.4 ei hylkaa ruutua. Lähempänä vanha saanto.
+* Koko video (26 heittoa): sivusuunnan sileys y > 26 m 1.83 -> 0.81 cm, syvyys 7.65 -> 5.97 cm; y > 20 m: ei yhtaan ulkolaisrivia (|rx| > 6 cm tai |ry| > 30 cm), suurin |rx| 4.9 cm.
+* Uusi ongelma: heitto 181 (uusi id 183) katoaa y ~ 11 m:ssa (f12705-12709 seuranta hyppaa 26 cm sivuun, inside0 0.54-0.60) eika palaa; aiemmin rata jatkui y = 3.7 m:iin.
+* Debug: SEURANTA_SIL_DEBUG=a:b tulostaa [SILDBG]-rivit (siluetin siirto, inside, min_y).
+
+### v4.5-koe: siluettiportti myos tarkoille ruuduille lahella (Y < 20 m), raja 0.65
+Heitto 181 (id 183) katosi v4.4:ssa y ~ 11 m: ruuduissa 12705-12708 (tarkka=1!) seuranta hyppasi lakaisijan kateen (~26 cm sivuun), inside0 vain 0.54-0.60 (lakaisijakin on graniittimaskissa).
+Koe: portti (inside0 >= 0.65) myos tarkoille ruuduille lahella -> heitto 181 pysyy kiinni (594 riviä, loppu 3.7 m), MUTTA: rivit 14640 -> 14028, heitto 127 katoaa y=10.3 m (v4.4: 4.9 m),
+heitot 72/157/147/191 loppuvat 1.3-1.9 m aiemmin. Syy: oikeankin kiven inside0 on y ~ 6-8.4 m:ssa usein 0.55-0.60 (tarkka-ruuduilla 5 %:lla < 0.42, 7 % valissa 0.55-0.65) -> absoluuttinen raja
+ei erota lakaisijaan tarttumista. Oletus palautettu (SEURANTA_MIN_INSIDE_NEAR = 0 = ei porttia tarkoille lahella). Vaihtoehdot: suhteellinen pudotus oman mediaanin alle tai hyppytesti
+(sivuttaishyppy/ruutu) - tutkimatta.
+
+### v4.5-koe: tarkempi varjokriteeri taustanvaimennuksessa (SHADOW_STRICT, oletus POIS)
+Vanha varjokriteeri: V-pudotus (-3, 50) riittaa "varjoksi" - ei katso kylläisyyttä eikä sitä onko tausta jaata. Siksi kivi (ja keltainen kahva) poistui viivan/mainoksen kohdalta (tausta jo tumma -> pieni V-pudotus).
+Uusi: varjo vain jos referenssipikseli on jaata (S < 22 ja V >= 0.92 * paikallinen mediaani-V, `_ref_ice_ok`; absoluuttinen V>=160 EI toiminut: kaukana jaa on V 138-153) JA |dS| < 20. Python = C++ (0 eroavaa pikselia).
+Koko video v4.4 -> tama: heittoja 26 -> 25, rivejä 14640 -> 13484, tarkka 0.81 -> 0.77, rms med 0.78 -> 0.96, kaukana (y>26 m) rms ka 6.0 -> 10.5 ja 6-9 m sileys 0.4/2 -> 2.5/5 cm.
+Syy: viivan/mainoksen jaannokset jaavat etualaksi (diff-kynnys 10 ei poista niita, varjokriteeri ei enaa) -> LM-sovitus huononee. Kiven sailyminen paranee mutta kokonaisuus ei -> oletus pois.
+Seuraavaksi (jos jatketaan): poistetaan jaannokset viivamaskilla (referenssin ei-jaa-alueet: ref_ok == 0 ja pikseli ~ referenssi) - vain kiven kohdalla tehtava tayttö siluettitarkennuksen maskiin.
+
+Jaa-raja V > 128 (sama kuin jaamaskissa) referenssin jaa-ehtona (SHADOW_STRICT=1 SHADOW_STRICT_RATIO=0): kuvissa kivipikselit viivan kohdalla 162 -> 73 (heitto 43 f2200), mutta koko video kuten suhteellisella kynnyksella:
+heittoja 26 -> 25, rivejä 14640 -> 13570, tarkka 0.81 -> 0.76, rms med 0.78 -> 0.96, rms kaukana 5.9 -> 11.6. Oletus edelleen POIS.
+
+**PALAUTETTU:** tarkemman varjokriteerin koodi (SHADOW_STRICT, `_ref_ice_ok`, C++ `set_shadow_ref_ok`/`shadowRefOk`) poistettu (main.py ja stone_tracker.cpp palautettu tilaan v4.4 + "siluettiportti lahella oletus pois"),
+koska se ei parantanut koko videota (kokeilukoodi oli commitissa 313856d/5108111; kokeilu- ja kuvaskriptit jäävät tools/-kansioon).
+
+### v4.5-koe: variportti taustanvaimennukseen (COLOR_GATE, oletus POIS)
+bg = (ero<10 TAI varjo TAI jaa) JA (S_ruutu < 60 TAI |H_ruutu - H_ref| <= 5). Python = C++ (0-3 pikselia eroa/frame, hue-pyoristys).
+Kuvissa: keltaisia (S>=60) siluetin pikseleita poistuu 49->10, 92->50, 68->0; kivipikseleita 162->134, 100->63, 111->60 (viivan alla S matala -> portti ei estä).
+Koko video v4.4 -> tama: heittoja 26 -> 26, rivejä 14640 -> 14619, tarkka 0.807 -> 0.808, rms med 0.78 -> 0.85, kaukana rms 6.4 -> 6.5, 6-9 m sileys 0.3/2.0 -> 0.4/2.7 cm; heitto 181 katoaa edelleen (y 8.4 m).
+Eli neutraali: ei paranna eika selvasti huononna. Oletus pois (COLOR_GATE=1 ottaa kayttoon).
+
+### Variportti: S = MOODIKUVAN kylläisyys (COLOR_GATE=1) ja variantti COLOR_GATE_BOTH=1
+bg = (ero tai varjo tai jaa) JA (S_ref < 60 TAI |dH| <= 5); BOTH: (S_ref < 60 JA S_ruutu < 60) TAI |dH| <= 5. Syy: vanha portti (S_ruutu < 60) paastaa kylläisen mainoksen paalla olevan tumman matalakylläisen kiven (y=3 m, kuva
+tulokset/seuranta_lahella_rikki_kivi_mainos.png) taustaksi.
+7 kuvaruutua (kiven harmaita pikseleita poistettu / keltaista kahvaa (S>=60) poistettu): ei porttia 474 / 1032; S_ruutu<60 tai H 474 / 225; S_ref<60 tai H 291 / 577; BOTH 291 / 225.
+Koko video (v4.4: 14640 rivia, tarkka 0.807, rms med 0.78): S_ref-portti 26 heittoa, 14748 rivia, tarkka 0.807, rms med 0.79, 6-9 m sileys 1.20/3.38 (v4.4 1.19/3.38) = kayttaytyy kuin v4.4;
+BOTH 14683 rivia, rms med 0.85, 6-9 m 1.17/3.70; S_ruutu<60 14619 rivia, rms 0.85, 6-9 m 1.19/3.76. Heitto 181: S_ref-portti jaa yhä y=10.3 m, BOTH ja S_ruutu y=8.4 m.
+
+### Variportti: S_ref < 60 TAI (|dH| <= 5 JA S_ruutu > 60)  (COLOR_GATE=1 COLOR_GATE_HUE_SAT=1)
+Kylläisen taustan (mainos) paalla matalakylläinen pikseli (esim. kiven tumma heijastus) ei ole tausta, vaikka savy olisi sama. 7 kuvaruutua: harmaata kiveä poistettu 474 (ei porttia) / 291 (S_ref<60 tai H5) / 252 (tama); ruutu 10088: 202 / 42 / 10;
+kahva 1032 / 577 / 577; roskaa kiven ulkopuolella 1109 / 1306 / 1399. Koko video: 26 heittoa, 14741 riviä (v4.4 14640), tarkka 0.810 (0.807), rms med 0.79 (0.78), 6-9 m sileys 1.24/3.38 (1.19/3.38), kaukana (y>26 m) 1.05/7.08 (0.83/6.00), heitto 181 katoaa y=10.3 m (kuten v4.4).
+
+### Variportti H +-10: S_ref < 60 TAI (|dH| <= 10 JA S_ruutu > 60)  (COLOR_GATE=1 COLOR_GATE_HUE_SAT=1 COLOR_GATE_H_TOL=10)
+7 kuvaruutua: harmaata kiveä poistettu 252 (sama kuin H5), roskaa 1399 -> 1317, jäänteet kiven oikealla (10088) 223 -> 153. Koko video: 26 heittoa, 14670 riviä, tarkka 0.808, rms med 0.79, 6-9 m sileys 1.22/3.34 (v4.4 1.19/3.38),
+kaukana (y>26 m) 1.06/7.14 (0.83/6.00); heitto 181 katoaa y=10.3 m (kuten v4.4). Kayttaytyy kuin v4.4; kuvissa kiven rikkinaisyys mainoksen paalla korjaantuu.
+
+## v4.5 (OLETUS): variportti taustanvaimennukseen
+bg = (ero<10 TAI varjo TAI jaa) JA (S_ref < 60 TAI (|dH| <= 10 JA S_ruutu > 60)); S_ref = moodikuvan kylläisyys, S_ruutu = ruudun. Oletus PAALLA: COLOR_GATE=1, COLOR_GATE_S_MAX=60, COLOR_GATE_H_TOL=10, COLOR_GATE_HUE_SAT=1.
+COLOR_GATE=0 palauttaa vanhan kolmen kriteerin vaimennuksen. Python = C++ (0 eroavaa pikselia). Koko video (26 heittoa): rivejä 14670 (v4.4 14640), tarkka 0.808, rms med 0.79, kuin v4.4.
+Windowsilla C++ pitaa kaantaa uudelleen (Remove-Item -Recurse -Force build; cmake -B build -S . -DCMAKE_BUILD_TYPE=Release; cmake --build build --config Release).

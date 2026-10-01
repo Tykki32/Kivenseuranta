@@ -875,7 +875,7 @@ static const int g_granite_close = getenv("GRANITE_CLOSE") ? atoi(getenv("GRANIT
 // MUISTIINPANO (Testi_03_04, tutkittava): tausta (sumennus sigma=25) arvioidaan 4x PIENENNETYLLA kuvalla (g_granite_down) -> ero tarkkaan sumennukseen on keskimaarin 0.035, mutta
 // jopa ~14 harmaasavya jyrkkien reunojen (isojen tummien kohteiden, esim. lakaisijan takki) vieressa. Kivien kohdalla ero ei nayttanyt (IoU mallin siluettiin sama 119 HAKU-osumalla),
 // mutta maskin kayttaytymista tummien kohteiden vieressa (taustan arvio laskee -> kiven tummuus pienenee -> reunapikselit putoavat) ei ole tutkittu. Katso README_alfa_profiili.md.
-static cv::Mat createGraniteMask(const cv::Mat& frame_bgr, const cv::Mat* sat_in = nullptr)
+static cv::Mat createGraniteMask(const cv::Mat& frame_bgr, const cv::Mat* sat_in = nullptr, int open_override = -1)
 {
     cv::Mat sat_ch, gray, gray_f, bg, darkness;
     PT gpt;
@@ -916,8 +916,9 @@ static cv::Mat createGraniteMask(const cv::Mat& frame_bgr, const cv::Mat* sat_in
 
     profAdd(P_GM_LOOP, gpt.lap());
     // Morfologia (kokeiluun ymparistomuuttujilla GRANITE_OPEN / GRANITE_CLOSE, 0 = ei kayteta)
-    if (g_granite_open > 0) {
-        cv::Mat kernel_open = cv::Mat::ones(g_granite_open, g_granite_open, CV_8U);
+    const int open_k = open_override >= 0 ? open_override : g_granite_open;      // Testi_03_04: siluettitarkennus kayttaa 3x3-avausta (5x5 poisti 5-6 px:n levyisen kaukaisen kiven)
+    if (open_k > 0) {
+        cv::Mat kernel_open = cv::Mat::ones(open_k, open_k, CV_8U);
         cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel_open);
     }
     if (g_granite_close > 0) {
@@ -946,6 +947,39 @@ static cv::Mat computeSat(const cv::Mat& frame_bgr)
 // voi tulla virhetunnistetuksi kiveksi HAKU-vaiheessa - katso
 // main.py:n oma kommentti taman alkuperaisesta motivaatiosta.
 // ============================================================
+
+// Testi_03_04 v4.5-koe: VARIPORTTI taustanvaimennukseen: bg = (ero tai varjo tai jaa) JA (S_REF (moodikuvan kylläisyys) < g_gate_s_max TAI |H_ruutu - H_ref| <= g_gate_h_tol). Eli suodatetaan vain jos
+// pikseli on harmaa/valkea (matala kylläisyys) tai sama sävy kuin referenssissa -> kylläinen mutta eri-savyinen (keltainen kahva) ei katoa. g_gate_s_max >= 256 = pois.
+static int g_gate_s_max = 256;
+static int g_gate_h_tol = 5;
+static int g_gate_both = 0;
+static int g_gate_hue_sat = 0;  // 1: sävyehto (|dH|<=tol) hyvaksytaan vain jos myos RUUDUN kylläisyys > g_gate_s_max (kylläisen taustan paalla oleva matalakylläinen pikseli ei ole tausta)     // 1: matala kylläisyys vaaditaan SEKA referenssilta ETTA ruudulta
+static inline int satFromMaxMin(int vmax, int vmin)
+{
+    static int tab[256]; static bool init = false;
+    if (!init) { tab[0] = 0; for (int i = 1; i < 256; ++i) tab[i] = (int)std::lround((255 << 12) / (1.0 * i)); init = true; }
+    return ((vmax - vmin) * tab[vmax] + 2048) >> 12;
+}
+static inline int hueOf(int b, int g, int r)   // OpenCV 8U HSV: H 0..179
+{
+    const int vmax = std::max(b, std::max(g, r)), vmin = std::min(b, std::min(g, r)), diff = vmax - vmin;
+    if (diff == 0) return 0;
+    const float hscale = 30.f / (float)diff;
+    float h;
+    if (vmax == r) h = (g - b) * hscale; else if (vmax == g) h = (b - r) * hscale + 60.f; else h = (r - g) * hscale + 120.f;
+    if (h < 0) h += 180.f;
+    return (int)std::lround(h);
+}
+static inline bool colorGateOk(int b, int g, int r, const uint8_t* rp, int vmax, int vmin)
+{
+    if (g_gate_s_max >= 256) return true;
+    { const int rmax = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2])), rmin = std::min((int)rp[0], std::min((int)rp[1], (int)rp[2]));
+      if (satFromMaxMin(rmax, rmin) < g_gate_s_max && (!g_gate_both || satFromMaxMin(vmax, vmin) < g_gate_s_max)) return true; }   // S = MOODIKUVAN (referenssin) kylläisyys (+ ruudun jos g_gate_both)
+    int dh = std::abs(hueOf(b, g, r) - hueOf((int)rp[0], (int)rp[1], (int)rp[2]));
+    if (dh > 90) dh = 180 - dh;
+    if (dh > g_gate_h_tol) return false;
+    return !g_gate_hue_sat || satFromMaxMin(vmax, vmin) > g_gate_s_max;
+}
 
 static cv::Mat suppressStaticBackground(
     const cv::Mat& frame_bgr, const cv::Mat& reference_bgr, double diff_threshold)
@@ -4360,9 +4394,9 @@ static py::array_t<uint8_t> suppress_shadow_background(
                     const int db = std::abs(b - rp[0]), dg = std::abs(gg - rp[1]), dr = std::abs(r - rp[2]);
                     const int gray = (db * 1868 + dg * 9617 + dr * 4899 + 8192) >> 14;
                     bool bg = (double)gray < diff_threshold;
+                    const int vmax = std::max(b, std::max(gg, r));
+                    const int vmin = std::min(b, std::min(gg, r));
                     if (!bg) {
-                        const int vmax = std::max(b, std::max(gg, r));
-                        const int vmin = std::min(b, std::min(gg, r));
                         const int rv = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2]));
                         const double vdrop = (double)(rv - vmax);
                         if (vdrop > v_drop_min && vdrop < v_drop_max) bg = true;
@@ -4371,6 +4405,7 @@ static py::array_t<uint8_t> suppress_shadow_background(
                             if (sat < ice_s_max && vmax > ice_v_min) bg = true;
                         }
                     }
+                    if (bg && !colorGateOk(b, gg, r, rp, vmax, vmin)) bg = false;
                     if (bg) { dp[0] = dp[1] = dp[2] = 255; }
                     else { dp[0] = (uint8_t)b; dp[1] = (uint8_t)gg; dp[2] = (uint8_t)r; }
                 }
@@ -4900,13 +4935,14 @@ static py::object alpha_observation_cpp(
             const int db = std::abs(b - rp[0]), dg = std::abs(gg - rp[1]), dr = std::abs(r - rp[2]);
             const int gray = (db * 1868 + dg * 9617 + dr * 4899 + 8192) >> 14;
             bool bg = (double)gray < diff_threshold;
+            const int vmax = std::max(b, std::max(gg, r)), vmin = std::min(b, std::min(gg, r));
             if (!bg) {
-                const int vmax = std::max(b, std::max(gg, r)), vmin = std::min(b, std::min(gg, r));
                 const int rv = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2]));
                 const double vdrop = (double)(rv - vmax);
                 if (vdrop > v_drop_min && vdrop < v_drop_max) bg = true;
                 else { const int sat = ((vmax - vmin) * sdiv[vmax] + 2048) >> 12; if (sat < ice_s_max && vmax > ice_v_min) bg = true; }
             }
+            if (bg && !colorGateOk(b, gg, r, rp, vmax, vmin)) bg = false;
             if (bg) { dp[0] = dp[1] = dp[2] = 255; } else { dp[0] = (uint8_t)b; dp[1] = (uint8_t)gg; dp[2] = (uint8_t)r; }
         }
     }
@@ -5107,7 +5143,7 @@ static py::tuple silhouette_refine_cpp(
     py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
     py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
     double R_max_cm, double H_total_cm, double handle_r_frac, double X0, double Y0,
-    double w_leak, double lam, double sigma_frac, int max_shift_px, int half, int margin)
+    double w_leak, double lam, double sigma_frac, int max_shift_px, int half, int margin, int open_size, int band_px)
 {
     auto fb = frame.request();
     if (fb.ndim != 3 || fb.shape[2] != 3) throw std::runtime_error("silhouette_refine_cpp: frame must be HxWx3 uint8");
@@ -5132,7 +5168,7 @@ static py::tuple silhouette_refine_cpp(
     if (x1c - x0c < 40 || y1c - y0c < 40) return fail();
 
     std::vector<float> dummy;
-    cv::Mat gm = createGraniteMask(img(cv::Rect(x0c, y0c, x1c - x0c, y1c - y0c)).clone());   // sama maski kuin HAKU/SEURANTA (sumennus pienennetylla kuvalla)
+    cv::Mat gm = createGraniteMask(img(cv::Rect(x0c, y0c, x1c - x0c, y1c - y0c)).clone(), nullptr, open_size);   // taustan sumennus pienennetylla kuvalla, avaus open_size (3)
     cv::Mat maskw = gm(cv::Rect(ox - x0c, oy - y0c, 2 * half, 2 * half)) > 0;
     if (cv::countNonZero(maskw) == 0) return fail();
     cv::Mat m2u, m2;
@@ -5161,10 +5197,17 @@ static py::tuple silhouette_refine_cpp(
         }
     }
     if (a < 10) return fail();
+    // --- ylitysrangaistus vain siluetin ymparilla olevalla kaistalla (band_px, kuvapikseleina): kupera peite laajennettuna (nelio) -> rivikohtainen vali [d1, d2]
+    std::vector<int> d1(sh, -1), d2(sh, -1);
+    {
+        cv::Mat dil; const int kb = 2 * band_px * UPS + 1;
+        cv::dilate(mh8, dil, cv::Mat::ones(kb, kb, CV_8U));
+        for (int y = 0; y < sh; ++y) { const uint8_t* dp = dil.ptr<uint8_t>(y); for (int x = 0; x < sw; ++x) if (dp[x]) { if (d1[y] < 0) d1[y] = x; d2[y] = x; } }
+    }
     const double sil_cx = sx_sum / a, sil_cy = sy_sum / a;
-    // --- maski (nollatayte S reunoilla) + rivikohtaiset kumulatiiviset summat: PR = sum M, PX = sum x*M; II = 2D-integraalikuva
+    // --- maski (nollatayte S reunoilla) + rivikohtaiset kumulatiiviset summat: PR = sum M, PX = sum x*M
     const int BH = sh + 2 * S, BW = sw + 2 * S;
-    std::vector<double> PR((size_t)BH * (BW + 1), 0.0), PX((size_t)BH * (BW + 1), 0.0), II((size_t)(BH + 1) * (BW + 1), 0.0);
+    std::vector<double> PR((size_t)BH * (BW + 1), 0.0), PX((size_t)BH * (BW + 1), 0.0);
     for (int r = 0; r < BH; ++r) {
         const bool in_m = (r >= S && r < S + sh);
         double acc = 0.0, accx = 0.0, rowsum_prev = 0.0;
@@ -5176,11 +5219,6 @@ static py::tuple silhouette_refine_cpp(
         PR[(size_t)r * (BW + 1) + BW] = acc; PX[(size_t)r * (BW + 1) + BW] = accx;
         (void)rowsum_prev;
     }
-    for (int r = 0; r < BH; ++r)
-        for (int x = 0; x < BW; ++x) {
-            const double v = PR[(size_t)r * (BW + 1) + x + 1] - PR[(size_t)r * (BW + 1) + x];
-            II[(size_t)(r + 1) * (BW + 1) + x + 1] = v + II[(size_t)r * (BW + 1) + x + 1] + II[(size_t)(r + 1) * (BW + 1) + x] - II[(size_t)r * (BW + 1) + x];
-        }
     auto rowint = [&](const std::vector<double>& P, int r, int xa, int xb) { return P[(size_t)r * (BW + 1) + xb] - P[(size_t)r * (BW + 1) + xa]; };   // [xa, xb)
     const double sig = sigma_frac * std::sqrt(a / (double)(UPS * UPS));
     const int NS = 2 * S + 1;
@@ -5188,18 +5226,18 @@ static py::tuple silhouette_refine_cpp(
     std::vector<double> ins_map((size_t)NS * NS), score_map((size_t)NS * NS);
     for (int iy = 0; iy < NS; ++iy) {
         for (int ix = 0; ix < NS; ++ix) {
-            double ins = 0.0, cnt = 0.0, mx = 0.0, my = 0.0, fr = 0.0;
+            double ins = 0.0, cnt = 0.0, mx = 0.0, my = 0.0, fr = 0.0, band_tot = 0.0;
             for (int y = 0; y < sh; ++y) {
+                if (d1[y] >= 0) band_tot += rowint(PR, y + iy, d1[y] + ix, d2[y] + 1 + ix);
                 if (h1[y] < 0) continue;
                 const int r = y + iy;
                 const double ci = rowint(PR, r, h1[y] + ix, h2[y] + 1 + ix);
                 cnt += ci; my += (double)y * ci;
                 mx += rowint(PX, r, h1[y] + ix, h2[y] + 1 + ix) - (double)ix * ci;
                 for (const Run& ru : sil_runs[(size_t)y]) ins += rowint(PR, r, ru.x1 + ix, ru.x2 + 1 + ix);
-                if (!sil_runs[(size_t)y].empty()) fr += rowint(PR, r, h2[y] + 1 + ix, sw + ix);          // vapaa alue: siluetin oikealla puolella samalla rivilla
+                if (!sil_runs[(size_t)y].empty()) fr += rowint(PR, r, h2[y] + 1 + ix, d2[y] + 1 + ix);   // vapaa alue (kaistan sisalla): siluetin oikealla puolella samalla rivilla
             }
-            const double rect = II[(size_t)(iy + sh) * (BW + 1) + ix + sw] - II[(size_t)iy * (BW + 1) + ix + sw] - II[(size_t)(iy + sh) * (BW + 1) + ix] + II[(size_t)iy * (BW + 1) + ix];
-            const double inside = ins / a, leak = (rect - cnt - fr) / a;
+            const double inside = ins / a, leak = (band_tot - cnt - fr) / a;
             double bonus = 0.0;
             if (cnt > 0.5) {
                 const double d = std::hypot(mx / cnt - sil_cx, my / cnt - sil_cy) / (double)UPS;
@@ -5232,11 +5270,12 @@ PYBIND11_MODULE(stone_tracker, m)
 {
     m.def("build_info", []() { return std::string("stone_tracker kaannetty ") + __DATE__ + " " + __TIME__; });
     m.def("set_haku_accept_score", [](double v) { g_haku_accept_score = v; }, py::arg("accept_score"));   // kokeiluihin (oletus 0.20)
+    m.def("set_color_gate", [](int s_max, int h_tol, int both, int hue_sat) { g_gate_s_max = s_max; g_gate_h_tol = h_tol; g_gate_both = both; g_gate_hue_sat = hue_sat; }, py::arg("s_max"), py::arg("h_tol"), py::arg("both") = 0, py::arg("hue_sat") = 0);   // s_max >= 256 = pois
     m.def("get_haku_accept_score", []() { return g_haku_accept_score; });
     m.def("silhouette_refine_cpp", &silhouette_refine_cpp,
           py::arg("frame"), py::arg("local_pts_body"), py::arg("K"), py::arg("R"), py::arg("t"),
           py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("handle_r_frac"), py::arg("X0"), py::arg("Y0"),
-          py::arg("w_leak"), py::arg("lam"), py::arg("sigma_frac"), py::arg("max_shift_px"), py::arg("half"), py::arg("margin"));
+          py::arg("w_leak"), py::arg("lam"), py::arg("sigma_frac"), py::arg("max_shift_px"), py::arg("half"), py::arg("margin"), py::arg("open_size") = 3, py::arg("band_px") = 3);
     m.def("alpha_observation_cpp", &alpha_observation_cpp,
           py::arg("frame"), py::arg("reference"), py::arg("gains"), py::arg("biases"), py::arg("cx"), py::arg("cy"),
           py::arg("diff_threshold"), py::arg("v_drop_min"), py::arg("v_drop_max"), py::arg("ice_s_max"), py::arg("ice_v_min"),

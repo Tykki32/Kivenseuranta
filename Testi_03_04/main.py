@@ -964,6 +964,14 @@ SHADOW_V_DROP_MAX = 50.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 # ============================================================
 ICE_S_MAX = 22
 ICE_V_MIN = 128
+# Testi_03_04 v4.5-koe: varitarkistus taustanvaimennuksessa: (ero tai varjo tai jaa) JA (S_ref = moodikuvan kylläisyys < COLOR_GATE_S_MAX TAI |H_ruutu - H_ref| <= COLOR_GATE_H_TOL).
+COLOR_GATE = os.environ.get("COLOR_GATE", "1") == "1"      # v4.5: OLETUKSENA PAALLA (COLOR_GATE=0 = vanha kolmen kriteerin vaimennus)
+COLOR_GATE_S_MAX = int(os.environ.get("COLOR_GATE_S_MAX", "60"))
+COLOR_GATE_H_TOL = int(os.environ.get("COLOR_GATE_H_TOL", "10"))
+COLOR_GATE_HUE_SAT = os.environ.get("COLOR_GATE_HUE_SAT", "1") == "1"      # 1: bg &= (S_ref < S_MAX) | (|dH| <= H_TOL & S_ruutu > S_MAX)
+COLOR_GATE_BOTH = os.environ.get("COLOR_GATE_BOTH", "0") == "1"      # 1: matala kylläisyys vaaditaan seka moodikuvalta etta ruudulta (kahva sailyy jaalla, tumma kivi mainoksen paalla sailyy)
+if hasattr(stone_tracker, "set_color_gate"):
+    stone_tracker.set_color_gate(COLOR_GATE_S_MAX if COLOR_GATE else 256, COLOR_GATE_H_TOL, int(COLOR_GATE_BOTH), int(COLOR_GATE_HUE_SAT))
 
 # ============================================================
 # JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
@@ -2505,7 +2513,19 @@ def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
         (frame_hsv[..., 1] < ICE_S_MAX) & (frame_hsv[..., 2] > ICE_V_MIN)
     )
 
-    return background_mask | shadow_mask | ice_mask
+    bg = background_mask | shadow_mask | ice_mask
+    if COLOR_GATE:
+        # Testi_03_04 v4.5-koe: varitarkistus - suodata vain jos S_ref (moodikuvan kylläisyys) < COLOR_GATE_S_MAX TAI sama savy kuin referenssissa (|dH| <= COLOR_GATE_H_TOL, H 0..179 ymparoi)
+        dh = np.abs(frame_hsv[..., 0] - ref_hsv[..., 0])
+        dh = np.minimum(dh, 180 - dh)
+        low_s = ref_hsv[..., 1] < COLOR_GATE_S_MAX                                   # S = MOODIKUVAN kylläisyys
+        if COLOR_GATE_BOTH:
+            low_s &= frame_hsv[..., 1] < COLOR_GATE_S_MAX
+        hue_ok = dh <= COLOR_GATE_H_TOL
+        if COLOR_GATE_HUE_SAT:
+            hue_ok &= frame_hsv[..., 1] > COLOR_GATE_S_MAX
+        bg &= low_s | hue_ok
+    return bg
 
 
 def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):
@@ -3157,7 +3177,16 @@ HAKU_SIL_LOG = os.environ.get("HAKU_SIL_LOG")
 # maskituella 17 cm; kivi 3: virhe 32 cm -> 4 cm).
 SEURANTA_SILHOUETTE = os.environ.get("SEURANTA_SILHOUETTE", "1") == "1"
 SEURANTA_MIN_INSIDE = float(os.environ.get("SEURANTA_MIN_INSIDE", "0.4"))
-SEURANTA_SIL_SHIFT_PX = int(os.environ.get("SEURANTA_SIL_SHIFT_PX", "2"))
+SEURANTA_SIL_SHIFT_PX = int(os.environ.get("SEURANTA_SIL_SHIFT_PX", "3"))
+# Testi_03_04 v4.4: kaukana (Y > SEURANTA_SIL_ALL_Y_CM, heittopaa) siluettitarkennus ajetaan KAIKILLE loydetyille ruuduille (myos tarkka=1): kiekko on siella vain 5-6 px
+# leveä ja heittajan tumma vartalo on kiinni kivessa -> LM:n rms/tarkka-lippu ei kerro paikan laadusta, siluetti (oma 3x3-avaus-maski + kaistarajattu ylitysrangaistus)
+# tasoittaa rataa (sileys 1.4-1.7 -> 0.5-0.8 cm sivusuunnassa). Tarkassa ruudussa maskiton tulos (inside0 < SEURANTA_MIN_INSIDE) EI hylkaa ruutua vaan jaa LM-paikka.
+SEURANTA_SIL_ALL_Y_CM = float(os.environ.get("SEURANTA_SIL_ALL_Y_CM", "2000"))
+# Lahella (Y <= SEURANTA_SIL_ALL_Y_CM) siluettiporttia sovelletaan MYOS tarkkoihin ruutuihin (LM:n tarkka-lippu ei suojaa: heitto 181 hyppasi ruuduissa 12705-12708 lakaisijan kateen
+# tarkka=1-ruuduilla) ja raja on korkeampi (SEURANTA_MIN_INSIDE_NEAR 0.65: oikean kiven inside0 ~0.8-0.9, lakaisijan 0.54-0.60). Tarkassa ruudussa siluetti EI siirra paikkaa lahella.
+# Testi_03_04 v4.5-koe: raja 0.65 lahella TOIMI heitolle 181 (rata pysyi kiinni, 594 riviä), mutta hylkasi liikaa oikeita kivia (y ~ 6-8 m inside0 ~ 0.55-0.60 myos oikealle kivelle;
+# rivit 14640 -> 14028, useita heittoja loppuu 1-2 m aiemmin, heitto 127 katoaa y=10.3 m) -> OLETUS 0 = ei porttia tarkoille ruuduille lahella (kuten v4.4). Ks. SEURANTA_KOKEILU.md.
+SEURANTA_MIN_INSIDE_NEAR = float(os.environ.get("SEURANTA_MIN_INSIDE_NEAR", "0"))
 PROFILE_ALPHA = os.environ.get("PROFILE_ALPHA", "1") == "1"   # 0 = vanha (seurannan oma aariviiva)
 ALPHA_LEVEL_DEFAULT = 0.434
 ALPHA_RATIO_MIN = 0.2
@@ -3952,7 +3981,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_03_04 v4.2 alfa-aariviiva C++ + HAKU-siluettitarkennus (2026-09-30)"
+SOFTWARE_VERSION = "Testi_03_04 v4.5 variportti taustanvaimennukseen (S_ref<60 tai H+-10 ja S_ruutu>60) + siluettitarkennus (2026-10-01)"
 
 
 def _version_string():
@@ -5221,7 +5250,7 @@ def run_pipeline(
                             k9, calib_result["pose"], R_max, H_total, shape_deltas, handle_r_frac,
                             max_shift_px=SEURANTA_SIL_SHIFT_PX, k94=k94
                         )
-                        print(f"SEURANTA maskituki PAALLA (inside >= {SEURANTA_MIN_INSIDE}, siluettitarkennus +-{SEURANTA_SIL_SHIFT_PX} px)")
+                        print(f"SEURANTA maskituki PAALLA (inside >= {SEURANTA_MIN_INSIDE}, siluettitarkennus +-{SEURANTA_SIL_SHIFT_PX} px, kaikille ruuduille kun Y > {SEURANTA_SIL_ALL_Y_CM:.0f} cm)")
 
                     print(
                         "Rakennetaan kiven pintavarireferenssia "
@@ -5536,19 +5565,29 @@ def run_pipeline(
                                         f"diff={median_diff:.3f}"
                                     )
 
-                        if (
-                            track_refiner is not None and refined["found"]
-                            and not refined.get("tarkka")
-                        ):
+                        if track_refiner is not None and refined["found"]:
+                            _far = refined["Y_cm"] > SEURANTA_SIL_ALL_Y_CM
                             with _prof("py: SEURANTA maskituki + siluettitarkennus"):
                                 _tx, _ty, _tinfo = track_refiner.refine(
                                     frame_u_for_tracking, refined["X_cm"], refined["Y_cm"]
                                 )
+                            if os.environ.get("SEURANTA_SIL_DEBUG") and int(os.environ.get("SEURANTA_SIL_DEBUG").split(":")[0]) <= frame_index <= int(os.environ.get("SEURANTA_SIL_DEBUG").split(":")[1]):
+                                print(f"[SILDBG] f={frame_index} id={s['stone_id']} tarkka={refined.get('tarkka')} X,Y=({refined['X_cm']:.1f},{refined['Y_cm']:.1f}) -> ({_tx:.1f},{_ty:.1f}) "
+                                      f"ok={_tinfo.get('ok')} in0={_tinfo.get('inside0')} in1={_tinfo.get('inside1')} sh={_tinfo.get('shift_px')} min_y={s['min_y_seen']:.1f}")
                             refined = dict(refined)
-                            if (not _tinfo.get("ok")) or _tinfo.get("inside0", 0.0) < SEURANTA_MIN_INSIDE:
-                                refined["found"] = False
+                            _min_in = SEURANTA_MIN_INSIDE if (_far or not refined.get("tarkka")) else SEURANTA_MIN_INSIDE_NEAR
+                            _sil_ok = _tinfo.get("ok") and _tinfo.get("inside0", 0.0) >= _min_in
+                            if _far:
+                                # kaukana: tarkka ruutu ei hylkaydy, ei-tarkka hylataan jos ei maskitukea
+                                if _sil_ok:
+                                    refined["X_cm"], refined["Y_cm"] = _tx, _ty
+                                elif not refined.get("tarkka"):
+                                    refined["found"] = False
                             else:
-                                refined["X_cm"], refined["Y_cm"] = _tx, _ty
+                                if not _sil_ok:
+                                    refined["found"] = False          # lahella portti koskee myos tarkkoja ruutuja
+                                elif not refined.get("tarkka"):
+                                    refined["X_cm"], refined["Y_cm"] = _tx, _ty
 
                         # --------------------------------
                         # KUMULATIIVINEN "EI TAAKSEPAIN" -TARKISTUS
