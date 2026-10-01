@@ -964,6 +964,12 @@ SHADOW_V_DROP_MAX = 50.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 # ============================================================
 ICE_S_MAX = 22
 ICE_V_MIN = 128
+# Testi_03_04 v4.5-koe: varitarkistus taustanvaimennuksessa: (ero tai varjo tai jaa) JA (S_ruutu < COLOR_GATE_S_MAX TAI |H_ruutu - H_ref| <= COLOR_GATE_H_TOL).
+COLOR_GATE = os.environ.get("COLOR_GATE", "0") == "1"
+COLOR_GATE_S_MAX = int(os.environ.get("COLOR_GATE_S_MAX", "60"))
+COLOR_GATE_H_TOL = int(os.environ.get("COLOR_GATE_H_TOL", "5"))
+if hasattr(stone_tracker, "set_color_gate"):
+    stone_tracker.set_color_gate(COLOR_GATE_S_MAX if COLOR_GATE else 256, COLOR_GATE_H_TOL)
 
 # ============================================================
 # JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
@@ -2505,7 +2511,13 @@ def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
         (frame_hsv[..., 1] < ICE_S_MAX) & (frame_hsv[..., 2] > ICE_V_MIN)
     )
 
-    return background_mask | shadow_mask | ice_mask
+    bg = background_mask | shadow_mask | ice_mask
+    if COLOR_GATE:
+        # Testi_03_04 v4.5-koe: varitarkistus - suodata vain jos S_ruutu < COLOR_GATE_S_MAX TAI sama savy kuin referenssissa (|dH| <= COLOR_GATE_H_TOL, H 0..179 ymparoi)
+        dh = np.abs(frame_hsv[..., 0] - ref_hsv[..., 0])
+        dh = np.minimum(dh, 180 - dh)
+        bg &= (frame_hsv[..., 1] < COLOR_GATE_S_MAX) | (dh <= COLOR_GATE_H_TOL)
+    return bg
 
 
 def suppress_static_background(frame_bgr, reference_bgr, diff_threshold=30):

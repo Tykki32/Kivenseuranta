@@ -948,6 +948,35 @@ static cv::Mat computeSat(const cv::Mat& frame_bgr)
 // main.py:n oma kommentti taman alkuperaisesta motivaatiosta.
 // ============================================================
 
+// Testi_03_04 v4.5-koe: VARIPORTTI taustanvaimennukseen: bg = (ero tai varjo tai jaa) JA (S_ruutu < g_gate_s_max TAI |H_ruutu - H_ref| <= g_gate_h_tol). Eli suodatetaan vain jos
+// pikseli on harmaa/valkea (matala kylläisyys) tai sama sävy kuin referenssissa -> kylläinen mutta eri-savyinen (keltainen kahva) ei katoa. g_gate_s_max >= 256 = pois.
+static int g_gate_s_max = 256;
+static int g_gate_h_tol = 5;
+static inline int satFromMaxMin(int vmax, int vmin)
+{
+    static int tab[256]; static bool init = false;
+    if (!init) { tab[0] = 0; for (int i = 1; i < 256; ++i) tab[i] = (int)std::lround((255 << 12) / (1.0 * i)); init = true; }
+    return ((vmax - vmin) * tab[vmax] + 2048) >> 12;
+}
+static inline int hueOf(int b, int g, int r)   // OpenCV 8U HSV: H 0..179
+{
+    const int vmax = std::max(b, std::max(g, r)), vmin = std::min(b, std::min(g, r)), diff = vmax - vmin;
+    if (diff == 0) return 0;
+    const float hscale = 30.f / (float)diff;
+    float h;
+    if (vmax == r) h = (g - b) * hscale; else if (vmax == g) h = (b - r) * hscale + 60.f; else h = (r - g) * hscale + 120.f;
+    if (h < 0) h += 180.f;
+    return (int)std::lround(h);
+}
+static inline bool colorGateOk(int b, int g, int r, const uint8_t* rp, int vmax, int vmin)
+{
+    if (g_gate_s_max >= 256) return true;
+    if (satFromMaxMin(vmax, vmin) < g_gate_s_max) return true;
+    int dh = std::abs(hueOf(b, g, r) - hueOf((int)rp[0], (int)rp[1], (int)rp[2]));
+    if (dh > 90) dh = 180 - dh;
+    return dh <= g_gate_h_tol;
+}
+
 static cv::Mat suppressStaticBackground(
     const cv::Mat& frame_bgr, const cv::Mat& reference_bgr, double diff_threshold)
 {
@@ -4361,9 +4390,9 @@ static py::array_t<uint8_t> suppress_shadow_background(
                     const int db = std::abs(b - rp[0]), dg = std::abs(gg - rp[1]), dr = std::abs(r - rp[2]);
                     const int gray = (db * 1868 + dg * 9617 + dr * 4899 + 8192) >> 14;
                     bool bg = (double)gray < diff_threshold;
+                    const int vmax = std::max(b, std::max(gg, r));
+                    const int vmin = std::min(b, std::min(gg, r));
                     if (!bg) {
-                        const int vmax = std::max(b, std::max(gg, r));
-                        const int vmin = std::min(b, std::min(gg, r));
                         const int rv = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2]));
                         const double vdrop = (double)(rv - vmax);
                         if (vdrop > v_drop_min && vdrop < v_drop_max) bg = true;
@@ -4372,6 +4401,7 @@ static py::array_t<uint8_t> suppress_shadow_background(
                             if (sat < ice_s_max && vmax > ice_v_min) bg = true;
                         }
                     }
+                    if (bg && !colorGateOk(b, gg, r, rp, vmax, vmin)) bg = false;
                     if (bg) { dp[0] = dp[1] = dp[2] = 255; }
                     else { dp[0] = (uint8_t)b; dp[1] = (uint8_t)gg; dp[2] = (uint8_t)r; }
                 }
@@ -4901,13 +4931,14 @@ static py::object alpha_observation_cpp(
             const int db = std::abs(b - rp[0]), dg = std::abs(gg - rp[1]), dr = std::abs(r - rp[2]);
             const int gray = (db * 1868 + dg * 9617 + dr * 4899 + 8192) >> 14;
             bool bg = (double)gray < diff_threshold;
+            const int vmax = std::max(b, std::max(gg, r)), vmin = std::min(b, std::min(gg, r));
             if (!bg) {
-                const int vmax = std::max(b, std::max(gg, r)), vmin = std::min(b, std::min(gg, r));
                 const int rv = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2]));
                 const double vdrop = (double)(rv - vmax);
                 if (vdrop > v_drop_min && vdrop < v_drop_max) bg = true;
                 else { const int sat = ((vmax - vmin) * sdiv[vmax] + 2048) >> 12; if (sat < ice_s_max && vmax > ice_v_min) bg = true; }
             }
+            if (bg && !colorGateOk(b, gg, r, rp, vmax, vmin)) bg = false;
             if (bg) { dp[0] = dp[1] = dp[2] = 255; } else { dp[0] = (uint8_t)b; dp[1] = (uint8_t)gg; dp[2] = (uint8_t)r; }
         }
     }
@@ -5235,6 +5266,7 @@ PYBIND11_MODULE(stone_tracker, m)
 {
     m.def("build_info", []() { return std::string("stone_tracker kaannetty ") + __DATE__ + " " + __TIME__; });
     m.def("set_haku_accept_score", [](double v) { g_haku_accept_score = v; }, py::arg("accept_score"));   // kokeiluihin (oletus 0.20)
+    m.def("set_color_gate", [](int s_max, int h_tol) { g_gate_s_max = s_max; g_gate_h_tol = h_tol; }, py::arg("s_max"), py::arg("h_tol"));   // s_max >= 256 = pois
     m.def("get_haku_accept_score", []() { return g_haku_accept_score; });
     m.def("silhouette_refine_cpp", &silhouette_refine_cpp,
           py::arg("frame"), py::arg("local_pts_body"), py::arg("K"), py::arg("R"), py::arg("t"),

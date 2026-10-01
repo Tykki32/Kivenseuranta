@@ -64,3 +64,9 @@ heittoja 26 -> 25, rivejä 14640 -> 13570, tarkka 0.81 -> 0.76, rms med 0.78 -> 
 
 **PALAUTETTU:** tarkemman varjokriteerin koodi (SHADOW_STRICT, `_ref_ice_ok`, C++ `set_shadow_ref_ok`/`shadowRefOk`) poistettu (main.py ja stone_tracker.cpp palautettu tilaan v4.4 + "siluettiportti lahella oletus pois"),
 koska se ei parantanut koko videota (kokeilukoodi oli commitissa 313856d/5108111; kokeilu- ja kuvaskriptit jäävät tools/-kansioon).
+
+### v4.5-koe: variportti taustanvaimennukseen (COLOR_GATE, oletus POIS)
+bg = (ero<10 TAI varjo TAI jaa) JA (S_ruutu < 60 TAI |H_ruutu - H_ref| <= 5). Python = C++ (0-3 pikselia eroa/frame, hue-pyoristys).
+Kuvissa: keltaisia (S>=60) siluetin pikseleita poistuu 49->10, 92->50, 68->0; kivipikseleita 162->134, 100->63, 111->60 (viivan alla S matala -> portti ei estä).
+Koko video v4.4 -> tama: heittoja 26 -> 26, rivejä 14640 -> 14619, tarkka 0.807 -> 0.808, rms med 0.78 -> 0.85, kaukana rms 6.4 -> 6.5, 6-9 m sileys 0.3/2.0 -> 0.4/2.7 cm; heitto 181 katoaa edelleen (y 8.4 m).
+Eli neutraali: ei paranna eika selvasti huononna. Oletus pois (COLOR_GATE=1 ottaa kayttoon).
