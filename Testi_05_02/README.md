@@ -65,3 +65,9 @@ prosessin CPU-käytön (ytimiä keskimäärin) ja pullonkaulavaiheen suurimmat o
 * `python main.py --max-frame 3000 --debug` → sama debug-videon kanssa (vertaa pääsäikeen palveluaikaa ja kapasiteettia).
 * Edistymisrivit sisältävät tiiviin rivin `pullonkaula: ...`; lopussa täysi raportti (vaiheet A/B/C: palveluaika, kapasiteetti, odotukset, jonojen täyttö, CPU, pullonkaulavaiheen suurimmat osat + vihje).
 * `PULLONKAULA_RAPORTTI=0` kytkee raportin pois. Lisäksi `--start/--end` leikkaa videosta pätkän (kuten ennen).
+
+## v5.2 – debug-videon piirto taustasäikeeseen
+
+Debug-videon koko piirto (valokorjaus, ääriviivat, kokoonpano, kirjoitus) ajetaan `AsyncVideoWriter`-säikeessä (`submit`).
+Pääsäie antaa vain tilannekuvan (frame_u, ääriviivalista, kopio hog_results). Sandbox-mittaus (2900 ruutua):
+pääsäikeen debug-aika ~8 ms → 0,1 ms/ruutu; C-vaihe 27–30 ms. Seuraavat rajoittajat: SEURANTA (C++) ja stabilointi (A, ~29 ms).
