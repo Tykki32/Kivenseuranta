@@ -70,3 +70,10 @@ bg = (ero<10 TAI varjo TAI jaa) JA (S_ruutu < 60 TAI |H_ruutu - H_ref| <= 5). Py
 Kuvissa: keltaisia (S>=60) siluetin pikseleita poistuu 49->10, 92->50, 68->0; kivipikseleita 162->134, 100->63, 111->60 (viivan alla S matala -> portti ei estä).
 Koko video v4.4 -> tama: heittoja 26 -> 26, rivejä 14640 -> 14619, tarkka 0.807 -> 0.808, rms med 0.78 -> 0.85, kaukana rms 6.4 -> 6.5, 6-9 m sileys 0.3/2.0 -> 0.4/2.7 cm; heitto 181 katoaa edelleen (y 8.4 m).
 Eli neutraali: ei paranna eika selvasti huononna. Oletus pois (COLOR_GATE=1 ottaa kayttoon).
+
+### Variportti: S = MOODIKUVAN kylläisyys (COLOR_GATE=1) ja variantti COLOR_GATE_BOTH=1
+bg = (ero tai varjo tai jaa) JA (S_ref < 60 TAI |dH| <= 5); BOTH: (S_ref < 60 JA S_ruutu < 60) TAI |dH| <= 5. Syy: vanha portti (S_ruutu < 60) paastaa kylläisen mainoksen paalla olevan tumman matalakylläisen kiven (y=3 m, kuva
+tulokset/seuranta_lahella_rikki_kivi_mainos.png) taustaksi.
+7 kuvaruutua (kiven harmaita pikseleita poistettu / keltaista kahvaa (S>=60) poistettu): ei porttia 474 / 1032; S_ruutu<60 tai H 474 / 225; S_ref<60 tai H 291 / 577; BOTH 291 / 225.
+Koko video (v4.4: 14640 rivia, tarkka 0.807, rms med 0.78): S_ref-portti 26 heittoa, 14748 rivia, tarkka 0.807, rms med 0.79, 6-9 m sileys 1.20/3.38 (v4.4 1.19/3.38) = kayttaytyy kuin v4.4;
+BOTH 14683 rivia, rms med 0.85, 6-9 m 1.17/3.70; S_ruutu<60 14619 rivia, rms 0.85, 6-9 m 1.19/3.76. Heitto 181: S_ref-portti jaa yhä y=10.3 m, BOTH ja S_ruutu y=8.4 m.
