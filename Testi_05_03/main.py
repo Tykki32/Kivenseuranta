@@ -1,4 +1,10 @@
 ﻿import os
+# v5.7: NumPyn BLAS (OpenBLAS/MKL) yhdelle saikeelle ENNEN numpy/cv2-importia. Koodin matriisit ovat pienia (3x3, polyfit, lstsq),
+# joten monisaikeinen BLAS ei nopeuta mitaan, mutta OpenBLASin tyosaikeet jaavat jokaisen kutsun jalkeen pyorimaan (busy-wait,
+# sched_yield / SwitchToThread) ja veivat profiloinnissa ~20 % CPU-ajasta SEURANNAN C++-saikeilta ja vaiheilta A/B.
+# BLAS_THREADS=n palauttaa monisaikeisuuden kokeiluun.
+for _blas_var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_blas_var, os.environ.get("BLAS_THREADS", "1"))
 import sys
 import math
 import csv
