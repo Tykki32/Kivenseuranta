@@ -2701,16 +2701,17 @@ def estimate_photometric_correction(frame_bgr, reference_bgr):
     return gains, biases
 
 
+_PHOTO_LUT_CACHE = {"key": None, "lut": None}
+
+
 def apply_photometric_correction(frame_bgr, gains, biases):
-
-    out = frame_bgr.astype(np.float32).copy()
-
-    for channel in range(3):
-        out[:, :, channel] = (
-            out[:, :, channel] * gains[channel] + biases[channel]
-        )
-
-    return np.clip(out, 0, 255).astype(np.uint8)
+    # Testi_05_02: kanavakohtainen LUT (cv2.LUT) float32-ruutu-numpyn sijaan (9 ms -> 0.8 ms, tulos TASMALLEEN sama: clip(v*gain + bias, 0, 255) float32:na -> uint8).
+    key = (tuple(float(g) for g in gains), tuple(float(b) for b in biases))
+    if _PHOTO_LUT_CACHE["key"] != key:
+        x = np.arange(256, dtype=np.float32)
+        lut = np.stack([np.clip(x * gains[c] + biases[c], 0, 255).astype(np.uint8) for c in range(3)], axis=1).reshape(256, 1, 3)
+        _PHOTO_LUT_CACHE["key"], _PHOTO_LUT_CACHE["lut"] = key, lut
+    return cv2.LUT(frame_bgr, _PHOTO_LUT_CACHE["lut"])
 
 
 _hann_window_cache = {}
@@ -4465,6 +4466,7 @@ def run_pipeline(
     csv_writer = None
     csv_file = None
     debug_video_writer = None
+    debug_composer = None
     hog_overlays = []      # Testi_05_01: hog-hog -tekstit (debug-video), katso HOG-HOG -ANALYYSI
     hog_results = []
 
@@ -5330,11 +5332,12 @@ def run_pipeline(
                     if debug_video_output is not None:
 
                         _dbg_vw, _dbg_vh, _dbg_scale, _dbg_total_w = hog_analyysi.debug_layout(width, height)
-                        debug_video_writer = cv2.VideoWriter(
+                        debug_video_writer = hog_analyysi.AsyncVideoWriter(cv2.VideoWriter(
                             debug_video_output,
                             cv2.VideoWriter_fourcc(*"mp4v"),
                             fps, (_dbg_total_w, _dbg_vh)
-                        )
+                        ))
+                        debug_composer = hog_analyysi.DebugComposer(width, height)
                         print(f"Debug-video: stabiloitu+korjattu, ei maskeja, kaannetty 90 astetta vastapaivaan, {_dbg_total_w}x{_dbg_vh} (video {_dbg_vw}x{_dbg_vh} + paneelit {hog_analyysi.PANEL_W} px/puoli)")
 
                     print()
@@ -6279,7 +6282,7 @@ def run_pipeline(
                             int(hull_i[:, 0, 0].min()), int(hull_i[:, 0, 1].min()) - 8, label, color
                         ))
 
-                    debug_frame = hog_analyysi.compose_debug_frame(
+                    debug_frame = debug_composer.compose(
                         debug_frame, _dbg_labels,
                         f"frame {frame_index}  t={timestamp:.2f}s  kivia={len(active_stones)}",
                         hog_results, hog_analyysi.plus_x_is_right(pose["K"], pose["R"], pose["t"])

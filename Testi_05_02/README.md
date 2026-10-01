@@ -47,3 +47,10 @@ Paneelin ja terminaalin kohta `hogilla` korvattu nimellä **`liuku`** (arvo = su
 Terminaalissa lisäksi liu'un suunta (astetta) ja pistemäärä; `<csv>_hog.csv`: `liuku_x_tee_cm`, `liuku_dir_deg`, `liuku_n`, `liuku_rms_cm`.
 Koko video (24 heittoa): liuku −156…+186 cm (hajonta 134), merkki −184…+218 cm; hogin jälkeinen suunta on keskimäärin 0,86° jyrkempi kuin alun (irrotus), X T-viivalla siirtyy keskimäärin 41 cm; etumerkki sama 24/24, korrelaatio 0,993.
 Esimerkki: `tulokset/debug_video_liuku.png`.
+
+## Debug-videon nopeutus (Testi_05_02)
+Debug-videon kustannus **52,2 → 11,8 ms/ruutu** (kokonaisaika/ruutu 86,4 → 54,0 ms; ruudut 0–2830, sama kone, ajettu rinnakkain):
+* `apply_photometric_correction` käyttää kanavakohtaista **LUT:ia** (`cv2.LUT`, välimuistissa) float32-koko-ruutu-numpyn sijaan: 9 → 0,8 ms, tulos täsmälleen sama (tarkistettu: max ero 0). Nopeuttaa myös muita kutsujia.
+* `DebugComposer`: pysyvä canvas, **paneelit piirretään uudelleen vain kun sisältö muuttuu**, skaalaus ennen kääntöä (INTER_LINEAR; kääntö pienemmälle kuvalle).
+* `AsyncVideoWriter`: mp4-enkoodaus omassa säikeessä (`cv2.VideoWriter.write` vapauttaa GIL:n).
+Ulkoasu ja hog-csv ennallaan.
