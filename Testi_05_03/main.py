@@ -986,6 +986,12 @@ if hasattr(stone_tracker, "set_color_gate"):
 
 # Testi_05_03: GPU_B=1 siirtaa vaiheen B (warpAffine+remap + varjotoleranssi-taustanvaimennus + valotasapaino) OpenCL:lle (esim. Intel UHD); tulos bitti-identtinen CPU:n (OpenCV 4.x) kanssa.
 GPU_B = os.environ.get("GPU_B", "0") == "1"
+
+# Testi_05_03 v5.5: liukuhihnan asetukset (kokeiluun, katso tools/vertailuajo.py).
+#   STAB_WORKERS=n : stabilointi (vaihekorrelaatio, vaihe A) n ruudulle rinnan (oletus 1 = ennallaan); ruudut ovat toisistaan riippumattomia (kukin vs. moodikuva), jarjestys sailyy -> tulos identtinen.
+#   PIPE_DEPTH=n   : vaiheiden valisten jonojen koko (oletus 3); isompi tasoittaa vaiheiden aikavaihtelua.
+STAB_WORKERS = max(1, int(os.environ.get("STAB_WORKERS", "1")))
+PIPE_DEPTH = max(1, int(os.environ.get("PIPE_DEPTH", "3")))
 GPU_GRID = os.environ.get("GPU_GRID", "0") == "1"
 GPU_GRID_VERIFY = os.environ.get("GPU_GRID_VERIFY", "0") == "1"
 if hasattr(stone_tracker, "set_gpu_grid"):
@@ -4181,7 +4187,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_03 v5.4 (pohja: Testi_05_02 v5.2; GPU-vaihe B valinnainen; joka toisen ruudun seuranta pois oletuksena) (2026-10-01)"
+SOFTWARE_VERSION = "Testi_05_03 v5.5 (pohja: Testi_05_02 v5.2; GPU-vaihe B valinnainen; STAB_WORKERS/PIPE_DEPTH) (2026-10-01)"
 
 
 def _version_string():
@@ -4393,6 +4399,8 @@ class _LivePipeline:
         _e[0] += time.perf_counter() - t0; _e[1] += 1
 
     def _run_a(self):
+        if STAB_WORKERS > 1:
+            return self._run_a_parallel()
         try:
             while not self._stop.is_set():
                 t0 = time.perf_counter()
@@ -4420,6 +4428,65 @@ class _LivePipeline:
         except BaseException as e:      # valitetaan eteenpain
             self._put(self._qa, e, "pipe A: odottaa vaihetta B (jono taynna)")
         finally:
+            _PIPE_STATS["cpu_a"] = time.thread_time()
+
+    def _run_a_parallel(self):
+        """Vaihe A usealle ruudulle rinnan (STAB_WORKERS): luku + gray jarjestyksessa tassa saikeessa, vaihekorrelaatiot (ruudut ovat
+        toisistaan riippumattomia: kukin verrataan moodikuvaan) tyontekijasaikeissa; tulokset viedaan jonoon ALKUPERAISESSA JARJESTYKSESSA,
+        joten tulos on identtinen. A:n palveluaika = taman saikeen oma kierto (sis. odotuksen tyontekijoita), tyontekijoiden yhteenlaskettu aika raportoidaan 'bg:'-rivilla."""
+        import collections
+        from concurrent.futures import ThreadPoolExecutor
+        ex = ThreadPoolExecutor(max_workers=STAB_WORKERS)
+        pending = collections.deque()
+
+        def _job(gray):
+            t = time.perf_counter()
+            dxy = _phase_correlate_cached(self._ref_gray, gray)
+            return dxy, time.perf_counter() - t
+
+        def _emit_oldest():
+            idx, frame, fut = pending.popleft()
+            t0 = time.perf_counter()
+            (dx, dy), dt_work = fut.result()
+            _e = _PROF.setdefault("pipe A: stabilointi (vaihekorrelaatio)", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+            _e = _PROF.setdefault("bg: stabilointi tyoaika (rinnakkaiset tyontekijat, ei lisaa)", [0.0, 0]); _e[0] += dt_work; _e[1] += 1
+            stab = np.array([[1.0, 0.0, -dx], [0.0, 1.0, -dy]], dtype=np.float64)
+            t0 = time.perf_counter()
+            self._engine.set_transform(stab)
+            _e = _PROF.setdefault("pipe A: set_transform", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+            self._put(self._qa, (idx, frame, stab), "pipe A: odottaa vaihetta B (jono taynna)")
+
+        try:
+            first = True
+            while not self._stop.is_set():
+                t0 = time.perf_counter()
+                frame = self._source_read()
+                _e = _PROF.setdefault("pipe A: read(video)", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+                if frame is None or frame.size == 0:
+                    while pending and not self._stop.is_set():
+                        _emit_oldest()
+                    self._put(self._qa, None, "pipe A: odottaa vaihetta B (jono taynna)")
+                    return
+
+                t0 = time.perf_counter()
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                _e = _PROF.setdefault("pipe A: gray cvtColor", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+
+                if first:
+                    # ensimmainen ruutu synkronisesti: alustaa referenssi-FFT-valimuistin ennen rinnakkaisajoa
+                    first = False
+                    fut0 = ex.submit(_job, gray)
+                    fut0.result()
+                    pending.append((self._index, frame, fut0))
+                else:
+                    pending.append((self._index, frame, ex.submit(_job, gray)))
+                self._index += 1
+                while len(pending) >= STAB_WORKERS:
+                    _emit_oldest()
+        except BaseException as e:      # valitetaan eteenpain
+            self._put(self._qa, e, "pipe A: odottaa vaihetta B (jono taynna)")
+        finally:
+            ex.shutdown(wait=False)
             _PIPE_STATS["cpu_a"] = time.thread_time()
 
     def _run_b(self):
@@ -5571,8 +5638,10 @@ def run_pipeline(
                     live_prep.prefix = "pipe B:"
                     frame_pipeline = _LivePipeline(
                         _pipe_source, engine, live_prep, loppuvideo_ref_gray,
-                        live_state, calib_result, frame_index + 1
+                        live_state, calib_result, frame_index + 1, depth=PIPE_DEPTH
                     )
+                    if STAB_WORKERS > 1 or PIPE_DEPTH != 3:
+                        print(f"Liukuhihna: stabilointi {STAB_WORKERS} ruudulle rinnan, jonojen syvyys {PIPE_DEPTH}")
 
                 timestamp = frame_index / fps
                 pose = calib_result["pose"]
