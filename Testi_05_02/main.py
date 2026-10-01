@@ -6536,7 +6536,6 @@ def run_pipeline(
 
         if debug_video_writer is not None:
             debug_video_writer.release()
-            print(debug_video_writer.stats_line())
 
     print()
 
