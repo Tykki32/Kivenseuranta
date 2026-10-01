@@ -1,15 +1,14 @@
 """Lukee Sony HDR-CX405:n kuvaa Elgato Cam Linkin (UVC-laite) kautta.
 
+Kayttaa vain 1920x1080-kuvaa antavaa laitetta (muut, esim. koneen oma
+webkamera 640x480, ohitetaan) ja tulostaa terminaaliin kameran tiedot.
+
 Kayttö:
-    python camlink_testi.py              # etsii Cam Linkin automaattisesti
-    python camlink_testi.py 2            # kayttaa laitenumeroa 2
-    python camlink_testi.py 0 --tallenna ulos.mp4
+    python camlink_testi.py                       # etsii 1920x1080-laitteen
+    python camlink_testi.py 2                     # pakottaa laitenumeron 2
+    python camlink_testi.py --tallenna ulos.mp4
 
 Nappaimet: q / ESC = lopeta, s = tallenna kuva.
-
-Kamerassa: HDMI-ulostulo paalle ja kamera TOISTO-tilan sijaan kuvaustilaan
-(Cam Link ottaa vastaan vain live-HDMI-signaalin). Aseta kamerasta
-Asetukset > HDMI-tarkkuus = 1080i/1080p tai 720p ja "Naytteen tiedot" pois.
 """
 import argparse
 import sys
@@ -17,41 +16,72 @@ import time
 
 import cv2
 
+LEVEYS, KORKEUS, FPS = 1920, 1080, 30
+
+try:  # hiljenna OpenCV:n varoitukset olemattomista laitteista
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except Exception:
+    pass
+
+
+def backend():
+    # Windowsissa DirectShow, Linuxissa V4L2
+    if sys.platform.startswith("win"):
+        return cv2.CAP_DSHOW, "DirectShow"
+    if sys.platform.startswith("linux"):
+        return cv2.CAP_V4L2, "V4L2"
+    return cv2.CAP_ANY, "ANY"
+
 
 def avaa(indeksi):
-    # Linuxissa V4L2, Windowsissa DirectShow (Cam Link toimii nailla parhaiten)
-    if sys.platform.startswith("win"):
-        backend = cv2.CAP_DSHOW
-    elif sys.platform.startswith("linux"):
-        backend = cv2.CAP_V4L2
-    else:
-        backend = cv2.CAP_ANY
-    cap = cv2.VideoCapture(indeksi, backend)
+    """Avaa laitteen 1920x1080-tilassa; palauttaa None jos ei toimi tai kuva ei ole 1920x1080."""
+    cap = cv2.VideoCapture(indeksi, backend()[0])
     if not cap.isOpened():
         return None
-    # Cam Link 4K antaa 1080p30 parhaiten MJPG/YUY2-muodossa
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, LEVEYS)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, KORKEUS)
+    cap.set(cv2.CAP_PROP_FPS, FPS)
     ok, frame = cap.read()
-    if not ok or frame is None:
+    if not ok or frame is None or frame.shape[1] != LEVEYS or frame.shape[0] != KORKEUS:
         cap.release()
         return None
     return cap
 
 
 def etsi_laite():
-    """Listaa toimivat laitteet; palauttaa ensimmaisen (yleensa Cam Link)."""
-    loydetyt = []
     for i in range(8):
         cap = avaa(i)
         if cap is not None:
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            print(f"  laite {i}: {w}x{h}")
-            loydetyt.append(i)
-            cap.release()
-    return loydetyt
+            return i, cap
+    return None, None
+
+
+def fourcc_teksti(arvo):
+    arvo = int(arvo)
+    teksti = "".join(chr((arvo >> (8 * i)) & 0xFF) for i in range(4))
+    return teksti if teksti.isprintable() and arvo else "?"
+
+
+def tulosta_tiedot(cap, indeksi, ensimmainen):
+    nimi = backend()[1]
+    h, w = ensimmainen.shape[:2]
+    print("=" * 44)
+    print("KAMERAN TIEDOT")
+    print("=" * 44)
+    print(f"Laitenumero      : {indeksi}")
+    print(f"Taustajarjestelma: {nimi}")
+    print(f"Tarkkuus (luettu): {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
+    print(f"Ruudun koko      : {w}x{h}, kanavia {ensimmainen.shape[2]}, {ensimmainen.dtype}")
+    print(f"FPS (ilmoitettu) : {cap.get(cv2.CAP_PROP_FPS):.2f}")
+    print(f"Pakkausmuoto     : {fourcc_teksti(cap.get(cv2.CAP_PROP_FOURCC))}")
+    print(f"Taustakoodaus    : {cap.getBackendName()}")
+    for nimi_, prop in [("Kirkkaus", cv2.CAP_PROP_BRIGHTNESS), ("Kontrasti", cv2.CAP_PROP_CONTRAST),
+                        ("Saturaatio", cv2.CAP_PROP_SATURATION), ("Valotus", cv2.CAP_PROP_EXPOSURE),
+                        ("Tarkennus", cv2.CAP_PROP_FOCUS)]:
+        v = cap.get(prop)
+        if v not in (0.0, -1.0) or nimi_ in ("Kirkkaus", "Kontrasti"):
+            print(f"{nimi_:<17}: {v}")
+    print("=" * 44)
 
 
 def main():
@@ -61,31 +91,25 @@ def main():
     args = ap.parse_args()
 
     if args.laite is None:
-        print("Etsitaan kameralaitteita...")
-        laitteet = etsi_laite()
-        if not laitteet:
-            sys.exit("Yhtaan kuvaa antavaa laitetta ei loytynyt. Tarkista USB 3.0 -portti, "
-                     "HDMI-kaapeli ja etta kamera on paalla kuvaustilassa.")
-        print(f"Kaytetaan laitetta {laitteet[0]} (anna numero argumenttina jos se on vaara)")
-        indeksi = laitteet[0]
+        indeksi, cap = etsi_laite()
     else:
-        indeksi = args.laite
-
-    cap = avaa(indeksi)
+        indeksi, cap = args.laite, avaa(args.laite)
     if cap is None:
-        sys.exit(f"Laitetta {indeksi} ei voitu avata.")
+        sys.exit(f"{LEVEYS}x{KORKEUS}-kuvaa antavaa laitetta ei loytynyt. Tarkista USB 3.0, "
+                 "HDMI-kaapeli ja etta kamera on paalla kuvaustilassa (HDMI-tarkkuus 1080).")
 
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    print(f"Kuva: {w}x{h} @ {fps:.0f} fps")
+    ok, ensimmainen = cap.read()
+    if ok:
+        tulosta_tiedot(cap, indeksi, ensimmainen)
+    fps = cap.get(cv2.CAP_PROP_FPS) or FPS
 
     writer = None
     if args.tallenna:
-        writer = cv2.VideoWriter(args.tallenna, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+        writer = cv2.VideoWriter(args.tallenna, cv2.VideoWriter_fourcc(*"mp4v"), fps, (LEVEYS, KORKEUS))
 
     n = 0
     t0 = time.time()
+    viimeinen = t0
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -98,15 +122,21 @@ def main():
         if writer is not None:
             writer.write(frame)
         cv2.imshow("Cam Link", frame)
+
+        nyt = time.time()
+        if nyt - viimeinen >= 1.0:  # tilanne terminaaliin kerran sekunnissa
+            print(f"\rkuva {n}  |  {n / (nyt - t0):.1f} fps  |  {time.strftime('%H:%M:%S')}", end="", flush=True)
+            viimeinen = nyt
+
         k = cv2.waitKey(1) & 0xFF
         if k in (ord("q"), 27):
             break
         if k == ord("s"):
             nimi = f"kuva_{int(time.time())}.png"
             cv2.imwrite(nimi, frame)
-            print("Tallennettu", nimi)
+            print(f"\nTallennettu {nimi}")
 
-    print(f"{n} kuvaa, keskim. {n / max(time.time() - t0, 1e-6):.1f} fps")
+    print(f"\n{n} kuvaa, keskim. {n / max(time.time() - t0, 1e-6):.1f} fps")
     cap.release()
     if writer is not None:
         writer.release()
