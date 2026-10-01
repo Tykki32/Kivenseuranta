@@ -4,10 +4,11 @@
   python tools/vertailuajo.py --video D:\\Tikku\\Suorita\\MAH00014.MP4
   python tools/vertailuajo.py --video ... --start 00:10:00 --end 00:21:00 --outdir D:\\Tikku\\Suorita\\vertailu
 
-Ajot (kaikki samalla videolla/aikavälillä, oletuksena debug-video päällä):
-  1) verify : GPU_GRID=1 GPU_GRID_VERIFY=1  (oikeellisuus: vertaa CPU-pistemääriin; hitaampi)
-  2) gpu    : GPU_GRID=1                    (nopeus GPU:lla)
-  3) cpu    : GPU_GRID pois                 (vertailu)
+Ajot (kaikki samalla videolla/aikavälillä, oletuksena debug-video päällä), valitaan --runs:
+  cpu    : kaikki CPU:lla (vertailu)            gpu : SEURANNAN ristikkohaku GPU:lla (GPU_GRID=1)
+  gpub   : vaihe B GPU:lla (GPU_B=1)            gpuall : molemmat GPU:lla
+  verify : GPU_GRID=1 + GPU_GRID_VERIFY=1 + GPU_B=1 (oikeellisuus, hidas)
+Oletus: cpu,gpub,gpuall.
 Tulokset kansioon --outdir (oletus: videon kansio / vertailuajo_<aikaleima>):
   ajo_<nimi>_loki.txt          koko terminaalitulostus
   ajo_<nimi>_sijainnit.csv     kivien sijainnit (+ _hog.csv)
@@ -26,10 +27,13 @@ import sys
 CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 RUNS = [
-    ("verify", {"GPU_GRID": "1", "GPU_GRID_VERIFY": "1"}),
-    ("gpu", {"GPU_GRID": "1"}),
-    ("cpu", {}),
+    ("cpu", {}),                                                          # vertailu: kaikki CPU:lla
+    ("gpu", {"GPU_GRID": "1"}),                                           # SEURANNAN ristikkohaku GPU:lla
+    ("gpub", {"GPU_B": "1"}),                                             # vaihe B (warp+remap+varjosuodatus) GPU:lla
+    ("gpuall", {"GPU_GRID": "1", "GPU_B": "1"}),                          # molemmat GPU:lla
+    ("verify", {"GPU_GRID": "1", "GPU_GRID_VERIFY": "1", "GPU_B": "1"}),  # oikeellisuus (hidas): ristikko verifioidaan CPU:hun
 ]
+DEFAULT_RUNS = "cpu,gpub,gpuall"
 
 
 def pick_video():
@@ -46,8 +50,8 @@ def pick_video():
 
 def run_main(name, env_extra, video, start, end, debug, extra, log_path):
     env = dict(os.environ)
-    for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_GRID_DEVICE"):
-        if k not in env_extra and k != "GPU_GRID_DEVICE":
+    for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_B"):
+        if k not in env_extra:
             env.pop(k, None)
     env.update(env_extra)
     env["PYTHONUNBUFFERED"] = "1"
@@ -84,7 +88,7 @@ def extract_blocks(text):
     """Poimii lokista pullonkaula- ja nopeusraportit sekä muut avainrivit."""
     lines = text.replace("\r", "\n").split("\n")
     out = []
-    keys = ("GPU-ristikkohaku", "Debug-video:", "Heittoportti", "Hog-hog -analyysi", "Versio:")
+    keys = ("GPU-ristikkohaku", "GPU-vaihe B", "Debug-video:", "Heittoportti", "Hog-hog -analyysi", "Versio:")
     seen = set()
     for ln in lines:
         if ln.startswith(keys) and ln not in seen:
@@ -183,7 +187,7 @@ def main():
     ap.add_argument("--end", default="00:21:00")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-debug", action="store_true", help="aja ilman debug-videota")
-    ap.add_argument("--runs", default="verify,gpu,cpu", help="ajettavat ajot pilkuilla (verify,gpu,cpu)")
+    ap.add_argument("--runs", default=DEFAULT_RUNS, help="ajettavat ajot pilkuilla (cpu,gpu,gpub,gpuall,verify); oletus " + DEFAULT_RUNS)
     ap.add_argument("--main-args", default="", help="lisäargumentit main.py:lle lainausmerkeissä, esim. \"--max-frame 3000\"")
     args = ap.parse_args()
 
@@ -228,7 +232,8 @@ def main():
     out.append("(rs = ruutua/s; ms_A/B/C = pullonkaularaportin vaiheiden palveluaika; ristikko-ms/kutsu: GPU-polku vs. CPU-ristikkohaku)")
     out.append("")
     out.append("== CSV-VERTAILU ==")
-    pairs = [("gpu", "cpu"), ("verify", "cpu"), ("verify", "gpu")]
+    names = [n for n, _ in RUNS if n in results]
+    pairs = [(a, "cpu") for a in names if a != "cpu"] if "cpu" in names else [(names[i], names[j]) for i in range(len(names)) for j in range(i + 1, len(names))]
     for a, b in pairs:
         pa = os.path.join(outdir, f"ajo_{a}_sijainnit.csv")
         pb = os.path.join(outdir, f"ajo_{b}_sijainnit.csv")
