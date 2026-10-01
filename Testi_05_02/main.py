@@ -1649,6 +1649,24 @@ HOG_OVERLAY_SECONDS = float(os.environ.get("HOG_OVERLAY_SECONDS", "5"))
 HOG_SAVE_SNAPSHOT = os.environ.get("HOG_SAVE_SNAPSHOT", "1") == "1"
 
 
+def _render_debug_frame(frame_u, gain, bias, items, pose, header, results, plus_right, composer, local_pts_body):
+    """Debug-videon yksi ruutu (ajetaan taustasaikeessa): valokorjattu kuva + ennustetut ääriviivat + paneelit."""
+    if gain is not None:
+        img = apply_photometric_correction(frame_u, gain, bias)
+    else:
+        img = frame_u.copy()
+    img = np.ascontiguousarray(img)
+    labels = []
+    for bx, by, s_id, color, label in items:
+        hull = k94.predicted_stone_hull_fast(local_pts_body, pose, bx, by)
+        if hull is None:
+            continue
+        hull_i = hull.astype(np.int32)
+        cv2.polylines(img, [hull_i], True, color, 2)
+        labels.append((int(hull_i[:, 0, 0].min()), int(hull_i[:, 0, 1].min()) - 8, label, color))
+    return composer.compose(img, labels, header, results, plus_right)
+
+
 def _hog_check(s, frame_index, fps, near_hog, far_hog, overlays, results, frame_img, csv_output, pose):
     rows = s.get("all_rows")
     if not rows:
@@ -4137,7 +4155,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_02 v5.1 (pohja: Testi_05_01 v5.0; liuku-analyysi) (2026-10-01)"
+SOFTWARE_VERSION = "Testi_05_02 v5.2 (pohja: Testi_05_01 v5.0; liuku-analyysi; debug-video taustasaikeessa) (2026-10-01)"
 
 
 def _version_string():
@@ -6363,40 +6381,13 @@ def run_pipeline(
                 _t_dbg0 = time.perf_counter()
                 if debug_video_writer is not None:
 
-                    # Testi_05_01: debug-video = stabiloitu + valotasapainokorjattu kuva ILMAN maskeja/taustanvaimennusta (aiemmin frame_u_for_tracking),
-                    # kaannettu 90 astetta vastapaivaan (kivet kulkevat ylhaalta alas), korkeus 1080; vasemmalla/oikealla paneelit vasemmalle/oikealle lahteneista heitoista.
-                    if live_prep.photo_gain is not None:
-                        debug_frame = apply_photometric_correction(frame_u, live_prep.photo_gain, live_prep.photo_bias)
-                    else:
-                        debug_frame = frame_u.copy()
-                    debug_frame = np.ascontiguousarray(debug_frame)
-                    _dbg_labels = []
-
-                    for bx, by, s_id, color, label in debug_draw_items:
-
-                        hull = k94.predicted_stone_hull_fast(
-                            local_pts_body, pose, bx, by
-                        )
-
-                        if hull is None:
-                            continue
-
-                        hull_i = hull.astype(np.int32)
-
-                        cv2.polylines(
-                            debug_frame, [hull_i], True, color, 2
-                        )
-                        _dbg_labels.append((
-                            int(hull_i[:, 0, 0].min()), int(hull_i[:, 0, 1].min()) - 8, label, color
-                        ))
-
-                    debug_frame = debug_composer.compose(
-                        debug_frame, _dbg_labels,
-                        f"frame {frame_index}  t={timestamp:.2f}s  kivia={len(active_stones)}",
-                        hog_results, hog_analyysi.plus_x_is_right(pose["K"], pose["R"], pose["t"])
-                    )
-
-                    debug_video_writer.write(debug_frame)
+                    # Testi_05_02 v5.2: koko debug-videon piirto (valokorjaus, ääriviivat, kokoonpano, kirjoitus) omassa saikeessa;
+                    # paasaie vain luovuttaa tilannekuvan (frame_u ei muutu enaa taman ruudun jalkeen, tulokset kopioidaan).
+                    debug_video_writer.submit(
+                        _render_debug_frame, frame_u, live_prep.photo_gain, live_prep.photo_bias, list(debug_draw_items),
+                        pose, f"frame {frame_index}  t={timestamp:.2f}s  kivia={len(active_stones)}",
+                        list(hog_results), hog_analyysi.plus_x_is_right(pose["K"], pose["R"], pose["t"]),
+                        debug_composer, local_pts_body)
                     _e = _PROF.setdefault("py: debug-video (piirto + kirjoitus)", [0.0, 0]); _e[0] += time.perf_counter() - _t_dbg0; _e[1] += 1
 
             _e = _PROF.setdefault("FRAME_KOKO", [0.0, 0])

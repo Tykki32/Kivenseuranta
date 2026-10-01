@@ -310,10 +310,16 @@ class AsyncVideoWriter:
             img = self._q.get()
             if img is None:
                 break
+            if isinstance(img, tuple):
+                img = img[0](*img[1])
             self._w.write(img)
 
     def write(self, img):
         self._q.put(img.copy())
+
+    def submit(self, fn, *args):
+        """Tyo (fn(*args) -> kuva) tehdaan taustasaikeessa ja kirjoitetaan; paasaie palaa heti."""
+        self._q.put((fn, args))
 
     def release(self):
         self._q.put(None)
