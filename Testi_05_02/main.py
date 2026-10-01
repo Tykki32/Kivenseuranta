@@ -6929,7 +6929,25 @@ if __name__ == "__main__":
         help="Videon loppuaika, esim. 00:21:00"
     )
     
+    _arg_parser.add_argument(
+        "--max-frame", type=int, default=0,
+        help=(
+            "Pysayta ajo (ja tulosta nopeus- ja pullonkaularaportti) kun tama ruutu on kasitelty - nopea testi omalla koneella, "
+            "esim. --max-frame 3000. Ohittaa MAX_FRAME-ymparistomuuttujan jos annettu."
+        )
+    )
+
+    _arg_parser.add_argument(
+        "--no-debug", action="store_true", default=False,
+        help="Pakota debug-video POIS (vertailuajo: nopeus ilman debug-videota). Ohittaa --debug ja DEBUG_SAVE_TRACKING_VIDEO."
+    )
+
     _args = _arg_parser.parse_args()
+
+    if _args.max_frame:
+        MAX_FRAME = _args.max_frame
+    if _args.no_debug:
+        _args.debug = False
 
     main(debug=_args.debug,
         start_time=_args.start,
