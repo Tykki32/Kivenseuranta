@@ -54,3 +54,8 @@ Debug-videon kustannus **52,2 → 11,8 ms/ruutu** (kokonaisaika/ruutu 86,4 → 5
 * `DebugComposer`: pysyvä canvas, **paneelit piirretään uudelleen vain kun sisältö muuttuu**, skaalaus ennen kääntöä (INTER_LINEAR; kääntö pienemmälle kuvalle).
 * `AsyncVideoWriter`: mp4-enkoodaus omassa säikeessä (`cv2.VideoWriter.write` vapauttaa GIL:n).
 Ulkoasu ja hog-csv ennallaan.
+
+## Pullonkaula-analyysi (nopeusraportin alussa + tiivis rivi edistymistulosteessa; `PULLONKAULA_RAPORTTI=0` pois)
+Liukuhihnan vaiheet A (luku+stabilointi), B (warp+varjosuodatus) ja C (pääsäie: HAKU/SEURANTA/CSV/debug) ajavat rinnan; nopeuden määrää **hitain vaihe** (suurin palveluaika ms/ruutu = pienin kapasiteetti r/s).
+Raportti kertoo per vaihe palveluajan, kapasiteetin, odotuksen syötteeseen (tyhjä jono) ja tulosteeseen (jono täynnä), kuormituksen, jonojen keskitäytön (B→C täynnä = pääsäie ei ehdi ottaa; tyhjä = ylävirran vaihe hitain),
+prosessin CPU-käytön (ytimiä keskimäärin) ja pullonkaulavaiheen suurimmat osat + vihjeen. Pääsäikeen oma CPU% on matala C++-kutsun aikana (odottaa C++:n työsäikeitä) - käytä palveluaikaa ja jonojen täyttöä.
