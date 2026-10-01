@@ -90,3 +90,9 @@ Kaukana (Y ≥ 15 m) mittaus on epätarkempaa, joten siellä käytetään kaikki
 Windows-ajossa pääsäikeen debug-aika oli 7,2 ms/ruutu ja C-vaihe pysyi ~42 ms vaikka SEURANTA nopeutui 26,9 → 22,7 ms – epäilys: yhden taustasäikeen
 piirto+koodaus (sandbox 10,6+14,7 ms, kuormitettuna hitaampi) ei pysy ruudun tahdissa ja pääsäie odottaa täyttä jonoa. Nyt piirto ja `VideoWriter.write`
 ovat omissa säikeissään (jonot 8). Sandbox (2900 ruutua, debug päällä): video ehjä (2900 ruutua, 1468x1080), pääsäikeen debug 0,14 ms, 31,3 r/s.
+
+### Stabiloinnin (vaihe A) nopeutustutkimus – `tools/bench_stabilointi.py`
+`python tools/bench_stabilointi.py <video> [ruutuja]` mittaa omalla koneella: CPU-polun vaiheet, `cv2.setNumThreads`-vaikutuksen, usean ruudun rinnakkaisajon läpimenon (1–4 säiettä)
+ja OpenCL/UMat-polun (esim. Intel UHD Graphics) sekä vertaa GPU-tuloksen CPU:hun.
+Sandbox (1280x720, 4 ydintä, ei OpenCL:ää): CPU-polku ~7 ms/ruutu; 1 → 4 säiettä: 147 → 420 r/s (ruudut ovat toisistaan riippumattomia, koska jokainen verrataan moodikuvaan).
+Keskitetyn rajauksen testi (ei pienennystä): 1024x576…800x450 -rajaus nopeutti 12 → 8…3,5 ms, mutta siirtymävirhe oli rms 0,13–0,19 px (max 0,7–0,8 px) -> ei käyttöön.
