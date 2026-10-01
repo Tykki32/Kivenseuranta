@@ -297,31 +297,44 @@ class DebugComposer:
 
 
 class AsyncVideoWriter:
-    """cv2.VideoWriter omassa saikeessa: write() kopioi kuvan jonoon ja palaa heti (jono taynna -> odottaa)."""
+    """cv2.VideoWriter kahdessa taustasaikeessa: (1) piirto/kokoonpano, (2) kirjoitus (koodaus). Pääsäie vain jonottaa tyon (submit)
+    tai valmiin kuvan (write); jono taynna -> odottaa."""
 
-    def __init__(self, writer, maxsize=6):
+    def __init__(self, writer, maxsize=8):
         self._w = writer
-        self._q = _queue.Queue(maxsize=maxsize)
-        self._t = threading.Thread(target=self._run, daemon=True)
-        self._t.start()
+        self._qr = _queue.Queue(maxsize=maxsize)    # piirtotyot
+        self._qw = _queue.Queue(maxsize=maxsize)    # valmiit kuvat kirjoitettavaksi
+        self._tr = threading.Thread(target=self._run_render, daemon=True)
+        self._tw = threading.Thread(target=self._run_write, daemon=True)
+        self._tr.start()
+        self._tw.start()
 
-    def _run(self):
+    def _run_render(self):
         while True:
-            img = self._q.get()
+            item = self._qr.get()
+            if item is None:
+                self._qw.put(None)
+                break
+            fn, args = item
+            # compose() palauttaa jaetun canvas-puskurin -> kopio ennen jonoon laittoa (kirjoitus on eri saikeessa)
+            self._qw.put(fn(*args).copy())
+
+    def _run_write(self):
+        while True:
+            img = self._qw.get()
             if img is None:
                 break
-            if isinstance(img, tuple):
-                img = img[0](*img[1])
             self._w.write(img)
 
     def write(self, img):
-        self._q.put(img.copy())
+        self._qw.put(img.copy())
 
     def submit(self, fn, *args):
-        """Tyo (fn(*args) -> kuva) tehdaan taustasaikeessa ja kirjoitetaan; paasaie palaa heti."""
-        self._q.put((fn, args))
+        """Tyo (fn(*args) -> kuva) piirretaan taustasaikeessa ja kirjoitetaan toisessa; paasaie palaa heti."""
+        self._qr.put((fn, args))
 
     def release(self):
-        self._q.put(None)
-        self._t.join()
+        self._qr.put(None)
+        self._tr.join()
+        self._tw.join()
         self._w.release()

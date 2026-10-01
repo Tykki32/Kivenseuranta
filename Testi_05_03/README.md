@@ -85,3 +85,8 @@ Kaukana (Y ≥ 15 m) mittaus on epätarkempaa, joten siellä käytetään kaikki
 - Nopeus 34,6 → 35,4 r/s (sandboxissa A-vaihe rajoittaa 40 r/s; pääsäikeen kapasiteetti 42,7 r/s ennen: SEURANTA 27,6 ms/kutsu, 20,3 ms/ruutu).
 - Heitot 26 / 26, hog-hog 23 → 26. Samat 23 heittoa: nopeus kaukohogilla ka ero −0,003 m/s (max 0,006), suunta −0,01°, suoran X T-viivalla ka −0,5 cm (max 5,2 cm). Liuku (alusta hog+1m) identtinen.
 - Korjattu: pysähtymisehto (ikkuna = stop_tracking_frames) ei täyttynyt parillisilla ruuduilla → sallitaan 1 ruudun vajaus (ilman tätä pysähtyneet kivet täyttivät paikat ja heittoja katosi).
+
+### Debug-videon kirjoitus kahteen säikeeseen (v5.3b)
+Windows-ajossa pääsäikeen debug-aika oli 7,2 ms/ruutu ja C-vaihe pysyi ~42 ms vaikka SEURANTA nopeutui 26,9 → 22,7 ms – epäilys: yhden taustasäikeen
+piirto+koodaus (sandbox 10,6+14,7 ms, kuormitettuna hitaampi) ei pysy ruudun tahdissa ja pääsäie odottaa täyttä jonoa. Nyt piirto ja `VideoWriter.write`
+ovat omissa säikeissään (jonot 8). Sandbox (2900 ruutua, debug päällä): video ehjä (2900 ruutua, 1468x1080), pääsäikeen debug 0,14 ms, 31,3 r/s.
