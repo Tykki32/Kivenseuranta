@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 import mode_engine
 import stone_tracker
 import haku_silhouette   # Testi_03_04: HAKU:n siluettitarkennus (valinnainen)
+import hog_analyysi      # Testi_05_01: hog-hog -analyysi (toisen asteen sovitus Y(t), nopeus/hidastuvuus/hog-hog-aika)
 from collections import deque
 import subprocess
 
@@ -1635,6 +1636,57 @@ def _select_throws(tracks):
         kept.append(c)
     return sorted(((k[3], k[4]) for k in kept), key=lambda t: t[1][0][0])
 
+
+
+# ============================================================
+# HOG-HOG -ANALYYSI (Testi_05_01): kun kivi on kulkenut riittavasti (Y <= lahihog + 50 cm), otetaan radan pisteet valilta [lahihog + 50 cm, kaukohog - 100 cm], sovitetaan
+# Y(t) = a t^2 + b t + c, pudotetaan 10 huonoiten sopivaa pistetta ja sovitetaan uudelleen. Jos R > 0.99: nopeus kaukohoglinella, keskihidastuvuus alueella ja hog-hog-aika
+# (yhtalon mukaan) tulostetaan terminaaliin ja kirjataan debug-videon kuvaan lahemman hoglinen luona radan sivuun HOG_OVERLAY_SECONDS ajaksi (+ still-kuva ja <csv>_hog.csv).
+# HOG_ANALYSIS=0 kytkee pois. Katso hog_analyysi.py.
+# ============================================================
+HOG_ANALYSIS = os.environ.get("HOG_ANALYSIS", "1") == "1"
+HOG_OVERLAY_SECONDS = float(os.environ.get("HOG_OVERLAY_SECONDS", "5"))
+HOG_SAVE_SNAPSHOT = os.environ.get("HOG_SAVE_SNAPSHOT", "1") == "1"
+
+
+def _hog_check(s, frame_index, fps, near_hog, far_hog, overlays, results, frame_img, csv_output, pose):
+    rows = s.get("all_rows")
+    if not rows:
+        return
+    y = rows[-1][2].get("Y_cm")
+    if y is None:
+        return
+    if "hog_result" not in s and y <= near_hog + hog_analyysi.NEAR_MARGIN_CM:
+        res = hog_analyysi.analyze_hog(rows, near_hog, far_hog)
+        res["stone_id"] = s["stone_id"]; res["frame"] = frame_index
+        s["hog_result"] = res
+        if res.get("ok"):
+            results.append(res)
+        print(f"[frame {frame_index}] " + " | ".join(hog_analyysi.format_lines(res, s["stone_id"])))
+    r = s.get("hog_result")
+    if r and r.get("ok") and not s.get("hog_overlay_started") and y <= near_hog:
+        s["hog_overlay_started"] = True
+        lines = hog_analyysi.format_lines(r, s["stone_id"])
+        overlays.append(dict(start=frame_index, end=frame_index + int(round(HOG_OVERLAY_SECONDS * fps)), lines=lines, stone_id=s["stone_id"]))
+        if HOG_SAVE_SNAPSHOT and frame_img is not None and csv_output:
+            try:
+                snap = hog_analyysi.draw_overlay(frame_img.copy(), lines, pose["K"], pose["R"], pose["t"], near_hog)
+                snap_path = os.path.splitext(csv_output)[0] + f"_hog_kivi{s['stone_id']}.png"
+                cv2.imwrite(snap_path, snap)
+            except Exception as e_:       # still-kuva ei saa kaataa seurantaa
+                print(f"[hog] still-kuvan tallennus epaonnistui: {e_}")
+
+
+def _hog_write_csv(results, csv_output):
+    if not results:
+        return
+    path = os.path.splitext(csv_output)[0] + "_hog.csv"
+    cols = ["stone_id", "frame", "R", "R_ennen_suodatusta", "n_kaytetty", "n_pudotettu", "v_far_hog_ms", "v_far_hog_kmh", "decel_ms2", "hog_hog_s", "t_far_hog_s", "t_near_hog_s", "v_near_hog_ms", "a", "b", "c"]
+    with open(path, "w", newline="") as hf:
+        w = csv.writer(hf); w.writerow(cols)
+        for r in results:
+            w.writerow([r.get(c_) for c_ in cols])
+    print(f"Hog-hog -analyysi: {len(results)} heittoa -> {path}")
 
 HAKU_MULTI = os.environ.get("HAKU_MULTI", "1") == "1"
 HAKU_MAX_RESULTS = int(os.environ.get("HAKU_MAX_RESULTS", "4"))
@@ -4411,6 +4463,8 @@ def run_pipeline(
     csv_writer = None
     csv_file = None
     debug_video_writer = None
+    hog_overlays = []      # Testi_05_01: hog-hog -tekstit (debug-video), katso HOG-HOG -ANALYYSI
+    hog_results = []
 
     previous_stabilization_matrix = np.array(
         [
@@ -5848,6 +5902,12 @@ def run_pipeline(
                             ):
                                 history.pop(0)
 
+                            if HOG_ANALYSIS and s.get("confirmed"):
+                                _hog_check(
+                                    s, frame_index, fps, k8.NEAR_HOGLINE_Y_CM, k8.FAR_HOGLINE_Y_CM,
+                                    hog_overlays, hog_results, frame_u, csv_output, pose
+                                )
+
                             stopped = False
 
                             if (
@@ -6227,6 +6287,12 @@ def run_pipeline(
                         (255, 255, 255), 2
                     )
 
+                    for _ov in hog_overlays:
+                        if _ov["start"] <= frame_index < _ov["end"]:
+                            hog_analyysi.draw_overlay(
+                                debug_frame, _ov["lines"], pose["K"], pose["R"], pose["t"], k8.NEAR_HOGLINE_Y_CM
+                            )
+
                     debug_video_writer.write(debug_frame)
                     _e = _PROF.setdefault("py: debug-video (piirto + kirjoitus)", [0.0, 0]); _e[0] += time.perf_counter() - _t_dbg0; _e[1] += 1
 
@@ -6366,6 +6432,9 @@ def run_pipeline(
                 f"{n_before} heittomaista rataa -> {len(gated)} heittoa (yksi / hogline-ylitys) "
                 f"({csv_output})"
             )
+
+        if HOG_ANALYSIS:
+            _hog_write_csv(hog_results, csv_output)
 
         if debug_video_writer is not None:
             debug_video_writer.release()
