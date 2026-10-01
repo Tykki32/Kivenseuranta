@@ -965,10 +965,10 @@ SHADOW_V_DROP_MAX = 50.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 ICE_S_MAX = 22
 ICE_V_MIN = 128
 # Testi_03_04 v4.5-koe: varitarkistus taustanvaimennuksessa: (ero tai varjo tai jaa) JA (S_ref = moodikuvan kylläisyys < COLOR_GATE_S_MAX TAI |H_ruutu - H_ref| <= COLOR_GATE_H_TOL).
-COLOR_GATE = os.environ.get("COLOR_GATE", "0") == "1"
+COLOR_GATE = os.environ.get("COLOR_GATE", "1") == "1"      # v4.5: OLETUKSENA PAALLA (COLOR_GATE=0 = vanha kolmen kriteerin vaimennus)
 COLOR_GATE_S_MAX = int(os.environ.get("COLOR_GATE_S_MAX", "60"))
-COLOR_GATE_H_TOL = int(os.environ.get("COLOR_GATE_H_TOL", "5"))
-COLOR_GATE_HUE_SAT = os.environ.get("COLOR_GATE_HUE_SAT", "0") == "1"      # 1: bg &= (S_ref < S_MAX) | (|dH| <= H_TOL & S_ruutu > S_MAX)
+COLOR_GATE_H_TOL = int(os.environ.get("COLOR_GATE_H_TOL", "10"))
+COLOR_GATE_HUE_SAT = os.environ.get("COLOR_GATE_HUE_SAT", "1") == "1"      # 1: bg &= (S_ref < S_MAX) | (|dH| <= H_TOL & S_ruutu > S_MAX)
 COLOR_GATE_BOTH = os.environ.get("COLOR_GATE_BOTH", "0") == "1"      # 1: matala kylläisyys vaaditaan seka moodikuvalta etta ruudulta (kahva sailyy jaalla, tumma kivi mainoksen paalla sailyy)
 if hasattr(stone_tracker, "set_color_gate"):
     stone_tracker.set_color_gate(COLOR_GATE_S_MAX if COLOR_GATE else 256, COLOR_GATE_H_TOL, int(COLOR_GATE_BOTH), int(COLOR_GATE_HUE_SAT))
@@ -3981,7 +3981,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_03_04 v4.4 siluettitarkennus: 3x3-maski + kaista, SEURANTA y>20 m kaikille (2026-09-30)"
+SOFTWARE_VERSION = "Testi_03_04 v4.5 variportti taustanvaimennukseen (S_ref<60 tai H+-10 ja S_ruutu>60) + siluettitarkennus (2026-10-01)"
 
 
 def _version_string():

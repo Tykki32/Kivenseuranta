@@ -85,3 +85,8 @@ kahva 1032 / 577 / 577; roskaa kiven ulkopuolella 1109 / 1306 / 1399. Koko video
 ### Variportti H +-10: S_ref < 60 TAI (|dH| <= 10 JA S_ruutu > 60)  (COLOR_GATE=1 COLOR_GATE_HUE_SAT=1 COLOR_GATE_H_TOL=10)
 7 kuvaruutua: harmaata kiveä poistettu 252 (sama kuin H5), roskaa 1399 -> 1317, jäänteet kiven oikealla (10088) 223 -> 153. Koko video: 26 heittoa, 14670 riviä, tarkka 0.808, rms med 0.79, 6-9 m sileys 1.22/3.34 (v4.4 1.19/3.38),
 kaukana (y>26 m) 1.06/7.14 (0.83/6.00); heitto 181 katoaa y=10.3 m (kuten v4.4). Kayttaytyy kuin v4.4; kuvissa kiven rikkinaisyys mainoksen paalla korjaantuu.
+
+## v4.5 (OLETUS): variportti taustanvaimennukseen
+bg = (ero<10 TAI varjo TAI jaa) JA (S_ref < 60 TAI (|dH| <= 10 JA S_ruutu > 60)); S_ref = moodikuvan kylläisyys, S_ruutu = ruudun. Oletus PAALLA: COLOR_GATE=1, COLOR_GATE_S_MAX=60, COLOR_GATE_H_TOL=10, COLOR_GATE_HUE_SAT=1.
+COLOR_GATE=0 palauttaa vanhan kolmen kriteerin vaimennuksen. Python = C++ (0 eroavaa pikselia). Koko video (26 heittoa): rivejä 14670 (v4.4 14640), tarkka 0.808, rms med 0.79, kuin v4.4.
+Windowsilla C++ pitaa kaantaa uudelleen (Remove-Item -Recurse -Force build; cmake -B build -S . -DCMAKE_BUILD_TYPE=Release; cmake --build build --config Release).
