@@ -16,7 +16,7 @@ import time
 
 import cv2
 
-LEVEYS, KORKEUS, FPS = 1920, 1080, 30
+LEVEYS, KORKEUS = 1920, 1080
 
 try:  # hiljenna OpenCV:n varoitukset olemattomista laitteista
     cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
@@ -40,7 +40,6 @@ def avaa(indeksi):
         return None
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, LEVEYS)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, KORKEUS)
-    cap.set(cv2.CAP_PROP_FPS, FPS)
     ok, frame = cap.read()
     if not ok or frame is None or frame.shape[1] != LEVEYS or frame.shape[0] != KORKEUS:
         cap.release()
@@ -54,6 +53,21 @@ def etsi_laite():
         if cap is not None:
             return i, cap
     return None, None
+
+
+def mittaa_fps(cap, n=60):
+    """Mittaa kameran oikean kuvanopeuden lukematta ruutuja nayttoon (ei piirtoa)."""
+    t0 = time.time()
+    luettu = 0
+    for _ in range(n):
+        ok, _frame = cap.read()
+        if not ok:
+            break
+        luettu += 1
+    mitattu = luettu / max(time.time() - t0, 1e-6)
+    # Napsauta lahimpaan vakiotaajuuteen (kamera lahettaa esim. 25 tai 30)
+    vakio = min((24, 25, 30, 50, 60), key=lambda f: abs(f - mitattu))
+    return mitattu, (vakio if abs(vakio - mitattu) / vakio < 0.08 else round(mitattu))
 
 
 def fourcc_teksti(arvo):
@@ -87,6 +101,7 @@ def tulosta_tiedot(cap, indeksi, ensimmainen):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("laite", nargs="?", type=int, default=None)
+    ap.add_argument("--fps", type=float, default=None, help="ohita automaattinen fps (tallennukselle)")
     ap.add_argument("--tallenna", default=None, help="tallenna video tiedostoon")
     args = ap.parse_args()
 
@@ -101,7 +116,10 @@ def main():
     ok, ensimmainen = cap.read()
     if ok:
         tulosta_tiedot(cap, indeksi, ensimmainen)
-    fps = cap.get(cv2.CAP_PROP_FPS) or FPS
+    mitattu, fps = mittaa_fps(cap)
+    if args.fps:
+        fps = args.fps
+    print(f"FPS (mitattu)    : {mitattu:.1f}  ->  kaytetaan {fps:g} fps")
 
     writer = None
     if args.tallenna:
