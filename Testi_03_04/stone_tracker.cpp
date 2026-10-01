@@ -952,7 +952,8 @@ static cv::Mat computeSat(const cv::Mat& frame_bgr)
 // pikseli on harmaa/valkea (matala kylläisyys) tai sama sävy kuin referenssissa -> kylläinen mutta eri-savyinen (keltainen kahva) ei katoa. g_gate_s_max >= 256 = pois.
 static int g_gate_s_max = 256;
 static int g_gate_h_tol = 5;
-static int g_gate_both = 0;     // 1: matala kylläisyys vaaditaan SEKA referenssilta ETTA ruudulta
+static int g_gate_both = 0;
+static int g_gate_hue_sat = 0;  // 1: sävyehto (|dH|<=tol) hyvaksytaan vain jos myos RUUDUN kylläisyys > g_gate_s_max (kylläisen taustan paalla oleva matalakylläinen pikseli ei ole tausta)     // 1: matala kylläisyys vaaditaan SEKA referenssilta ETTA ruudulta
 static inline int satFromMaxMin(int vmax, int vmin)
 {
     static int tab[256]; static bool init = false;
@@ -976,7 +977,8 @@ static inline bool colorGateOk(int b, int g, int r, const uint8_t* rp, int vmax,
       if (satFromMaxMin(rmax, rmin) < g_gate_s_max && (!g_gate_both || satFromMaxMin(vmax, vmin) < g_gate_s_max)) return true; }   // S = MOODIKUVAN (referenssin) kylläisyys (+ ruudun jos g_gate_both)
     int dh = std::abs(hueOf(b, g, r) - hueOf((int)rp[0], (int)rp[1], (int)rp[2]));
     if (dh > 90) dh = 180 - dh;
-    return dh <= g_gate_h_tol;
+    if (dh > g_gate_h_tol) return false;
+    return !g_gate_hue_sat || satFromMaxMin(vmax, vmin) > g_gate_s_max;
 }
 
 static cv::Mat suppressStaticBackground(
@@ -5268,7 +5270,7 @@ PYBIND11_MODULE(stone_tracker, m)
 {
     m.def("build_info", []() { return std::string("stone_tracker kaannetty ") + __DATE__ + " " + __TIME__; });
     m.def("set_haku_accept_score", [](double v) { g_haku_accept_score = v; }, py::arg("accept_score"));   // kokeiluihin (oletus 0.20)
-    m.def("set_color_gate", [](int s_max, int h_tol, int both) { g_gate_s_max = s_max; g_gate_h_tol = h_tol; g_gate_both = both; }, py::arg("s_max"), py::arg("h_tol"), py::arg("both") = 0);   // s_max >= 256 = pois
+    m.def("set_color_gate", [](int s_max, int h_tol, int both, int hue_sat) { g_gate_s_max = s_max; g_gate_h_tol = h_tol; g_gate_both = both; g_gate_hue_sat = hue_sat; }, py::arg("s_max"), py::arg("h_tol"), py::arg("both") = 0, py::arg("hue_sat") = 0);   // s_max >= 256 = pois
     m.def("get_haku_accept_score", []() { return g_haku_accept_score; });
     m.def("silhouette_refine_cpp", &silhouette_refine_cpp,
           py::arg("frame"), py::arg("local_pts_body"), py::arg("K"), py::arg("R"), py::arg("t"),

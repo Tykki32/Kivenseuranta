@@ -968,9 +968,10 @@ ICE_V_MIN = 128
 COLOR_GATE = os.environ.get("COLOR_GATE", "0") == "1"
 COLOR_GATE_S_MAX = int(os.environ.get("COLOR_GATE_S_MAX", "60"))
 COLOR_GATE_H_TOL = int(os.environ.get("COLOR_GATE_H_TOL", "5"))
+COLOR_GATE_HUE_SAT = os.environ.get("COLOR_GATE_HUE_SAT", "0") == "1"      # 1: bg &= (S_ref < S_MAX) | (|dH| <= H_TOL & S_ruutu > S_MAX)
 COLOR_GATE_BOTH = os.environ.get("COLOR_GATE_BOTH", "0") == "1"      # 1: matala kylläisyys vaaditaan seka moodikuvalta etta ruudulta (kahva sailyy jaalla, tumma kivi mainoksen paalla sailyy)
 if hasattr(stone_tracker, "set_color_gate"):
-    stone_tracker.set_color_gate(COLOR_GATE_S_MAX if COLOR_GATE else 256, COLOR_GATE_H_TOL, int(COLOR_GATE_BOTH))
+    stone_tracker.set_color_gate(COLOR_GATE_S_MAX if COLOR_GATE else 256, COLOR_GATE_H_TOL, int(COLOR_GATE_BOTH), int(COLOR_GATE_HUE_SAT))
 
 # ============================================================
 # JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
@@ -2520,7 +2521,10 @@ def _shadow_tolerant_background_mask(frame_bgr, reference_bgr, diff_threshold,
         low_s = ref_hsv[..., 1] < COLOR_GATE_S_MAX                                   # S = MOODIKUVAN kylläisyys
         if COLOR_GATE_BOTH:
             low_s &= frame_hsv[..., 1] < COLOR_GATE_S_MAX
-        bg &= low_s | (dh <= COLOR_GATE_H_TOL)
+        hue_ok = dh <= COLOR_GATE_H_TOL
+        if COLOR_GATE_HUE_SAT:
+            hue_ok &= frame_hsv[..., 1] > COLOR_GATE_S_MAX
+        bg &= low_s | hue_ok
     return bg
 
 
