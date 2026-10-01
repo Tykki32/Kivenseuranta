@@ -3998,8 +3998,109 @@ def _prof(name):
         e[1] += 1
 
 
+
+# ============================================================
+# PULLONKAULA-ANALYYSI (Testi_05_02): kuka oikeasti rajoittaa nopeutta? Liukuhihnan vaiheet A (luku+stabilointi), B (warp+varjosuodatus) ja C (paasaie: HAKU/SEURANTA/CSV/debug)
+# ajavat rinnan; nopeuden maaraa HITAIN vaihe (suurin "palveluaika" ms/ruutu = pienin kapasiteetti r/s). Muut odottavat joko syotetta (tyhja jono) tai tulostetta (jono taynna).
+# CPU < 100 % kun pullonkaulavaihe on yksi saie. Raportti tulostuu nopeusraportin alkuun ja tiiviina edistymisrivin yhteydessa. PULLONKAULA_RAPORTTI=0 = pois.
+# ============================================================
+PULLONKAULA_RAPORTTI = os.environ.get("PULLONKAULA_RAPORTTI", "1") == "1"
+_PIPE_STATS = {"wall0": None, "cpu0": None, "qC_sum": 0, "qC_n": 0, "qA_sum": 0, "qA_n": 0, "cpu_a": None, "cpu_b": None, "depth": 3}
+
+
+def _stage_numbers():
+    """Palauttaa dict: vaiheiden palveluaika / odotukset (ms per ruutu) _PROF:n pohjalta, tai None jos hihnaa ei ole ajettu."""
+    P = lambda k: _PROF.get(k, [0.0, 0])
+    a_n = P("pipe A: stabilointi (vaihekorrelaatio)")[1]
+    b_n = P("pipe B: odottaa vaihetta A")[1]
+    c_n = P("pipe C: paasaie odottaa hihnaa (sisaltyy py: read(video)-riviin)")[1]
+    if a_n < 20 or b_n < 20 or c_n < 20:
+        return None
+    a_busy = sum(v[0] for k, v in _PROF.items() if k.startswith("pipe A:") and "odottaa" not in k) / a_n * 1000
+    a_wout = P("pipe A: odottaa vaihetta B (jono taynna)")[0] / a_n * 1000
+    b_busy = sum(v[0] for k, v in _PROF.items() if k.startswith("pipe B:") and "odottaa" not in k) / b_n * 1000
+    b_win = P("pipe B: odottaa vaihetta A")[0] / b_n * 1000
+    b_wout = P("pipe B: odottaa paasaiketta (jono taynna)")[0] / b_n * 1000
+    c_win = P("pipe C: paasaie odottaa hihnaa (sisaltyy py: read(video)-riviin)")[0] / c_n * 1000
+    c_tot = P("FRAME_KOKO")[0] / max(P("FRAME_KOKO")[1], 1) * 1000
+    c_busy = max(c_tot - c_win, 1e-6)
+    return dict(a=(a_busy, 0.0, a_wout), b=(b_busy, b_win, b_wout), c=(c_busy, c_win, 0.0), c_tot=c_tot)
+
+
+def _bottleneck_compact():
+    s = _stage_numbers()
+    if s is None:
+        return None
+    names = {"a": "A luku+stabilointi", "b": "B warp+varjosuodatus", "c": "C paasaie"}
+    worst = max(("a", "b", "c"), key=lambda k: s[k][0])
+    q = ""
+    if _PIPE_STATS["qC_n"]:
+        q = f" | jonot A->B {_PIPE_STATS['qA_sum'] / max(_PIPE_STATS['qA_n'], 1):.1f}/{_PIPE_STATS['depth']} B->C {_PIPE_STATS['qC_sum'] / _PIPE_STATS['qC_n']:.1f}/{_PIPE_STATS['depth']}"
+    return (f"  pullonkaula: {names[worst]} ({s[worst][0]:.0f} ms/ruutu = max {1000 / s[worst][0]:.1f} r/s) | "
+            f"A {s['a'][0]:.0f} ms, B {s['b'][0]:.0f} ms, C {s['c'][0]:.0f} ms{q}")
+
+
+def _bottleneck_report_lines(n_frames):
+    s = _stage_numbers()
+    if s is None:
+        return []
+    L = ["=== PULLONKAULA-ANALYYSI (kuka oikeasti rajoittaa nopeutta) ==="]
+    names = {"a": "A  luku + gray + stabilointi (vaihekorrelaatio)", "b": "B  warpAffine+remap + valotasapaino + varjosuodatus", "c": "C  paasaie: HAKU/SEURANTA/CSV/debug-video"}
+    L.append(f"{'vaihe':52s} {'palvelu':>8s} {'kapas.':>7s} {'odottaa':>8s} {'odottaa':>8s} {'kuorm.':>7s}")
+    L.append(f"{'':52s} {'ms/rt':>8s} {'r/s':>7s} {'syotetta':>8s} {'tulosta':>8s} {'%':>7s}")
+    for k in ("a", "b", "c"):
+        busy, win, wout = s[k]
+        L.append(f"{names[k]:52s} {busy:8.1f} {1000 / busy:7.1f} {win:8.1f} {wout:8.1f} {100 * busy / (busy + win + wout):7.0f}")
+    worst = max(("a", "b", "c"), key=lambda k: s[k][0])
+    L.append(f"=> PULLONKAULA: {names[worst].split('  ', 1)[1].strip()} - kapasiteetti {1000 / s[worst][0]:.1f} r/s (mitattu kokonaisnopeus {1000 / s['c_tot']:.1f} r/s). "
+             "Muut vaiheet odottavat tahan (jono taynna) eivatka ole rajoittavia.")
+    if _PIPE_STATS["qC_n"]:
+        L.append(f"Jonojen keskitaytto: A->B {_PIPE_STATS['qA_sum'] / max(_PIPE_STATS['qA_n'], 1):.2f}/{_PIPE_STATS['depth']}, B->C {_PIPE_STATS['qC_sum'] / _PIPE_STATS['qC_n']:.2f}/{_PIPE_STATS['depth']} "
+                 "(B->C taynna = paasaie ei ehdi ottaa; tyhja = ylavirran vaihe on hitain)")
+    # CPU
+    try:
+        wall = time.perf_counter() - _PIPE_STATS["wall0"]; cpu = time.process_time() - _PIPE_STATS["cpu0"]
+        th = []
+        if _PIPE_STATS["cpu_a"] is not None:
+            th.append(f"A {100 * _PIPE_STATS['cpu_a'] / wall:.0f}%")
+        if _PIPE_STATS["cpu_b"] is not None:
+            th.append(f"B {100 * _PIPE_STATS['cpu_b'] / wall:.0f}%")
+        c_cpu = time.thread_time()
+        th.append(f"paasaie {100 * c_cpu / max(wall, 1e-9):.0f}%")
+        L.append(f"CPU: prosessi {cpu / wall:.2f} ydinta keskimaarin ({os.cpu_count()} loogista ydinta); saikeiden CPU/seinakello: " + ", ".join(th) +
+                 " (HUOM: paasaie odottaa C++-kutsun (SEURANTA/HAKU) aikana, jolloin sen oma CPU% on matala vaikka se on pullonkaula - C++ tyo kuluu C++:n tyosaikeissa; luotettavin mittari on yo. palveluaika + jonojen taytto)")
+    except Exception:
+        pass
+    # paasaikeen sisainen jako
+    items = [(k, v[0] / max(_PROF.get("FRAME_KOKO", [0, 1])[1], 1) * 1000) for k, v in _PROF.items()
+             if k.startswith("py:") and "taustasaikeen oma kesto" not in k and "MUU / JAANNOS" not in k and "tulossilmukka" not in k]
+    items.sort(key=lambda kv: -kv[1])
+    if worst == "c" and items:
+        L.append("Paasaikeen suurimmat osat (ms/ruutu, % palveluajasta):")
+        for k, ms in items[:6]:
+            L.append(f"   {k:62s} {ms:7.2f} {100 * ms / s['c'][0]:5.1f}%")
+        top = items[0][0]
+        if "debug-video" in top:
+            L.append("Vihje: debug-video on suurin osa - aja ilman --debug (tai nopeuta piirtoa).")
+        elif "SEURANTA dispatch" in top:
+            L.append("Vihje: SEURANTA (C++ track_stones_batch) on peräkkäinen kutsu joka ruudulle; sisainen rinnakkaisuus rajoittuu kivien maaraan/kutsu. "
+                     "Nopeutus: vahenna kivi-ehdokkaita, pienenna hakualueita, tai porrasta HAKU/SEURANTA useammalle saikeelle.")
+        elif "HAKU odotus" in top:
+            L.append("Vihje: HAKU-taustasaie ei ehdi valmistua ruudun aikana - harvenna HAKU-vali tai nopeuta HAKU:a.")
+    elif worst == "a":
+        L.append("Vihje: stabilointi (vaihekorrelaatio) on hitain - laske pienemmalla resoluutiolla/harvemmin tai jaa kahteen saikeeseen.")
+    elif worst == "b":
+        L.append("Vihje: warp+remap / varjosuodatus on hitain - yhdista yhteen lapikaynti tai laske pienemmalla alueella.")
+    L.append("================================================")
+    return L
+
+
 def _print_prof_report(n_frames, n_seuranta_updates):
     print()
+    if PULLONKAULA_RAPORTTI:
+        for _l in _bottleneck_report_lines(n_frames):
+            print(_l)
+        print()
     print("=== VAIHEKOHTAINEN AIKAMITTAUS (Testi_03_01) ===")
     print(f"ruutuja: {n_frames}, kivipaivityksia: {n_seuranta_updates}")
     _serial = sum(
@@ -4197,6 +4298,7 @@ class _LivePipeline:
         self._live_state = live_state
         self._calib_result = calib_result
         self._index = first_index
+        _PIPE_STATS.update(wall0=time.perf_counter(), cpu0=time.process_time(), qC_sum=0, qC_n=0, qA_sum=0, qA_n=0, cpu_a=None, cpu_b=None, depth=depth)
         self._ta = threading.Thread(target=self._run_a, daemon=True)
         self._tb = threading.Thread(target=self._run_b, daemon=True)
         self._ta.start()
@@ -4241,12 +4343,15 @@ class _LivePipeline:
                 self._index += 1
         except BaseException as e:      # valitetaan eteenpain
             self._put(self._qa, e, "pipe A: odottaa vaihetta B (jono taynna)")
+        finally:
+            _PIPE_STATS["cpu_a"] = time.thread_time()
 
     def _run_b(self):
         import queue as _queue
         try:
             while not self._stop.is_set():
                 t0 = time.perf_counter()
+                _PIPE_STATS["qA_sum"] += self._qa.qsize(); _PIPE_STATS["qA_n"] += 1
                 try:
                     item = self._qa.get(timeout=0.2)
                 except _queue.Empty:
@@ -4265,9 +4370,12 @@ class _LivePipeline:
                 }, "pipe B: odottaa paasaiketta (jono taynna)")
         except BaseException as e:
             self._put(self._q, e, "pipe B: odottaa paasaiketta (jono taynna)")
+        finally:
+            _PIPE_STATS["cpu_b"] = time.thread_time()
 
     def get(self):
         t0 = time.perf_counter()
+        _PIPE_STATS["qC_sum"] += self._q.qsize(); _PIPE_STATS["qC_n"] += 1
         item = self._q.get()
         _e = _PROF.setdefault("pipe C: paasaie odottaa hihnaa (sisaltyy py: read(video)-riviin)", [0.0, 0])
         _e[0] += time.perf_counter() - t0; _e[1] += 1
@@ -6390,6 +6498,10 @@ def run_pipeline(
                     f"valotasapaino {(total_photometric_time / processed) * 1000:.2f} ms/ruutu | "
                     f"varjosuodatus {(total_shadow_suppress_time / processed) * 1000:.2f} ms/ruutu"
                 )
+                if PULLONKAULA_RAPORTTI:
+                    _bn = _bottleneck_compact()
+                    if _bn:
+                        print(_bn)
 
     finally:
 
@@ -6817,7 +6929,25 @@ if __name__ == "__main__":
         help="Videon loppuaika, esim. 00:21:00"
     )
     
+    _arg_parser.add_argument(
+        "--max-frame", type=int, default=0,
+        help=(
+            "Pysayta ajo (ja tulosta nopeus- ja pullonkaularaportti) kun tama ruutu on kasitelty - nopea testi omalla koneella, "
+            "esim. --max-frame 3000. Ohittaa MAX_FRAME-ymparistomuuttujan jos annettu."
+        )
+    )
+
+    _arg_parser.add_argument(
+        "--no-debug", action="store_true", default=False,
+        help="Pakota debug-video POIS (vertailuajo: nopeus ilman debug-videota). Ohittaa --debug ja DEBUG_SAVE_TRACKING_VIDEO."
+    )
+
     _args = _arg_parser.parse_args()
+
+    if _args.max_frame:
+        MAX_FRAME = _args.max_frame
+    if _args.no_debug:
+        _args.debug = False
 
     main(debug=_args.debug,
         start_time=_args.start,
