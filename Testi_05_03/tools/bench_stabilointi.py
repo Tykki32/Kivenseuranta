@@ -14,7 +14,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import cv2, numpy as np
 import stone_tracker
 
-video = sys.argv[1]
+if len(sys.argv) > 1:
+    video = sys.argv[1]
+else:
+    try:                                    # ei argumenttia -> tiedostovalitsin
+        import tkinter, tkinter.filedialog
+        tkinter.Tk().withdraw()
+        video = tkinter.filedialog.askopenfilename(title="Valitse video", filetypes=[("Video", "*.mp4 *.avi *.mov *.mkv")])
+    except Exception:
+        video = ""
+    if not video:
+        sys.exit("Kayto: python tools/bench_stabilointi.py <video> [ruutuja=200]")
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 200
 cap = cv2.VideoCapture(video)
 grays = []
