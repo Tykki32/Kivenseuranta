@@ -6612,7 +6612,8 @@ def main(debug=None, start_time=None, end_time=None):
         f"Video: {input_file}"
     )
 
-    command = ["ffmpeg"]
+    # -y: leikattu video (<nimi>_leikattu.mp4) ylikirjoitetaan AINA ilman kysymysta (ilman tata ffmpeg kysyy "File exists. Overwrite? [y/N]")
+    command = ["ffmpeg", "-y"]
 
     if start_time is not None:
         command += ["-ss", start_time]
