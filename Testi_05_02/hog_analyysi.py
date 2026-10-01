@@ -258,3 +258,64 @@ def compose_debug_frame(base_bgr, labels, header, results, plus_right):
     left = [r for r in results if throw_side(r, plus_right) == "L"][::-1]
     right = [r for r in results if throw_side(r, plus_right) == "R"][::-1]
     return np.hstack([render_panel(left), vid, render_panel(right)])
+
+
+# ============================================================
+# NOPEA DEBUG-VIDEON KOOSTAJA (Testi_05_02): pysyva canvas, paneelit piirretaan uudelleen vain kun sisalto muuttuu, skaalaus ENNEN kaantoa (pienempi kuva),
+# ja AsyncVideoWriter (mp4-enkoodaus omassa saikeessa; cv2.VideoWriter.write vapauttaa GIL:n).
+# ============================================================
+import threading
+import queue as _queue
+
+
+class DebugComposer:
+    def __init__(self, src_w, src_h):
+        self.src_w, self.src_h = int(src_w), int(src_h)
+        self.video_w, self.video_h, self.scale, self.total_w = debug_layout(src_w, src_h)
+        self.canvas = np.zeros((self.video_h, self.total_w, 3), np.uint8)
+        self._key = {"L": None, "R": None}
+        # skaalaus ennen kaantoa: (src_w x src_h) -> (video_h x video_w) = (DEBUG_H x video_w) kaantamattomana: leveys DEBUG_H, korkeus video_w
+        self._pre_w, self._pre_h = DEBUG_H, self.video_w
+
+    def compose(self, base_bgr, labels, header, results, plus_right):
+        H0, W0 = base_bgr.shape[:2]
+        small = cv2.resize(base_bgr, (self._pre_w, self._pre_h), interpolation=cv2.INTER_LINEAR)     # 1080 x 608
+        vid = cv2.rotate(small, cv2.ROTATE_90_COUNTERCLOCKWISE)                                   # 608 x 1080 (leveys x korkeus)
+        scale = self.scale
+        for (x, y, txt, col) in labels:
+            xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))
+            cv2.putText(vid, txt, (max(2, min(self.video_w - 120, xr)), max(14, min(self.video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
+        cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
+        self.canvas[:, PANEL_W:PANEL_W + self.video_w] = vid
+        for side, x0 in (("L", 0), ("R", PANEL_W + self.video_w)):
+            ents = [r for r in results if throw_side(r, plus_right) == side][::-1]
+            key = tuple((r["stone_id"], r["frame"]) for r in ents)
+            if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui
+                self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents)
+                self._key[side] = key
+        return self.canvas
+
+
+class AsyncVideoWriter:
+    """cv2.VideoWriter omassa saikeessa: write() kopioi kuvan jonoon ja palaa heti (jono taynna -> odottaa)."""
+
+    def __init__(self, writer, maxsize=6):
+        self._w = writer
+        self._q = _queue.Queue(maxsize=maxsize)
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+
+    def _run(self):
+        while True:
+            img = self._q.get()
+            if img is None:
+                break
+            self._w.write(img)
+
+    def write(self, img):
+        self._q.put(img.copy())
+
+    def release(self):
+        self._q.put(None)
+        self._t.join()
+        self._w.release()
