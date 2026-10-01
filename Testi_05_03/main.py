@@ -970,8 +970,8 @@ SHADOW_V_DROP_MAX = 50.0  # kuinka paljon V (HSV) saa pudota ja silti tulkita ta
 ICE_S_MAX = 22
 ICE_V_MIN = 128
 # Testi_03_04 v4.5-koe: varitarkistus taustanvaimennuksessa: (ero tai varjo tai jaa) JA (S_ref = moodikuvan kylläisyys < COLOR_GATE_S_MAX TAI |H_ruutu - H_ref| <= COLOR_GATE_H_TOL).
-# Testi_05_03: kivea seurataan vain joka toisella ruudulla kun Y < tama (cm); 0 = pois. Ymparistomuuttuja SEURANTA_HALF_RATE_Y_CM.
-SEURANTA_HALF_RATE_Y_CM = float(os.environ.get("SEURANTA_HALF_RATE_Y_CM", "1500"))
+# Testi_05_03: kivea seurataan vain joka toisella ruudulla kun Y < tama (cm); 0 = pois (oletus v5.4:sta alkaen). Ymparistomuuttuja SEURANTA_HALF_RATE_Y_CM (esim. 1500 = 15 m).
+SEURANTA_HALF_RATE_Y_CM = float(os.environ.get("SEURANTA_HALF_RATE_Y_CM", "0"))   # v5.4: OLETUKSENA POIS (ei nopeuttanut mitaan mutta heikensi laatua: 24 -> 22 heittoa)
 
 COLOR_GATE = os.environ.get("COLOR_GATE", "1") == "1"      # v4.5: OLETUKSENA PAALLA (COLOR_GATE=0 = vanha kolmen kriteerin vaimennus)
 COLOR_GATE_S_MAX = int(os.environ.get("COLOR_GATE_S_MAX", "60"))
@@ -983,6 +983,9 @@ if hasattr(stone_tracker, "set_color_gate"):
 
 # Testi_05_03: GPU-ristikkohaku (OpenCL, esim. Intel UHD) SEURANNAN hienolle ristikolle. GPU_GRID=1 paalle (oletus pois), GPU_GRID_VERIFY=1 vertaa CPU:hun ja kerryttaa tilastoa,
 # GPU_GRID_DEVICE=gpu|cpu|any (oletus gpu).
+
+# Testi_05_03: GPU_B=1 siirtaa vaiheen B (warpAffine+remap + varjotoleranssi-taustanvaimennus + valotasapaino) OpenCL:lle (esim. Intel UHD); tulos bitti-identtinen CPU:n (OpenCV 4.x) kanssa.
+GPU_B = os.environ.get("GPU_B", "0") == "1"
 GPU_GRID = os.environ.get("GPU_GRID", "0") == "1"
 GPU_GRID_VERIFY = os.environ.get("GPU_GRID_VERIFY", "0") == "1"
 if hasattr(stone_tracker, "set_gpu_grid"):
@@ -4178,7 +4181,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_03 v5.3 (pohja: Testi_05_02 v5.2; joka toinen ruutu kun Y<15 m) (2026-10-01)"
+SOFTWARE_VERSION = "Testi_05_03 v5.4 (pohja: Testi_05_02 v5.2; GPU-vaihe B valinnainen; joka toisen ruudun seuranta pois oletuksena) (2026-10-01)"
 
 
 def _version_string():
@@ -4249,17 +4252,39 @@ class _LivePrep:
 
     def process(self, frame, stabilization_matrix, frame_index, live_state, calib_result):
         pf = self.prefix
-        t_warp0 = time.perf_counter()
-        stabilized = cv2.warpAffine(
-            frame, stabilization_matrix, (self.width, self.height)
-        )
-        frame_u = cv2.remap(
-            stabilized, live_state["map1"], live_state["map2"],
-            interpolation=cv2.INTER_LINEAR
-        )
-        _e = _PROF.setdefault(pf + " warpAffine+remap (koko frame)", [0.0, 0]); _e[0] += time.perf_counter() - t_warp0; _e[1] += 1
-
         ref_undist_live = calib_result["calib"]["frame_undistorted"]
+        t_warp0 = time.perf_counter()
+
+        # GPU-vaihe B (valinnainen): alustus kerran, virheessa pysyva paluu CPU-polkuun
+        if GPU_B and getattr(self, "_gpu_b", None) is None:
+            self._gpu_b = False
+            try:
+                if (ENABLE_SHADOW_TOLERANT_STABILIZATION and hasattr(stone_tracker, "gpu_b_init") and ref_undist_live is not None
+                        and ref_undist_live.shape == frame.shape):
+                    _info = stone_tracker.gpu_b_init(live_state["map1"], live_state["map2"], ref_undist_live, float(GRANITE_DIFF_THRESHOLD),
+                                                     float(SHADOW_V_DROP_MIN), float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN))
+                    self._gpu_b = not _info.startswith("EI KAYTETTAVISSA")
+                    print(f"GPU-vaihe B: {_info}")
+                else:
+                    print("GPU-vaihe B: EI KAYTETTAVISSA (varjotoleranssi pois / vanha moduuli / kokoero)")
+            except Exception as _e:
+                print(f"GPU-vaihe B: EI KAYTETTAVISSA ({_e!r})")
+
+        frame_u = None
+        if getattr(self, "_gpu_b", False):
+            frame_u = stone_tracker.gpu_b_warp(frame, np.ascontiguousarray(stabilization_matrix, dtype=np.float64))
+            if frame_u is None:
+                print("GPU-vaihe B: virhe -> palataan CPU-polkuun")
+                self._gpu_b = False
+        if frame_u is None:
+            stabilized = cv2.warpAffine(
+                frame, stabilization_matrix, (self.width, self.height)
+            )
+            frame_u = cv2.remap(
+                stabilized, live_state["map1"], live_state["map2"],
+                interpolation=cv2.INTER_LINEAR
+            )
+        _e = _PROF.setdefault(pf + " warpAffine+remap (koko frame)", [0.0, 0]); _e[0] += time.perf_counter() - t_warp0; _e[1] += 1
 
         # VALOTASAPAINO: estimointi taustasaikeessa kerran sekunnissa. Uusi gain/bias otetaan kayttoon
         # AINA tasan PHOTO_APPLY_DELAY_FRAMES ruutua laheteyksen jalkeen (tarvittaessa odotetaan tulosta),
@@ -4298,13 +4323,23 @@ class _LivePrep:
         if ENABLE_SHADOW_TOLERANT_STABILIZATION:
             t_shadow0 = time.perf_counter()
             if _fast_shadow:
-                frame_u_for_tracking = stone_tracker.suppress_shadow_background(
-                    frame_u, ref_undist_live,
-                    np.asarray(self.photo_gain, dtype=np.float64),
-                    np.asarray(self.photo_bias, dtype=np.float64),
-                    float(GRANITE_DIFF_THRESHOLD), float(SHADOW_V_DROP_MIN),
-                    float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN)
-                )
+                frame_u_for_tracking = None
+                if getattr(self, "_gpu_b", False):
+                    frame_u_for_tracking = stone_tracker.gpu_b_suppress(
+                        np.asarray(self.photo_gain, dtype=np.float64), np.asarray(self.photo_bias, dtype=np.float64),
+                        int(frame_u.shape[0]), int(frame_u.shape[1])
+                    )
+                    if frame_u_for_tracking is None:
+                        print("GPU-vaihe B: virhe -> palataan CPU-polkuun")
+                        self._gpu_b = False
+                if frame_u_for_tracking is None:
+                    frame_u_for_tracking = stone_tracker.suppress_shadow_background(
+                        frame_u, ref_undist_live,
+                        np.asarray(self.photo_gain, dtype=np.float64),
+                        np.asarray(self.photo_bias, dtype=np.float64),
+                        float(GRANITE_DIFF_THRESHOLD), float(SHADOW_V_DROP_MIN),
+                        float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN)
+                    )
             else:
                 frame_u_for_tracking = suppress_static_background(
                     frame_u_photo, ref_undist_live, diff_threshold=GRANITE_DIFF_THRESHOLD

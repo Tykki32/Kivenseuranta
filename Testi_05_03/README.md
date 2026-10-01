@@ -127,3 +127,12 @@ Tarkista oma ffmpeg: `ffmpeg -hide_banner -encoders | findstr qsv`.
 Ajaa main.py:n kolmesti (verify = GPU+CPU-vertailu, gpu, cpu; oletuksena debug-video päällä) ja tallentaa kansioon (oletus `<videon kansio>/vertailuajo_<aikaleima>`): jokaisen ajon koko lokin, sijainti-CSV:t, ja
 `vertailu_yhteenveto.txt` (nopeudet, pullonkaularaportit, GPU-tilasto, CSV-vertailu). Ilman `--video`-argumenttia avataan tiedostovalitsin kerran.
 Lisäksi `main.py --video <polku>` ohittaa tiedostovalitsimen.
+
+### v5.4: GPU-vaihe B (`GPU_B=1`) + joka toisen ruudun seuranta pois oletuksena
+- **Puolitus pois:** `SEURANTA_HALF_RATE_Y_CM` oletus on nyt 0 (ei nopeuttanut mitään, mutta heikensi laatua: 24 -> 22 heittoa). Voi kytkeä: `SEURANTA_HALF_RATE_Y_CM=1500`.
+- **GPU-vaihe B** (OpenCL, esim. Intel UHD; oletuksena pois): `warpAffine` + `remap` + valotasapaino + varjotoleranssi-taustanvaimennus ajetaan GPU:lla. Pullonkaula oli vaihe B (38–40 ms, 92 % kuormitus), ja sen CPU-aika kasvoi putkessa 4× yksittäismittauksesta.
+  - Tulos on **bitti-identtinen** OpenCV 4.x:n CPU-polun kanssa: ydin toistaa OpenCV:n kiintopisteisen bilineaarisen interpoloinnin (AB_BITS=10, INTER_BITS=5, 15-bittiset painot, painotaulukon korjauskuvio) ja `suppress_shadow_background`:n kokonaislukulaskennan
+    (sävylaskenta float-taulukolla ja ilman FMA-yhdistelyä). Testattu OpenCV 4.12:ta vastaan (28 kuvaa × 4 siirtymää, IPP päällä/pois): 0 eri arvoa. (OpenCV 5.0:n warpAffine/remap eroaa 4.x:stä – ei tuettu.)
+  - Rajapinta: `gpu_b_init(map1, map2, ref, ...)`, `gpu_b_warp(frame, M)`, `gpu_b_suppress(gains, biases, H, W)`; `main.py` käyttää niitä `_LivePrep.process`:ssa, virheessä palataan CPU-polkuun.
+  - GPU-polku siirtää kuvat GPU:lle ja takaisin (frame_u ja frame_for_tracking ladataan takaisin, koska pääsäie, debug-video ja muu koodi käyttävät niitä).
+- `tools/vertailuajo.py`: oletus nyt `cpu,gpub,gpuall` (muut: `gpu`, `verify`).
