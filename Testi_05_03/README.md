@@ -110,3 +110,14 @@ Keskitetyn rajauksen testi (ei pienennystä): 1024x576…800x450 -rajaus nopeutt
 Perustelu: GPU ei auta DFT:ssä (15,5 vs 11,5 ms) eikä SEURANNASSA; koodaus on sen sijaan laskentaa jonka media-moottori tekee CPU:ta kuormittamatta,
 ja debug-video hidasti kaikkia vaiheita ~20 % (26,0 → 20,5 r/s). Sandbox (ei QSV:tä): putki toimii (x264) ja varapolku (mp4v) toimii.
 Tarkista oma ffmpeg: `ffmpeg -hide_banner -encoders | findstr qsv`.
+
+### GPU-ristikkohaku (OpenCL, esim. Intel UHD) – oletuksena pois
+`GPU_GRID=1` ottaa käyttöön SEURANNAN ristikkohaun HIENON vaiheen (±coarse-askel, 1,5 cm askel -> tyypillisesti 10×10 = 100 ehdokasta, kaikki pisteytetään) GPU:lla.
+- OpenCL-kirjasto (OpenCL.dll / libOpenCL.so) ladataan ajonaikaisesti: ei build-riippuvuutta; jos laitetta ei löydy, käytetään CPU-polkua ja tulostetaan syy.
+- Isäntä (CPU) laskee ehdokkaiden kokonaislukumonikulmiot täsmälleen kuten CPU-polku (projektio, trunkointi, marginaalihull); GPU-ydin rasteroi ne **täsmälleen kuten `cv::fillPoly`** (Bresenham-reunat + täyttö 16.16-kiintopisteellä, dx katkaistuna kuten OpenCV:ssä) ja laskee pikselimäärät
+  (rivikohtaiset kumulatiiviset maskisummat -> ei pikselisilmukkaa); pistemäärä muodostetaan isännässä samalla kaavalla kuin CPU:lla. Leikkautuvat/ei-kuperat ehdokkaat pisteytetään CPU:lla (`hullOverlapScore`).
+- Verifiointi: `GPU_GRID_VERIFY=1` laskee myös CPU-pistemäärät kaikille ehdokkaille ja kerryttää tilastoa. Sandbox (OpenCL-laite = pocl/CPU, 6851 ristikkoa / 685 100 ehdokasta): 0 eri pistemäärää, 0 eri voittajaa; stones.csv identtinen CPU-polun kanssa.
+- `GPU_GRID_DEVICE=gpu|cpu|any` (oletus gpu). 3 peräkkäistä OpenCL-virhettä -> GPU pois käytöstä (CPU-varapolku).
+- Pullonkaularaportissa C++-puolen rivit "ristikko: GPU-polku" + alarivit (isäntälaskenta / OpenCL-kutsu / pisteytys). Vertaa ristikkohaun CPU-aikaan ("haku: ristikko (yhdistelma...)").
+- Käännös (Windows): C++-moduuli pitää kääntää uudelleen (`stone_tracker.cpp`: ei CMake-muutoksia; `windows.h` mukaan LoadLibrary-kutsua varten).
+- Kokeilu: `$env:GPU_GRID=1; python main.py --max-frame 3000 --no-debug` vs. ilman; lisää `$env:GPU_GRID_VERIFY=1` kerran oikeellisuuden tarkistamiseen.

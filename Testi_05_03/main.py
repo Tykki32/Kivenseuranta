@@ -981,6 +981,15 @@ COLOR_GATE_BOTH = os.environ.get("COLOR_GATE_BOTH", "0") == "1"      # 1: matala
 if hasattr(stone_tracker, "set_color_gate"):
     stone_tracker.set_color_gate(COLOR_GATE_S_MAX if COLOR_GATE else 256, COLOR_GATE_H_TOL, int(COLOR_GATE_BOTH), int(COLOR_GATE_HUE_SAT))
 
+# Testi_05_03: GPU-ristikkohaku (OpenCL, esim. Intel UHD) SEURANNAN hienolle ristikolle. GPU_GRID=1 paalle (oletus pois), GPU_GRID_VERIFY=1 vertaa CPU:hun ja kerryttaa tilastoa,
+# GPU_GRID_DEVICE=gpu|cpu|any (oletus gpu).
+GPU_GRID = os.environ.get("GPU_GRID", "0") == "1"
+GPU_GRID_VERIFY = os.environ.get("GPU_GRID_VERIFY", "0") == "1"
+if hasattr(stone_tracker, "set_gpu_grid"):
+    _gpu_info = stone_tracker.set_gpu_grid(int(GPU_GRID), int(GPU_GRID_VERIFY))
+    if GPU_GRID:
+        print(f"GPU-ristikkohaku: {_gpu_info}" + (" (verify: vertaa CPU-tuloksiin)" if GPU_GRID_VERIFY else ""))
+
 # ============================================================
 # JOKA-FRAME SUB-PIKSELI-KOHDISTUS - OMA, ERILLINEN lippunsa (irrotettu
 # ENABLE_SHADOW_TOLERANT_STABILIZATIONista, kayttajan pyynnosta: katso
@@ -4143,6 +4152,13 @@ def _print_prof_report(n_frames, n_seuranta_updates):
         snap = _st.prof_snapshot()
     except Exception:
         snap = []
+    try:
+        if GPU_GRID and hasattr(_st, "gpu_grid_stats"):
+            _g = _st.gpu_grid_stats()
+            print(f"GPU-ristikkohaku: kutsuja {_g['calls']}, GPU-polku kaytossa {_g['used']}, CPU-varapolku {_g['fallbacks']}, ehdokkaita tarkalla CPU:lla (leikkautuva/ei-kupera) {_g['cand_exact_cpu']}"
+                  + (f" | verify: {_g['verified']} ristikkoa ({_g['cand_compared']} ehdokasta), eri pistemaara {_g['score_diffs']}, eri voittaja {_g['mismatches']}, suurin pistemaaraero {_g['err_max']:.2e}" if GPU_GRID_VERIFY else ""))
+    except Exception as _e:
+        print("GPU-tilasto ei saatavilla:", _e)
     if snap:
         print("--- C++-puoli (summattu CPU-aika saikeiden yli) ---")
         print(f"{'vaihe':58s} {'ms/ruutu':>9s} {'ms/kutsu':>9s} {'kutsuja':>8s}")
