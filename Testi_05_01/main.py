@@ -5328,11 +5328,13 @@ def run_pipeline(
 
                     if debug_video_output is not None:
 
+                        _dbg_vw, _dbg_vh, _dbg_scale, _dbg_total_w = hog_analyysi.debug_layout(width, height)
                         debug_video_writer = cv2.VideoWriter(
                             debug_video_output,
                             cv2.VideoWriter_fourcc(*"mp4v"),
-                            fps, (width, height)
+                            fps, (_dbg_total_w, _dbg_vh)
                         )
+                        print(f"Debug-video: stabiloitu+korjattu, ei maskeja, kaannetty 90 astetta vastapaivaan, {_dbg_total_w}x{_dbg_vh} (video {_dbg_vw}x{_dbg_vh} + paneelit {hog_analyysi.PANEL_W} px/puoli)")
 
                     print()
                     print(
@@ -6249,12 +6251,14 @@ def run_pipeline(
                 _t_dbg0 = time.perf_counter()
                 if debug_video_writer is not None:
 
-                    # Kayttajan pyynnosta: debug-videoon tallennetaan
-                    # moodikuvalla suodatettu frame_u_for_tracking (se
-                    # mita HAKU/SEURANTA oikeasti NAKEE), EI alkuperaista
-                    # frame_u:ta - nain debug-videosta voi suoraan
-                    # tarkistaa mita tunnistus itse asiassa kaytti.
-                    debug_frame = frame_u_for_tracking.copy()
+                    # Testi_05_01: debug-video = stabiloitu + valotasapainokorjattu kuva ILMAN maskeja/taustanvaimennusta (aiemmin frame_u_for_tracking),
+                    # kaannettu 90 astetta vastapaivaan (kivet kulkevat ylhaalta alas), korkeus 1080; vasemmalla/oikealla paneelit vasemmalle/oikealle lahteneista heitoista.
+                    if live_prep.photo_gain is not None:
+                        debug_frame = apply_photometric_correction(frame_u, live_prep.photo_gain, live_prep.photo_bias)
+                    else:
+                        debug_frame = frame_u.copy()
+                    debug_frame = np.ascontiguousarray(debug_frame)
+                    _dbg_labels = []
 
                     for bx, by, s_id, color, label in debug_draw_items:
 
@@ -6270,29 +6274,15 @@ def run_pipeline(
                         cv2.polylines(
                             debug_frame, [hull_i], True, color, 2
                         )
+                        _dbg_labels.append((
+                            int(hull_i[:, 0, 0].min()), int(hull_i[:, 0, 1].min()) - 8, label, color
+                        ))
 
-                        cv2.putText(
-                            debug_frame, label,
-                            (
-                                int(hull_i[:, 0, 0].min()),
-                                int(hull_i[:, 0, 1].min()) - 8
-                            ),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2
-                        )
-
-                    cv2.putText(
-                        debug_frame,
-                        f"frame {frame_index}  t={timestamp:.2f}s  "
-                        f"kivia={len(active_stones)}",
-                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                        (255, 255, 255), 2
+                    debug_frame = hog_analyysi.compose_debug_frame(
+                        debug_frame, _dbg_labels,
+                        f"frame {frame_index}  t={timestamp:.2f}s  kivia={len(active_stones)}",
+                        hog_results, hog_analyysi.plus_x_is_right(pose["K"], pose["R"], pose["t"])
                     )
-
-                    for _ov in hog_overlays:
-                        if _ov["start"] <= frame_index < _ov["end"]:
-                            hog_analyysi.draw_overlay(
-                                debug_frame, _ov["lines"], pose["K"], pose["R"], pose["t"], k8.NEAR_HOGLINE_Y_CM
-                            )
 
                     debug_video_writer.write(debug_frame)
                     _e = _PROF.setdefault("py: debug-video (piirto + kirjoitus)", [0.0, 0]); _e[0] += time.perf_counter() - _t_dbg0; _e[1] += 1
@@ -6612,7 +6602,8 @@ def main(debug=None, start_time=None, end_time=None):
         f"Video: {input_file}"
     )
 
-    command = ["ffmpeg"]
+    # -y: leikattu video (<nimi>_leikattu.mp4) ylikirjoitetaan AINA ilman kysymysta (ilman tata ffmpeg kysyy "File exists. Overwrite? [y/N]")
+    command = ["ffmpeg", "-y"]
 
     if start_time is not None:
         command += ["-ss", start_time]

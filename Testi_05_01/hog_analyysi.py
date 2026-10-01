@@ -168,3 +168,80 @@ def draw_overlay(img, lines, K, R, t, near_hog_cm, x_side_cm=300.0, lane_half_cm
     for i, s in enumerate(lines):
         cv2.putText(img, s, (x0, y0 + 22 + i * lh), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color if i else (0, 255, 255), 2)
     return img
+
+
+# ============================================================
+# DEBUG-VIDEON UUSI ULKOASU: kaannetty 90 astetta vastapaivaan (kivet kulkevat ylhaalta alas), korkeus DEBUG_H (1080), vasemmalla ja oikealla
+# tietopaneelit heitoista jotka lahtivat vasemmalle / oikealle (ylimpana viimeisin, vanhemmat rullaavat alas kunnes eivat mahdu).
+# ============================================================
+DEBUG_H = 1080
+PANEL_W = 430
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+FONT_SCALE = 0.6          # sama fontti kuin edellisessa (hog-hog -tekstissa)
+FONT_THICK = 2
+LINE_H = 26
+BOX_PAD = 8
+BOX_GAP = 8
+
+
+def debug_layout(src_w, src_h):
+    """Kaannetyn videon koko: (video_w, video_h, scale, total_w). Kaannos 90 astetta -> leveys = src_h, korkeus = src_w; skaalataan korkeus DEBUG_H:hon."""
+    scale = DEBUG_H / float(src_w)
+    video_w = int(round(src_h * scale))
+    return video_w, DEBUG_H, scale, video_w + 2 * PANEL_W
+
+
+def plus_x_is_right(K, R, t, y_cm=1500.0):
+    """True jos +X on kaannetyssa (90 astetta vastapaivaan) videossa OIKEALLA. Kaannos: x' = y_alkuperainen."""
+    K = np.asarray(K, float); R = np.asarray(R, float).reshape(3, 3); t = np.asarray(t, float).reshape(3)
+    def py(x):
+        p = K @ (R @ np.array([x, y_cm, 0.0]) + t); return p[1] / p[2]
+    return py(100.0) > py(-100.0)
+
+
+def throw_side(res, plus_right):
+    """'L' tai 'R': mille puolelle (kaannetyssa videossa) heitto lahti kaukohoglinella (suunta dir_far_hog_deg: + = kohti +X)."""
+    toward_plus = res["dir_far_hog_deg"] > 0
+    return "R" if toward_plus == bool(plus_right) else "L"
+
+
+def entry_lines(res):
+    return [f"kiven ID: {res['stone_id']}",
+            f"nopeus: {res['v_far_hog_ms']:.2f} m/s",
+            f"hidastuvuus: {res['decel_ms2']:.3f} m/s^2",
+            f"hog-hog: {res['hog_hog_s']:.2f} s",
+            f"hogilla: {res['x_far_hog_cm']:+.1f} cm",
+            f"merkki: {res.get('x_straight_at_tee_cm', float('nan')):+.1f} cm"]
+
+
+def render_panel(entries):
+    """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x PANEL_W) kuvan; jokainen heitto omassa laatikossa."""
+    img = np.zeros((DEBUG_H, PANEL_W, 3), np.uint8)
+    box_h = LINE_H * 6 + 2 * BOX_PAD
+    y = BOX_GAP
+    for res in entries:
+        if y + box_h > DEBUG_H:
+            break
+        cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (45, 45, 45), -1)
+        cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (0, 200, 255), 2)
+        for i, s in enumerate(entry_lines(res)):
+            cv2.putText(img, s, (BOX_GAP + BOX_PAD + 4, y + BOX_PAD + 20 + i * LINE_H), FONT, FONT_SCALE,
+                        (0, 255, 255) if i == 0 else (255, 255, 255), FONT_THICK)
+        y += box_h + BOX_GAP
+    return img
+
+
+def compose_debug_frame(base_bgr, labels, header, results, plus_right):
+    """base_bgr: alkuperainen (stabiloitu+korjattu, piirretyt ääriviivat) kuva; labels: [(x, y, teksti, vari_bgr)] alkuperaisen kuvan pikselikoordinaateissa.
+    Palauttaa kaannetyn+skaalatun kuvan paneeleineen: [vasen paneeli | video | oikea paneeli]."""
+    H0, W0 = base_bgr.shape[:2]
+    video_w, video_h, scale, _ = debug_layout(W0, H0)
+    rot = cv2.rotate(base_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    vid = cv2.resize(rot, (video_w, video_h), interpolation=cv2.INTER_AREA)
+    for (x, y, txt, col) in labels:                      # kaannos: (x, y) -> (y, W0 - 1 - x), sitten skaalaus
+        xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))
+        cv2.putText(vid, txt, (max(2, min(video_w - 120, xr)), max(14, min(video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
+    cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
+    left = [r for r in results if throw_side(r, plus_right) == "L"][::-1]
+    right = [r for r in results if throw_side(r, plus_right) == "R"][::-1]
+    return np.hstack([render_panel(left), vid, render_panel(right)])
