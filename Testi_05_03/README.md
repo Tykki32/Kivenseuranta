@@ -148,3 +148,4 @@ Windows-ajossa (par3) pääsäie C oli ainoa pullonkaula (42 ms, 100 % kuormitus
 mutta ajettiin peräkkäin. `INTRA_PARALLEL=1` ajaa mean-shiftit omissa säikeissään ristikkohaun rinnalla (`locate_mode 5`, `stone_tracker.set_intra_parallel`); syötteet, ehdokkaiden järjestys ja valintalogiikka ovat samat -> tulos identtinen.
 Sandbox (4 ydintä, jo kyllästetty): CSV identtinen (2900 ruutua), SEURANTA-kutsu 26,6 -> 26,1 ms; hyöty odotetaan vasta koneella jossa on vapaita ytimiä (Windows-kone: 3,9/8 ydintä käytössä).
 `tools/vertailuajo.py`: uudet ajot `intra`, `intragrid`; oletus `cpu,par,intra,intragrid`. C++-moduuli pitää kääntää uudelleen.
+`tools/vertailuajo.py --outdir <aiempi kansio> --runs par,intra,intragrid`: jos kansiossa on aiemman ajon `ajo_cpu_loki.txt` + `ajo_cpu_sijainnit.csv`, cpu-perusajoa ei tarvitse ajaa uudelleen; se otetaan yhteenvetoon ja CSV-vertailuun.

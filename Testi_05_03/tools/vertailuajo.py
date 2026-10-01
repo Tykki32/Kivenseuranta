@@ -9,6 +9,7 @@ Ajot (kaikki samalla videolla/aikavälillä, oletuksena debug-video päällä), 
   gpub   : vaihe B GPU:lla (GPU_B=1)            gpuall : molemmat GPU:lla
   verify : GPU_GRID=1 + GPU_GRID_VERIFY=1 + GPU_B=1 (oikeellisuus, hidas)
   par    : GPU_B + STAB_WORKERS=2 + PIPE_DEPTH=6     par3 : kuten par, STAB_WORKERS=3     parcpu : STAB_WORKERS=2 + PIPE_DEPTH=6 (vaihe B CPU:lla)
+  --outdir <aiempi kansio>: jos siina on ajo_cpu_loki.txt + ajo_cpu_sijainnit.csv, cpu-ajoa ei tarvitse ajaa uudelleen (--runs par,intra,intragrid) - aiempi mukaan yhteenvetoon ja CSV-vertailuun
   intra  : par + INTRA_PARALLEL=1 (kiven sisäinen rinnakkaisuus)     intragrid : intra + GPU_GRID=1
 Oletus: cpu,par,intra,intragrid.
 Tulokset kansioon --outdir (oletus: videon kansio / vertailuajo_<aikaleima>):
@@ -226,6 +227,13 @@ def main():
     except KeyboardInterrupt:
         print("\nKeskeytetty - kootaan yhteenveto valmistuneista ajoista.")
 
+    # Jos cpu-ajoa ei ajettu tassa mutta --outdir:ssa on aiemman cpu-ajon loki + CSV, otetaan se mukaan vertailuun (sama kansio = sama video/aikavali)
+    prev_log = os.path.join(outdir, "ajo_cpu_loki.txt")
+    if "cpu" not in results and os.path.exists(prev_log) and os.path.exists(os.path.join(outdir, "ajo_cpu_sijainnit.csv")):
+        text = read_text(prev_log)
+        results = {"cpu": {"rc": 0, "wall_s": 0.0, "text": text, "nums": summarize_numbers(text), "earlier": True}, **results}
+        print("Mukaan otettu aiempi cpu-ajo kansiosta", outdir)
+
     out = []
     out.append(f"VERTAILUAJO {datetime.datetime.now():%Y-%m-%d %H:%M}  video={video}  {args.start}..{args.end}  debug={'ei' if args.no_debug else 'kyllä'}")
     out.append("")
@@ -252,7 +260,7 @@ def main():
             out.append(f"{a} vs {b} (hog): {compare_csv(pa, pb)}")
     for name, r in results.items():
         out.append("")
-        out.append(f"=================== AJO {name} (paluukoodi {r['rc']}, seinakello {r['wall_s']:.0f} s) ===================")
+        out.append(f"=================== AJO {name}{' (AIEMPI AJO, ei ajettu nyt)' if r.get('earlier') else ''} (paluukoodi {r['rc']}, seinakello {r['wall_s']:.0f} s) ===================")
         out.append(extract_blocks(r["text"]))
     summary = "\n".join(out)
     path = os.path.join(outdir, "vertailu_yhteenveto.txt")
