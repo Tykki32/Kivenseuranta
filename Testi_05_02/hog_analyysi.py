@@ -265,6 +265,7 @@ def compose_debug_frame(base_bgr, labels, header, results, plus_right):
 # ja AsyncVideoWriter (mp4-enkoodaus omassa saikeessa; cv2.VideoWriter.write vapauttaa GIL:n).
 # ============================================================
 import threading
+import time
 import queue as _queue
 
 
@@ -297,11 +298,19 @@ class DebugComposer:
 
 
 class AsyncVideoWriter:
-    """cv2.VideoWriter omassa saikeessa: write() kopioi kuvan jonoon ja palaa heti (jono taynna -> odottaa)."""
+    """cv2.VideoWriter omassa saikeessa: write()/submit() palaa heti (jono taynna -> odottaa). Mittaa omat aikansa (stats_line)."""
 
     def __init__(self, writer, maxsize=6):
         self._w = writer
         self._q = _queue.Queue(maxsize=maxsize)
+        self._maxsize = maxsize
+        self._n_sub = 0
+        self._put_wait = 0.0       # paasaikeen odotus put():ssa (jono taynna)
+        self._put_total = 0.0
+        self._n_done = 0
+        self._t_render = 0.0       # taustasaikeen piirto
+        self._t_write = 0.0        # taustasaikeen VideoWriter.write
+        self._fill_sum = 0
         self._t = threading.Thread(target=self._run, daemon=True)
         self._t.start()
 
@@ -310,16 +319,37 @@ class AsyncVideoWriter:
             img = self._q.get()
             if img is None:
                 break
+            t0 = time.perf_counter()
             if isinstance(img, tuple):
                 img = img[0](*img[1])
+            t1 = time.perf_counter()
             self._w.write(img)
+            t2 = time.perf_counter()
+            self._t_render += t1 - t0
+            self._t_write += t2 - t1
+            self._n_done += 1
 
     def write(self, img):
         self._q.put(img.copy())
 
     def submit(self, fn, *args):
         """Tyo (fn(*args) -> kuva) tehdaan taustasaikeessa ja kirjoitetaan; paasaie palaa heti."""
+        t0 = time.perf_counter()
+        full = self._q.full()
+        self._fill_sum += self._q.qsize()
         self._q.put((fn, args))
+        dt = time.perf_counter() - t0
+        self._put_total += dt
+        if full:
+            self._put_wait += dt
+        self._n_sub += 1
+
+    def stats_line(self):
+        n = max(1, self._n_sub)
+        d = max(1, self._n_done)
+        return (f"debug-video taustasaie: paasaikeen submit {1000*self._put_total/n:.2f} ms/ruutu (josta jono taynna -odotus {1000*self._put_wait/n:.2f}), "
+                f"jonon keskitaytto {self._fill_sum/n:.1f}/{self._maxsize} | taustasaie: piirto {1000*self._t_render/d:.1f} ms + kirjoitus {1000*self._t_write/d:.1f} ms/ruutu "
+                f"(kapasiteetti {d/max(1e-9,self._t_render+self._t_write):.1f} r/s)")
 
     def release(self):
         self._q.put(None)
