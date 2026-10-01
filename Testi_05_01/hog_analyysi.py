@@ -83,7 +83,7 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=MIN_R):
     v = lambda tx: -(2 * a * tx + b)                       # cm/s (positiivinen = kohti lahempaa pesaa)
     v_far = v(t_far)
     decel = (v(t_hi_y) - v(t_lo_y)) / (t_lo_y - t_hi_y) if t_lo_y != t_hi_y else 0.0
-    out.update(ok=True, v_far_hog_ms=v_far / 100.0, v_far_hog_kmh=v_far / 100.0 * 3.6, decel_ms2=decel / 100.0,
+    out.update(ok=True, v_far_hog_ms=v_far / 100.0, decel_ms2=decel / 100.0,
                hog_hog_s=float(t_near - t_far), t_far_hog_s=float(t_far + t0), t_near_hog_s=float(t_near + t0),
                v_near_hog_ms=v(t_near) / 100.0)
     return out
@@ -95,7 +95,7 @@ def format_lines(res, stone_id=None):
     if not res.get("ok"):
         return [hdr, "ei laskettu: " + res.get("reason", "?")]
     return [hdr,
-            f"nopeus kaukohogilla: {res['v_far_hog_ms']:.2f} m/s ({res['v_far_hog_kmh']:.1f} km/h)",
+            f"nopeus kaukohogilla: {res['v_far_hog_ms']:.2f} m/s",
             f"keskihidastuvuus: {res['decel_ms2']:.3f} m/s^2",
             f"hog-hog aika: {res['hog_hog_s']:.2f} s",
             f"R = {res['R']:.5f}  n = {res['n_kaytetty']} (pudotettu {res['n_pudotettu']})"]

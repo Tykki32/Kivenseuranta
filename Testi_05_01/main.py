@@ -1681,7 +1681,7 @@ def _hog_write_csv(results, csv_output):
     if not results:
         return
     path = os.path.splitext(csv_output)[0] + "_hog.csv"
-    cols = ["stone_id", "frame", "R", "R_ennen_suodatusta", "n_kaytetty", "n_pudotettu", "v_far_hog_ms", "v_far_hog_kmh", "decel_ms2", "hog_hog_s", "t_far_hog_s", "t_near_hog_s", "v_near_hog_ms", "a", "b", "c"]
+    cols = ["stone_id", "frame", "R", "R_ennen_suodatusta", "n_kaytetty", "n_pudotettu", "v_far_hog_ms", "decel_ms2", "hog_hog_s", "t_far_hog_s", "t_near_hog_s", "v_near_hog_ms", "a", "b", "c"]
     with open(path, "w", newline="") as hf:
         w = csv.writer(hf); w.writerow(cols)
         for r in results:
