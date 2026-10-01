@@ -148,6 +148,9 @@ static std::atomic<long long> g_prof_n[P_COUNT];
 
 static inline void profAdd(ProfId id, long long ns) { g_prof_ns[id] += ns; g_prof_n[id] += 1; }
 
+// Testi_05_03 v5.6: kiven sisainen rinnakkaisuus (ristikkohaku + 2 mean-shiftia eri saikeissa); ohjaus Pythonista set_intra_parallel(0/1)
+static std::atomic<int> g_intra_parallel{0};
+
 struct PT {
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
     long long lap() {
@@ -3856,23 +3859,58 @@ static StoneUpdateResult trackStoneUpdateOneEx(
             double adj = c.second - ms_params.ens_back_pen * back / 10.0 - ms_params.ens_pred_pen * pdev / 10.0;
             cands.push_back({ c.first, c.second, adj, src });
         };
-        auto g = locateByGridSearchTrackingFast(
-            local_pts_search, mask_for_track, roi.x, roi.y,
-            X0 + pred_dX, track_half_range_x_cm, Y0 + pred_dY, track_half_range_y_cm,
-            coarse_step_cm, fine_step_cm, K, R, t
-        );
-        profAdd(P_LOC_ENS_GRID, pt.lap());
+        // Testi_05_03 v5.6: kolme toisistaan riippumatonta hakua (ristikko, MS viimeisesta, MS ennustetusta) voidaan ajaa rinnan
+        // (set_intra_parallel(1)); syotteet ja ehdokkaiden jarjestys/valinta ovat samat -> tulos identtinen.
+        std::pair<cv::Point2d, double> g;
+        MeanShiftResult m1, m2;
+        if (g_intra_parallel.load()) {
+            long long ns1 = 0, ns2 = 0;
+            std::thread th1([&]() {
+                PT p;
+                m1 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+                    X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params);
+                ns1 = p.lap();
+            });
+            std::thread th2;
+            if (have_pred)
+                th2 = std::thread([&]() {
+                    PT p;
+                    m2 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+                        X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params,
+                        X0 + pred_dX, Y0 + pred_dY);
+                    ns2 = p.lap();
+                });
+            g = locateByGridSearchTrackingFast(
+                local_pts_search, mask_for_track, roi.x, roi.y,
+                X0 + pred_dX, track_half_range_x_cm, Y0 + pred_dY, track_half_range_y_cm,
+                coarse_step_cm, fine_step_cm, K, R, t
+            );
+            profAdd(P_LOC_ENS_GRID, pt.lap());
+            th1.join();
+            if (have_pred) th2.join();
+            profAdd(P_LOC_MS1, ns1);
+            if (have_pred) profAdd(P_LOC_MS2, ns2);
+        } else {
+            g = locateByGridSearchTrackingFast(
+                local_pts_search, mask_for_track, roi.x, roi.y,
+                X0 + pred_dX, track_half_range_x_cm, Y0 + pred_dY, track_half_range_y_cm,
+                coarse_step_cm, fine_step_cm, K, R, t
+            );
+            profAdd(P_LOC_ENS_GRID, pt.lap());
+            m1 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+                X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params);
+            profAdd(P_LOC_MS1, pt.lap());
+            if (have_pred) {
+                m2 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+                    X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params,
+                    X0 + pred_dX, Y0 + pred_dY);
+                profAdd(P_LOC_MS2, pt.lap());
+            }
+        }
         adjust(g, 0);
-        auto m1 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
-            X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params);
-        profAdd(P_LOC_MS1, pt.lap());
         adjust({ m1.xy, m1.score }, 1);
         out.iters = m1.iters; out.converged = m1.converged;
         if (have_pred) {
-            auto m2 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
-                X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params,
-                X0 + pred_dX, Y0 + pred_dY);
-            profAdd(P_LOC_MS2, pt.lap());
             adjust({ m2.xy, m2.score }, 2);
             out.iters += m2.iters;
         }
@@ -6091,6 +6129,7 @@ PYBIND11_MODULE(stone_tracker, m)
         if (!ok) return py::none();
         return out;
     });
+    m.def("set_intra_parallel", [](int on) { g_intra_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("prof_reset", &prof_reset);
     m.def("prof_snapshot", &prof_snapshot);
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";
