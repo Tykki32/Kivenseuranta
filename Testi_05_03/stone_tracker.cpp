@@ -74,6 +74,19 @@
 // vasta eri kielella/kirjastolla lasketun liukulukuaritmetiikan kautta.
 // ============================================================
 
+// Testi_05_03: GPU-ristikkohaku lataa OpenCL-kirjaston ajonaikaisesti (ei kaannosaikaista riippuvuutta)
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -111,6 +124,7 @@ enum ProfId {
     P_GM_CVT, P_GM_BLUR, P_GM_LOOP, P_GM_MORPH, P_GS_HULL, P_GS_SCORE,
     P_LM_FALLBACK, P_LM_LIN, P_LM_VERIFY, P_LM_BUILD, P_LM_EVAL_ONLY,
     P_C_NBODY, P_C_NRING, P_C_NHULL, P_C_LMITER, P_C_LMEVAL,
+    P_GS_GPU, P_GS_GPU_PREP, P_GS_GPU_KERNEL, P_GS_GPU_POST,
     P_COUNT
 };
 static const char* PROF_NAMES[P_COUNT] = {
@@ -125,7 +139,9 @@ static const char* PROF_NAMES[P_COUNT] = {
     "HAKU: spawn-suodatin HYLKASI ehdokkaan (kpl)", "HAKU: spawn-suodatin hyvaksyi ehdokkaan (kpl)",
     "    granite: cvtColor x2 + convert", "    granite: GaussianBlur", "    granite: kynnys-silmukka", "    granite: morfologia", "    ristikko: predictedHull", "    ristikko: hullOverlapScore",
     "    LM: TARKKA VARAKEINO-LM (linearisointi hylatty)", "    LM#1: lineaarinen LM", "    LM#1: tarkka varmistus", "    LM: linearisoinnin rakennus", "    LM: residuaali+jacobi evaluaatiot",
-    "LASKURI keskiarvo: runkopisteita/LM", "LASKURI keskiarvo: rengaspisteita/LM", "LASKURI keskiarvo: hull-kulmia/LM", "LASKURI keskiarvo: LM-iteraatioita/LM", "LASKURI keskiarvo: residuaalievaluaatioita/LM"
+    "LASKURI keskiarvo: runkopisteita/LM", "LASKURI keskiarvo: rengaspisteita/LM", "LASKURI keskiarvo: hull-kulmia/LM", "LASKURI keskiarvo: LM-iteraatioita/LM", "LASKURI keskiarvo: residuaalievaluaatioita/LM",
+    "    ristikko: GPU-polku (hieno ristikko, yhteensa)",
+    "      GPU: isantalaskenta (monikulmiot, maskisummat)", "      GPU: OpenCL-kutsu (puskurit+ydin+luku)", "      GPU: pistemaarat + tarkka CPU-pisteytys + valinta"
 };
 static std::atomic<long long> g_prof_ns[P_COUNT];
 static std::atomic<long long> g_prof_n[P_COUNT];
@@ -607,6 +623,420 @@ static std::pair<cv::Point2d, double> gridSearchBestLinearized(
 }
 
 
+// ============================================================
+// GPU-RISTIKKOHAKU (Testi_05_03): SEURANNAN ristikkohaun HIENO vaihe (tyypillisesti 10x10 = 100 ehdokasta, kaikki
+// pisteytetaan) pisteytetaan OpenCL:lla (esim. Intel UHD Graphics). OpenCL-kirjasto ladataan ajonaikaisesti
+// (OpenCL.dll / libOpenCL.so) -> ei kaannosaikaista riippuvuutta; jos kirjastoa/laitetta ei ole, kaytetaan CPU-polkua.
+// Ytimessa jokainen ehdokas: hullin karkien projisointi (sama karkijoukko kuin CPU-polussa), 2D-hullin ja marginaalihullin
+// rivikohtaiset valit (kupera monikulmio) + rivikohtaiset kumulatiiviset maskisummat -> peitto/ulkopuolinen osuus ilman
+// pikselisilmukkaa. Rasterointi on likimaarainen (OpenCV fillPoly:n reunasaantoja ei toisteta), joten parhaat K ehdokasta
+// pisteytetaan UUDELLEEN tarkalla CPU-funktiolla (hullOverlapScore) ja valinta tehdaan niiden kesken. Tulos on siis
+// sama kuin CPU:n tyhjentava haku, ellei likimaarainen pisteytys jata oikeaa voittajaa pois top-K:sta.
+// Ohjaus (Python): set_gpu_grid(enable, verify); verify=1 laskee myos CPU-tulokset ja kerryttaa tilastoa (gpu_grid_stats).
+// ============================================================
+namespace gpucl {
+
+typedef int32_t cl_int; typedef uint32_t cl_uint; typedef uint64_t cl_ulong;
+#ifdef _WIN32
+#define GPUCL_CALL __stdcall
+#else
+#define GPUCL_CALL
+#endif
+typedef cl_int  (GPUCL_CALL *fnGetPlatformIDs)(cl_uint, void**, cl_uint*);
+typedef cl_int  (GPUCL_CALL *fnGetDeviceIDs)(void*, cl_ulong, cl_uint, void**, cl_uint*);
+typedef cl_int  (GPUCL_CALL *fnGetDeviceInfo)(void*, cl_uint, size_t, void*, size_t*);
+typedef void*   (GPUCL_CALL *fnCreateContext)(const void*, cl_uint, void* const*, void*, void*, cl_int*);
+typedef void*   (GPUCL_CALL *fnCreateCommandQueue)(void*, void*, cl_ulong, cl_int*);
+typedef void*   (GPUCL_CALL *fnCreateProgramWithSource)(void*, cl_uint, const char**, const size_t*, cl_int*);
+typedef cl_int  (GPUCL_CALL *fnBuildProgram)(void*, cl_uint, void* const*, const char*, void*, void*);
+typedef cl_int  (GPUCL_CALL *fnGetProgramBuildInfo)(void*, void*, cl_uint, size_t, void*, size_t*);
+typedef void*   (GPUCL_CALL *fnCreateKernel)(void*, const char*, cl_int*);
+typedef cl_int  (GPUCL_CALL *fnSetKernelArg)(void*, cl_uint, size_t, const void*);
+typedef void*   (GPUCL_CALL *fnCreateBuffer)(void*, cl_ulong, size_t, void*, cl_int*);
+typedef cl_int  (GPUCL_CALL *fnEnqueueNDRangeKernel)(void*, void*, cl_uint, const size_t*, const size_t*, const size_t*, cl_uint, const void*, void*);
+typedef cl_int  (GPUCL_CALL *fnEnqueueReadBuffer)(void*, void*, cl_uint, size_t, size_t, void*, cl_uint, const void*, void*);
+typedef cl_int  (GPUCL_CALL *fnRelease)(void*);
+
+static const char* KERNEL_SRC = R"CLC(
+#define MAXV 64
+// Bresenham (OpenCV LineIterator, 8-yhteys, leftToRight) -> rivin y pikselien pienin/suurin x; palauttaa 0 jos rivilla ei pikseleita.
+inline int bresRow(int xa, int ya, int xb, int yb, int y, int* oa, int* ob)
+{
+    int x1 = xa, y1 = ya, x2 = xb, y2 = yb;
+    if (x2 - x1 < 0) { x1 = xb; y1 = yb; x2 = xa; y2 = ya; }
+    int dx = x2 - x1, dy = y2 - y1, sy = 1;
+    if (dy < 0) { dy = -dy; sy = -1; }
+    if (dy > dx) {
+        int D = dy, d = dx, i = (y - y1) * sy;
+        if (i < 0 || i > D) return 0;
+        int m = (2 * d * i + D - 1) / (2 * D);
+        *oa = x1 + m; *ob = x1 + m;
+        return 1;
+    }
+    int D = dx, d = dy, k = (y - y1) * sy;
+    if (D == 0) { if (y == y1) { *oa = x1; *ob = x1; return 1; } return 0; }
+    if (k < 0) return 0;
+    int mD = (2 * d * D + D - 1) / (2 * D);
+    if (k > mD) return 0;
+    int lo = 0, hi = D;
+    if (k > 0) lo = (d == 0) ? D + 1 : (2 * D * k - D + 1 + 2 * d - 1) / (2 * d);
+    if (k + 1 <= mD) hi = ((d == 0) ? D + 1 : (2 * D * (k + 1) - D + 1 + 2 * d - 1) / (2 * d)) - 1;
+    if (hi > D) hi = D;
+    if (lo > hi) return 0;
+    *oa = x1 + lo; *ob = x1 + hi;
+    return 1;
+}
+
+// cv::fillPoly-rivi: reunaviivat (Bresenham) + taytto (kiintea piste 16.16, dx katkaistu kuten OpenCV:ssa).
+// Palauttaa 1 = rivilla pikseleita, 0 = ei pikseleita, -1 = ei-kupera/epailyttava tapaus (tarkka CPU-pisteytys tarvitaan).
+inline int polySpan(const int* px, const int* py, int m, int y, int* sl, int* sr)
+{
+    int L = 2147483647, R = -2147483647;
+    long xs[3];
+    int nact = 0;
+    for (int k = 0; k < m; ++k) {
+        int k0 = (k == 0) ? m - 1 : k - 1;
+        int xa = px[k0], ya = py[k0], xb = px[k], yb = py[k];
+        int ylo = min(ya, yb), yhi = max(ya, yb);
+        if (y >= ylo && y <= yhi) {
+            int a, b;
+            if (bresRow(xa, ya, xb, yb, y, &a, &b)) { L = min(L, a); R = max(R, b); }
+        }
+        if (ya != yb && y >= ylo && y < yhi) {
+            long x0f = ((long)((ya < yb) ? xa : xb)) << 16;
+            long dxf = (((long)(xb - xa)) << 16) / (long)(yb - ya);
+            if (nact < 3) xs[nact] = x0f + dxf * (long)(y - ylo);
+            ++nact;
+        }
+    }
+    if (nact == 2) {
+        long lo = min(xs[0], xs[1]), hi = max(xs[0], xs[1]);
+        int x1 = (int)((lo + 65535L) >> 16), x2 = (int)(hi >> 16);
+        if (x1 <= x2) { L = min(L, x1); R = max(R, x2); }
+    } else if (nact != 0) {
+        return -1;
+    }
+    if (L > R) return 0;
+    *sl = L; *sr = R;
+    return 1;
+}
+
+__kernel void raster_counts(
+    __global const int* polys, int m, __global const int* host_flag, int ncand,
+    __global const int* pref, int rows, int cols,
+    __global int* out)                     // 5 lukua / ehdokas: hull_area, overlap, band_area, outside, lippu (alustettu nollilla)
+{
+    int gid = get_global_id(0), ry = get_global_id(1);
+    if (gid >= ncand) return;
+    if (host_flag[gid]) return;                                  // hull tyhja (ei-aarellinen projektio) -> pistemaara 0
+    int hx[MAXV], hy[MAXV], mx[MAXV], my[MAXV];
+    __global const int* P = polys + (size_t)gid * 4 * m;
+    int minx = 2147483647, maxx = -2147483647, miny = 2147483647, maxy = -2147483647;
+    for (int k = 0; k < m; ++k) {
+        hx[k] = P[k]; hy[k] = P[m + k]; mx[k] = P[2 * m + k]; my[k] = P[3 * m + k];
+        minx = min(minx, mx[k]); maxx = max(maxx, mx[k]); miny = min(miny, my[k]); maxy = max(maxy, my[k]);
+    }
+    // tarkka rasterointi vain jos koko marginaalihullin rajauslaatikko on maskin sisalla (ei leikkautumista) ja hull on sen sisalla
+    bool exact = (minx >= 0 && maxx < cols && miny >= 0 && maxy < rows);
+    for (int k = 0; k < m && exact; ++k)
+        if (hx[k] < minx || hx[k] > maxx || hy[k] < miny || hy[k] > maxy) exact = false;
+    if (!exact) { if (ry == 0) atomic_or(&out[5 * gid + 4], 1); return; }
+    int y = miny + ry;
+    if (y > maxy) return;
+    int hl = 0, hr = -1, ml = 0, mr = -1;
+    int sh = polySpan(hx, hy, m, y, &hl, &hr);
+    int sm = polySpan(mx, my, m, y, &ml, &mr);
+    if (sh < 0 || sm < 0) { atomic_or(&out[5 * gid + 4], 1); return; }
+    __global const int* pr = pref + (size_t)y * (cols + 1);
+    int nh = 0, ch = 0, nm = 0, cm = 0, nhm = 0, chm = 0;
+    if (sh > 0) { nh = hr - hl + 1; ch = pr[hr + 1] - pr[hl]; }
+    if (sm > 0) { nm = mr - ml + 1; cm = pr[mr + 1] - pr[ml]; }
+    if (sh > 0 && sm > 0) {
+        int il = max(hl, ml), ir = min(hr, mr);
+        if (ir >= il) { nhm = ir - il + 1; chm = pr[ir + 1] - pr[il]; }
+    }
+    atomic_add(&out[5 * gid], nh); atomic_add(&out[5 * gid + 1], ch);
+    atomic_add(&out[5 * gid + 2], nm - nhm); atomic_add(&out[5 * gid + 3], cm - chm);
+}
+)CLC";
+
+struct State {
+    bool ok = false;
+    std::string info = "ei alustettu";
+    void *ctx = nullptr, *queue = nullptr, *prog = nullptr, *dev = nullptr;
+    fnCreateKernel createKernel = nullptr; fnSetKernelArg setArg = nullptr; fnCreateBuffer createBuffer = nullptr;
+    fnEnqueueNDRangeKernel enqueue = nullptr; fnEnqueueReadBuffer readBuf = nullptr;
+    fnRelease releaseMem = nullptr, releaseKernel = nullptr;
+};
+
+static void* openLib()
+{
+#ifdef _WIN32
+    return (void*)LoadLibraryA("OpenCL.dll");
+#else
+    void* h = dlopen("libOpenCL.so.1", RTLD_LAZY);
+    if (!h) h = dlopen("libOpenCL.so", RTLD_LAZY);
+    return h;
+#endif
+}
+
+static void* getSym(void* lib, const char* name)
+{
+#ifdef _WIN32
+    return (void*)GetProcAddress((HMODULE)lib, name);
+#else
+    return dlsym(lib, name);
+#endif
+}
+
+static void initState(State& st)
+{
+    void* lib = openLib();
+    if (!lib) { st.info = "OpenCL-kirjastoa ei loytynyt"; return; }
+#define GPUCL_LOAD(var, type, name) type var = (type)getSym(lib, name); if (!var) { st.info = std::string("OpenCL-funktio puuttuu: ") + name; return; }
+    GPUCL_LOAD(getPlatforms, fnGetPlatformIDs, "clGetPlatformIDs")
+    GPUCL_LOAD(getDevices, fnGetDeviceIDs, "clGetDeviceIDs")
+    GPUCL_LOAD(getDeviceInfo, fnGetDeviceInfo, "clGetDeviceInfo")
+    GPUCL_LOAD(createContext, fnCreateContext, "clCreateContext")
+    GPUCL_LOAD(createQueue, fnCreateCommandQueue, "clCreateCommandQueue")
+    GPUCL_LOAD(createProgram, fnCreateProgramWithSource, "clCreateProgramWithSource")
+    GPUCL_LOAD(buildProgram, fnBuildProgram, "clBuildProgram")
+    GPUCL_LOAD(getBuildInfo, fnGetProgramBuildInfo, "clGetProgramBuildInfo")
+#undef GPUCL_LOAD
+    st.createKernel = (fnCreateKernel)getSym(lib, "clCreateKernel");
+    st.setArg = (fnSetKernelArg)getSym(lib, "clSetKernelArg");
+    st.createBuffer = (fnCreateBuffer)getSym(lib, "clCreateBuffer");
+    st.enqueue = (fnEnqueueNDRangeKernel)getSym(lib, "clEnqueueNDRangeKernel");
+    st.readBuf = (fnEnqueueReadBuffer)getSym(lib, "clEnqueueReadBuffer");
+    st.releaseMem = (fnRelease)getSym(lib, "clReleaseMemObject");
+    st.releaseKernel = (fnRelease)getSym(lib, "clReleaseKernel");
+    if (!st.createKernel || !st.setArg || !st.createBuffer || !st.enqueue || !st.readBuf || !st.releaseMem || !st.releaseKernel) {
+        st.info = "OpenCL-funktioita puuttuu"; return;
+    }
+
+    // laitevalinta: GPU_GRID_DEVICE=gpu (oletus) | cpu | any
+    const char* dv = getenv("GPU_GRID_DEVICE");
+    std::string want = dv ? dv : "gpu";
+    cl_ulong dtype = want == "cpu" ? (1ULL << 1) : (want == "any" ? 0xFFFFFFFFULL : (1ULL << 2));
+    void* platforms[16]; cl_uint np = 0;
+    if (getPlatforms(16, platforms, &np) != 0 || np == 0) { st.info = "OpenCL-alustoja ei loytynyt"; return; }
+    void* dev = nullptr;
+    for (cl_uint p = 0; p < np && !dev; ++p) {
+        void* devs[8]; cl_uint nd = 0;
+        if (getDevices(platforms[p], dtype, 8, devs, &nd) == 0 && nd > 0) dev = devs[0];
+    }
+    if (!dev) { st.info = "OpenCL-laitetta (" + want + ") ei loytynyt"; return; }
+    char name[256] = {0};
+    getDeviceInfo(dev, 0x102B /*CL_DEVICE_NAME*/, sizeof(name) - 1, name, nullptr);
+
+    cl_int err = 0;
+    st.ctx = createContext(nullptr, 1, &dev, nullptr, nullptr, &err);
+    if (!st.ctx || err) { st.info = "clCreateContext epaonnistui"; return; }
+    st.queue = createQueue(st.ctx, dev, 0, &err);
+    if (!st.queue || err) { st.info = "clCreateCommandQueue epaonnistui"; return; }
+    const char* src = KERNEL_SRC; size_t len = std::strlen(KERNEL_SRC);
+    st.prog = createProgram(st.ctx, 1, &src, &len, &err);
+    if (!st.prog || err) { st.info = "clCreateProgramWithSource epaonnistui"; return; }
+    if (buildProgram(st.prog, 1, &dev, "", nullptr, nullptr) != 0) {
+        char log[2048] = {0};
+        getBuildInfo(st.prog, dev, 0x1183 /*CL_PROGRAM_BUILD_LOG*/, sizeof(log) - 1, log, nullptr);
+        st.info = std::string("OpenCL-ytimen kaannos epaonnistui: ") + log; return;
+    }
+    st.dev = dev;
+    st.ok = true;
+    st.info = std::string(name);
+}
+
+static State& state()
+{
+    static State st;
+    static std::once_flag once;
+    std::call_once(once, [&]() { initState(st); });
+    return st;
+}
+
+// Ajaa rasterointiytimen: polys = ehdokkaiden kokonaislukumonikulmiot (hull + marginaalihull, 4*m lukua/ehdokas), host_flag = 1 jos hull tyhja.
+// Tulos out = (hull_area, overlap, band_area, outside) per ehdokas; hull_area < 0 = tarkka CPU-pisteytys tarvitaan.
+static bool rasterCounts(const std::vector<int>& polys, int m, const std::vector<int>& host_flag, int ncand, int max_rows,
+                         const std::vector<int>& pref, int rows, int cols, std::vector<int>& out)
+{
+    State& st = state();
+    if (!st.ok) return false;
+    cl_int e1 = 0, e2 = 0, e3 = 0, e4 = 0, ek = 0;
+    const cl_ulong RO = (1ULL << 2) | (1ULL << 5), RW = (1ULL << 0) | (1ULL << 5);
+    out.assign((size_t)ncand * 5, 0);
+    void* b_poly = st.createBuffer(st.ctx, RO, polys.size() * sizeof(int), (void*)polys.data(), &e1);
+    void* b_flag = st.createBuffer(st.ctx, RO, host_flag.size() * sizeof(int), (void*)host_flag.data(), &e2);
+    void* b_pref = st.createBuffer(st.ctx, RO, pref.size() * sizeof(int), (void*)pref.data(), &e3);
+    void* b_out = st.createBuffer(st.ctx, RW, out.size() * sizeof(int), (void*)out.data(), &e4);   // alustus nollilla
+    void* kern = st.createKernel(st.prog, "raster_counts", &ek);
+    bool ok = b_poly && b_flag && b_pref && b_out && kern && !e1 && !e2 && !e3 && !e4 && !ek;
+    if (ok) {
+        cl_uint a = 0;
+        cl_int r = 0;
+        r |= st.setArg(kern, a++, sizeof(void*), &b_poly);
+        r |= st.setArg(kern, a++, sizeof(int), &m);
+        r |= st.setArg(kern, a++, sizeof(void*), &b_flag);
+        r |= st.setArg(kern, a++, sizeof(int), &ncand);
+        r |= st.setArg(kern, a++, sizeof(void*), &b_pref);
+        r |= st.setArg(kern, a++, sizeof(int), &rows);
+        r |= st.setArg(kern, a++, sizeof(int), &cols);
+        r |= st.setArg(kern, a++, sizeof(void*), &b_out);
+        size_t gs[2] = { (size_t)ncand, (size_t)std::max(1, max_rows) };
+        if (!r) r = st.enqueue(st.queue, kern, 2, nullptr, gs, nullptr, 0, nullptr, nullptr);
+        if (!r) r = st.readBuf(st.queue, b_out, 1 /*blocking*/, 0, out.size() * sizeof(int), out.data(), 0, nullptr, nullptr);
+        ok = (r == 0);
+    }
+    if (b_poly) st.releaseMem(b_poly);
+    if (b_flag) st.releaseMem(b_flag);
+    if (b_pref) st.releaseMem(b_pref);
+    if (b_out) st.releaseMem(b_out);
+    if (kern) st.releaseKernel(kern);
+    return ok;
+}
+
+}   // namespace gpucl
+
+static std::atomic<int> g_gpu_grid{0};
+static std::atomic<int> g_gpu_verify{0};
+static std::atomic<int> g_gpu_fail_streak{0};
+static const int GPU_GRID_MIN_CANDIDATES = 16;
+static const int GPU_GRID_MAX_HULL_VERTS = 64;
+
+struct GpuGridStats {
+    long long calls = 0, used = 0, fallbacks = 0, verified = 0, mismatches = 0, cand_compared = 0, cand_exact_cpu = 0, score_diffs = 0;
+    double err_max = 0.0;
+};
+static GpuGridStats g_gpu_stats;
+static std::mutex g_gpu_stats_mx;
+
+// Hienon ristikon pisteytys GPU:lla. Host laskee ehdokkaiden kokonaislukumonikulmiot TASMALLEEN kuten CPU-polku (sama
+// projektio, trunkointi, marginaalihull); GPU rasteroi ne OpenCV:n fillPoly:n tavalla ja laskee pikselimaarat, host muodostaa
+// pistemaaran samalla kaavalla -> tulos on sama kuin gridSearchBest:lla. Leikkautuvat/ei-kuperat ehdokkaat pisteytetaan CPU:lla.
+// Palauttaa false jos GPU-polkua ei voitu kayttaa (silloin kutsuja ajaa CPU-polun).
+static bool gpuFineGrid(
+    const std::vector<cv::Point3d>& local_pts_search, const cv::Mat& mask_crop, int off_x, int off_y,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    const std::vector<double>& x_vals, const std::vector<double>& y_vals,
+    std::pair<cv::Point2d, double>& result)
+{
+    const int nx = (int)x_vals.size(), ny = (int)y_vals.size(), ncand = nx * ny;
+    if (!g_gpu_grid.load() || ncand < GPU_GRID_MIN_CANDIDATES) return false;
+    if (!gpucl::state().ok) return false;
+    // CPU-polun HullProjector kayttaa nopeaa polkua vain < 15 cm paassa ensimmaisesta ehdokkaasta; muuten hull-karjet vaihtuisivat
+    if (x_vals.back() - x_vals.front() >= 15.0 || y_vals.back() - y_vals.front() >= 15.0) return false;
+    PT pt_gpu, pt_part;
+
+    HullProjector hp(local_pts_search, K, R, t);
+    auto h0 = hp.hull(x_vals[0], y_vals[0]);
+    const int m = (int)hp.ref_idx.size();
+    if (h0.empty() || m < 3 || m > GPU_GRID_MAX_HULL_VERTS) return false;
+
+    // --- ehdokkaiden monikulmiot (sama laskenta kuin HullProjector::hull nopea polku + hullOverlapScore) ---
+    std::vector<int> polys((size_t)ncand * 4 * m);
+    std::vector<int> host_flag((size_t)ncand, 0);
+    std::vector<int> hxv((size_t)m), hyv((size_t)m);
+    for (int i = 0; i < nx; ++i) {
+        for (int j = 0; j < ny; ++j) {
+            const int q = i * ny + j;
+            const double X = x_vals[(size_t)i], Y = y_vals[(size_t)j];
+            const double ox = X * hp.kx[0] + Y * hp.ky[0], oy = X * hp.kx[1] + Y * hp.ky[1], oz = X * hp.kx[2] + Y * hp.ky[2];
+            int* P = &polys[(size_t)q * 4 * m];
+            bool finite = true;
+            double cxs = 0.0, cys = 0.0;
+            for (int k = 0; k < m; ++k) {
+                const cv::Vec3d& a = hp.A[(size_t)hp.ref_idx[(size_t)k]];
+                const double z = a[2] + oz;
+                const double px = (a[0] + ox) / z, py = (a[1] + oy) / z;
+                if (!std::isfinite(px) || !std::isfinite(py)) { finite = false; break; }
+                const float fx = (float)px, fy = (float)py;
+                hxv[(size_t)k] = (int)fx - off_x; hyv[(size_t)k] = (int)fy - off_y;
+                cxs += (double)hxv[(size_t)k]; cys += (double)hyv[(size_t)k];
+            }
+            if (!finite) { host_flag[(size_t)q] = 1; continue; }
+            const double cx = cxs / (double)m, cy = cys / (double)m;
+            for (int k = 0; k < m; ++k) {
+                P[k] = hxv[(size_t)k]; P[m + k] = hyv[(size_t)k];
+                P[2 * m + k] = (int)std::lround(cx + (hxv[(size_t)k] - cx) * HULL_MARGIN_SCALE);
+                P[3 * m + k] = (int)std::lround(cy + (hyv[(size_t)k] - cy) * HULL_MARGIN_SCALE);
+            }
+        }
+    }
+
+    const int rows = mask_crop.rows, cols = mask_crop.cols;
+    std::vector<int> pref((size_t)rows * (cols + 1));
+    for (int r = 0; r < rows; ++r) {
+        const uchar* mp = mask_crop.ptr<uchar>(r);
+        int* pr = &pref[(size_t)r * (cols + 1)];
+        int acc = 0; pr[0] = 0;
+        for (int c = 0; c < cols; ++c) { acc += mp[c] > 0 ? 1 : 0; pr[c + 1] = acc; }
+    }
+
+    int max_rows = 1;
+    for (int q = 0; q < ncand; ++q) {
+        if (host_flag[(size_t)q]) continue;
+        const int* P = &polys[(size_t)q * 4 * m];
+        int mn = P[3 * m], mxv = P[3 * m];
+        for (int k = 1; k < m; ++k) { mn = std::min(mn, P[3 * m + k]); mxv = std::max(mxv, P[3 * m + k]); }
+        max_rows = std::max(max_rows, mxv - mn + 1);
+    }
+    if (max_rows > 4096) return false;
+    profAdd(P_GS_GPU_PREP, pt_part.lap());
+    std::vector<int> cnt;
+    const bool raster_ok = gpucl::rasterCounts(polys, m, host_flag, ncand, max_rows, pref, rows, cols, cnt);
+    profAdd(P_GS_GPU_KERNEL, pt_part.lap());
+    if (!raster_ok) {
+        if (g_gpu_fail_streak.fetch_add(1) + 1 >= 3) g_gpu_grid = 0;     // 3 perakkaista virhetta -> GPU pois kaytosta
+        return false;
+    }
+    g_gpu_fail_streak = 0;
+
+    auto exactAt = [&](int q) {
+        const int i = q / ny, j = q % ny;
+        auto hull = hp.hull(x_vals[(size_t)i], y_vals[(size_t)j]);
+        return hullOverlapScore(mask_crop, hull, off_x, off_y);
+    };
+    std::vector<double> score((size_t)ncand);
+    long long n_cpu = 0;
+    for (int q = 0; q < ncand; ++q) {
+        if (cnt[(size_t)q * 5 + 4]) { score[(size_t)q] = exactAt(q); ++n_cpu; continue; }   // leikkautuva / ei-kupera -> tarkka CPU
+        const int hull_area = cnt[(size_t)q * 5];
+        if (hull_area == 0) { score[(size_t)q] = 0.0; continue; }
+        const int overlap = cnt[(size_t)q * 5 + 1], band_area = cnt[(size_t)q * 5 + 2], outside_overlap = cnt[(size_t)q * 5 + 3];
+        const double inside_score = (double)overlap / (double)hull_area;
+        const double outside_score = band_area > 0 ? (double)outside_overlap / (double)band_area : 0.0;
+        score[(size_t)q] = inside_score - HULL_OUTSIDE_PENALTY_WEIGHT * outside_score;
+    }
+    double best_score = -1.0; int best_q = 0;
+    for (int q = 0; q < ncand; ++q)
+        if (score[(size_t)q] > best_score) { best_score = score[(size_t)q]; best_q = q; }
+    result = { cv::Point2d(x_vals[(size_t)(best_q / ny)], y_vals[(size_t)(best_q % ny)]), best_score };
+
+    if (g_gpu_verify.load()) {
+        double best_exact = -1.0; int best_exact_q = 0;
+        long long diffs = 0; double emax = 0.0;
+        for (int q = 0; q < ncand; ++q) {
+            const double sc = exactAt(q);
+            if (sc > best_exact) { best_exact = sc; best_exact_q = q; }
+            const double e = std::abs(sc - score[(size_t)q]);
+            if (e > 1e-12) { ++diffs; emax = std::max(emax, e); }
+        }
+        std::lock_guard<std::mutex> lk(g_gpu_stats_mx);
+        g_gpu_stats.verified += 1;
+        g_gpu_stats.cand_compared += ncand;
+        g_gpu_stats.score_diffs += diffs;
+        g_gpu_stats.err_max = std::max(g_gpu_stats.err_max, emax);
+        if (best_exact_q != best_q) g_gpu_stats.mismatches += 1;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_gpu_stats_mx);
+        g_gpu_stats.cand_exact_cpu += n_cpu;
+    }
+    profAdd(P_GS_GPU_POST, pt_part.lap());
+    profAdd(P_GS_GPU, pt_gpu.lap());
+    return true;
+}
+
 static std::pair<cv::Point2d, double> locateByGridSearchFast(
     const std::vector<cv::Point3d>& local_pts_search,
     const cv::Mat& mask_crop, int off_x, int off_y,
@@ -807,6 +1237,23 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
 
     auto x_vals2 = arangeVec(best1.first.x - coarse_step, best1.first.x + coarse_step + 1e-6, fine_step);
     auto y_vals2 = arangeVec(best1.first.y - coarse_step, best1.first.y + coarse_step + 1e-6, fine_step);
+    {
+        std::pair<cv::Point2d, double> gpu_best;
+        const bool gpu_try = g_gpu_grid.load() && (int)(x_vals2.size() * y_vals2.size()) >= GPU_GRID_MIN_CANDIDATES;
+        if (gpu_try) {
+            std::lock_guard<std::mutex> lk(g_gpu_stats_mx);
+            g_gpu_stats.calls += 1;
+        }
+        if (gpu_try && gpuFineGrid(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2, gpu_best)) {
+            std::lock_guard<std::mutex> lk(g_gpu_stats_mx);
+            g_gpu_stats.used += 1;
+            return gpu_best;
+        }
+        if (gpu_try) {
+            std::lock_guard<std::mutex> lk(g_gpu_stats_mx);
+            g_gpu_stats.fallbacks += 1;
+        }
+    }
     auto best2 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2);
 
     return best2;
@@ -5298,6 +5745,21 @@ PYBIND11_MODULE(stone_tracker, m)
           py::arg("n_sample") = 40, py::arg("initial_radius") = 14.55, py::arg("height_min") = 11.43, py::arg("height_max") = 15.0,
           py::arg("handle_min") = 0.30, py::arg("handle_max") = 0.95, py::arg("handle_init") = 0.70,
           py::arg("reg_weight") = 60.0, py::arg("max_iterations") = 100, py::arg("r_fixed") = -1.0);
+    m.def("set_gpu_grid", [](int enable, int verify) -> std::string {
+        g_gpu_verify = verify; g_gpu_fail_streak = 0;
+        if (!enable) { g_gpu_grid = 0; return "pois"; }
+        auto& st = gpucl::state();
+        g_gpu_grid = st.ok ? 1 : 0;
+        return st.ok ? st.info : ("EI KAYTETTAVISSA: " + st.info);
+    }, py::arg("enable"), py::arg("verify") = 0);
+    m.def("gpu_grid_stats", []() {
+        std::lock_guard<std::mutex> lk(g_gpu_stats_mx);
+        py::dict d;
+        d["calls"] = g_gpu_stats.calls; d["used"] = g_gpu_stats.used; d["fallbacks"] = g_gpu_stats.fallbacks;
+        d["verified"] = g_gpu_stats.verified; d["mismatches"] = g_gpu_stats.mismatches; d["cand_compared"] = g_gpu_stats.cand_compared;
+        d["cand_exact_cpu"] = g_gpu_stats.cand_exact_cpu; d["score_diffs"] = g_gpu_stats.score_diffs; d["err_max"] = g_gpu_stats.err_max;
+        return d;
+    });
     m.def("prof_reset", &prof_reset);
     m.def("prof_snapshot", &prof_snapshot);
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";
