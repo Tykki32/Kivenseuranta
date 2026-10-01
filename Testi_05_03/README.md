@@ -121,3 +121,9 @@ Tarkista oma ffmpeg: `ffmpeg -hide_banner -encoders | findstr qsv`.
 - Pullonkaularaportissa C++-puolen rivit "ristikko: GPU-polku" + alarivit (isäntälaskenta / OpenCL-kutsu / pisteytys). Vertaa ristikkohaun CPU-aikaan ("haku: ristikko (yhdistelma...)").
 - Käännös (Windows): C++-moduuli pitää kääntää uudelleen (`stone_tracker.cpp`: ei CMake-muutoksia; `windows.h` mukaan LoadLibrary-kutsua varten).
 - Kokeilu: `$env:GPU_GRID=1; python main.py --max-frame 3000 --no-debug` vs. ilman; lisää `$env:GPU_GRID_VERIFY=1` kerran oikeellisuuden tarkistamiseen.
+
+### Vertailuajo (GPU vs CPU) – `tools/vertailuajo.py`
+`python tools/vertailuajo.py --video <alkuperäinen video> [--start 00:10:00 --end 00:21:00] [--outdir ...] [--no-debug] [--runs verify,gpu,cpu] [--main-args "--max-frame 3000"]`
+Ajaa main.py:n kolmesti (verify = GPU+CPU-vertailu, gpu, cpu; oletuksena debug-video päällä) ja tallentaa kansioon (oletus `<videon kansio>/vertailuajo_<aikaleima>`): jokaisen ajon koko lokin, sijainti-CSV:t, ja
+`vertailu_yhteenveto.txt` (nopeudet, pullonkaularaportit, GPU-tilasto, CSV-vertailu). Ilman `--video`-argumenttia avataan tiedostovalitsin kerran.
+Lisäksi `main.py --video <polku>` ohittaa tiedostovalitsimen.

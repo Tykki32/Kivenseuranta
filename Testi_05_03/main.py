@@ -6698,7 +6698,7 @@ def _time_str_to_seconds(time_str):
     return seconds
 
 
-def main(debug=None, start_time=None, end_time=None):
+def main(debug=None, start_time=None, end_time=None, video=None):
 
     # debug=None (oletus): kayta DEBUG_SAVE_TRACKING_VIDEO-vakion
     # arvoa (katso sen kommentti). debug=True/False komentoriviltä
@@ -6709,25 +6709,28 @@ def main(debug=None, start_time=None, end_time=None):
         DEBUG_SAVE_TRACKING_VIDEO if debug is None else debug
     )
 
-    root = tk.Tk()
-    root.withdraw()
-    
-    input_file = filedialog.askopenfilename(
-        title="Valitse video",
-        filetypes=[
-            (
-                "Videot",
-                "*.mts *.MTS *.mp4 *.MP4 "
-                "*.mov *.MOV *.avi *.AVI"
-            ),
-            (
-                "Kaikki tiedostot",
-                "*.*"
-            )
-        ]
-    )
+    if video:
+        input_file = video          # --video: ei tiedostovalitsinta
+    else:
+        root = tk.Tk()
+        root.withdraw()
 
-    root.destroy()
+        input_file = filedialog.askopenfilename(
+            title="Valitse video",
+            filetypes=[
+                (
+                    "Videot",
+                    "*.mts *.MTS *.mp4 *.MP4 "
+                    "*.mov *.MOV *.avi *.AVI"
+                ),
+                (
+                    "Kaikki tiedostot",
+                    "*.*"
+                )
+            ]
+        )
+
+        root.destroy()
 
     if not input_file:
 
@@ -6961,6 +6964,11 @@ if __name__ == "__main__":
     )
     
     _arg_parser.add_argument(
+        "--video", type=str, default=None,
+        help="Videotiedoston polku (ohittaa tiedostovalitsimen), esim. --video D:\\Tikku\\Suorita\\MAH00014.MP4"
+    )
+
+    _arg_parser.add_argument(
         "--max-frame", type=int, default=0,
         help=(
             "Pysayta ajo (ja tulosta nopeus- ja pullonkaularaportti) kun tama ruutu on kasitelty - nopea testi omalla koneella, "
@@ -6982,4 +6990,5 @@ if __name__ == "__main__":
 
     main(debug=_args.debug,
         start_time=_args.start,
-        end_time=_args.end)
+        end_time=_args.end,
+        video=_args.video)
