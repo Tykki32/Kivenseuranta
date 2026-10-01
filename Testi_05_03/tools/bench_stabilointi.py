@@ -123,3 +123,24 @@ else:
         print("   (huom: jos GPU-polku ei ole selvasti nopeampi kuin kohta 1, sita ei kannata kayttaa)")
     except Exception as e:
         print("   GPU-polku epaonnistui:", repr(e))
+
+
+print("5. warpAffine + remap (vaihe B) CPU vs OpenCL:")
+try:
+    fr = cv2.cvtColor(grays[0], cv2.COLOR_GRAY2BGR)
+    M = np.array([[1.0, 0.0, -1.3], [0.0, 1.0, 0.7]], np.float64)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    map1 = xx + 2.0 * np.sin(yy / 50.0).astype(np.float32); map2 = yy + 2.0 * np.cos(xx / 60.0).astype(np.float32)
+    def cpu_b(_):
+        return cv2.remap(cv2.warpAffine(fr, M, (w, h)), map1, map2, interpolation=cv2.INTER_LINEAR)
+    ms_b, ref_b = bench(cpu_b, [0] * 40)
+    print(f"   CPU: {ms_b:.2f} ms/ruutu")
+    if cv2.ocl.haveOpenCL():
+        cv2.ocl.setUseOpenCL(True)
+        um1, um2 = cv2.UMat(map1), cv2.UMat(map2)
+        def gpu_b(_):
+            return cv2.remap(cv2.warpAffine(cv2.UMat(fr), M, (w, h)), um1, um2, interpolation=cv2.INTER_LINEAR).get()
+        ms_gb, out_gb = bench(gpu_b, [0] * 40)
+        print(f"   GPU (UMat, sis. siirrot): {ms_gb:.2f} ms/ruutu | ero CPU:hun max {np.abs(out_gb[0].astype(int) - ref_b[0].astype(int)).max()}")
+except Exception as e:
+    print("   epaonnistui:", repr(e))

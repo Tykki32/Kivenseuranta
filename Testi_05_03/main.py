@@ -7,6 +7,10 @@ import threading
 import argparse
 import importlib.util
 import cv2
+
+# Testi_05_03: OpenCV:n oma saiemaara (cv2.setNumThreads) koeajoihin: CV_THREADS=2 python main.py --max-frame 3000 --no-debug (oletus: OpenCV:n oma)
+if os.environ.get("CV_THREADS"):
+    cv2.setNumThreads(int(os.environ["CV_THREADS"]))
 import numpy as np
 import tkinter as tk
 from tkinter import filedialog

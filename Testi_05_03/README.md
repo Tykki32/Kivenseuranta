@@ -96,3 +96,10 @@ ovat omissa säikeissään (jonot 8). Sandbox (2900 ruutua, debug päällä): vi
 ja OpenCL/UMat-polun (esim. Intel UHD Graphics) sekä vertaa GPU-tuloksen CPU:hun.
 Sandbox (1280x720, 4 ydintä, ei OpenCL:ää): CPU-polku ~7 ms/ruutu; 1 → 4 säiettä: 147 → 420 r/s (ruudut ovat toisistaan riippumattomia, koska jokainen verrataan moodikuvaan).
 Keskitetyn rajauksen testi (ei pienennystä): 1024x576…800x450 -rajaus nopeutti 12 → 8…3,5 ms, mutta siirtymävirhe oli rms 0,13–0,19 px (max 0,7–0,8 px) -> ei käyttöön.
+
+### Benchmark-tulos Windows-koneella (Intel UHD Graphics, 1280x720, OpenCV 4.12, OpenCL käytössä)
+- CPU-polku yksin: 11,5 ms/ruutu (ikkuna 1,4 + DFT 3,3 + vaihe 1,7 + käänteis-DFT 4,3 + huippu 0,4). `cv2.setNumThreads` ei vaikuta DFT:hen.
+- Usea ruutu rinnan: 1 säie 86 r/s, 2 säiettä 130, 3–4 säiettä 140 r/s (kyllästyy ~2–3 säikeeseen).
+- OpenCL/UHD: 15,5 ms/ruutu eli hitaampi kuin CPU -> ei käyttöön (tulos identtinen).
+- Putkessa vaihe A kestää silti 29–41 ms vs. 11,5 ms yksin -> ero johtuu kilpailusta muiden säikeiden kanssa (SEURANTA:n C++-säikeet, B), ei laskennasta.
+- Koeajoon `CV_THREADS=n` (cv2.setNumThreads) ja bench-työkalun kohta 5 (warpAffine+remap CPU vs OpenCL).
