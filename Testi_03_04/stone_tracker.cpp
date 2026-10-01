@@ -948,6 +948,27 @@ static cv::Mat computeSat(const cv::Mat& frame_bgr)
 // main.py:n oma kommentti taman alkuperaisesta motivaatiosta.
 // ============================================================
 
+// Testi_03_04 v4.5: TARKEMPI VARJOKRITEERI. Vanha: "varjo" = pelkka V-pudotus (vdrop_min, vdrop_max) -> poisti kiven (ja keltaisen kahvan) taustaviivan/mainoksen kohdalta, koska
+// tausta on siella jo tumma (V-pudotus pieni) ja kahvan kylläisyys nousee jopa 100+ (varjo ei muuta kylläisyyttä). Uusi: varjo hyvaksytaan vain jos REFERENSSIPIKSELI on jaata
+// (kartta g_shadow_ref_ok, main.py laskee: S < ice_s_max ja V >= 0.92 * paikallinen mediaani-V) JA kylläisyys ei muutu (|S_frame - S_ref| < g_shadow_ds_max). Oletus = pois; asetus set_shadow_ref_ok/set_shadow_strict.
+static std::vector<uint8_t> g_shadow_ref_ok;     // HxW: 1 = referenssipikseli on jaata (ei viivaa/mainosta/hoglinea); tyhja = ei kayteta
+static int g_shadow_ds_max = 256;
+static inline int satFromMaxMin(int vmax, int vmin)
+{
+    static int tab[256]; static bool init = false;
+    if (!init) { tab[0] = 0; for (int i = 1; i < 256; ++i) tab[i] = (int)std::lround((255 << 12) / (1.0 * i)); init = true; }
+    return ((vmax - vmin) * tab[vmax] + 2048) >> 12;
+}
+// idx = y * W + x koko kuvassa
+static inline bool shadowRefOk(const uint8_t* rp, int vmax, int vmin, size_t idx)
+{
+    if (g_shadow_ref_ok.empty() && g_shadow_ds_max >= 256) return true;
+    if (!g_shadow_ref_ok.empty() && idx < g_shadow_ref_ok.size() && !g_shadow_ref_ok[idx]) return false;
+    if (g_shadow_ds_max >= 256) return true;
+    const int rmax = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2])), rmin = std::min((int)rp[0], std::min((int)rp[1], (int)rp[2]));
+    return std::abs(satFromMaxMin(vmax, vmin) - satFromMaxMin(rmax, rmin)) < g_shadow_ds_max;
+}
+
 static cv::Mat suppressStaticBackground(
     const cv::Mat& frame_bgr, const cv::Mat& reference_bgr, double diff_threshold)
 {
@@ -4366,7 +4387,7 @@ static py::array_t<uint8_t> suppress_shadow_background(
                         const int vmin = std::min(b, std::min(gg, r));
                         const int rv = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2]));
                         const double vdrop = (double)(rv - vmax);
-                        if (vdrop > v_drop_min && vdrop < v_drop_max) bg = true;
+                        if (vdrop > v_drop_min && vdrop < v_drop_max && shadowRefOk(rp, vmax, vmin, (size_t)y * W + x)) bg = true;
                         else {
                             const int sat = ((vmax - vmin) * sdiv[vmax] + 2048) >> 12;
                             if (sat < ice_s_max && vmax > ice_v_min) bg = true;
@@ -4905,7 +4926,7 @@ static py::object alpha_observation_cpp(
                 const int vmax = std::max(b, std::max(gg, r)), vmin = std::min(b, std::min(gg, r));
                 const int rv = std::max((int)rp[0], std::max((int)rp[1], (int)rp[2]));
                 const double vdrop = (double)(rv - vmax);
-                if (vdrop > v_drop_min && vdrop < v_drop_max) bg = true;
+                if (vdrop > v_drop_min && vdrop < v_drop_max && shadowRefOk(rp, vmax, vmin, (size_t)(ry0 + y) * W + (rx0 + x))) bg = true;
                 else { const int sat = ((vmax - vmin) * sdiv[vmax] + 2048) >> 12; if (sat < ice_s_max && vmax > ice_v_min) bg = true; }
             }
             if (bg) { dp[0] = dp[1] = dp[2] = 255; } else { dp[0] = (uint8_t)b; dp[1] = (uint8_t)gg; dp[2] = (uint8_t)r; }
@@ -5235,6 +5256,8 @@ PYBIND11_MODULE(stone_tracker, m)
 {
     m.def("build_info", []() { return std::string("stone_tracker kaannetty ") + __DATE__ + " " + __TIME__; });
     m.def("set_haku_accept_score", [](double v) { g_haku_accept_score = v; }, py::arg("accept_score"));   // kokeiluihin (oletus 0.20)
+    m.def("set_shadow_strict", [](int ds_max) { g_shadow_ds_max = ds_max; }, py::arg("ds_max"));   // 256 = ei kylläisyystarkistusta
+    m.def("set_shadow_ref_ok", [](py::array_t<uint8_t, py::array::c_style | py::array::forcecast> a) { auto b = a.request(); g_shadow_ref_ok.assign((const uint8_t*)b.ptr, (const uint8_t*)b.ptr + b.size); }, py::arg("ok_map"));   // tyhja = vanha kriteeri
     m.def("get_haku_accept_score", []() { return g_haku_accept_score; });
     m.def("silhouette_refine_cpp", &silhouette_refine_cpp,
           py::arg("frame"), py::arg("local_pts_body"), py::arg("K"), py::arg("R"), py::arg("t"),

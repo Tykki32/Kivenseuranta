@@ -51,3 +51,10 @@ Koe: portti (inside0 >= 0.65) myos tarkoille ruuduille lahella -> heitto 181 pys
 heitot 72/157/147/191 loppuvat 1.3-1.9 m aiemmin. Syy: oikeankin kiven inside0 on y ~ 6-8.4 m:ssa usein 0.55-0.60 (tarkka-ruuduilla 5 %:lla < 0.42, 7 % valissa 0.55-0.65) -> absoluuttinen raja
 ei erota lakaisijaan tarttumista. Oletus palautettu (SEURANTA_MIN_INSIDE_NEAR = 0 = ei porttia tarkoille lahella). Vaihtoehdot: suhteellinen pudotus oman mediaanin alle tai hyppytesti
 (sivuttaishyppy/ruutu) - tutkimatta.
+
+### v4.5-koe: tarkempi varjokriteeri taustanvaimennuksessa (SHADOW_STRICT, oletus POIS)
+Vanha varjokriteeri: V-pudotus (-3, 50) riittaa "varjoksi" - ei katso kylläisyyttä eikä sitä onko tausta jaata. Siksi kivi (ja keltainen kahva) poistui viivan/mainoksen kohdalta (tausta jo tumma -> pieni V-pudotus).
+Uusi: varjo vain jos referenssipikseli on jaata (S < 22 ja V >= 0.92 * paikallinen mediaani-V, `_ref_ice_ok`; absoluuttinen V>=160 EI toiminut: kaukana jaa on V 138-153) JA |dS| < 20. Python = C++ (0 eroavaa pikselia).
+Koko video v4.4 -> tama: heittoja 26 -> 25, rivejä 14640 -> 13484, tarkka 0.81 -> 0.77, rms med 0.78 -> 0.96, kaukana (y>26 m) rms ka 6.0 -> 10.5 ja 6-9 m sileys 0.4/2 -> 2.5/5 cm.
+Syy: viivan/mainoksen jaannokset jaavat etualaksi (diff-kynnys 10 ei poista niita, varjokriteeri ei enaa) -> LM-sovitus huononee. Kiven sailyminen paranee mutta kokonaisuus ei -> oletus pois.
+Seuraavaksi (jos jatketaan): poistetaan jaannokset viivamaskilla (referenssin ei-jaa-alueet: ref_ok == 0 ja pikseli ~ referenssi) - vain kiven kohdalla tehtava tayttö siluettitarkennuksen maskiin.
