@@ -1,0 +1,327 @@
+"""Hog-hog -analyysi (Testi_05_01/05_02) + X-suuntainen analyysi: heiton nopeus kaukaisella hoglinella, keskihidastuvuus ja hog-hog-aika toisen asteen sovituksesta.
+
+Datapisteet: radan rivit joiden Y on valilla [lahihog + 50 cm, kaukohog - 100 cm]. Sovitus Y(t) = a t^2 + b t + c (t sekunteina valin ensimmaisesta pisteesta).
+Ensin sovitus kaikille pisteille; sitten DROP_WORST (10) huonoiten sopivaa pistetta (suurin |residuaali|) suodatetaan pois ja sovitus tehdaan uudelleen (poistaa satunnaiset
+epaonnistumiset). R lasketaan uudelleensovituksesta. Jos R = sqrt(R^2) > MIN_R (0.99):
+  * nopeus kaukaisella hoglinella v = -dY/dt hetkella jolloin Y(t) = kaukohog (yhtalon mukaan),
+  * keskihidastuvuus alueella = (v(alku) - v(loppu)) / (t_loppu - t_alku) (toisen asteen yhtalolle vakio 2a),
+  * hog-hog-aika = t(Y = lahihog) - t(Y = kaukohog) yhtalon mukaan (lahihog 50 cm sovitusalueen ulkopuolella -> ekstrapolaatio).
+Y pienenee kun kivi etenee kohti lahempaa pesaa (lahihog = pienempi Y).
+
+X-SUUNTAINEN ANALYYSI: samoille pisteille lasketaan Y_yht = Y:n yhtalo hetkella t (sileä Y), ja X sovitetaan toisen asteen yhtaloon Y_yht:n suhteen: X = p u^2 + q u + r, u = (Y_yht - kaukohog)/100
+(taas 10 huonoiten sopivaa pistetta pois + uudelleensovitus). Jos R_x > 0.99: suunta kaukohoglinella (dX/dY kaukohogilla -> kulma kulkusuunnassa, + = kohti +X) ja X-arvo jonka
+SUORA (kaukohogin suunta jatkettuna) saisi lahemmalla T-viivalla (Y = lahipesan keskipiste). TULOSTETAAN VAIN jos R_y * R_x > MIN_PRODUCT (0.99) (ja kumpikin R > 0.99): suodattaa kaiken huonon."""
+import numpy as np
+import cv2
+
+MIN_R = 0.99
+MIN_PRODUCT = 0.99        # R_y * R_x -ehto tulostukselle
+NEAR_MARGIN_CM = 50.0     # lahihog + 50 cm
+FAR_MARGIN_CM = 100.0     # kaukohog - 100 cm
+MIN_POINTS = 40
+LIUKU_END_MARGIN_CM = 100.0  # liuku: suoran sovitus heiton alusta kaukohog + 100 cm asti
+LIUKU_MIN_POINTS = 8
+DROP_WORST = 10           # ensimmaisen sovituksen jalkeen pudotetaan 10 huonoiten sopivaa pistetta ja sovitetaan uudelleen
+COVER_TOL_CM = 150.0      # radan pitaa kattaa valin paat (+-)
+
+
+def _roots(a, b, c_minus_y):
+    if abs(a) < 1e-9:
+        return [-c_minus_y / b] if abs(b) > 1e-12 else []
+    d = b * b - 4 * a * c_minus_y
+    if d < 0:
+        return []
+    s = np.sqrt(d)
+    return [(-b - s) / (2 * a), (-b + s) / (2 * a)]
+
+
+def _time_at(a, b, c, y, t_lo, t_hi):
+    """Hetki jolloin Y(t) = y: juuri jossa Y pienenee (dY/dt < 0) ja joka on lahinna havaintovalia [t_lo, t_hi]."""
+    cands = [t for t in _roots(a, b, c - y) if 2 * a * t + b < 0]
+    if not cands:
+        return None
+    mid = 0.5 * (t_lo + t_hi)
+    return float(min(cands, key=lambda t: abs(t - mid)))
+
+
+def _r_of(tt, y, a, b, c):
+    ss_res = float(np.sum((y - (a * tt * tt + b * tt + c)) ** 2)); ss_tot = float(np.sum((y - y.mean()) ** 2))
+    return float(np.sqrt(max(1.0 - ss_res / ss_tot, 0.0))) if ss_tot > 0 else 0.0
+
+
+def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=MIN_R, tee_cm=None, min_product=MIN_PRODUCT):
+    """rows: [(frame, timestamp_s, {"Y_cm": ...}), ...]. Palauttaa dict: ok (bool), reason, n, R, ..."""
+    ylo, yhi = near_hog_cm + NEAR_MARGIN_CM, far_hog_cm - FAR_MARGIN_CM
+    pts = [(float(t), float(r["Y_cm"])) for _, t, r in rows if r.get("Y_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi]
+    out = dict(ok=False, reason="", n=len(pts), y_lo_cm=ylo, y_hi_cm=yhi, near_hog_cm=near_hog_cm, far_hog_cm=far_hog_cm)
+    if len(pts) < MIN_POINTS:
+        out["reason"] = f"liian vahan pisteita ({len(pts)} < {MIN_POINTS})"
+        return out
+    t = np.array([p[0] for p in pts]); y = np.array([p[1] for p in pts])
+    if y.max() < yhi - COVER_TOL_CM or y.min() > ylo + COVER_TOL_CM:
+        out["reason"] = "kivi ei ole kulkenut riittavasti (data ei kata sovitusvalia)"
+        return out
+    t0 = float(t.min()); tt = t - t0
+    a, b, c = np.polyfit(tt, y, 2)
+    R1 = _r_of(tt, y, a, b, c)
+    n_drop = min(DROP_WORST, max(0, len(y) - MIN_POINTS))
+    if n_drop > 0:                                   # pudota n_drop huonoiten sopivaa pistetta ja sovita uudelleen
+        res = np.abs(y - (a * tt * tt + b * tt + c))
+        keep = np.argsort(res)[: len(y) - n_drop]
+        keep.sort()
+        tt, y = tt[keep], y[keep]
+        a, b, c = np.polyfit(tt, y, 2)
+    pred = a * tt * tt + b * tt + c
+    ss_res = float(np.sum((y - pred) ** 2)); ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    R = float(np.sqrt(max(r2, 0.0)))
+    out.update(R=R, R_ennen_suodatusta=R1, n_pudotettu=n_drop, n_kaytetty=int(len(y)), r2=r2, a=float(a), b=float(b), c=float(c), t0=t0,
+               rms_cm=float(np.sqrt(ss_res / len(y))))
+    if R <= min_r:
+        out["reason"] = f"sovitus ei riittavan hyva (R = {R:.4f} <= {min_r})"
+        return out
+    t_hi_y = _time_at(a, b, c, yhi, tt.min(), tt.max())   # alueen alku (kaukopaa)
+    t_lo_y = _time_at(a, b, c, ylo, tt.min(), tt.max())   # alueen loppu (lahipaa)
+    t_far = _time_at(a, b, c, far_hog_cm, tt.min(), tt.max())
+    t_near = _time_at(a, b, c, near_hog_cm, tt.min(), tt.max())
+    if None in (t_hi_y, t_lo_y, t_far, t_near):
+        out["reason"] = "yhtalolla ei ratkaisua hoglinelle"
+        return out
+    v = lambda tx: -(2 * a * tx + b)                       # cm/s (positiivinen = kohti lahempaa pesaa)
+    v_far = v(t_far)
+    decel = (v(t_hi_y) - v(t_lo_y)) / (t_lo_y - t_hi_y) if t_lo_y != t_hi_y else 0.0
+    out.update(ok_y=True, v_far_hog_ms=v_far / 100.0, decel_ms2=decel / 100.0,
+               hog_hog_s=float(t_near - t_far), t_far_hog_s=float(t_far + t0), t_near_hog_s=float(t_near + t0),
+               v_near_hog_ms=v(t_near) / 100.0)
+
+    # ---- X-suuntainen analyysi ----
+    pts_x = [(float(t_), float(r["Y_cm"]), float(r["X_cm"])) for _, t_, r in rows
+             if r.get("Y_cm") is not None and r.get("X_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi]
+    if len(pts_x) < MIN_POINTS:
+        out["ok"] = False; out["reason"] = "X-pisteita liian vahan"
+        return out
+    tx = np.array([p[0] for p in pts_x]) - t0
+    xx = np.array([p[2] for p in pts_x])
+    y_eq = a * tx * tx + b * tx + c                         # Y yhtalosta ajan funktiona
+    u = (y_eq - far_hog_cm) / 100.0
+    px, qx, rx = np.polyfit(u, xx, 2)
+    Rx1 = _r_of(u, xx, px, qx, rx)
+    nd = min(DROP_WORST, max(0, len(xx) - MIN_POINTS))
+    if nd > 0:
+        resx = np.abs(xx - (px * u * u + qx * u + rx))
+        kx = np.sort(np.argsort(resx)[: len(xx) - nd])
+        u, xx = u[kx], xx[kx]
+        px, qx, rx = np.polyfit(u, xx, 2)
+    Rx = _r_of(u, xx, px, qx, rx)
+    out.update(R_x=Rx, R_x_ennen_suodatusta=Rx1, nx_kaytetty=int(len(xx)), nx_pudotettu=nd, px=float(px), qx=float(qx), rx=float(rx), R_tulo=R * Rx)
+    if Rx <= min_r or R * Rx <= min_product:
+        out["ok"] = False
+        out["reason"] = f"X-sovitus tai R_y*R_x ei riittava (R_x = {Rx:.4f}, R_y*R_x = {R * Rx:.4f})"
+        return out
+    slope = qx / 100.0                                      # dX/dY kaukohoglinella (u = 0), cm / cm
+    x_far = float(rx)
+    dir_deg = float(np.degrees(np.arctan(-slope)))          # kulkusuunta (Y pienenee): + = kohti +X
+    out.update(x_far_hog_cm=x_far, slope_dxdy=float(slope), dir_far_hog_deg=dir_deg)
+    if tee_cm is not None:
+        out["tee_y_cm"] = float(tee_cm)
+        out["x_straight_at_tee_cm"] = float(x_far + slope * (tee_cm - far_hog_cm))
+    # ---- LIUKU: suora X(Y) heiton alusta kohtaan kaukohog + LIUKU_END_MARGIN_CM (kivi ei ole viela ylittanyt hogia) -> mihin se osuisi lahemmalla T-viivalla ----
+    if tee_cm is not None:
+        pts_l = [(float(r["Y_cm"]), float(r["X_cm"])) for _, _, r in rows
+                 if r.get("Y_cm") is not None and r.get("X_cm") is not None and float(r["Y_cm"]) >= far_hog_cm + LIUKU_END_MARGIN_CM]
+        if len(pts_l) >= LIUKU_MIN_POINTS:
+            yl = np.array([p[0] for p in pts_l]); xl = np.array([p[1] for p in pts_l])
+            sl, ic = np.polyfit(yl, xl, 1)
+            out.update(liuku_x_tee_cm=float(sl * tee_cm + ic), liuku_dir_deg=float(np.degrees(np.arctan(-sl))), liuku_n=int(len(yl)),
+                       liuku_rms_cm=float(np.std(xl - (sl * yl + ic))))
+    out["ok"] = True
+    return out
+
+
+def format_lines(res, stone_id=None):
+    """Tekstirivit (terminaali + kuva). Vain onnistuneelle (R_y, R_x, R_y*R_x) analyysille; muuten None."""
+    if not res.get("ok"):
+        return None
+    hdr = "Hog-hog + X-suunta" + (f" (kivi {stone_id})" if stone_id is not None else "")
+    d = res["dir_far_hog_deg"]
+    side = "+X" if d > 0 else "-X"
+    liuku = f"{res['liuku_x_tee_cm']:+.1f} cm (suunta {res['liuku_dir_deg']:+.2f} deg, n = {res['liuku_n']})" if "liuku_x_tee_cm" in res else "ei laskettu"
+    lines = [hdr,
+             f"nopeus kaukohogilla: {res['v_far_hog_ms']:.2f} m/s",
+             f"keskihidastuvuus: {res['decel_ms2']:.3f} m/s^2",
+             f"hog-hog aika: {res['hog_hog_s']:.2f} s",
+             f"suunta kaukohogilla: {abs(d):.2f} deg kohti {side}",
+             f"liuku (suoran X T-viivalla, alusta hog+1m): {liuku}"]
+    if "x_straight_at_tee_cm" in res:
+        lines.append(f"merkki (suoran X T-viivalla, hogin jalkeen): {res['x_straight_at_tee_cm']:+.1f} cm")
+    lines.append(f"R_y = {res['R']:.5f}  R_x = {res['R_x']:.5f}  tulo = {res['R_tulo']:.5f}")
+    return lines
+
+
+def draw_overlay(img, lines, K, R, t, near_hog_cm, x_side_cm=300.0, lane_half_cm=237.0, color=(255, 255, 255)):
+    """Piirtaa tekstirivit radan SIVUUN lahemman hoglinen kohdalle (ja hoglinen ohuena viivana). Palauttaa img."""
+    K = np.asarray(K, float); R = np.asarray(R, float).reshape(3, 3); t = np.asarray(t, float).reshape(3)
+    def proj(x, y):
+        p = K @ (R @ np.array([x, y, 0.0]) + t); return float(p[0] / p[2]), float(p[1] / p[2])
+    H, W = img.shape[:2]
+    pa, pb = proj(-lane_half_cm, near_hog_cm), proj(lane_half_cm, near_hog_cm)
+    cv2.line(img, (int(pa[0]), int(pa[1])), (int(pb[0]), int(pb[1])), (0, 200, 255), 2)
+    sides = [proj(x_side_cm, near_hog_cm), proj(-x_side_cm, near_hog_cm)]
+    lh = 26; box_h = lh * len(lines) + 10
+    # valitse sivu jolla teksti mahtuu kuvaan (ylempi ensin; teksti piirretaan ankkurista ylos/alas poispain radasta)
+    anchor = None
+    for p, direction in ((min(sides, key=lambda q: q[1]), -1), (max(sides, key=lambda q: q[1]), 1)):
+        y0 = p[1] - box_h if direction < 0 else p[1]
+        if 0 <= y0 and y0 + box_h <= H:
+            anchor = (p[0], y0); break
+    if anchor is None:
+        anchor = (sides[0][0], max(0, min(H - box_h, sides[0][1] - box_h)))
+    x0 = int(max(5, min(W - 570, anchor[0] - 200))); y0 = int(anchor[1])
+    cv2.rectangle(img, (x0 - 6, y0), (x0 + 560, y0 + box_h), (0, 0, 0), -1)
+    for i, s in enumerate(lines):
+        cv2.putText(img, s, (x0, y0 + 22 + i * lh), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color if i else (0, 255, 255), 2)
+    return img
+
+
+# ============================================================
+# DEBUG-VIDEON UUSI ULKOASU: kaannetty 90 astetta vastapaivaan (kivet kulkevat ylhaalta alas), korkeus DEBUG_H (1080), vasemmalla ja oikealla
+# tietopaneelit heitoista jotka lahtivat vasemmalle / oikealle (ylimpana viimeisin, vanhemmat rullaavat alas kunnes eivat mahdu).
+# ============================================================
+DEBUG_H = 1080
+PANEL_W = 430
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+FONT_SCALE = 0.6          # sama fontti kuin edellisessa (hog-hog -tekstissa)
+FONT_THICK = 2
+LINE_H = 26
+BOX_PAD = 8
+BOX_GAP = 8
+
+
+def debug_layout(src_w, src_h):
+    """Kaannetyn videon koko: (video_w, video_h, scale, total_w). Kaannos 90 astetta -> leveys = src_h, korkeus = src_w; skaalataan korkeus DEBUG_H:hon."""
+    scale = DEBUG_H / float(src_w)
+    video_w = int(round(src_h * scale))
+    return video_w, DEBUG_H, scale, video_w + 2 * PANEL_W
+
+
+def plus_x_is_right(K, R, t, y_cm=1500.0):
+    """True jos +X on kaannetyssa (90 astetta vastapaivaan) videossa OIKEALLA. Kaannos: x' = y_alkuperainen."""
+    K = np.asarray(K, float); R = np.asarray(R, float).reshape(3, 3); t = np.asarray(t, float).reshape(3)
+    def py(x):
+        p = K @ (R @ np.array([x, y_cm, 0.0]) + t); return p[1] / p[2]
+    return py(100.0) > py(-100.0)
+
+
+def throw_side(res, plus_right):
+    """'L' tai 'R': mille puolelle (kaannetyssa videossa) heitto lahti kaukohoglinella (suunta dir_far_hog_deg: + = kohti +X)."""
+    toward_plus = res["dir_far_hog_deg"] > 0
+    return "R" if toward_plus == bool(plus_right) else "L"
+
+
+def entry_lines(res):
+    return [f"kiven ID: {res['stone_id']}",
+            f"nopeus: {res['v_far_hog_ms']:.2f} m/s",
+            f"hidastuvuus: {res['decel_ms2']:.3f} m/s^2",
+            f"hog-hog: {res['hog_hog_s']:.2f} s",
+            f"liuku: {res['liuku_x_tee_cm']:+.1f} cm" if "liuku_x_tee_cm" in res else "liuku: -",
+            f"merkki: {res.get('x_straight_at_tee_cm', float('nan')):+.1f} cm"]
+
+
+def render_panel(entries):
+    """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x PANEL_W) kuvan; jokainen heitto omassa laatikossa."""
+    img = np.zeros((DEBUG_H, PANEL_W, 3), np.uint8)
+    box_h = LINE_H * 6 + 2 * BOX_PAD
+    y = BOX_GAP
+    for res in entries:
+        if y + box_h > DEBUG_H:
+            break
+        cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (45, 45, 45), -1)
+        cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (0, 200, 255), 2)
+        for i, s in enumerate(entry_lines(res)):
+            cv2.putText(img, s, (BOX_GAP + BOX_PAD + 4, y + BOX_PAD + 20 + i * LINE_H), FONT, FONT_SCALE,
+                        (0, 255, 255) if i == 0 else (255, 255, 255), FONT_THICK)
+        y += box_h + BOX_GAP
+    return img
+
+
+def compose_debug_frame(base_bgr, labels, header, results, plus_right):
+    """base_bgr: alkuperainen (stabiloitu+korjattu, piirretyt ääriviivat) kuva; labels: [(x, y, teksti, vari_bgr)] alkuperaisen kuvan pikselikoordinaateissa.
+    Palauttaa kaannetyn+skaalatun kuvan paneeleineen: [vasen paneeli | video | oikea paneeli]."""
+    H0, W0 = base_bgr.shape[:2]
+    video_w, video_h, scale, _ = debug_layout(W0, H0)
+    rot = cv2.rotate(base_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    vid = cv2.resize(rot, (video_w, video_h), interpolation=cv2.INTER_AREA)
+    for (x, y, txt, col) in labels:                      # kaannos: (x, y) -> (y, W0 - 1 - x), sitten skaalaus
+        xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))
+        cv2.putText(vid, txt, (max(2, min(video_w - 120, xr)), max(14, min(video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
+    cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
+    left = [r for r in results if throw_side(r, plus_right) == "L"][::-1]
+    right = [r for r in results if throw_side(r, plus_right) == "R"][::-1]
+    return np.hstack([render_panel(left), vid, render_panel(right)])
+
+
+# ============================================================
+# NOPEA DEBUG-VIDEON KOOSTAJA (Testi_05_02): pysyva canvas, paneelit piirretaan uudelleen vain kun sisalto muuttuu, skaalaus ENNEN kaantoa (pienempi kuva),
+# ja AsyncVideoWriter (mp4-enkoodaus omassa saikeessa; cv2.VideoWriter.write vapauttaa GIL:n).
+# ============================================================
+import threading
+import queue as _queue
+
+
+class DebugComposer:
+    def __init__(self, src_w, src_h):
+        self.src_w, self.src_h = int(src_w), int(src_h)
+        self.video_w, self.video_h, self.scale, self.total_w = debug_layout(src_w, src_h)
+        self.canvas = np.zeros((self.video_h, self.total_w, 3), np.uint8)
+        self._key = {"L": None, "R": None}
+        # skaalaus ennen kaantoa: (src_w x src_h) -> (video_h x video_w) = (DEBUG_H x video_w) kaantamattomana: leveys DEBUG_H, korkeus video_w
+        self._pre_w, self._pre_h = DEBUG_H, self.video_w
+
+    def compose(self, base_bgr, labels, header, results, plus_right):
+        H0, W0 = base_bgr.shape[:2]
+        small = cv2.resize(base_bgr, (self._pre_w, self._pre_h), interpolation=cv2.INTER_LINEAR)     # 1080 x 608
+        vid = cv2.rotate(small, cv2.ROTATE_90_COUNTERCLOCKWISE)                                   # 608 x 1080 (leveys x korkeus)
+        scale = self.scale
+        for (x, y, txt, col) in labels:
+            xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))
+            cv2.putText(vid, txt, (max(2, min(self.video_w - 120, xr)), max(14, min(self.video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
+        cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
+        self.canvas[:, PANEL_W:PANEL_W + self.video_w] = vid
+        for side, x0 in (("L", 0), ("R", PANEL_W + self.video_w)):
+            ents = [r for r in results if throw_side(r, plus_right) == side][::-1]
+            key = tuple((r["stone_id"], r["frame"]) for r in ents)
+            if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui
+                self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents)
+                self._key[side] = key
+        return self.canvas
+
+
+class AsyncVideoWriter:
+    """cv2.VideoWriter omassa saikeessa: write() kopioi kuvan jonoon ja palaa heti (jono taynna -> odottaa)."""
+
+    def __init__(self, writer, maxsize=6):
+        self._w = writer
+        self._q = _queue.Queue(maxsize=maxsize)
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+
+    def _run(self):
+        while True:
+            img = self._q.get()
+            if img is None:
+                break
+            if isinstance(img, tuple):
+                img = img[0](*img[1])
+            self._w.write(img)
+
+    def write(self, img):
+        self._q.put(img.copy())
+
+    def submit(self, fn, *args):
+        """Tyo (fn(*args) -> kuva) tehdaan taustasaikeessa ja kirjoitetaan; paasaie palaa heti."""
+        self._q.put((fn, args))
+
+    def release(self):
+        self._q.put(None)
+        self._t.join()
+        self._w.release()
