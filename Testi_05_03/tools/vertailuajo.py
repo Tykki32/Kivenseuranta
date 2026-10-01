@@ -9,7 +9,8 @@ Ajot (kaikki samalla videolla/aikavälillä, oletuksena debug-video päällä), 
   gpub   : vaihe B GPU:lla (GPU_B=1)            gpuall : molemmat GPU:lla
   verify : GPU_GRID=1 + GPU_GRID_VERIFY=1 + GPU_B=1 (oikeellisuus, hidas)
   par    : GPU_B + STAB_WORKERS=2 + PIPE_DEPTH=6     par3 : kuten par, STAB_WORKERS=3     parcpu : STAB_WORKERS=2 + PIPE_DEPTH=6 (vaihe B CPU:lla)
-Oletus: cpu,gpub,par,par3.
+  intra  : par + INTRA_PARALLEL=1 (kiven sisäinen rinnakkaisuus)     intragrid : intra + GPU_GRID=1
+Oletus: cpu,par,intra,intragrid.
 Tulokset kansioon --outdir (oletus: videon kansio / vertailuajo_<aikaleima>):
   ajo_<nimi>_loki.txt          koko terminaalitulostus
   ajo_<nimi>_sijainnit.csv     kivien sijainnit (+ _hog.csv)
@@ -36,8 +37,10 @@ RUNS = [
     ("par", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6"}),      # vaihe B GPU:lla + stabilointi 2 ruudulle rinnan + jonot 6
     ("par3", {"GPU_B": "1", "STAB_WORKERS": "3", "PIPE_DEPTH": "6"}),     # kuten par, 3 rinnakkaista stabilointia
     ("parcpu", {"STAB_WORKERS": "2", "PIPE_DEPTH": "6"}),                 # vain liukuhihnan rinnakkaisuus (vaihe B CPU:lla)
+    ("intra", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1"}),                    # par + kiven sisainen rinnakkaisuus (ristikko + 2 mean-shiftia rinnan)
+    ("intragrid", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1", "GPU_GRID": "1"}),  # intra + ristikkohaun hieno vaihe GPU:lla
 ]
-DEFAULT_RUNS = "cpu,gpub,par,par3"
+DEFAULT_RUNS = "cpu,par,intra,intragrid"
 
 
 def pick_video():
@@ -54,7 +57,7 @@ def pick_video():
 
 def run_main(name, env_extra, video, start, end, debug, extra, log_path):
     env = dict(os.environ)
-    for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_B", "STAB_WORKERS", "PIPE_DEPTH"):
+    for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_B", "STAB_WORKERS", "PIPE_DEPTH", "INTRA_PARALLEL"):
         if k not in env_extra:
             env.pop(k, None)
     env.update(env_extra)
@@ -191,7 +194,7 @@ def main():
     ap.add_argument("--end", default="00:21:00")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-debug", action="store_true", help="aja ilman debug-videota")
-    ap.add_argument("--runs", default=DEFAULT_RUNS, help="ajettavat ajot pilkuilla (cpu,gpu,gpub,gpuall,verify,par,par3,parcpu); oletus " + DEFAULT_RUNS)
+    ap.add_argument("--runs", default=DEFAULT_RUNS, help="ajettavat ajot pilkuilla (cpu,gpu,gpub,gpuall,verify,par,par3,parcpu,intra,intragrid); oletus " + DEFAULT_RUNS)
     ap.add_argument("--main-args", default="", help="lisäargumentit main.py:lle lainausmerkeissä, esim. \"--max-frame 3000\"")
     args = ap.parse_args()
 

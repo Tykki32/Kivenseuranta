@@ -142,3 +142,9 @@ Perustelu (Windows-vertailuajo, GPU-vaihe B): B 37,7 -> 18,7 ms, CPU-kuorma ja l
 - `STAB_WORKERS=n`: stabilointi (vaihekorrelaatio) n ruudulle rinnan; ruudut ovat toisistaan riippumattomia (kukin vs. moodikuva), tulokset jonoon alkuperäisessä järjestyksessä -> tulos identtinen (sandbox 2900 ruutua: CSV identtinen, 31,1 -> 34,1 r/s kun STAB_WORKERS=3, PIPE_DEPTH=6). Oletus 1 (ennallaan). A:n palveluaika raportissa = A-säikeen oma kierto; työntekijöiden yhteenlaskettu aika "bg: stabilointi tyoaika"-rivillä.
 - `PIPE_DEPTH=n`: vaiheiden välisten jonojen koko (oletus 3).
 - `tools/vertailuajo.py`: uudet ajot `par` (GPU_B + 2 rinnakkaista + jonot 6), `par3`, `parcpu`; oletus `cpu,gpub,par,par3`.
+
+### v5.6: kiven sisäinen rinnakkaisuus (`INTRA_PARALLEL=1`)
+Windows-ajossa (par3) pääsäie C oli ainoa pullonkaula (42 ms, 100 % kuormitus; A 4 ms, B 19 ms): SEURANTA 25 ms/ruutu = 60 % siitä. Kiven kolme hakua – ristikkohaku (~4–5 ms) ja kaksi mean-shiftiä (~3 ms kumpikin) – ovat toisistaan riippumattomia,
+mutta ajettiin peräkkäin. `INTRA_PARALLEL=1` ajaa mean-shiftit omissa säikeissään ristikkohaun rinnalla (`locate_mode 5`, `stone_tracker.set_intra_parallel`); syötteet, ehdokkaiden järjestys ja valintalogiikka ovat samat -> tulos identtinen.
+Sandbox (4 ydintä, jo kyllästetty): CSV identtinen (2900 ruutua), SEURANTA-kutsu 26,6 -> 26,1 ms; hyöty odotetaan vasta koneella jossa on vapaita ytimiä (Windows-kone: 3,9/8 ydintä käytössä).
+`tools/vertailuajo.py`: uudet ajot `intra`, `intragrid`; oletus `cpu,par,intra,intragrid`. C++-moduuli pitää kääntää uudelleen.

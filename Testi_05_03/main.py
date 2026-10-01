@@ -992,6 +992,12 @@ GPU_B = os.environ.get("GPU_B", "0") == "1"
 #   PIPE_DEPTH=n   : vaiheiden valisten jonojen koko (oletus 3); isompi tasoittaa vaiheiden aikavaihtelua.
 STAB_WORKERS = max(1, int(os.environ.get("STAB_WORKERS", "1")))
 PIPE_DEPTH = max(1, int(os.environ.get("PIPE_DEPTH", "3")))
+# Testi_05_03 v5.6: INTRA_PARALLEL=1 ajaa kiven kolme hakua (ristikko + 2 mean-shiftia) rinnan eri saikeissa (oletus pois; tulos identtinen).
+INTRA_PARALLEL = os.environ.get("INTRA_PARALLEL", "0") == "1"
+if hasattr(stone_tracker, "set_intra_parallel"):
+    stone_tracker.set_intra_parallel(int(INTRA_PARALLEL))
+    if INTRA_PARALLEL:
+        print("SEURANTA: kiven sisainen rinnakkaisuus paalla (ristikkohaku + 2 mean-shiftia rinnan)")
 GPU_GRID = os.environ.get("GPU_GRID", "0") == "1"
 GPU_GRID_VERIFY = os.environ.get("GPU_GRID_VERIFY", "0") == "1"
 if hasattr(stone_tracker, "set_gpu_grid"):
@@ -4187,7 +4193,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_03 v5.5 (pohja: Testi_05_02 v5.2; GPU-vaihe B valinnainen; STAB_WORKERS/PIPE_DEPTH) (2026-10-01)"
+SOFTWARE_VERSION = "Testi_05_03 v5.6 (pohja: Testi_05_02 v5.2; GPU-vaihe B valinnainen; STAB_WORKERS/PIPE_DEPTH/INTRA_PARALLEL) (2026-10-01)"
 
 
 def _version_string():
