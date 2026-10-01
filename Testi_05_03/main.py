@@ -1000,6 +1000,12 @@ STAB_WORKERS = max(1, int(os.environ.get("STAB_WORKERS", "1")))
 PIPE_DEPTH = max(1, int(os.environ.get("PIPE_DEPTH", "3")))
 # Testi_05_03 v5.6: INTRA_PARALLEL=1 ajaa kiven kolme hakua (ristikko + 2 mean-shiftia) rinnan eri saikeissa (oletus pois; tulos identtinen).
 INTRA_PARALLEL = os.environ.get("INTRA_PARALLEL", "0") == "1"
+# v5.7: Pythonin GIL-vaihtovali (sys.setswitchinterval, oletus 5 ms). Liukuhihnassa on useita Python-saikeita (A, B, debug-piirto, HAKU,
+# valotasapaino); kun paasaie palaa C++/cv2-kutsusta (GIL vapautettu), se joutuu odottamaan GIL:ia enimmillaan koko vaihtovalin jos toinen
+# saie ajaa Python-koodia. Lyhyempi vali -> paasaie (pullonkaula) saa GIL:n nopeammin takaisin. Ei vaikuta tuloksiin. 0 = Pythonin oletus.
+PY_SWITCH_INTERVAL_MS = float(os.environ.get("PY_SWITCH_INTERVAL_MS", "0"))
+if PY_SWITCH_INTERVAL_MS > 0:
+    sys.setswitchinterval(PY_SWITCH_INTERVAL_MS / 1000.0)
 if hasattr(stone_tracker, "set_intra_parallel"):
     stone_tracker.set_intra_parallel(int(INTRA_PARALLEL))
     if INTRA_PARALLEL:
@@ -1824,6 +1830,7 @@ STOP_TRACKING_DISPLACEMENT_CM = 20.0
 # kommentti (STOP_TRACKING_DISPLACEMENT_CM/SECONDS RIITTAA yksinaan).
 # color_match_median_diff/color_diff_history sailyvat silti (COLOR_DEBUG-
 # diagnostiikkaa varten), vain paatoksentekoon ei enaa vaikuta.
+_COLOR_DEBUG = bool(os.environ.get("COLOR_DEBUG"))   # v5.7: SEURANNAN varidiagnostiikka lasketaan vain tassa tilassa
 COLOR_REF_MIN_RING_SPACING_PX = 2.5
 COLOR_REF_MIN_OBSERVATIONS = 3
 COLOR_MATCH_MIN_VALID_POINTS = 20
@@ -5847,7 +5854,19 @@ def run_pipeline(
                     color_ref = live_state["color_reference"]
                     frame_u_f64 = None
 
-                    for s, refined in zip(seuranta_stones, batch_results):
+                    # v5.7: siluettitarkennus kaikille loydetyille kiville kerralla (C++, kivet rinnan). Syote = C++-tulos (X_cm, Y_cm)
+                    # ennen alla olevia tarkistuksia, kuten ennenkin (kivisilmukka ei muuta niita ennen refine-kutsua) -> tulos sama.
+                    _sil_results = {}
+                    if track_refiner is not None:
+                        _sil_idx = [i for i, r in enumerate(batch_results) if r["found"]]
+                        if _sil_idx:
+                            with _prof("py: SEURANTA maskituki + siluettitarkennus"):
+                                _sil_out = track_refiner.refine_many(
+                                    frame_u_for_tracking, [(batch_results[i]["X_cm"], batch_results[i]["Y_cm"]) for i in _sil_idx]
+                                )
+                            _sil_results = dict(zip(_sil_idx, _sil_out))
+
+                    for _si, (s, refined) in enumerate(zip(seuranta_stones, batch_results)):
 
                         # --------------------------------
                         # VARIHISTORIAN KERAYS (COLOR_DEBUG-diagnostiikkaa
@@ -5870,7 +5889,9 @@ def run_pipeline(
                         # katoa/vaaristu taman takia.
                         # --------------------------------
 
-                        if refined["found"] and color_ref is not None:
+                        # v5.7: varidiagnostiikka (color_diff_history) ei vaikuta mihinkaan paatokseen eika tulosteeseen (vain COLOR_DEBUG-
+                        # tulostus, katso COLOR_REF_*-kommentti) -> lasketaan vain kun COLOR_DEBUG on asetettu (saastaa ~1 ms/ruutu paasaikeessa).
+                        if refined["found"] and color_ref is not None and _COLOR_DEBUG:
 
                             with _prof("py: SEURANTA jalkeen: varidiagnostiikka (astype+median)"):
                                 if frame_u_f64 is None:
@@ -5906,10 +5927,7 @@ def run_pipeline(
 
                         if track_refiner is not None and refined["found"]:
                             _far = refined["Y_cm"] > SEURANTA_SIL_ALL_Y_CM
-                            with _prof("py: SEURANTA maskituki + siluettitarkennus"):
-                                _tx, _ty, _tinfo = track_refiner.refine(
-                                    frame_u_for_tracking, refined["X_cm"], refined["Y_cm"]
-                                )
+                            _tx, _ty, _tinfo = _sil_results[_si]
                             if os.environ.get("SEURANTA_SIL_DEBUG") and int(os.environ.get("SEURANTA_SIL_DEBUG").split(":")[0]) <= frame_index <= int(os.environ.get("SEURANTA_SIL_DEBUG").split(":")[1]):
                                 print(f"[SILDBG] f={frame_index} id={s['stone_id']} tarkka={refined.get('tarkka')} X,Y=({refined['X_cm']:.1f},{refined['Y_cm']:.1f}) -> ({_tx:.1f},{_ty:.1f}) "
                                       f"ok={_tinfo.get('ok')} in0={_tinfo.get('inside0')} in1={_tinfo.get('inside1')} sh={_tinfo.get('shift_px')} min_y={s['min_y_seen']:.1f}")
