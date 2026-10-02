@@ -1141,6 +1141,50 @@ if hasattr(stone_tracker, "set_intra_parallel"):
     stone_tracker.set_intra_parallel(int(INTRA_PARALLEL))
     if INTRA_PARALLEL:
         print("SEURANTA: kiven sisainen rinnakkaisuus paalla (ristikkohaku + 2 mean-shiftia rinnan)")
+# v6.11: peittolaskenta ilman valiaikaisia kuvia (sama tulos; OVERLAP_FAST=0 = vanha tapa) ja yhdistelmahaun ristikkohaun ohitus:
+# GRID_SKIP=1 keskeyttaa ristikkohaun, kun molemmat mean-shiftit ovat hyvia (>= GRID_SKIP_SCORE) ja yksimielisia
+# (<= GRID_SKIP_AGREE_CM); 0 = pois, 2 = varjotila (ristikko ajetaan aina, GRID_SKIP_DUMP=<tiedosto.csv> kirjaa mita ohitus muuttaisi).
+# OHITUS EI OLE KAYTOSSA: varjotila (MAH00014, 21363 paivitysta) - mean-shiftien pistemaara on harvoin korkea (mediaani 0,66) ja
+# ristikkohaun tulos valitaan ~44 %:ssa paivityksista; kynnyksella 0,90 / 1 cm ohitettaisiin vain 1 % ja niista 46 % muuttuisi.
+OVERLAP_FAST = os.environ.get("OVERLAP_FAST", "1") == "1"
+GRID_SKIP = int(os.environ.get("GRID_SKIP", "0"))
+GRID_SKIP_SCORE = float(os.environ.get("GRID_SKIP_SCORE", "0.90"))
+GRID_SKIP_AGREE_CM = float(os.environ.get("GRID_SKIP_AGREE_CM", "1.0"))
+GRID_SKIP_DUMP = os.environ.get("GRID_SKIP_DUMP", "")
+if hasattr(stone_tracker, "set_grid_skip"):
+    stone_tracker.set_overlap_fast(int(OVERLAP_FAST))
+    stone_tracker.set_grid_skip(GRID_SKIP, GRID_SKIP_SCORE, GRID_SKIP_AGREE_CM)
+    if GRID_SKIP:
+        print(f"SEURANTA: ristikkohaun ohitus {'PAALLA' if GRID_SKIP == 1 else 'VARJOTILA'} "
+              f"(mean-shiftit >= {GRID_SKIP_SCORE:.2f} ja <= {GRID_SKIP_AGREE_CM:.1f} cm toisistaan)")
+
+    # v6.11: OLETUKSENA PAALLA. SEURANNAN ristikkohaun hieno vaihe maennousulla (~15 arviota ~100:n sijaan; LM tarkentaa paikan
+    # joka tapauksessa). MAH00014: ristikkohaun CPU 12,7 -> 4,3 ms/ruutu, samat heitot (+1), hog-hog-ero <= 0,007 s.
+    FINE_CLIMB = int(os.environ.get("FINE_CLIMB", "1"))
+    stone_tracker.set_fine_climb(FINE_CLIMB)
+    if FINE_CLIMB:
+        print(f"SEURANTA: ristikkohaun hieno vaihe maennousulla ({'PAALLA' if FINE_CLIMB == 1 else 'VARJOTILA'})")
+
+    def _grid_skip_report():
+        fc = stone_tracker.fine_climb_stats()
+        if fc["kutsuja"]:
+            print(f"Hieno ristikko maennousulla: {fc['kutsuja']} hakua, {fc['arvioita_ka']:.1f} arviota/haku"
+                  + (f" (kaikki ehdokkaat {fc['kaikki_arvioita_ka']:.1f}); sama piste {100.0 * fc['sama_piste'] / fc['kutsuja']:.1f} %, "
+                     f"ero ka {fc['ero_cm_ka']:.2f} cm / max {fc['ero_cm_max']:.2f} cm, pistemaaran menetys ka {fc['pisteero_ka']:.4f} "
+                     f"/ max {fc['pisteero_max']:.3f}" if fc["kaikki_arvioita_ka"] else ""))
+        st = stone_tracker.grid_skip_stats()
+        if st["arvioitu"]:
+            print(f"Ristikkohaun ohitus: {st['ohitettu']} / {st['arvioitu']} kiven paivitysta "
+                  f"({100.0 * st['ohitettu'] / st['arvioitu']:.1f} %) ilman ristikkohakua")
+        if GRID_SKIP_DUMP:
+            rows = stone_tracker.grid_skip_dump()
+            with open(GRID_SKIP_DUMP, "w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(["ms1", "ms2", "ms_ero_cm", "ennusteesta_cm", "ristikko", "ristikko_ms1_cm", "muuttuisi", "muutos_cm"])
+                w.writerows(rows)
+            print(f"Ristikkohaun varjotilan kirjaus: {len(rows)} riviä -> {GRID_SKIP_DUMP}")
+    import atexit
+    atexit.register(_grid_skip_report)
 GPU_GRID = os.environ.get("GPU_GRID", "0") == "1"
 GPU_GRID_VERIFY = os.environ.get("GPU_GRID_VERIFY", "0") == "1"
 if hasattr(stone_tracker, "set_gpu_grid"):
@@ -4390,7 +4434,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.10 (live-kamera + puskuri, havaintoruutujen kiinnitys; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.11 (live-kamera + puskuri, havaintoruutujen kiinnitys; nopea peittolaskenta + ristikkohaun ohitus; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
