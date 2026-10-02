@@ -115,6 +115,12 @@ FAR_HOUSE_ROI_TARGET_BLUE_FRACTION = 0.31
 FAR_HOUSE_ROI_TARGET_RED_FRACTION = 0.11
 HOGLINE_GRAY_HALF_BAND_CM = 50.0
 HOGLINE_GRAY_TARGET_COVERAGE = 0.98
+# v6.7: hoglinien paikkaa ei ole mitattu tarkasti -> todellinen paikka voi poiketa nimellisesta (640 cm teesta)
+# +-HOGLINE_POSITION_TOLERANCE_CM. Kalibrointi ei pakota hoglinea nimelliseen paikkaan, vaan mittaa sen paikan
+# toleranssin sisalla (hogline rajoittaa vain suoruutta/kiertoa) ja kayttaa mitattua paikkaa kaikkialla.
+HOGLINE_POSITION_TOLERANCE_CM = 20.0
+NOMINAL_NEAR_HOGLINE_Y_CM = k8.NEAR_HOGLINE_Y_CM
+NOMINAL_FAR_HOGLINE_Y_CM = k8.FAR_HOGLINE_Y_CM
 
 
 def _extended_canvas_size(extended_y_max_cm):
@@ -630,9 +636,29 @@ def hogline_points_gray_threshold(topdown_raw, hogline_y_cm, H_current,
     return points, weights_norm
 
 
+def _hogline_target_y(H, hog_pts, nominal_y_cm, tol_cm=None):
+    """v6.7: hoglinen tavoite-Y homografian sovitukseen: hoglinepisteiden mediaani-Y nykyisella H:lla, rajattuna
+    nimellinen +-tol_cm. Toleranssin sisalla hogline ei siis veda radan pituussuuntaista mittakaavaa (paikka
+    maaraytyy pesista), vain viivan suoruus ja kierto rajoittavat; toleranssin ulkopuolelle se ei paase."""
+    if tol_cm is None:
+        tol_cm = HOGLINE_POSITION_TOLERANCE_CM
+    if len(hog_pts) == 0 or tol_cm <= 0.0:
+        return float(nominal_y_cm)
+    y = k8.output_px_to_physical(k8._apply_h(H, np.asarray(hog_pts, dtype=np.float64)))[:, 1]
+    return float(nominal_y_cm + np.clip(np.median(y) - nominal_y_cm, -tol_cm, tol_cm))
+
+
+def set_hogline_positions(near_y_cm, far_y_cm):
+    """v6.7: asettaa hoglinien paikan (k8-moduulin vakiot) -> kayttoon kaikkialla: kameran asento (k9),
+    heittoportti, hog-ylitys ja hog-hog-analyysi, piirrot."""
+    k8.NEAR_HOGLINE_Y_CM = float(near_y_cm)
+    k8.FAR_HOGLINE_Y_CM = float(far_y_cm)
+
+
 def refine_geometric_homography_color(frame_undistorted, H_init, near_pts, near_phys,
                                        output_w, output_h,
-                                       max_iterations=None, min_relative_improvement=None):
+                                       max_iterations=None, min_relative_improvement=None,
+                                       hog_tol_cm=0.0, label="varipohjainen"):
     """Sama iteratiivinen konvergenssiperiaate kuin k8.refine_geometric_
     homography (katso sen kommentti), mutta kaukaisen renkaan ja
     hoglinien tunnistus jokaisella kierroksella tehdaan tama tiedoston
@@ -672,9 +698,11 @@ def refine_geometric_homography_color(frame_undistorted, H_init, near_pts, near_
         hog_pts = np.concatenate([near_hog_pts, far_hog_pts]) if (
             len(near_hog_pts) or len(far_hog_pts)
         ) else np.zeros((0, 2))
+        near_hog_y = _hogline_target_y(H_current, near_hog_pts, NOMINAL_NEAR_HOGLINE_Y_CM, hog_tol_cm)
+        far_hog_y = _hogline_target_y(H_current, far_hog_pts, NOMINAL_FAR_HOGLINE_Y_CM, hog_tol_cm)
         hog_y = np.concatenate([
-            np.full(len(near_hog_pts), k8.NEAR_HOGLINE_Y_CM),
-            np.full(len(far_hog_pts), k8.FAR_HOGLINE_Y_CM),
+            np.full(len(near_hog_pts), near_hog_y),
+            np.full(len(far_hog_pts), far_hog_y),
         ])
         hog_strength = np.concatenate([near_hog_w, far_hog_w])
 
@@ -693,7 +721,7 @@ def refine_geometric_homography_color(frame_undistorted, H_init, near_pts, near_
         quality = k8.measure_house_quality(frame_undistorted, H_new)
 
         print(
-            f"[Geometrinen korjaus (varipohjainen) {iteration}/{max_iterations}] "
+            f"[Geometrinen korjaus ({label}) {iteration}/{max_iterations}] "
             f"lahempi RMS: {rms:.4f} cm, {k8.house_quality_str(quality)} "
             f"(kaukaisen renkaan pisteita {len(far_pts)}, paino {far_weight:.3f}; "
             f"hogline-pisteita {len(hog_pts)}, lahi/kauko-kulma "
@@ -720,6 +748,7 @@ def refine_geometric_homography_color(frame_undistorted, H_init, near_pts, near_
         best = {
             "H_final": H_new, "topdown_raw": topdown_raw, "rms": rms,
             "quality": quality, "iterations": iteration,
+            "near_hog_pts": near_hog_pts, "far_hog_pts": far_hog_pts,
         }
         best_rms = rms
         H_current = H_new
@@ -746,6 +775,8 @@ def calibrate_camera_from_image_with_seed(filename):
 
     if frame is None:
         raise RuntimeError(f"Kuvaa ei voitu avata: {filename}")
+
+    set_hogline_positions(NOMINAL_NEAR_HOGLINE_Y_CM, NOMINAL_FAR_HOGLINE_Y_CM)
 
     image_height, image_width = frame.shape[:2]
 
@@ -780,6 +811,12 @@ def calibrate_camera_from_image_with_seed(filename):
     dir_forward /= np.linalg.norm(dir_forward)
     dir_lateral = np.array(v_t, dtype=np.float64)
     dir_lateral = dir_lateral / np.linalg.norm(dir_lateral)
+    # v6.7: k8.build_image_directions ottaa v_t:n merkin T-viivan janaparin JARJESTYKSESTA (sattumanvarainen) ->
+    # joskus sivusuunta kaantyi ja homografiasta tuli PEILIKUVA (fysikaaliset x:t +-vaihtuivat, kaukaista pesaa ei
+    # loytynyt). Ylhaalta katsova kamera ei koskaan peilaa: kuvassa (y alas) eteen x sivulle > 0 kuten
+    # topdown-kuvassa (eteen = ylos, +x = oikealle). Kun merkki oli jo oikein, tulos on taysin ennallaan.
+    if dir_forward[0] * dir_lateral[1] - dir_forward[1] * dir_lateral[0] < 0:
+        dir_lateral = -dir_lateral
 
     near_img_pts, near_phys_pts, near_labels = k8.near_house_correspondences(
         t_line, centerline, house_center, blue_outer, blue_inner, red_outer, red_inner,
@@ -800,24 +837,63 @@ def calibrate_camera_from_image_with_seed(filename):
         best_k1 = 0.0
         dist_coeffs = np.zeros(5, dtype=np.float64)
 
-    frame_undistorted = cv2.undistort(frame, camera_matrix, dist_coeffs)
-    near_pts_frame = k8.undistort_points_px(
-        np.array(near_img_pts, dtype=np.float64), camera_matrix, best_k1
-    )
-
     print("  Etsitaan kaukaisen pesan karkea sijainti (rivi-skannaus + lahi-pesa-homografia)...")
-    H_v1, output_w, output_h = build_far_house_center_seed(
-        frame_undistorted, near_pts_frame, near_phys_pts
-    )
+    # v6.7: k1 hyvaksytaan kun se parantaa lahipesan RMS:aa > 8 %. Rajatapauksessa (esim. 8.2 %) huonosti maaraytynyt
+    # k1 vie 28 m paahan ekstrapoloidun kaukaisen pesan hakualueen ulkopuolelle -> kalibrointi kaatui. Jos kaukaista
+    # pesaa ei loydy k1:lla, yritetaan ilman vaaristymakorjausta (k1 = 0). Kun k1:lla loytyy, tulos on ennallaan.
+    k1_candidates = [best_k1] + ([0.0] if best_k1 != 0.0 else [])
+    for k1_try in k1_candidates:
+        dist_coeffs = np.array([k1_try, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        frame_undistorted = cv2.undistort(frame, camera_matrix, dist_coeffs)
+        near_pts_frame = k8.undistort_points_px(
+            np.array(near_img_pts, dtype=np.float64), camera_matrix, k1_try
+        )
+        try:
+            H_v1, output_w, output_h = build_far_house_center_seed(
+                frame_undistorted, near_pts_frame, near_phys_pts
+            )
+        except RuntimeError as e:
+            if k1_try == k1_candidates[-1]:
+                raise
+            print(f"  {e} -> uusi yritys ilman vaaristymakorjausta (k1 {k1_try:.3f} -> 0)")
+            continue
+        best_k1 = k1_try
+        break
 
     print("  Geometrinen tarkennus (varipohjainen kaukainen rengas + harmaasavy-hoglinet)...")
     best = refine_geometric_homography_color(
         frame_undistorted, H_v1, near_pts_frame, near_phys_pts, output_w, output_h
     )
+    print(f"  Hoglinet nimellisessa paikassa: RMS = {best['rms']:.3f} cm, {k8.house_quality_str(best['quality'])}")
 
-    print(f"  Valittu H: RMS = {best['rms']:.3f} cm, {k8.house_quality_str(best['quality'])}")
+    # v6.7: hoglinien paikka voi poiketa nimellisesta +-HOGLINE_POSITION_TOLERANCE_CM. Sovitetaan myos versio, jossa
+    # hogline saa olla missa tahansa toleranssin sisalla; se valitaan, jos pesien pyoreys/koko ei huonone
+    # (k8.candidate_is_better, sama saanto kuin kalibroinnissa muutenkin). Kaukainen hogline on 30 m paassa ja
+    # sen paikka maaraytyy kuvasta heikosti -> jos vapaampi sovitus huonontaa pesia, pidetaan nimellinen.
+    hog_y = [NOMINAL_NEAR_HOGLINE_Y_CM, NOMINAL_FAR_HOGLINE_Y_CM]
+    if HOGLINE_POSITION_TOLERANCE_CM > 0.0:
+        free = refine_geometric_homography_color(
+            frame_undistorted, H_v1, near_pts_frame, near_phys_pts, output_w, output_h,
+            hog_tol_cm=HOGLINE_POSITION_TOLERANCE_CM, label=f"hogline +-{HOGLINE_POSITION_TOLERANCE_CM:.0f} cm"
+        )
+        free_y = [_hogline_target_y(free["H_final"], free["near_hog_pts"], NOMINAL_NEAR_HOGLINE_Y_CM),
+                  _hogline_target_y(free["H_final"], free["far_hog_pts"], NOMINAL_FAR_HOGLINE_Y_CM)]
+        accept, _, _ = k8.candidate_is_better(
+            frame_undistorted, free["H_final"], free["rms"], frame_undistorted, best["H_final"], best["rms"]
+        )
+        print(f"  Hoglinet +-{HOGLINE_POSITION_TOLERANCE_CM:.0f} cm: RMS = {free['rms']:.3f} cm, "
+              f"{k8.house_quality_str(free['quality'])}, lahi {free_y[0] - hog_y[0]:+.1f} cm, "
+              f"kauko {free_y[1] - hog_y[1]:+.1f} cm -> {'VALITAAN' if accept else 'hylataan (pesat eivat parane)'}")
+        if accept:
+            best, hog_y = free, free_y
+
+    print(f"  Valittu H: RMS = {best['rms']:.3f} cm, {k8.house_quality_str(best['quality'])} | hoglinet: "
+          f"lahi {hog_y[0]:.1f} cm ({hog_y[0] - NOMINAL_NEAR_HOGLINE_Y_CM:+.1f}), "
+          f"kauko {hog_y[1]:.1f} cm ({hog_y[1] - NOMINAL_FAR_HOGLINE_Y_CM:+.1f})")
+    set_hogline_positions(*hog_y)
 
     return {
+        "hogline_y_cm": tuple(hog_y),
         "frame": frame,
         "frame_undistorted": frame_undistorted,
         "camera_matrix": camera_matrix,
@@ -4288,7 +4364,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.6 (live-kamera + puskuri; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.7 (live-kamera + puskuri; kalibrointi: hoglinet +-20 cm, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():

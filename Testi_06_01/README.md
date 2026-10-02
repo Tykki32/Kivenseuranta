@@ -88,6 +88,39 @@ Nyt vertailu on mediaani pikselikohtaisista eroista (liike ei vääristä; sandb
 hyväksyntä: paras < 20 ja (paras < 4 tai < 0,7 x seuraavaksi paras). Tuloste näyttää erot ja parhaan kanavittaisen keskieron (B/G/R).
 `--live-raakajarjestys YUY2` pakottaa järjestyksen (hylätään vain selvästi väärä kuva).
 
+## v6.7: kalibroinnin varmistukset + hoglinet ±20 cm
+Live-tallenteen (`live_..._live.mp4`) tiedostoajo kaatui: "Kaukaista pesaa ei loytynyt rivi-skannauksella", vaikka moodikuva
+oli lähes sama kuin onnistuneessa live-ajossa (keskiero 1 harmaasävytaso). Syitä löytyi kaksi (toistettu sandboxissa
+`Testi_05_03/live_20261002_163845_*moodikuva.png`):
+* **Peilikuva:** `k8.build_image_directions` ottaa sivusuunnan merkin T-viivan janaparin *järjestyksestä*, joka vaihtelee
+  kuvasta toiseen. Joskus fysikaaliset x:t vaihtuivat (+182,9 ↔ −182,9) ja homografia peilautui. Nyt sivusuunta
+  asetetaan aina ei-peilaavaksi (ylhäältä katsova kamera ei peilaa). Kun merkki oli jo oikein, tulos on ennallaan.
+* **k1 rajatapauksessa:** linssivääristymä k1 hyväksytään, kun se parantaa lähipesän RMS:ää > 8 %. Tässä kuvassa
+  parannus oli 8,2 % (k1 = −0,08), ja 28 m päähän ekstrapoloitu kaukopesä jäi hakualueen ulkopuolelle. Jos kaukopesää
+  ei löydy k1:llä, yritetään nyt uudelleen ilman vääristymäkorjausta (k1 = 0).
+
+**Hoglinet ±20 cm (`HOGLINE_POSITION_TOLERANCE_CM`, 0 = vanha tapa):** hoglinien paikkaa ei ole mitattu tarkasti.
+Kalibrointi laskee kaksi versiota: hoglinet nimellisessä paikassa (640 cm teestä) ja hoglinet vapaana ±20 cm
+sisällä (hogline rajoittaa vain suoruutta/kiertoa). Vapaa valitaan, jos pesien pyöreys/koko ei huonone
+(`k8.candidate_is_better`). Valittu hoglinen paikka asetetaan kaikkialle (`set_hogline_positions`): kameran asento,
+heittoportti, hog-ylitys, hog-hog-analyysi ja piirrot. Tuloste: `Valittu H: ... | hoglinet: lahi 828.8 cm (+5.9), kauko 3004.6 cm (-13.0)`.
+
+Kalibrointikuvat (sandbox):
+
+| kuva | nimellinen | ±20 cm | valinta |
+|---|---|---|---|
+| MAH00014 | RMS 1,93, pyöreys 0,988, koko 0,5 % | RMS 1,40, 1,000, 0,9 %, lähi +5,9 / kauko −13,0 | ±20 |
+| Testi_01 leikattu | 1,67, 0,990, 0,8 % | 1,37, 1,000, 0,5 %, +4,9 / −6,2 | ±20 |
+| Testi_01 00011 (eri kenttä) | 5,50, 0,976, 1,4 % | 5,51, 0,978, 1,7 %, +1,1 / −13,6 | nimellinen |
+| live-ajon moodikuva | 2,07, 0,978, 1,7 % | 1,27, 0,962, 0,3 %, +5,4 / −18,6 | ±20 |
+| live-tallenteen moodikuva | 2,30, 1,000, 0,4 % | 2,45, 1,000, 2,6 %, +5,1 / +20,0 | nimellinen |
+
+Lähi-hogline mitataan tasaisesti (+5 cm); kaukohogline (30 m päässä) määräytyy kuvasta heikommin (−6…−19 cm), siksi
+laatuvertailu. Pelkän lähi-hoglinen vapauttaminen oli huonompi (pesät huononivat 4/5 kuvassa).
+
+MAH00014 koko ajo (sandbox, vrt. v5.12): samat 22 heittoa, hog-hog-aika −0,02…−0,04 s, nopeus kaukohoglinella
+−1,5 %, x kaukohoglinella −0,3…−0,9 cm. Muut kalibroinnit (peili/k1) bit-identtiset kaikilla vanhoilla moodikuvilla.
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
