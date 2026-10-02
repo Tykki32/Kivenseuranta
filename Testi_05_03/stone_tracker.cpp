@@ -5351,6 +5351,23 @@ static bool solveLinear(std::vector<double>& A, std::vector<double>& b, int n, s
     return true;
 }
 
+// v5.7: riippumattomat tehtavat 0..n-1 usealle saikeelle (dynaaminen jako). Jokainen tehtava kirjoittaa vain omaan
+// tulospaikkaansa -> tulos on bitti-identtinen perakkaisen silmukan kanssa.
+template <class F>
+static void parallelTasks(int n, F fn)
+{
+    unsigned hw = std::thread::hardware_concurrency();
+    int nt = std::min(n, (int)std::max(1u, std::min(8u, hw == 0 ? 2u : hw)));
+    if (nt <= 1) { for (int i = 0; i < n; ++i) fn(i); return; }
+    std::atomic<int> next(0);
+    auto worker = [&]() { for (int i = next.fetch_add(1); i < n; i = next.fetch_add(1)) fn(i); };
+    std::vector<std::thread> th;
+    th.reserve((size_t)nt - 1);
+    for (int k = 1; k < nt; ++k) th.emplace_back(worker);
+    worker();
+    for (auto& x : th) x.join();
+}
+
 } // namespace pfit
 
 
@@ -5413,13 +5430,16 @@ static py::dict fit_stone_profile_cpp(
         double X0 = p[(size_t)(3 + N_SHAPE + 2 * si)], Y0 = p[(size_t)(3 + N_SHAPE + 2 * si + 1)];
         stoneBlock(c, si, X0, Y0, u.R, u.H, u.handle, u.deltas_full, out);
     };
-    auto fullResiduals = [&](const std::vector<double>& p, std::vector<double>& r) {
+    // v5.7: par = true -> kivien lohkot rinnan (lohkot ovat toisistaan riippumattomia, kukin omaan kohtaansa r:ssa -> sama tulos)
+    auto fullResiduals = [&](const std::vector<double>& p, std::vector<double>& r, bool par = false) {
         r.assign(m, 0.0);
         Unpacked u = unpack(c, p, handle_min, handle_max);
-        for (int i = 0; i < ns; ++i) {
+        auto one = [&](int i) {
             double X0 = p[(size_t)(3 + N_SHAPE + 2 * i)], Y0 = p[(size_t)(3 + N_SHAPE + 2 * i + 1)];
             stoneBlock(c, i, X0, Y0, u.R, u.H, u.handle, u.deltas_full, &r[off[(size_t)i]]);
-        }
+        };
+        if (par) parallelTasks(ns, one);
+        else for (int i = 0; i < ns; ++i) one(i);
         for (int k = 0; k < N_SHAPE; ++k) r[m_data + (size_t)k] = p[(size_t)(3 + k)] * c.reg_eff;
     };
 
@@ -5428,14 +5448,16 @@ static py::dict fit_stone_profile_cpp(
     const double eps = 1e-6;
     {
         py::gil_scoped_release release;
-        fullResiduals(params, resid);
+        fullResiduals(params, resid, true);
         for (double v : resid) cost += v * v;
 
         std::vector<double> J(m * (size_t)np), JTJ((size_t)np * np), JTr((size_t)np), A, b, delta, tmp(m);
         for (int it = 0; it < max_iterations; ++it) {
             std::fill(J.begin(), J.end(), 0.0);
-            for (int j = 0; j < np; ++j) {
-                if (j == 0 && r_fixed > 0.0) continue;      // kiinteä R: sarake nolla
+            // v5.7: Jacobin sarakkeet rinnan - kukin sarake j kirjoittaa vain J[.., j]:hin ja lukee params/resid -taulukoita
+            // (ei muutu taman vaiheen aikana) -> bitti-identtinen perakkaisen silmukan kanssa.
+            parallelTasks(np, [&](int j) {
+                if (j == 0 && r_fixed > 0.0) return;      // kiinteä R: sarake nolla
                 double step = eps * std::max(1.0, std::abs(params[(size_t)j]));
                 std::vector<double> pp = params;
                 pp[(size_t)j] += step;
@@ -5452,7 +5474,7 @@ static py::dict fit_stone_profile_cpp(
                     fullResiduals(pp, rp);
                     for (size_t k = 0; k < m; ++k) J[k * (size_t)np + (size_t)j] = (rp[k] - resid[k]) / step;
                 }
-            }
+            });
             std::fill(JTJ.begin(), JTJ.end(), 0.0);
             std::fill(JTr.begin(), JTr.end(), 0.0);
             for (size_t k = 0; k < m; ++k) {
@@ -5477,7 +5499,7 @@ static py::dict fit_stone_profile_cpp(
                 if (!solveLinear(A, b, np, delta)) { lam *= 10.0; continue; }
                 std::vector<double> trial = params;
                 for (int a = 0; a < np; ++a) trial[(size_t)a] += delta[(size_t)a];
-                fullResiduals(trial, trial_resid);
+                fullResiduals(trial, trial_resid, true);
                 double trial_cost = 0.0;
                 for (double v : trial_resid) trial_cost += v * v;
                 if (trial_cost < cost) {
@@ -5786,24 +5808,24 @@ static void silFillPoly(cv::Mat& m, const std::vector<cv::Point2f>& poly, int ox
     cv::fillPoly(m, std::vector<std::vector<cv::Point>>{pts}, cv::Scalar(1));
 }
 
-static py::tuple silhouette_refine_cpp(
-    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame,
-    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
-    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
-    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
-    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+// v5.7: laskentaydin ilman Python-olioita -> voidaan ajaa usealle kivelle rinnan (silhouette_refine_batch_cpp, GIL vapaana).
+// Laskenta tasmalleen sama kuin ennen; silhouette_refine_cpp ja silhouette_refine_batch_cpp palauttavat saman tuplen (X, Y, info).
+struct SilResult {
+    bool ok = false;
+    double X = 0.0, Y = 0.0;
+    double score0 = 0.0, score1 = 0.0, inside0 = 0.0, inside1 = 0.0, shift_px = 0.0, shift_cm = 0.0;
+};
+
+static SilResult silhouetteRefineCore(
+    const cv::Mat& img, const std::vector<cv::Point3d>& body,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
     double R_max_cm, double H_total_cm, double handle_r_frac, double X0, double Y0,
     double w_leak, double lam, double sigma_frac, int max_shift_px, int half, int margin, int open_size, int band_px)
 {
-    auto fb = frame.request();
-    if (fb.ndim != 3 || fb.shape[2] != 3) throw std::runtime_error("silhouette_refine_cpp: frame must be HxWx3 uint8");
-    const int H = (int)fb.shape[0], W = (int)fb.shape[1];
-    cv::Mat img(H, W, CV_8UC3, (void*)fb.ptr);
-    auto body = parsePts3(local_pts_body_arr);
-    auto K = parseMat33(K_arr); auto R = parseMat33(R_arr); auto t = parseVec3(t_arr);
+    const int H = img.rows, W = img.cols;
     const int UPS = 2;
     const int S = max_shift_px * UPS;
-    auto fail = [&]() { py::dict d; d["ok"] = false; return py::make_tuple(X0, Y0, d); };
+    auto fail = [&]() { SilResult r; r.ok = false; r.X = X0; r.Y = Y0; return r; };
 
     auto proj = [&](double x, double y, double z) {
         cv::Vec3d pc = R * cv::Vec3d(x, y, z) + t; cv::Vec3d pi = K * pc;
@@ -5905,16 +5927,101 @@ static py::tuple silhouette_refine_cpp(
     const double du = (double)(bix - S) / UPS, dv = (double)(biy - S) / UPS;
     const double s0 = score_map[(size_t)S * NS + S], s1 = score_map[(size_t)biy * NS + bix];
     const double in0 = ins_map[(size_t)S * NS + S], in1 = ins_map[(size_t)biy * NS + bix];
-    py::dict d; d["ok"] = true; d["score0"] = s0; d["score1"] = s1; d["inside0"] = in0; d["inside1"] = in1;
-    if (du == 0.0 && dv == 0.0) { d["shift_px"] = 0.0; d["shift_cm"] = 0.0; return py::make_tuple(X0, Y0, d); }
+    SilResult res; res.ok = true; res.score0 = s0; res.score1 = s1; res.inside0 = in0; res.inside1 = in1;
+    if (du == 0.0 && dv == 0.0) { res.shift_px = 0.0; res.shift_cm = 0.0; res.X = X0; res.Y = Y0; return res; }
     const cv::Point2d p0 = c0, px = proj(X0 + 1.0, Y0, H_total_cm / 2.0), py_ = proj(X0, Y0 + 1.0, H_total_cm / 2.0);
     const double j00 = px.x - p0.x, j01 = py_.x - p0.x, j10 = px.y - p0.y, j11 = py_.y - p0.y;
     const double det = j00 * j11 - j01 * j10;
     if (std::abs(det) < 1e-12) return fail();
     const double dX = (du * j11 - j01 * dv) / det, dY = (j00 * dv - j10 * du) / det;
-    d["shift_px"] = std::hypot(du, dv); d["shift_cm"] = std::hypot(dX, dY);
-    return py::make_tuple(X0 + dX, Y0 + dY, d);
+    res.shift_px = std::hypot(du, dv); res.shift_cm = std::hypot(dX, dY);
+    res.X = X0 + dX; res.Y = Y0 + dY;
+    return res;
 }
+
+static py::tuple silResultToTuple(const SilResult& r)
+{
+    py::dict d;
+    d["ok"] = r.ok;
+    if (r.ok) {
+        d["score0"] = r.score0; d["score1"] = r.score1; d["inside0"] = r.inside0; d["inside1"] = r.inside1;
+        d["shift_px"] = r.shift_px; d["shift_cm"] = r.shift_cm;
+    }
+    return py::make_tuple(r.X, r.Y, d);
+}
+
+static py::tuple silhouette_refine_cpp(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+    double R_max_cm, double H_total_cm, double handle_r_frac, double X0, double Y0,
+    double w_leak, double lam, double sigma_frac, int max_shift_px, int half, int margin, int open_size, int band_px)
+{
+    auto fb = frame.request();
+    if (fb.ndim != 3 || fb.shape[2] != 3) throw std::runtime_error("silhouette_refine_cpp: frame must be HxWx3 uint8");
+    cv::Mat img((int)fb.shape[0], (int)fb.shape[1], CV_8UC3, (void*)fb.ptr);
+    auto body = parsePts3(local_pts_body_arr);
+    auto K = parseMat33(K_arr); auto R = parseMat33(R_arr); auto t = parseVec3(t_arr);
+    SilResult r;
+    {
+        py::gil_scoped_release release;
+        r = silhouetteRefineCore(img, body, K, R, t, R_max_cm, H_total_cm, handle_r_frac, X0, Y0,
+                                 w_leak, lam, sigma_frac, max_shift_px, half, margin, open_size, band_px);
+    }
+    return silResultToTuple(r);
+}
+
+// v5.7: sama siluettitarkennus USEALLE kivelle samasta ruudusta rinnan (yksi std::thread / kivi, GIL vapaana, OpenCV:n sisainen
+// rinnakkaisuus pois kuten track_stones_batch:issa). Kivet ovat toisistaan riippumattomia -> tulokset samat kuin perakkaisilla
+// silhouette_refine_cpp-kutsuilla, samassa jarjestyksessa. Palauttaa listan (X, Y, info) -tupleja.
+static py::list silhouette_refine_batch_cpp(
+    py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame,
+    py::array_t<double, py::array::c_style | py::array::forcecast> local_pts_body_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+    double R_max_cm, double H_total_cm, double handle_r_frac,
+    py::array_t<double, py::array::c_style | py::array::forcecast> X0_arr,
+    py::array_t<double, py::array::c_style | py::array::forcecast> Y0_arr,
+    double w_leak, double lam, double sigma_frac, int max_shift_px, int half, int margin, int open_size, int band_px)
+{
+    auto fb = frame.request();
+    if (fb.ndim != 3 || fb.shape[2] != 3) throw std::runtime_error("silhouette_refine_batch_cpp: frame must be HxWx3 uint8");
+    cv::Mat img((int)fb.shape[0], (int)fb.shape[1], CV_8UC3, (void*)fb.ptr);
+    auto body = parsePts3(local_pts_body_arr);
+    auto K = parseMat33(K_arr); auto R = parseMat33(R_arr); auto t = parseVec3(t_arr);
+    auto X0b = X0_arr.unchecked<1>();
+    auto Y0b = Y0_arr.unchecked<1>();
+    const int n = (int)X0b.shape(0);
+    if ((int)Y0b.shape(0) != n) throw std::runtime_error("silhouette_refine_batch_cpp: X0/Y0 length mismatch");
+    std::vector<double> xs((size_t)n), ys((size_t)n);
+    for (int i = 0; i < n; ++i) { xs[(size_t)i] = X0b(i); ys[(size_t)i] = Y0b(i); }
+    std::vector<SilResult> results((size_t)n);
+    {
+        py::gil_scoped_release release;
+        auto run_one = [&](int i) {
+            results[(size_t)i] = silhouetteRefineCore(img, body, K, R, t, R_max_cm, H_total_cm, handle_r_frac,
+                                                      xs[(size_t)i], ys[(size_t)i], w_leak, lam, sigma_frac,
+                                                      max_shift_px, half, margin, open_size, band_px);
+        };
+        if (n == 1) {
+            run_one(0);
+        } else if (n > 1) {
+            ScopedSingleThreadedOpenCV single_threaded_opencv_guard;
+            std::vector<std::thread> th;
+            th.reserve((size_t)n - 1);
+            for (int i = 1; i < n; ++i) th.emplace_back(run_one, i);
+            run_one(0);
+            for (auto& x : th) x.join();
+        }
+    }
+    py::list out;
+    for (auto& r : results) out.append(silResultToTuple(r));
+    return out;
+}
+
 
 static std::string gpuBInit(const cv::Mat& map1, const cv::Mat& map2, const cv::Mat& ref,
                             double diff_thr, double vd_min, double vd_max, int ice_s, int ice_v)
@@ -6048,6 +6155,10 @@ PYBIND11_MODULE(stone_tracker, m)
     m.def("set_color_gate", [](int s_max, int h_tol, int both, int hue_sat) { g_gate_s_max = s_max; g_gate_h_tol = h_tol; g_gate_both = both; g_gate_hue_sat = hue_sat; }, py::arg("s_max"), py::arg("h_tol"), py::arg("both") = 0, py::arg("hue_sat") = 0);   // s_max >= 256 = pois
     m.def("get_haku_accept_score", []() { return g_haku_accept_score; });
     m.def("silhouette_refine_cpp", &silhouette_refine_cpp,
+          py::arg("frame"), py::arg("local_pts_body"), py::arg("K"), py::arg("R"), py::arg("t"),
+          py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("handle_r_frac"), py::arg("X0"), py::arg("Y0"),
+          py::arg("w_leak"), py::arg("lam"), py::arg("sigma_frac"), py::arg("max_shift_px"), py::arg("half"), py::arg("margin"), py::arg("open_size") = 3, py::arg("band_px") = 3);
+    m.def("silhouette_refine_batch_cpp", &silhouette_refine_batch_cpp,
           py::arg("frame"), py::arg("local_pts_body"), py::arg("K"), py::arg("R"), py::arg("t"),
           py::arg("R_max_cm"), py::arg("H_total_cm"), py::arg("handle_r_frac"), py::arg("X0"), py::arg("Y0"),
           py::arg("w_leak"), py::arg("lam"), py::arg("sigma_frac"), py::arg("max_shift_px"), py::arg("half"), py::arg("margin"), py::arg("open_size") = 3, py::arg("band_px") = 3);

@@ -362,6 +362,29 @@ def open_debug_writer(path, fps, size):
     return cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
 
 
+# v5.7: taustasaikeiden prioriteetti. Pullonkaula on paasaikeen SEURANTA (C++-tyosaikeet); liukuhihnan tuottajilla (A, B), debug-videon
+# piirrolla/koodauksella ja valotasapainolla on kapasiteettivaraa (jonot puskuroivat). Kun naiden saikeiden prioriteetti on hieman alempi,
+# kayttojarjestelma antaa ytimet ensin SEURANNALLE. Vaikuttaa vain ajoitukseen - ruutujen jarjestys ja tulokset ovat samat.
+# OLETUKSENA POIS (BG_PRIORITY=1 kytkee paalle): sandboxissa (4 ydinta, kaikki kaytossa) C nopeutui mutta A hidastui yhta paljon ->
+# ei kokonaishyotya; koneella jossa on vapaita loogisia ytimia vaikutus voi olla toinen (vertailuajo: ajo "prio").
+# Windows: THREAD_PRIORITY_BELOW_NORMAL; Linux: saikeen nice +BG_NICE (oletus 5).
+
+def lower_thread_priority():
+    """Laskee KUTSUVAN saikeen prioriteettia (vain kun BG_PRIORITY=1). Virheet ohitetaan hiljaa."""
+    import os as _o, sys as _s
+    if _o.environ.get("BG_PRIORITY", "0") != "1":
+        return
+    try:
+        if _s.platform == "win32":
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.SetThreadPriority(k32.GetCurrentThread(), -1)      # THREAD_PRIORITY_BELOW_NORMAL
+        elif hasattr(_o, "setpriority"):
+            _o.setpriority(_o.PRIO_PROCESS, threading.get_native_id(), int(_o.environ.get("BG_NICE", "5")))
+    except Exception:
+        pass
+
+
 class AsyncVideoWriter:
     """cv2.VideoWriter kahdessa taustasaikeessa: (1) piirto/kokoonpano, (2) kirjoitus (koodaus). Pääsäie vain jonottaa tyon (submit)
     tai valmiin kuvan (write); jono taynna -> odottaa."""
@@ -376,6 +399,7 @@ class AsyncVideoWriter:
         self._tw.start()
 
     def _run_render(self):
+        lower_thread_priority()
         while True:
             item = self._qr.get()
             if item is None:
@@ -386,6 +410,7 @@ class AsyncVideoWriter:
             self._qw.put(fn(*args).copy())
 
     def _run_write(self):
+        lower_thread_priority()
         while True:
             img = self._qw.get()
             if img is None:

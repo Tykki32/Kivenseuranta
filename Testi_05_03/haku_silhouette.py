@@ -79,6 +79,20 @@ class SilhouetteRefiner:
                                              int(self.open_size), int(self.band_px))
         return self.refine_py(frame_bgr, X0, Y0)
 
+    def refine_many(self, frame_bgr, xys):
+        """v5.7: refine() usealle (X0, Y0) -parille samasta ruudusta. C++-polulla kivet lasketaan rinnan (silhouette_refine_batch_cpp,
+        GIL vapaana); tulokset samat ja samassa jarjestyksessa kuin perakkaisilla refine()-kutsuilla. Palauttaa listan (X, Y, info)."""
+        if not xys:
+            return []
+        if self.body_pts is not None and hasattr(_st, "silhouette_refine_batch_cpp"):
+            xs = np.ascontiguousarray([float(x) for x, _ in xys], dtype=np.float64)
+            ys = np.ascontiguousarray([float(y) for _, y in xys], dtype=np.float64)
+            return list(_st.silhouette_refine_batch_cpp(np.ascontiguousarray(frame_bgr), self.body_pts, self.K, self.R, self.t,
+                                                        float(self.R_max), float(self.H_total), float(self.lovi), xs, ys,
+                                                        float(self.w), float(self.lam), float(self.sigfrac), int(self.max_shift_px), int(HALF), int(MASK_MARGIN),
+                                                        int(self.open_size), int(self.band_px)))
+        return [self.refine(frame_bgr, x, y) for x, y in xys]
+
     def refine_py(self, frame_bgr, X0, Y0):
         H_img, W_img = frame_bgr.shape[:2]
         cx, cy = self.proj(X0, Y0, self.H_total / 2)

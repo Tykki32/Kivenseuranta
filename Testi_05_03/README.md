@@ -149,3 +149,33 @@ mutta ajettiin peräkkäin. `INTRA_PARALLEL=1` ajaa mean-shiftit omissa säikeis
 Sandbox (4 ydintä, jo kyllästetty): CSV identtinen (2900 ruutua), SEURANTA-kutsu 26,6 -> 26,1 ms; hyöty odotetaan vasta koneella jossa on vapaita ytimiä (Windows-kone: 3,9/8 ydintä käytössä).
 `tools/vertailuajo.py`: uudet ajot `intra`, `intragrid`; oletus `cpu,par,intra,intragrid`. C++-moduuli pitää kääntää uudelleen.
 `tools/vertailuajo.py --outdir <aiempi kansio> --runs par,intra,intragrid`: jos kansiossa on aiemman ajon `ajo_cpu_loki.txt` + `ajo_cpu_sijainnit.csv`, cpu-perusajoa ei tarvitse ajaa uudelleen; se otetaan yhteenvetoon ja CSV-vertailuun.
+
+### v5.7: nopeutus ilman tulosmuutosta (CSV:t bitti-identtiset v5.6:n kanssa)
+Tavoite: nopeampi ilman laadun heikkenemistä. Jokainen muutos tarkistettiin ajamalla koko MAH00014-video (`--debug`) ja vertaamalla
+`kivien_sijainnit.csv`, `_raaka.csv` ja `_hog.csv` tavu tavulta v5.6:n tulokseen: **identtiset** (24 heittoa, hog-analyysi 22).
+Sandbox (4 ydintä, Linux), koko video debug-videolla: **476,5 s -> ~390-400 s** (VM:n nopeus vaihtelee ajojen välillä ~5-10 %).
+
+1. **NumPyn BLAS yhdelle säikeelle** (`main.py`:n alku, ennen numpy/cv2-importia: `OPENBLAS_NUM_THREADS`/`OMP_NUM_THREADS`/`MKL_NUM_THREADS` = 1).
+   perf-profiloinnissa ~20 % koko prosessin CPU-ajasta kului OpenBLASin työsäikeiden tyhjäkäyntiin (`blas_thread_server` + `sched_yield`;
+   Windowsin OpenBLAS pyörii samoin) - säikeet heräävät jokaisesta pienestä matriisikutsusta (3x3, polyfit, lstsq) ja vievät ytimiä
+   SEURANNAN C++-säikeiltä. Koodin matriisit ovat pieniä, joten yksi säie ei hidasta mitään. 476,5 -> 397,6 s. `BLAS_THREADS=n` palauttaa.
+2. **Pääsäikeen keventäminen** (pääsäie C on pullonkaula; py-spy: ~87 % sen ajasta SEURANTA-kutsussa):
+   * SEURANNAN siluettitarkennus kaikille löydetyille kiville kerralla, kivet rinnan C++:ssa (`silhouette_refine_batch_cpp`, GIL vapaana;
+     sama laskentaydin `silhouetteRefineCore` kuin `silhouette_refine_cpp`:ssä) kivi kerrallaan -silmukan sijaan.
+   * SEURANNAN värivertailu (`color_match_median_diff` -> `color_diff_history`) lasketaan vain `COLOR_DEBUG`-tilassa: se ei vaikuta
+     mihinkään päätökseen eikä tulosteeseen (poistettu "pysähtynyt"-päätöksestä jo aiemmin), mutta maksoi ~1 ms/ruutu pääsäikeessä.
+3. **Kalibrointivaihe** (kertakustannus jokaisessa ajossa, sandbox ~73 -> ~61-63 s):
+   * `fit_stone_profile_cpp`: Jacobin sarakkeet ja kivien residuaalilohkot rinnan (kukin kirjoittaa vain omaan kohtaansa; summausjärjestys ennallaan) 10,3 -> 3,0 s.
+   * Profiilin opettelun seuranta (`track_stone_in_video_windowed`): remap + kandidaattiskannaus `SCAN_WORKERS` (oletus 3) säikeessä rinnan, tulokset ruutuindeksillä.
+   * Alfa-havaintojen ja värireferenssin ruudut luetaan eteenpäin (`grab`) jos seuraava ruutu on <= `SEEK_MAX_SKIP` (25) ruudun päässä:
+     seek maksoi ~50 ms/havainto, eteenpäin luku ~1,7 ms/ruutu; ruudut tarkistettu identtisiksi.
+
+Valinnaiset ajoitussäädöt (eivät muuta tuloksia; oletuksena pois, koska sandboxissa ei hyötyä - kokeile omalla koneella `tools/vertailuajo.py`:llä):
+* `BG_PRIORITY=1`: liukuhihnan A/B-säikeet, videon luku, valotasapaino ja debug-videon piirto/kirjoitus alemmalle prioriteetille
+  (Windows `THREAD_PRIORITY_BELOW_NORMAL`) -> SEURANNAN säikeet saavat ytimet ensin. Sandboxissa (kaikki 4 ydintä käytössä) C nopeutui mutta A hidastui.
+* `PY_SWITCH_INTERVAL_MS=1`: Pythonin GIL-vaihtoväli 5 ms -> 1 ms (pääsäie saa GIL:n nopeammin takaisin C++-kutsun jälkeen). Sandboxissa ei vaikutusta.
+
+Tutkittu, ei otettu käyttöön: `cv2.remap` kiintopistekartoilla (identtinen, ei nopeampi), `CV_THREADS=1/2` (ei hyötyä),
+debug-videon koodaus ffmpeg-putkella (mpeg4/x264, BGR tai valmis YUV) - nykyinen `cv2.VideoWriter` mp4v oli CPU:lla halvin (7,8 ms/ruutu).
+`tools/vertailuajo.py`: uudet ajot `blasmt`/`intrablasmt` (vanha BLAS-käytös vertailuun), `intraprio`, `intrasw`.
+C++-moduuli pitää kääntää uudelleen (`stone_tracker.cpp`).

@@ -11,6 +11,8 @@ Ajot (kaikki samalla videolla/aikavälillä, oletuksena debug-video päällä), 
   par    : GPU_B + STAB_WORKERS=2 + PIPE_DEPTH=6     par3 : kuten par, STAB_WORKERS=3     parcpu : STAB_WORKERS=2 + PIPE_DEPTH=6 (vaihe B CPU:lla)
   --outdir <aiempi kansio>: jos siina on ajo_cpu_loki.txt + ajo_cpu_sijainnit.csv, cpu-ajoa ei tarvitse ajaa uudelleen (--runs par,intra,intragrid) - aiempi mukaan yhteenvetoon ja CSV-vertailuun
   intra  : par + INTRA_PARALLEL=1 (kiven sisäinen rinnakkaisuus)     intragrid : intra + GPU_GRID=1
+  v5.7:  blasmt / intrablasmt : cpu / intra vanhalla BLAS-asetuksella (OpenBLAS 8 säiettä, kuten <= v5.6) -> BLAS-korjauksen vaikutus
+         intraprio : intra + BG_PRIORITY=1 (taustasäikeet alemmalle prioriteetille)    intrasw : intra + PY_SWITCH_INTERVAL_MS=1
 Oletus: cpu,par,intra,intragrid.
 Tulokset kansioon --outdir (oletus: videon kansio / vertailuajo_<aikaleima>):
   ajo_<nimi>_loki.txt          koko terminaalitulostus
@@ -40,6 +42,13 @@ RUNS = [
     ("parcpu", {"STAB_WORKERS": "2", "PIPE_DEPTH": "6"}),                 # vain liukuhihnan rinnakkaisuus (vaihe B CPU:lla)
     ("intra", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1"}),                    # par + kiven sisainen rinnakkaisuus (ristikko + 2 mean-shiftia rinnan)
     ("intragrid", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1", "GPU_GRID": "1"}),  # intra + ristikkohaun hieno vaihe GPU:lla
+    # v5.7: vertailu vanhaan BLAS-kaytokseen (NumPyn OpenBLAS monisaikeisena, kuten <= v5.6) - nayttaa BLAS-korjauksen vaikutuksen tallä koneella
+    ("blasmt", {"OPENBLAS_NUM_THREADS": "8", "OMP_NUM_THREADS": "8", "MKL_NUM_THREADS": "8"}),
+    ("intrablasmt", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1",
+                     "OPENBLAS_NUM_THREADS": "8", "OMP_NUM_THREADS": "8", "MKL_NUM_THREADS": "8"}),
+    # v5.7: valinnaiset ajoitussaadot (eivat muuta tuloksia): taustasaikeet alemmalle prioriteetille / lyhyempi GIL-vaihtovali
+    ("intraprio", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1", "BG_PRIORITY": "1"}),
+    ("intrasw", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1", "PY_SWITCH_INTERVAL_MS": "1"}),
 ]
 DEFAULT_RUNS = "cpu,par,intra,intragrid"
 
@@ -58,7 +67,8 @@ def pick_video():
 
 def run_main(name, env_extra, video, start, end, debug, extra, log_path):
     env = dict(os.environ)
-    for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_B", "STAB_WORKERS", "PIPE_DEPTH", "INTRA_PARALLEL"):
+    for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_B", "STAB_WORKERS", "PIPE_DEPTH", "INTRA_PARALLEL",
+              "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_THREADS", "BG_PRIORITY", "PY_SWITCH_INTERVAL_MS"):
         if k not in env_extra:
             env.pop(k, None)
     env.update(env_extra)
@@ -195,7 +205,7 @@ def main():
     ap.add_argument("--end", default="00:21:00")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-debug", action="store_true", help="aja ilman debug-videota")
-    ap.add_argument("--runs", default=DEFAULT_RUNS, help="ajettavat ajot pilkuilla (cpu,gpu,gpub,gpuall,verify,par,par3,parcpu,intra,intragrid); oletus " + DEFAULT_RUNS)
+    ap.add_argument("--runs", default=DEFAULT_RUNS, help="ajettavat ajot pilkuilla (cpu,gpu,gpub,gpuall,verify,par,par3,parcpu,intra,intragrid,blasmt,intrablasmt,intraprio,intrasw); oletus " + DEFAULT_RUNS)
     ap.add_argument("--main-args", default="", help="lisäargumentit main.py:lle lainausmerkeissä, esim. \"--max-frame 3000\"")
     args = ap.parse_args()
 
