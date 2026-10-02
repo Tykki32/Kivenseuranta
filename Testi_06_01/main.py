@@ -4364,7 +4364,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.7 (live-kamera + puskuri; kalibrointi: hoglinet +-20 cm, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.9 (live-kamera + puskuri, havaintoruutujen kiinnitys; kalibrointi: hoglinet +-20 cm, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -5579,6 +5579,10 @@ def run_pipeline(
                                 }
                                 for i in idxs
                             ]
+                            if live_source.active() is not None:
+                                # v6.9: havaintojen ruudut luetaan uudelleen (alfa + pintavarireferenssi) jopa kymmenia
+                                # sekunteja myohemmin -> kiinnitetaan puskuriin, ettei historian karsinta poista niita.
+                                live_source.active().store.pin(o["frame_idx"] for o in candidate_observations)
 
                             # --------------------------------
                             # YKSINAINEN KELVOLLISUUSTARKISTUS
@@ -5763,6 +5767,8 @@ def run_pipeline(
                         calib_result["pose"], local_pts_body, 28,
                         accumulated_stones
                     )
+                    if live_source.active() is not None:
+                        live_source.active().store.unpin_all()      # v6.9: kiinnitetyt havaintoruudut vapaaksi
 
                     raw_csv_path = (
                         os.path.splitext(csv_output)[0] + "_raaka.csv"

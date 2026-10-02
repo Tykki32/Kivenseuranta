@@ -121,6 +121,13 @@ laatuvertailu. Pelkän lähi-hoglinen vapauttaminen oli huonompi (pesät huononi
 MAH00014 koko ajo (sandbox, vrt. v5.12): samat 22 heittoa, hog-hog-aika −0,02…−0,04 s, nopeus kaukohoglinella
 −1,5 %, x kaukohoglinella −0,3…−0,9 cm. Muut kalibroinnit (peili/k1) bit-identtiset kaikilla vanhoilla moodikuvilla.
 
+## v6.9: profiilihavaintojen ruudut kiinnitetään puskuriin
+Live-simulaatio kaatui: `ruutu 1489 on jo poistettu puskurista (vanhin 1707)` kiven pintavarireferenssiä rakennettaessa.
+Puskuri säilyttää 40 s historiaa, mutta täyttyessään (kalibroinnin viive 52 s) karsii sen 31 s:iin; profiilihavainnot olivat
+~40 s taaksepäin. Nyt havaintojen ruudut kiinnitetään (`FrameStore.pin`) heti kun ne kerätään, ja vapautetaan
+pintavarireferenssin jälkeen (`unpin_all`). Lisäksi `BufferedCapture.grab()` ei enää hae ohitettavaa ruutua
+(eteenpäinluvussa välissä olevat ruudut saavat olla jo poistettu). Sandbox: MAH00014 `--live-sim --live-taakse-s 31` läpi.
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
