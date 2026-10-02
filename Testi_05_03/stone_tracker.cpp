@@ -157,6 +157,9 @@ static std::atomic<int> g_grid_threads{1};
 // v5.10: kiven valmistelussa etualamaski (createForegroundFromWhitened) omassa saikeessaan saturaation + graniittimaskin rinnalla
 // (riippumattomat syotteet -> sama tulos). PREP_PARALLEL=0 pois.
 static std::atomic<int> g_prep_parallel{0};
+// v5.13: saturaatio omassa saikeessaan graniittimaskin tummuusosan rinnalla (v5.12) - OLETUKSENA POIS: Windows-vertailussa
+// hidasti ~7 % (lisasaie kilpailee hypersaikeista/muistikaistasta jo valmiiksi rinnakkaisessa kivilaskennassa). SAT_PARALLEL=1 paalle.
+static std::atomic<int> g_sat_parallel{0};
 
 struct PT {
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -3935,7 +3938,7 @@ static StoneUpdateResult trackStoneUpdateOneEx(
         fg_thread = std::thread([&]() { PT p; fg_mask_par = createForegroundFromWhitened(crop_filtered); fg_ns = p.lap(); });
     cv::Mat sat_u8_crop, sat_crop, mask_crop;
     const bool same_image = (crop_filtered.data == crop.data);
-    if (same_image && g_prep_parallel.load()) {
+    if (same_image && g_sat_parallel.load()) {
         // v5.12: saturaatio (oma saie) rinnan graniittimaskin tummuusosan kanssa; yhdistys samalla funktiolla kuin
         // createGraniteMask(crop_filtered, &sat_u8_crop) -> sama tulos.
         long long sat_ns = 0;
@@ -6439,6 +6442,7 @@ PYBIND11_MODULE(stone_tracker, m)
         }
     }, py::arg("on"));
     m.def("set_grid_threads", [](int n) { g_grid_threads = std::max(1, n); }, py::arg("n"));
+    m.def("set_sat_parallel", [](int on) { g_sat_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("set_prep_parallel", [](int on) { g_prep_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("set_intra_parallel", [](int on) { g_intra_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("prof_reset", &prof_reset);
