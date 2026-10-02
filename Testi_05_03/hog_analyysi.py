@@ -309,8 +309,17 @@ _ENCODER_ARGS = {
 }
 
 
+def _yuv_input(w, h):
+    """v5.8: DEBUG_YUV=1 -> ruudut muunnetaan BGR -> YUV 4:2:0 (I420) tassa prosessissa cv2.cvtColorilla (SIMD, nopea) ja ffmpegille
+    syotetaan valmis yuv420p: ffmpegin hitaampi BGR-muunnos (swscale) jaa pois ja putkeen menee puolet vahemman tavuja.
+    Varit voivat poiketa aavistuksen (eri muunnoskaava/krominanssin naytteistys). Vain debug-video, ei vaikuta seurantaan.
+    Vaatii parilliset mitat."""
+    return _os.environ.get("DEBUG_YUV", "0") == "1" and int(w) % 2 == 0 and int(h) % 2 == 0
+
+
 def _ffmpeg_cmd(w, h, fps, encoder, out_path):
-    return (["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+    pix = "yuv420p" if _yuv_input(w, h) else "bgr24"
+    return (["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", pix,
              "-s", f"{int(w)}x{int(h)}", "-r", f"{float(fps):.4f}", "-i", "-", "-an"] + _ENCODER_ARGS[encoder] + [out_path])
 
 
@@ -319,7 +328,8 @@ def probe_encoder(encoder, w, h, fps):
     cmd = _ffmpeg_cmd(w, h, fps, encoder, "-")
     cmd = cmd[:-1] + ["-f", "null", "-"]
     try:
-        p = _sp.run(cmd, input=bytes(int(w) * int(h) * 3 * 3), stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=30)
+        frame_bytes = int(w) * int(h) * 3 // 2 if _yuv_input(w, h) else int(w) * int(h) * 3
+        p = _sp.run(cmd, input=bytes(frame_bytes * 3), stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=30)
         return p.returncode == 0, p.stderr.decode("utf-8", "replace").strip()[-300:]
     except Exception as e:                      # ffmpeg puuttuu / aikakatkaisu
         return False, repr(e)
@@ -330,12 +340,15 @@ class FfmpegPipeWriter:
 
     def __init__(self, path, fps, size, encoder):
         self._dead = False
+        self._yuv = _yuv_input(size[0], size[1])
         self._p = _sp.Popen(_ffmpeg_cmd(size[0], size[1], fps, encoder, path), stdin=_sp.PIPE, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
 
     def write(self, img):
         if self._dead:
             return
         try:
+            if self._yuv:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2YUV_I420)
             self._p.stdin.write(np.ascontiguousarray(img).data)
         except Exception as e:                  # ffmpeg kuoli -> ei kaadeta seurantaa
             self._dead = True
@@ -356,7 +369,8 @@ def open_debug_writer(path, fps, size):
     for enc in order:
         ok, err = probe_encoder(enc, size[0], size[1], fps)
         if ok:
-            print(f"Debug-video: koodaus ffmpeg/{enc} ({'Intel Quick Sync, grafiikkapiiri' if enc == 'qsv' else 'CPU'})")
+            print(f"Debug-video: koodaus ffmpeg/{enc} ({'Intel Quick Sync, grafiikkapiiri' if enc == 'qsv' else 'CPU'})"
+                  f"{', syote YUV 4:2:0 (DEBUG_YUV=1)' if _yuv_input(size[0], size[1]) else ''}")
             return FfmpegPipeWriter(path, fps, size, enc)
         print(f"Debug-video: ffmpeg/{enc} ei kaytettavissa ({err or 'tuntematon virhe'}) -> cv2.VideoWriter (mp4v, CPU)")
     return cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, size)

@@ -179,3 +179,9 @@ Tutkittu, ei otettu käyttöön: `cv2.remap` kiintopistekartoilla (identtinen, e
 debug-videon koodaus ffmpeg-putkella (mpeg4/x264, BGR tai valmis YUV) - nykyinen `cv2.VideoWriter` mp4v oli CPU:lla halvin (7,8 ms/ruutu).
 `tools/vertailuajo.py`: uudet ajot `blasmt`/`intrablasmt` (vanha BLAS-käytös vertailuun), `intraprio`, `intrasw`.
 C++-moduuli pitää kääntää uudelleen (`stone_tracker.cpp`).
+
+### v5.8: debug-video ffmpegille valmiina YUV:na (`DEBUG_YUV=1`, valinnainen)
+QSV-/x264-putkessa ffmpeg muunsi BGR-ruudut YUV:ksi omalla (hitaalla) swscalellaan CPU:lla. `DEBUG_YUV=1`: muunnos tehdään kirjoitussäikeessä
+`cv2.cvtColor(BGR2YUV_I420)`:lla (SIMD) ja ffmpegille syötetään yuv420p -> putkeen puolet vähemmän dataa. Sandbox-mittaus (mpeg4/x264): ~2,5-3 ms/ruutu
+vähemmän CPU:ta. Värit voivat poiketa aavistuksen (PSNR BGR-putkeen 42-45 dB). Ei vaikuta seurantaan (CSV identtinen). Ei koske cv2.VideoWriter-varapolkua.
+`tools/vertailuajo.py`: ajo `intrayuv` (= intra + DEBUG_YUV=1).
