@@ -200,6 +200,23 @@ Nopeustesti (käyttäjän kone, live-tallenne, `--tilat live`, tallennus pääll
 Ylikuormitetulla koneella etualamaskin oma säie (yksi lisäsäie per kivi) hidastaa → live-tilassa oletuksena pois
 (tiedostoajo ennallaan; `PREP_PARALLEL=1` ohittaa). Tulos on sama, vain ajoitus muuttuu.
 
+## v6.15: seuranta loppuu lähi-hoglinelle (`TRACK_END_PAST_NEAR_HOG_CM=30`)
+Kiveä ei seurata enää, kun se on 30 cm lähi-hoglinen ohi (hog-hog-analyysi käyttää vain pisteitä lähi-hog + 50 cm … kauko-hog − 100 cm).
+Katkaistulla radalla heittoportin hidastuvuussuhde mitataan lähi-hoglinella eikä pesässä: MAH00014:n 24 heitolla 0,36–0,61 (ennen 0,18–0,47,
+pelaaja ~1) → katkaistuille radoille oma raja `GATE_MAX_SPEED_RATIO_CUT=0,75` (0,6:lla katosi 3 heittoa; 0,7–0,85: kaikki 24, ei ylimääräisiä).
+
+MAH00014 (sandbox, kaksi ajoa rinnakkain):
+
+| | ennen (`TRACK_END_PAST_NEAR_HOG_CM=0`) | v6.15 |
+|---|---|---|
+| kiven päivityksiä | 27 789 | 23 093 (−17 %) |
+| SEURANTA ms/ruutu | 21,5 | 18,2 (−15 %) |
+| pääsäie | 27,6 ms | 24,4 ms (−12 %) |
+| heitot / hog-hog | 24 | 24, hog-tulokset täsmälleen samat |
+
+Kokeiltu ja hylätty: **LM-tarkennuksen keventäminen 10–24 m:n alueella** (1 ulkokierros / ei 2. LM:ää / ≤ 10 iteraatiota):
+LM alueella −78…−85 %, mutta seuranta kokonaisuudessaan vain −6…−7 %, ja 3–4 heittoa 24:stä katosi (paikkavirhe 1 %:ssa päivityksistä > 10 cm).
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
