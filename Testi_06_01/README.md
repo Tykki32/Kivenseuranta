@@ -82,6 +82,12 @@ asetettiin vasta kun virta oli jo käynnissä BGR-tilassa (MSMF alustaa virran u
 Nyt raakatilassa kamera suljetaan ja avataan uudelleen raakatila valmiiksi asetettuna; väritarkistuksen vertailukuva on tunnistuksessa luettu
 BGR-ruutu (~1-2 s aiemmin) ja järjestys hyväksytään jos keskiero < 5 tai selvästi (< 0,5x) pienempi kuin seuraavaksi paras.
 
+## v6.6: väritarkistus mediaanilla, `--live-raakajarjestys`
+v6.5-ajo: raakakuva saatiin nyt YUY2:na, mutta tarkistus hylkäsi sen liian tiukasti (keskiero YUY2 6,8 / YVYU 12,9 / UYVY 48,0; suhde 0,53 > 0,5).
+Nyt vertailu on mediaani pikselikohtaisista eroista (liike ei vääristä; sandbox 1,6 s ruutuvälillä: YUY2 1,7 / YVYU 3,0 / UYVY 45,0),
+hyväksyntä: paras < 20 ja (paras < 4 tai < 0,7 x seuraavaksi paras). Tuloste näyttää erot ja parhaan kanavittaisen keskieron (B/G/R).
+`--live-raakajarjestys YUY2` pakottaa järjestyksen (hylätään vain selvästi väärä kuva).
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
