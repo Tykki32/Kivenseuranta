@@ -204,3 +204,18 @@ Windows-mittauksen kivikohtainen ketju (INTRA_PARALLEL päällä): valmistelu ~7
 * `PREP_PARALLEL=1` (oletus): etualamaski (riippuu vain taustavaimennetusta rajauksesta) omassa säikeessään saturaation ja graniittimaskin rinnalla.
 `tools/vertailuajo.py`: ajot `v59` (= v5.9:n oletukset), `oletus`, `grid3` (GRID_THREADS=3); oletuksena ajetaan nämä kolme.
 C++-moduuli pitää kääntää uudelleen.
+
+### v5.11: pääsäikeen nopeutus (tavoite >= 10 %), tulokset identtiset
+Windows-loki v5.9 (oletus): pääsäie C 36,1 ms/ruutu = SEURANTA 26,6 + HAKUn odotus 2,4 + siluettitarkennus 1,5 + muu; kiven ketju (INTRA_PARALLEL)
+valmistelu ~7 ms -> haku (ristikko 6,2 ms) -> LM 13,8 ms (josta 200 px:n reunustuksen kopio 1,4 ms). Muutokset (kaikki oletuksena päällä, 0 = pois):
+1. `HAKU_AHEAD=1`: HAKU käynnistetään jo liukuhihnan vaiheessa B heti kun ruutu on valmis (syöte riippuu vain ruudusta ja kalibroinnista;
+   EVICT_AT_CAP-oletuksella HAKU-ehto riippuu vain ruudun indeksistä) -> tulos on valmis kun pääsäie ehtii ruutuun, odotus ~0.
+2. v5.10 `GRID_THREADS=2`, `PREP_PARALLEL=1` (katso yllä).
+3. `SIL_IN_BATCH=1`: SEURANNAN siluettitarkennus lasketaan `track_stones_batch`:in kivisäikeessä heti kiven päivityksen jälkeen
+   (sama `silhouetteRefineCore`, sama kuva ja syöte; `set_seuranta_silhouette`) -> ei erillistä vaihetta pääsäikeessä.
+4. LM:n reunustus ilman kopioita: saturaatio luetaan `PaddedView`-näkymän kautta (sama koordinaatisto ja nollat kuin 200 px:n
+   `copyMakeBorder`-kopiossa), maskiin 1 px:n nollareunus ja ääriviivan pisteet siirretään takaisin ennen pinta-ala/momenttilaskentaa.
+   Ei kytkettävissä (identtinen).
+Diagnostiikka: käynnistyksessä tulostuu `C++-moduulin OpenCV: ...` (Baseline/Dispatched = SIMD-optimoinnit, Intel IPP, säiekehys).
+Graniittimaski (cvtColor + GaussianBlur) oli Windowsissa 4,7x sandboxia hitaampi, kun muut vaiheet ~2x -> epäily: vcpkg:n OpenCV ilman AVX2/IPP:tä.
+`tools/vertailuajo.py`: oletuksena ajot `v59` (vanha) ja `oletus` (uusi). C++-moduuli pitää kääntää uudelleen.

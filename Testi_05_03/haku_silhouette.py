@@ -79,6 +79,16 @@ class SilhouetteRefiner:
                                              int(self.open_size), int(self.band_px))
         return self.refine_py(frame_bgr, X0, Y0)
 
+    def batch_config(self, half=HALF, margin=MASK_MARGIN):
+        """v5.11: argumentit stone_tracker.set_seuranta_silhouette:lle (sama laskenta kuin refine(), track_stones_batch laskee sen
+        kivisaikeessa). None jos C++-polku ei ole kaytossa."""
+        if self.body_pts is None:
+            return None
+        return (self.body_pts, np.ascontiguousarray(self.K, dtype=np.float64), np.ascontiguousarray(self.R, dtype=np.float64),
+                np.ascontiguousarray(self.t, dtype=np.float64), float(self.R_max), float(self.H_total), float(self.lovi),
+                float(self.w), float(self.lam), float(self.sigfrac), int(self.max_shift_px), int(half), int(margin),
+                int(self.open_size), int(self.band_px))
+
     def refine_many(self, frame_bgr, xys):
         """v5.7: refine() usealle (X0, Y0) -parille samasta ruudusta. C++-polulla kivet lasketaan rinnan (silhouette_refine_batch_cpp,
         GIL vapaana); tulokset samat ja samassa jarjestyksessa kuin perakkaisilla refine()-kutsuilla. Palauttaa listan (X, Y, info)."""
