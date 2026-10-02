@@ -1003,16 +1003,34 @@ PIPE_DEPTH = max(1, int(os.environ.get("PIPE_DEPTH", "6")))
 # Testi_05_03 v5.6: INTRA_PARALLEL=1 ajaa kiven kolme hakua (ristikko + 2 mean-shiftia) rinnan eri saikeissa (oletus pois; tulos identtinen).
 #   v5.9: OLETUKSENA PAALLA (INTRA_PARALLEL=0 pois).
 INTRA_PARALLEL = os.environ.get("INTRA_PARALLEL", "1") == "1"
-# v5.9: OpenCV:n saiemaara SEURANNAN/HAKUn kivikohtaisissa C++-kutsuissa (oletus 1 = ennallaan; tulos sama). Kokeiluun: SEURANTA_CV_THREADS=2/3.
-SEURANTA_CV_THREADS = max(1, int(os.environ.get("SEURANTA_CV_THREADS", "1")))
+# v5.10: SEURANNAN ristikkohaun hieno vaihe GRID_THREADS saikeelle (oletus 2; 1 = ennallaan) ja kiven valmistelun etualamaski rinnan
+# (PREP_PARALLEL, oletus 1). Molemmat bitti-identtisia perakkaisen version kanssa.
+GRID_THREADS = max(1, int(os.environ.get("GRID_THREADS", "2")))
+PREP_PARALLEL = os.environ.get("PREP_PARALLEL", "1") == "1"
 # v5.7: Pythonin GIL-vaihtovali (sys.setswitchinterval, oletus 5 ms). Liukuhihnassa on useita Python-saikeita (A, B, debug-piirto, HAKU,
 # valotasapaino); kun paasaie palaa C++/cv2-kutsusta (GIL vapautettu), se joutuu odottamaan GIL:ia enimmillaan koko vaihtovalin jos toinen
 # saie ajaa Python-koodia. Lyhyempi vali -> paasaie (pullonkaula) saa GIL:n nopeammin takaisin. Ei vaikuta tuloksiin. 0 = Pythonin oletus.
 PY_SWITCH_INTERVAL_MS = float(os.environ.get("PY_SWITCH_INTERVAL_MS", "0"))
 if PY_SWITCH_INTERVAL_MS > 0:
     sys.setswitchinterval(PY_SWITCH_INTERVAL_MS / 1000.0)
-if hasattr(stone_tracker, "set_seuranta_cv_threads"):
-    stone_tracker.set_seuranta_cv_threads(SEURANTA_CV_THREADS)
+def _print_cpp_opencv_info():
+    """v5.11: C++-moduulin (stone_tracker) OpenCV:n kaannosasetukset: puuttuva AVX2-optimointi tai IPP selittaisi hitaan
+    graniittimaskin (cvtColor/GaussianBlur). Tulostetaan vain olennaiset rivit."""
+    if not hasattr(stone_tracker, "opencv_build_info"):
+        return
+    try:
+        keys = ("General configuration for OpenCV", "Baseline:", "Dispatched code generation:", "requested:", "Parallel framework:",
+                "Intel IPP:", "at:", "C++ flags (Release):", "Configuration:", "Built as dynamic libs?:")
+        lines = [l.strip() for l in stone_tracker.opencv_build_info().splitlines() if any(k in l for k in keys)]
+        print("C++-moduulin OpenCV: " + " | ".join(lines[:14]))
+    except Exception as e:
+        print(f"C++-moduulin OpenCV: tietoja ei saatu ({e!r})")
+
+
+_print_cpp_opencv_info()
+if hasattr(stone_tracker, "set_grid_threads"):
+    stone_tracker.set_grid_threads(GRID_THREADS)
+    stone_tracker.set_prep_parallel(int(PREP_PARALLEL))
 if hasattr(stone_tracker, "set_intra_parallel"):
     stone_tracker.set_intra_parallel(int(INTRA_PARALLEL))
     if INTRA_PARALLEL:
@@ -1078,7 +1096,9 @@ SPAWN_ABS_X_MAX = float(os.environ.get("SPAWN_ABS_X_MAX", "65"))
 SPAWN_SCORE_MAX = float(os.environ.get("SPAWN_SCORE_MAX", "0.9"))
 SEEK_MAX_SKIP = int(os.environ.get("SEEK_MAX_SKIP", "25"))   # v5.7: havaintoruutujen luku: eteenpain luku jos <= nain monta ruutua (0 = aina haku, kuten ennen)
 SCAN_WORKERS = max(1, int(os.environ.get("SCAN_WORKERS", "3")))   # v5.7: profiilin opettelun kandidaattiskannaus rinnan (1 = perakkain, kuten ennen)
-LIVE_PIPELINE = os.environ.get("LIVE_PIPELINE", "1") == "1"  # liukuhihna: ruudun valmistelu omassa saikeessa
+LIVE_PIPELINE = os.environ.get("LIVE_PIPELINE", "1") == "1"
+HAKU_AHEAD = os.environ.get("HAKU_AHEAD", "1") == "1"
+SIL_IN_BATCH = os.environ.get("SIL_IN_BATCH", "1") == "1"   # v5.11: SEURANNAN siluettitarkennus C++-kivisaikeissa (0 = erillinen vaihe)   # v5.11: HAKU kaynnistetaan jo liukuhihnan vaiheessa B (0 = paasaikeessa kuten ennen)  # liukuhihna: ruudun valmistelu omassa saikeessa
 VIDEO_PREFETCH = os.environ.get("VIDEO_PREFETCH", "1") == "1"  # videon luku omassa saikeessa elavassa vaiheessa
 PHOTO_APPLY_DELAY_FRAMES = int(os.environ.get("PHOTO_APPLY_DELAY_FRAMES", "10"))  # valotasapainon uusi arvo kayttoon tasan N ruudun paasta (toistettava ajo)
 PHOTO_SUBSAMPLE = int(os.environ.get("PHOTO_SUBSAMPLE", "4"))  # valotasapainon estimoinnin pikseliharvennus (1 = kaikki pikselit)
@@ -4258,7 +4278,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_03 v5.9 (oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_05_03 v5.11 (oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -4439,8 +4459,9 @@ class _LivePipeline:
     Ruutujen jarjestys ja sisalto ovat samat kuin ilman hihnaa. Kaytetaan vasta kun calib_result on
     valmis ja live_state luotu."""
 
-    def __init__(self, source_read, engine, prep, ref_gray, live_state, calib_result, first_index, depth=3):
+    def __init__(self, source_read, engine, prep, ref_gray, live_state, calib_result, first_index, depth=3, haku_ahead=None):
         import queue as _queue
+        self._haku_ahead = haku_ahead      # v5.11: kutsu(idx, frame_u_for_tracking, thr) -> HAKU-future tai None
         self._qa = _queue.Queue(maxsize=depth)   # A -> B
         self._q = _queue.Queue(maxsize=depth)    # B -> paasaie
         self._stop = threading.Event()
@@ -4580,9 +4601,12 @@ class _LivePipeline:
                 frame_u, frame_u_for_tracking, thr = self._prep.process(
                     frame, stab, idx, self._live_state, self._calib_result
                 )
+                # v5.11: HAKU kaynnistetaan heti kun ruutu on valmis (syote riippuu vain ruudusta ja kalibroinnista) -> tulos on
+                # valmiina kun paasaie ehtii tahan ruutuun (jono PIPE_DEPTH ruutua). Sama syote ja sama ruutu kuin ennen -> sama tulos.
+                haku_fut = self._haku_ahead(idx, frame_u_for_tracking, thr) if self._haku_ahead is not None else None
                 self._put(self._q, {
                     "frame": frame, "stab": stab, "frame_u": frame_u,
-                    "frame_u_for_tracking": frame_u_for_tracking, "thr": thr,
+                    "frame_u_for_tracking": frame_u_for_tracking, "thr": thr, "haku_future": haku_fut,
                 }, "pipe B: odottaa paasaiketta (jono taynna)")
         except BaseException as e:
             self._put(self._q, e, "pipe B: odottaa paasaiketta (jono taynna)")
@@ -5634,6 +5658,10 @@ def run_pipeline(
                             max_shift_px=SEURANTA_SIL_SHIFT_PX, k94=k94
                         )
                         print(f"SEURANTA maskituki PAALLA (inside >= {SEURANTA_MIN_INSIDE}, siluettitarkennus +-{SEURANTA_SIL_SHIFT_PX} px, kaikille ruuduille kun Y > {SEURANTA_SIL_ALL_Y_CM:.0f} cm)")
+                        # v5.11: siluettitarkennus suoraan SEURANNAN C++-kivisaikeissa (SIL_IN_BATCH=0 = erillinen vaihe kuten ennen)
+                        _sil_cfg = track_refiner.batch_config()
+                        if SIL_IN_BATCH and _sil_cfg is not None and hasattr(stone_tracker, "set_seuranta_silhouette"):
+                            stone_tracker.set_seuranta_silhouette(*_sil_cfg)
 
                     print(
                         "Rakennetaan kiven pintavarireferenssia "
@@ -5710,9 +5738,37 @@ def run_pipeline(
                     else:
                         _pipe_source = engine.read
                     live_prep.prefix = "pipe B:"
+
+                    _haku_ahead = None
+                    if HAKU_AHEAD and EVICT_AT_CAP:
+                        # v5.11: sama HAKU-kutsu kuin alempana (EVICT_AT_CAP: ehto riippuu vain ruudun indeksista)
+                        _ha_pose = calib_result["pose"]
+                        _ha_ref = calib_result["calib"]["frame_undistorted"]
+                        _ha_body = live_state["local_pts_body"]
+                        _ha_search = live_state["local_pts_search"]
+
+                        def _haku_ahead(idx, fut_frame, thr):
+                            if idx % haku_interval_frames != 0:
+                                return None
+                            y_c = (k92.SEARCH_Y_MIN_CM + k92.SEARCH_Y_MAX_CM) / 2.0
+                            y_h = (k92.SEARCH_Y_MAX_CM - k92.SEARCH_Y_MIN_CM) / 2.0
+                            return haku_executor.submit(
+                                _run_haku_timed,
+                                fut_frame, _ha_ref,
+                                _ha_body, _ha_search,
+                                _ha_pose["K"], _ha_pose["R"], _ha_pose["t"],
+                                0.0, k92.SEARCH_X_HALF_WIDTH_CM, y_c, y_h,
+                                k92.SEARCH_COARSE_STEP_CM, k92.SEARCH_FINE_STEP_CM,
+                                k92.SEARCH_SCORE_THRESHOLD,
+                                live_state["R_max"], live_state["H_total"],
+                                live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
+                                thr
+                            )
+
                     frame_pipeline = _LivePipeline(
                         _pipe_source, engine, live_prep, loppuvideo_ref_gray,
-                        live_state, calib_result, frame_index + 1, depth=PIPE_DEPTH
+                        live_state, calib_result, frame_index + 1, depth=PIPE_DEPTH,
+                        haku_ahead=_haku_ahead
                     )
                     if STAB_WORKERS > 1 or PIPE_DEPTH != 3:
                         print(f"Liukuhihna: stabilointi {STAB_WORKERS} ruudulle rinnan, jonojen syvyys {PIPE_DEPTH}")
@@ -5774,18 +5830,21 @@ def run_pipeline(
                     ) / 2.0
 
                     _t_hs = time.perf_counter()
-                    haku_future = haku_executor.submit(
-                        _run_haku_timed,
-                        frame_u_for_tracking, ref_undist_live,
-                        local_pts_body, local_pts_search,
-                        pose["K"], pose["R"], pose["t"],
-                        x_center, k92.SEARCH_X_HALF_WIDTH_CM, y_center, y_half,
-                        k92.SEARCH_COARSE_STEP_CM, k92.SEARCH_FINE_STEP_CM,
-                        k92.SEARCH_SCORE_THRESHOLD,
-                        live_state["R_max"], live_state["H_total"],
-                        live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
-                        haku_seuranta_diff_threshold
-                    )
+                    if pipe_item is not None and pipe_item.get("haku_future") is not None:
+                        haku_future = pipe_item["haku_future"]      # v5.11: kaynnistetty jo vaiheessa B
+                    else:
+                        haku_future = haku_executor.submit(
+                            _run_haku_timed,
+                            frame_u_for_tracking, ref_undist_live,
+                            local_pts_body, local_pts_search,
+                            pose["K"], pose["R"], pose["t"],
+                            x_center, k92.SEARCH_X_HALF_WIDTH_CM, y_center, y_half,
+                            k92.SEARCH_COARSE_STEP_CM, k92.SEARCH_FINE_STEP_CM,
+                            k92.SEARCH_SCORE_THRESHOLD,
+                            live_state["R_max"], live_state["H_total"],
+                            live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
+                            haku_seuranta_diff_threshold
+                        )
                     _PROF.setdefault("py: HAKU submit (Python, saikeen kaynnistys)", [0.0, 0])
                     _PROF["py: HAKU submit (Python, saikeen kaynnistys)"][0] += time.perf_counter() - _t_hs
                     _PROF["py: HAKU submit (Python, saikeen kaynnistys)"][1] += 1
@@ -5914,7 +5973,9 @@ def run_pipeline(
                     _sil_results = {}
                     if track_refiner is not None:
                         _sil_idx = [i for i, r in enumerate(batch_results) if r["found"]]
-                        if _sil_idx:
+                        if _sil_idx and all("sil" in batch_results[i] for i in _sil_idx):
+                            _sil_results = {i: tuple(batch_results[i]["sil"]) for i in _sil_idx}     # v5.11: laskettu jo C++:ssa
+                        elif _sil_idx:
                             with _prof("py: SEURANTA maskituki + siluettitarkennus"):
                                 _sil_out = track_refiner.refine_many(
                                     frame_u_for_tracking, [(batch_results[i]["X_cm"], batch_results[i]["Y_cm"]) for i in _sil_idx]

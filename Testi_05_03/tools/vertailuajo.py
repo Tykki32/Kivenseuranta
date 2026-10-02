@@ -14,9 +14,10 @@ Ajot (kaikki samalla videolla/aikavälillä, oletuksena debug-video päällä), 
   v5.7:  blasmt / intrablasmt : cpu / intra vanhalla BLAS-asetuksella (OpenBLAS 8 säiettä, kuten <= v5.6) -> BLAS-korjauksen vaikutus
          intraprio : intra + BG_PRIORITY=1 (taustasäikeet alemmalle prioriteetille)    intrasw : intra + PY_SWITCH_INTERVAL_MS=1
   v5.8:  intrayuv : intra + DEBUG_YUV=1 (debug-video ffmpegille valmiina YUV:na; vain qsv/x264-putki)
-  v5.9:  oletus : main.py:n uudet oletukset (= intrayuv)    cv2t / cv3t : oletus + SEURANTA_CV_THREADS=2 / 3    oletusgrid : oletus + GPU_GRID=1
+  v5.9:  oletus : main.py:n nykyiset oletukset    oletusgrid : oletus + GPU_GRID=1
+  v5.10/11: v59 : oletus ilman v5.10-11:n lisayksia (GRID_THREADS=1, PREP_PARALLEL=0, HAKU_AHEAD=0, SIL_IN_BATCH=0)    grid3 : oletus + GRID_THREADS=3
          (vanhat ajot cpu, par, intra, ... ajetaan vanhoilla oletuksilla GPU_B=0, STAB_WORKERS=1, PIPE_DEPTH=3, INTRA_PARALLEL=0, DEBUG_YUV=0)
-Oletus: oletus,cv2t,cv3t,oletusgrid.
+Oletus: v59,oletus.
 Tulokset kansioon --outdir (oletus: videon kansio / vertailuajo_<aikaleima>):
   ajo_<nimi>_loki.txt          koko terminaalitulostus
   ajo_<nimi>_sijainnit.csv     kivien sijainnit (+ _hog.csv)
@@ -56,15 +57,20 @@ RUNS = [
     ("intrayuv", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1", "DEBUG_YUV": "1"}),
     # v5.9: uudet oletukset (= intrayuv). Naissa ajoissa EI kayteta OLD_DEFAULTS-pohjaa.
     ("oletus", {}),
-    ("cv2t", {"SEURANTA_CV_THREADS": "2"}),           # oletus + OpenCV 2 saietta kivikohtaisissa C++-kutsuissa
-    ("cv3t", {"SEURANTA_CV_THREADS": "3"}),           # oletus + OpenCV 3 saietta
     ("oletusgrid", {"GPU_GRID": "1"}),                # oletus + ristikkohaun hieno vaihe GPU:lla
+    # v5.10: kiven sisaisen rinnakkaisuuden lisaykset (oletuksena paalla) - vertailu ilman niita ja 3 saikeen ristikolla
+    ("v59", {"GRID_THREADS": "1", "PREP_PARALLEL": "0", "HAKU_AHEAD": "0", "SIL_IN_BATCH": "0"}),   # = v5.9:n oletukset (LM-reunustuksen poisto mukana, ei kytkettava)
+    ("grid3", {"GRID_THREADS": "3"}),                       # oletus + hieno ristikko 3 saikeelle
 ]
 # v5.9: main.py:n oletukset muuttuivat (GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1). Vanhat ajot (cpu, par, intra, ...)
 # ajetaan edelleen VANHOILLA oletuksilla, jotta niiden merkitys ei muutu; ajon omat asetukset ylikirjoittavat nama.
 OLD_DEFAULTS = {"GPU_B": "0", "STAB_WORKERS": "1", "PIPE_DEPTH": "3", "INTRA_PARALLEL": "0", "DEBUG_YUV": "0"}
-NEW_DEFAULT_RUNS = {"oletus", "cv2t", "cv3t", "oletusgrid"}
-DEFAULT_RUNS = "oletus,cv2t,cv3t,oletusgrid"
+NEW_DEFAULT_RUNS = {"oletus", "oletusgrid", "v59", "grid3"}
+OLD_DEFAULTS["GRID_THREADS"] = "1"
+OLD_DEFAULTS["PREP_PARALLEL"] = "0"
+OLD_DEFAULTS["HAKU_AHEAD"] = "0"
+OLD_DEFAULTS["SIL_IN_BATCH"] = "0"
+DEFAULT_RUNS = "v59,oletus"
 
 
 def pick_video():
@@ -82,7 +88,7 @@ def pick_video():
 def run_main(name, env_extra, video, start, end, debug, extra, log_path):
     env = dict(os.environ)
     for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_B", "STAB_WORKERS", "PIPE_DEPTH", "INTRA_PARALLEL",
-              "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_THREADS", "BG_PRIORITY", "PY_SWITCH_INTERVAL_MS", "DEBUG_YUV", "SEURANTA_CV_THREADS"):
+              "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_THREADS", "BG_PRIORITY", "PY_SWITCH_INTERVAL_MS", "DEBUG_YUV", "GRID_THREADS", "PREP_PARALLEL", "HAKU_AHEAD", "SIL_IN_BATCH"):
         if k not in env_extra:
             env.pop(k, None)
     if name not in NEW_DEFAULT_RUNS:
@@ -221,7 +227,7 @@ def main():
     ap.add_argument("--end", default="00:21:00")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-debug", action="store_true", help="aja ilman debug-videota")
-    ap.add_argument("--runs", default=DEFAULT_RUNS, help="ajettavat ajot pilkuilla (cpu,gpu,gpub,gpuall,verify,par,par3,parcpu,intra,intragrid,blasmt,intrablasmt,intraprio,intrasw,intrayuv,oletus,cv2t,cv3t,oletusgrid); oletus " + DEFAULT_RUNS)
+    ap.add_argument("--runs", default=DEFAULT_RUNS, help="ajettavat ajot pilkuilla (cpu,gpu,gpub,gpuall,verify,par,par3,parcpu,intra,intragrid,blasmt,intrablasmt,intraprio,intrasw,intrayuv,oletus,oletusgrid,v59,grid3); oletus " + DEFAULT_RUNS)
     ap.add_argument("--main-args", default="", help="lisäargumentit main.py:lle lainausmerkeissä, esim. \"--max-frame 3000\"")
     args = ap.parse_args()
 

@@ -150,6 +150,13 @@ static inline void profAdd(ProfId id, long long ns) { g_prof_ns[id] += ns; g_pro
 
 // Testi_05_03 v5.6: kiven sisainen rinnakkaisuus (ristikkohaku + 2 mean-shiftia eri saikeissa); ohjaus Pythonista set_intra_parallel(0/1)
 static std::atomic<int> g_intra_parallel{0};
+// v5.10: SEURANNAN ristikkohaun HIENON vaiheen ehdokkaat GRID_THREADS saikeelle (oletus 2; 1 = perakkain kuten ennen). Kukin saie kay
+// oman X-lohkonsa lapi alkuperaisessa jarjestyksessa ja lohkojen parhaat yhdistetaan lohkojarjestyksessa samalla "aidosti suurempi
+// voittaa" -saannolla -> sama tulos kuin perakkaisella silmukalla.
+static std::atomic<int> g_grid_threads{1};
+// v5.10: kiven valmistelussa etualamaski (createForegroundFromWhitened) omassa saikeessaan saturaation + graniittimaskin rinnalla
+// (riippumattomat syotteet -> sama tulos). PREP_PARALLEL=0 pois.
+static std::atomic<int> g_prep_parallel{0};
 
 struct PT {
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -197,10 +204,6 @@ namespace {
 std::mutex g_cv_single_thread_mutex;
 int g_cv_single_thread_refcount = 0;
 int g_cv_single_thread_saved = 1;
-// v5.9: OpenCV:n saiemaara vartijan aikana (oletus 1 = ennallaan). SEURANTA_CV_THREADS=n (main.py -> set_seuranta_cv_threads):
-// kivikohtaiset OpenCV-kutsut (cvtColor, GaussianBlur, morfologia) saavat n saietta - hyodyllinen kun kivia on vahan ja ytimia vapaana.
-// Tulos sama (OpenCV jakaa rivit, laskenta ei riipu saiemaarasta).
-std::atomic<int> g_cv_guard_threads(1);
 }
 
 class ScopedSingleThreadedOpenCV {
@@ -209,7 +212,7 @@ public:
         std::lock_guard<std::mutex> lock(g_cv_single_thread_mutex);
         if (g_cv_single_thread_refcount == 0) {
             g_cv_single_thread_saved = cv::getNumThreads();
-            cv::setNumThreads(std::max(1, g_cv_guard_threads.load()));
+            cv::setNumThreads(1);
         }
         g_cv_single_thread_refcount++;
     }
@@ -553,6 +556,13 @@ struct HullProjector {
         ref_idx = idx; ref_x = X; ref_y = Y;
         return h;
     }
+    // v5.10: siirtaa projektorin tilan (vertailupiste) kuten hull(X, Y) tekisi, ilman pisteytysta. Rinnakkainen ristikko
+    // (gridSearchBestPar) toistaa naiden avulla edeltavien pisteiden tilamuutokset -> sama kärkijoukko kuin perakkain.
+    void advance(double X, double Y)
+    {
+        const bool fast = !ref_idx.empty() && std::abs(X - ref_x) < 15.0 && std::abs(Y - ref_y) < 15.0;
+        if (!fast) (void)hull(X, Y);
+    }
 };
 
 static std::pair<cv::Point2d, double> gridSearchBest(
@@ -577,6 +587,49 @@ static std::pair<cv::Point2d, double> gridSearchBest(
     }
 
     return {best_xy, best_score};
+}
+
+
+// v5.10: gridSearchBest usealla saikeella (katso g_grid_threads) - bitti-identtinen perakkaisen version kanssa.
+static std::pair<cv::Point2d, double> gridSearchBestPar(
+    const std::vector<cv::Point3d>& local_pts_search,
+    const cv::Mat& mask_crop, int off_x, int off_y,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    const std::vector<double>& x_vals, const std::vector<double>& y_vals, int n_threads)
+{
+    const int nx = (int)x_vals.size();
+    n_threads = std::min(n_threads, nx);
+    if (n_threads <= 1 || y_vals.empty())
+        return gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals);
+    std::vector<std::pair<cv::Point2d, double>> part((size_t)n_threads);
+    auto run = [&](int k) {
+        const int a = (int)((long long)nx * k / n_threads), b = (int)((long long)nx * (k + 1) / n_threads);
+        // HullProjector muistaa vertailupisteen (hull-karjet) -> toistetaan edeltavien pisteiden tilamuutokset ensin,
+        // jolloin tama lohko kayttaa TASMALLEEN samaa kärkijoukkoa kuin perakkainen silmukka.
+        HullProjector proj_(local_pts_search, K, R, t);
+        for (int i = 0; i < a; ++i)
+            for (double Y : y_vals) proj_.advance(x_vals[(size_t)i], Y);
+        double best_score = -1.0;
+        cv::Point2d best_xy(x_vals[(size_t)a], y_vals[0]);
+        for (int i = a; i < b; ++i) {
+            const double X = x_vals[(size_t)i];
+            for (double Y : y_vals) {
+                auto hull = proj_.hull(X, Y);
+                double score = hullOverlapScore(mask_crop, hull, off_x, off_y);
+                if (score > best_score) { best_score = score; best_xy = cv::Point2d(X, Y); }
+            }
+        }
+        part[(size_t)k] = { best_xy, best_score };
+    };
+    std::vector<std::thread> th;
+    for (int k = 1; k < n_threads; ++k) th.emplace_back(run, k);
+    run(0);
+    for (auto& x : th) x.join();
+    // yhdistys: lohko 0 ensin (sen alkuarvo = (x_vals[0], y_vals[0]) kuten perakkaisessa), sitten "aidosti suurempi voittaa"
+    std::pair<cv::Point2d, double> best = part[0];
+    for (int k = 1; k < n_threads; ++k)
+        if (part[(size_t)k].second > best.second) best = part[(size_t)k];
+    return best;
 }
 
 
@@ -1426,7 +1479,7 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
             g_gpu_stats.fallbacks += 1;
         }
     }
-    auto best2 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2);
+    auto best2 = gridSearchBestPar(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2, g_grid_threads.load());
 
     return best2;
 }
@@ -1742,7 +1795,21 @@ static cv::Rect trackRoiBounds(
 // tarvitse numpy-tyylista vektorointia).
 // ============================================================
 
-static bool bilinearSample(const cv::Mat& channel, double x, double y, double& out)
+// v5.11: nollareunustettu (CV_32F) kuva ILMAN kopiota: koordinaatisto on kuin roi olisi reunustettu pl/pt/pr/pb nollapikselilla
+// (cv::copyMakeBorder BORDER_CONSTANT 0), joten bilinearSample palauttaa tasmalleen saman arvon ja saman kelvollisuuden
+// kuin aiemmin reunustetulla kopiolla - mutta 200 px:n reunusta ei tarvitse kopioida joka kivelle.
+struct PaddedView {
+    const cv::Mat* roi;
+    int pl, pt, cols, rows;      // cols/rows = reunustetun kuvan koko
+    inline float at(int y, int x) const
+    {
+        const int yy = y - pt, xx = x - pl;
+        if (yy < 0 || xx < 0 || yy >= roi->rows || xx >= roi->cols) return 0.0f;
+        return roi->at<float>(yy, xx);
+    }
+};
+
+static bool bilinearSample(const PaddedView& channel, double x, double y, double& out)
 {
     int w = channel.cols, h = channel.rows;
     int x0 = (int)std::floor(x), y0 = (int)std::floor(y);
@@ -1752,10 +1819,10 @@ static bool bilinearSample(const cv::Mat& channel, double x, double y, double& o
         return false;
 
     double fx = x - x0, fy = y - y0;
-    double v00 = channel.at<float>(y0, x0);
-    double v10 = channel.at<float>(y0, x1);
-    double v01 = channel.at<float>(y1, x0);
-    double v11 = channel.at<float>(y1, x1);
+    double v00 = channel.at(y0, x0);
+    double v10 = channel.at(y0, x1);
+    double v01 = channel.at(y1, x0);
+    double v11 = channel.at(y1, x1);
 
     out = v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) +
           v01 * (1 - fx) * fy + v11 * fx * fy;
@@ -1770,7 +1837,7 @@ static bool bilinearSample(const cv::Mat& channel, double x, double y, double& o
 // ============================================================
 
 static std::vector<cv::Point2d> detectBoundaryPoints(
-    const cv::Mat& sat, double cx_px, double cy_px, double r_px_approx,
+    const PaddedView& sat, double cx_px, double cy_px, double r_px_approx,
     int n_angles = BOUNDARY_N_ANGLES,
     double threshold = BOUNDARY_SATURATION_THRESHOLD,
     double r_step = BOUNDARY_RADIAL_STEP_PX,
@@ -1886,10 +1953,15 @@ static bool findContourNear(
     double max_dist_px = BODY_CONTOUR_MAX_SEARCH_DIST_PX,
     double min_area = BODY_CONTOUR_MIN_AREA_PX,
     double max_area = -1.0,
-    bool* rejected_for_size = nullptr)
+    bool* rejected_for_size = nullptr,
+    cv::Point coord_shift = cv::Point(0, 0))
 {
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+    // v5.11: maski voi olla pienemmalla reunuksella kuin kutsujan koordinaatisto -> pisteet siirretaan ENNEN pinta-ala-/
+    // momenttilaskentaa, jolloin kaikki laskenta tehdaan samoilla kokonaisluvuilla kuin ennen.
+    if (coord_shift.x != 0 || coord_shift.y != 0)
+        for (auto& c : contours) for (auto& p : c) p += coord_shift;
 
     bool found = false;
     double best_dist = 0.0;
@@ -1946,7 +2018,7 @@ static bool findContourNear(
 
 
 static std::vector<cv::Point2d> filterIceBoundaryPoints(
-    const cv::Mat& sat, const std::vector<cv::Point>& contour,
+    const PaddedView& sat, const std::vector<cv::Point>& contour,
     double check_dist_px = BODY_HANDLE_CHECK_DIST_PX,
     double threshold = BOUNDARY_SATURATION_THRESHOLD)
 {
@@ -3093,11 +3165,16 @@ static RefineResult refinePositionJoint(
     int pad_right = std::max(0, std::min(PAD, frame_w - (off_x_roi + mask_crop_roi.cols)));
     int pad_bottom = std::max(0, std::min(PAD, frame_h - (off_y_roi + mask_crop_roi.rows)));
 
-    cv::Mat mask_crop, sat_crop;
-    cv::copyMakeBorder(mask_crop_roi, mask_crop, pad_top, pad_bottom, pad_left, pad_right,
-                        cv::BORDER_CONSTANT, cv::Scalar(0));
-    cv::copyMakeBorder(sat_crop_roi, sat_crop, pad_top, pad_bottom, pad_left, pad_right,
-                        cv::BORDER_CONSTANT, cv::Scalar(0));
+    // v5.11: saturaatio luetaan reunustettuna NAKYMANA (PaddedView, ei kopiota) ja maskiin riittaa 1 px:n nollareunus
+    // (findContours: ulkoaariviivat ovat siirtoinvariantteja kun kaikkialla on vahintaan 1 nollapikseli ymparilla);
+    // aariviivan pisteet siirretaan takaisin 200 px:n reunuksen koordinaatteihin -> tulokset tasmalleen samat kuin ennen.
+    const int mpl = std::min(1, pad_left), mpt = std::min(1, pad_top);
+    const int mpr = std::min(1, pad_right), mpb = std::min(1, pad_bottom);
+    cv::Mat mask_crop;
+    cv::copyMakeBorder(mask_crop_roi, mask_crop, mpt, mpb, mpl, mpr, cv::BORDER_CONSTANT, cv::Scalar(0));
+    const int mshift_x = pad_left - mpl, mshift_y = pad_top - mpt;     // maskin koordinaatit -> 200 px:n reunuksen koordinaatit
+    PaddedView sat_crop{ &sat_crop_roi, pad_left, pad_top,
+                         sat_crop_roi.cols + pad_left + pad_right, sat_crop_roi.rows + pad_top + pad_bottom };
     int off_x = off_x_roi - pad_left;
     int off_y = off_y_roi - pad_top;
     profAdd(P_R_PAD, rpt.lap());
@@ -3133,7 +3210,7 @@ static RefineResult refinePositionJoint(
     bool has_contour = findContourNear(
         mask_crop, approx_px_crop, raw_contour,
         BODY_CONTOUR_MAX_SEARCH_DIST_PX, BODY_CONTOUR_MIN_AREA_PX, max_contour_area,
-        &oversized_reject
+        &oversized_reject, cv::Point(mshift_x, mshift_y)
     );
 
     std::vector<cv::Point2d> body_pts;
@@ -3696,6 +3773,42 @@ static MeanShiftResult meanShiftLocate(
 }
 
 
+struct SilResult {
+    bool ok = false;
+    double X = 0.0, Y = 0.0;
+    double score0 = 0.0, score1 = 0.0, inside0 = 0.0, inside1 = 0.0, shift_px = 0.0, shift_cm = 0.0;
+};
+
+static SilResult silhouetteRefineCore(
+    const cv::Mat& img, const std::vector<cv::Point3d>& body,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    double R_max_cm, double H_total_cm, double handle_r_frac, double X0, double Y0,
+    double w_leak, double lam, double sigma_frac, int max_shift_px, int half, int margin, int open_size, int band_px);
+
+// v5.11: SEURANNAN siluettitarkennus (main.py track_refiner) suoraan track_stones_batch:in kivisaikeessa heti kiven paivityksen
+// jalkeen (sama silhouetteRefineCore, sama kuva, syote = paivityksen X_cm/Y_cm) -> ei erillista vaihetta paasaikeessa.
+struct SeurantaSilCfg {
+    bool on = false;
+    std::vector<cv::Point3d> body;
+    cv::Matx33d K, R; cv::Vec3d t;
+    double R_max = 0, H_total = 0, lovi = 0, w = 0, lam = 0, sigfrac = 0;
+    int max_shift = 0, half = 0, margin = 0, open_size = 3, band = 3;
+};
+static SeurantaSilCfg g_sil_cfg;
+
+static py::tuple silResultToTuple(const SilResult& r)
+{
+    py::dict d;
+    d["ok"] = r.ok;
+    if (r.ok) {
+        d["score0"] = r.score0; d["score1"] = r.score1; d["inside0"] = r.inside0; d["inside1"] = r.inside1;
+        d["shift_px"] = r.shift_px; d["shift_cm"] = r.shift_cm;
+    }
+    return py::make_tuple(r.X, r.Y, d);
+}
+
+static std::mutex g_sil_cfg_mx;
+
 struct StoneUpdateResult {
     double score = 0.0;
     bool has_position = false;
@@ -3786,6 +3899,13 @@ static StoneUpdateResult trackStoneUpdateOneEx(
     }
 
     profAdd(P_PREP_CROP_SUPPRESS, pt.lap());
+    // v5.10: etualamaski riippuu vain crop_filtered:sta -> lasketaan omassa saikeessaan saturaation ja graniittimaskin rinnalla
+    cv::Mat fg_mask_par;
+    long long fg_ns = 0;
+    std::thread fg_thread;
+    const bool fg_par = have_bg_reference && g_prep_parallel.load();
+    if (fg_par)
+        fg_thread = std::thread([&]() { PT p; fg_mask_par = createForegroundFromWhitened(crop_filtered); fg_ns = p.lap(); });
     cv::Mat sat_u8_crop = satU8FromBgr(crop);
     cv::Mat sat_crop;
     sat_u8_crop.convertTo(sat_crop, CV_32F);
@@ -3809,11 +3929,18 @@ static StoneUpdateResult trackStoneUpdateOneEx(
     // "ei-valkoinen" kattaisi lahes koko kuvan eika olisi mielekas
     // etuala-signaali.
     cv::Mat mask_for_track = mask_crop;
-    if (have_bg_reference) {
-        cv::Mat fg_mask = createForegroundFromWhitened(crop_filtered);
-        mask_for_track = mask_crop | fg_mask;
+    if (fg_par) {
+        fg_thread.join();
+        mask_for_track = mask_crop | fg_mask_par;
+        pt.lap();
+        profAdd(P_PREP_FOREGROUND, fg_ns);
+    } else {
+        if (have_bg_reference) {
+            cv::Mat fg_mask = createForegroundFromWhitened(crop_filtered);
+            mask_for_track = mask_crop | fg_mask;
+        }
+        profAdd(P_PREP_FOREGROUND, pt.lap());
     }
-    profAdd(P_PREP_FOREGROUND, pt.lap());
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts1 = std::chrono::steady_clock::now();
 #endif
@@ -4226,6 +4353,10 @@ static py::list track_stones_batch(
     int n_stones = (int)X0b.shape(0);
 
     std::vector<StoneUpdateResult> results((size_t)n_stones);
+    std::vector<SilResult> sil_results((size_t)n_stones);
+    std::vector<char> has_sil((size_t)n_stones, 0);
+    SeurantaSilCfg sil_cfg;
+    { std::lock_guard<std::mutex> lk(g_sil_cfg_mx); sil_cfg = g_sil_cfg; }
     profAdd(P_BATCH_SETUP, bpt.lap());
 
     {
@@ -4265,6 +4396,13 @@ static py::list track_stones_batch(
                     (size_t)i < pdx.size() ? pdx[(size_t)i] : 0.0, (size_t)i < pdy.size() ? pdy[(size_t)i] : 0.0,
                     ms_edge_fallback
                 );
+                if (sil_cfg.on && results[(size_t)i].has_position) {
+                    const auto& rr = results[(size_t)i].refined;
+                    sil_results[(size_t)i] = silhouetteRefineCore(frame_mat, sil_cfg.body, sil_cfg.K, sil_cfg.R, sil_cfg.t,
+                        sil_cfg.R_max, sil_cfg.H_total, sil_cfg.lovi, rr.X_cm, rr.Y_cm, sil_cfg.w, sil_cfg.lam, sil_cfg.sigfrac,
+                        sil_cfg.max_shift, sil_cfg.half, sil_cfg.margin, sil_cfg.open_size, sil_cfg.band);
+                    has_sil[(size_t)i] = 1;
+                }
             }
         };
 
@@ -4281,8 +4419,11 @@ static py::list track_stones_batch(
 
     bpt.lap();
     py::list out;
-    for (auto& r : results)
-        out.append(resultToDict(r));
+    for (size_t i = 0; i < results.size(); ++i) {
+        py::dict d = resultToDict(results[i]);
+        if (has_sil[i]) d["sil"] = silResultToTuple(sil_results[i]);
+        out.append(d);
+    }
     profAdd(P_BATCH_RESULT, bpt.lap());
     profAdd(P_BATCH_WALL, bpt_wall.lap());
 
@@ -5814,11 +5955,6 @@ static void silFillPoly(cv::Mat& m, const std::vector<cv::Point2f>& poly, int ox
 
 // v5.7: laskentaydin ilman Python-olioita -> voidaan ajaa usealle kivelle rinnan (silhouette_refine_batch_cpp, GIL vapaana).
 // Laskenta tasmalleen sama kuin ennen; silhouette_refine_cpp ja silhouette_refine_batch_cpp palauttavat saman tuplen (X, Y, info).
-struct SilResult {
-    bool ok = false;
-    double X = 0.0, Y = 0.0;
-    double score0 = 0.0, score1 = 0.0, inside0 = 0.0, inside1 = 0.0, shift_px = 0.0, shift_cm = 0.0;
-};
 
 static SilResult silhouetteRefineCore(
     const cv::Mat& img, const std::vector<cv::Point3d>& body,
@@ -5943,16 +6079,6 @@ static SilResult silhouetteRefineCore(
     return res;
 }
 
-static py::tuple silResultToTuple(const SilResult& r)
-{
-    py::dict d;
-    d["ok"] = r.ok;
-    if (r.ok) {
-        d["score0"] = r.score0; d["score1"] = r.score1; d["inside0"] = r.inside0; d["inside1"] = r.inside1;
-        d["shift_px"] = r.shift_px; d["shift_cm"] = r.shift_cm;
-    }
-    return py::make_tuple(r.X, r.Y, d);
-}
 
 static py::tuple silhouette_refine_cpp(
     py::array_t<uint8_t, py::array::c_style | py::array::forcecast> frame,
@@ -6244,7 +6370,26 @@ PYBIND11_MODULE(stone_tracker, m)
         if (!ok) return py::none();
         return out;
     });
-    m.def("set_seuranta_cv_threads", [](int n) { g_cv_guard_threads = std::max(1, n); }, py::arg("n"));
+    m.def("set_seuranta_silhouette", [](py::object body_obj, py::array_t<double, py::array::c_style | py::array::forcecast> K_arr,
+                                        py::array_t<double, py::array::c_style | py::array::forcecast> R_arr,
+                                        py::array_t<double, py::array::c_style | py::array::forcecast> t_arr,
+                                        double R_max, double H_total, double lovi, double w, double lam, double sigfrac,
+                                        int max_shift, int half, int margin, int open_size, int band) {
+        SeurantaSilCfg c;
+        if (!body_obj.is_none()) {
+            auto body_arr = py::cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(body_obj);
+            c.body = parsePts3(body_arr);
+            c.K = parseMat33(K_arr); c.R = parseMat33(R_arr); c.t = parseVec3(t_arr);
+            c.R_max = R_max; c.H_total = H_total; c.lovi = lovi; c.w = w; c.lam = lam; c.sigfrac = sigfrac;
+            c.max_shift = max_shift; c.half = half; c.margin = margin; c.open_size = open_size; c.band = band;
+            c.on = true;
+        }
+        std::lock_guard<std::mutex> lk(g_sil_cfg_mx);
+        g_sil_cfg = c;
+    });
+    m.def("opencv_build_info", []() { return std::string(cv::getBuildInformation()); });   // v5.11: diagnostiikka (AVX2/IPP/saiekehys)
+    m.def("set_grid_threads", [](int n) { g_grid_threads = std::max(1, n); }, py::arg("n"));
+    m.def("set_prep_parallel", [](int on) { g_prep_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("set_intra_parallel", [](int on) { g_intra_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("prof_reset", &prof_reset);
     m.def("prof_snapshot", &prof_snapshot);
