@@ -1003,16 +1003,19 @@ PIPE_DEPTH = max(1, int(os.environ.get("PIPE_DEPTH", "6")))
 # Testi_05_03 v5.6: INTRA_PARALLEL=1 ajaa kiven kolme hakua (ristikko + 2 mean-shiftia) rinnan eri saikeissa (oletus pois; tulos identtinen).
 #   v5.9: OLETUKSENA PAALLA (INTRA_PARALLEL=0 pois).
 INTRA_PARALLEL = os.environ.get("INTRA_PARALLEL", "1") == "1"
-# v5.9: OpenCV:n saiemaara SEURANNAN/HAKUn kivikohtaisissa C++-kutsuissa (oletus 1 = ennallaan; tulos sama). Kokeiluun: SEURANTA_CV_THREADS=2/3.
-SEURANTA_CV_THREADS = max(1, int(os.environ.get("SEURANTA_CV_THREADS", "1")))
+# v5.10: SEURANNAN ristikkohaun hieno vaihe GRID_THREADS saikeelle (oletus 2; 1 = ennallaan) ja kiven valmistelun etualamaski rinnan
+# (PREP_PARALLEL, oletus 1). Molemmat bitti-identtisia perakkaisen version kanssa.
+GRID_THREADS = max(1, int(os.environ.get("GRID_THREADS", "2")))
+PREP_PARALLEL = os.environ.get("PREP_PARALLEL", "1") == "1"
 # v5.7: Pythonin GIL-vaihtovali (sys.setswitchinterval, oletus 5 ms). Liukuhihnassa on useita Python-saikeita (A, B, debug-piirto, HAKU,
 # valotasapaino); kun paasaie palaa C++/cv2-kutsusta (GIL vapautettu), se joutuu odottamaan GIL:ia enimmillaan koko vaihtovalin jos toinen
 # saie ajaa Python-koodia. Lyhyempi vali -> paasaie (pullonkaula) saa GIL:n nopeammin takaisin. Ei vaikuta tuloksiin. 0 = Pythonin oletus.
 PY_SWITCH_INTERVAL_MS = float(os.environ.get("PY_SWITCH_INTERVAL_MS", "0"))
 if PY_SWITCH_INTERVAL_MS > 0:
     sys.setswitchinterval(PY_SWITCH_INTERVAL_MS / 1000.0)
-if hasattr(stone_tracker, "set_seuranta_cv_threads"):
-    stone_tracker.set_seuranta_cv_threads(SEURANTA_CV_THREADS)
+if hasattr(stone_tracker, "set_grid_threads"):
+    stone_tracker.set_grid_threads(GRID_THREADS)
+    stone_tracker.set_prep_parallel(int(PREP_PARALLEL))
 if hasattr(stone_tracker, "set_intra_parallel"):
     stone_tracker.set_intra_parallel(int(INTRA_PARALLEL))
     if INTRA_PARALLEL:
@@ -4258,7 +4261,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_03 v5.9 (oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_05_03 v5.10 (oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():

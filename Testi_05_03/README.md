@@ -190,8 +190,17 @@ vähemmän CPU:ta. Värit voivat poiketa aavistuksen (PSNR BGR-putkeen 42-45 dB)
 Windows-vertailuajo (MAH00014, debug päällä, kaikki CSV:t identtiset): intra 640,5 s, intrablasmt 669,9 s (vanha BLAS), intraprio 692,0 s (huonompi),
 intrasw 648,4 s, intrayuv 631,7 s (nopein). Uudet oletukset = intrayuv: **`GPU_B=1`, `STAB_WORKERS=2`, `PIPE_DEPTH=6`, `INTRA_PARALLEL=1`, `DEBUG_YUV=1`**
 (GPU_B palaa CPU:lle jos OpenCL-laitetta ei löydy; DEBUG_YUV koskee vain ffmpeg-putkea). Vanhat arvot saa ympäristömuuttujilla (esim. `GPU_B=0`).
-Windows-mittauksessa kiven C++-päivitys 29 ms CPU (sandbox 14,6), josta graniittimaski 4,1 ms (sandbox 1,0) - OpenCV on SEURANNAN aikana
-pakotettu yhdelle säikeelle (ScopedSingleThreadedOpenCV), vaikka kiviä on keskimäärin 2,4 ja loogisia ytimiä 8. Uusi `SEURANTA_CV_THREADS=n`
-(oletus 1 = ennallaan) antaa näille kutsuille n säiettä; tulos sama (OpenCV jakaa rivit).
-`tools/vertailuajo.py`: uudet ajot `oletus`, `cv2t`, `cv3t`, `oletusgrid` (oletuksena ajetaan nämä). Vanhat ajot (cpu, par, intra, ...) ajetaan
+`tools/vertailuajo.py`: uudet ajot `oletus`, `oletusgrid`. Vanhat ajot (cpu, par, intra, ...) ajetaan
 vanhoilla oletuksilla, jotta niiden merkitys ei muutu. C++-moduuli pitää kääntää uudelleen.
+
+### v5.10: kiven sisäistä rinnakkaisuutta lisää (`GRID_THREADS`, `PREP_PARALLEL`)
+Windows-vertailuajo v5.9: oletus 657,0 s, oletusgrid (GPU_GRID=1) 707,7 s -> GPU-ristikko ei kannata.
+v5.9:n kokeiluasetus `SEURANTA_CV_THREADS` (OpenCV:n säiemäärä > 1 SEURANNAN aikana) **poistettu**: Windowsissa ajo kaatui
+(`mode_engine.read`: "Unknown exception") - säiemäärän vaihtaminen joka ruudulla samalla kun videon luku käyttää samaa OpenCV-kirjastoa
+rikkoo säiepoolin. Ennen kaatumista kirjoitetut sijainnit olivat identtiset.
+Windows-mittauksen kivikohtainen ketju (INTRA_PARALLEL päällä): valmistelu ~7 ms -> haku max(ristikko 6,2 ms, mean-shiftit ~2,9 ms) -> LM 13,8 ms.
+* `GRID_THREADS=2` (oletus): ristikkohaun hieno vaihe (~100 toisistaan riippumatonta ehdokasta) kahdelle säikeelle; kumpikin käy oman X-lohkonsa
+  alkuperäisessä järjestyksessä ja tulokset yhdistetään samalla "aidosti suurempi voittaa" -säännöllä -> sama tulos. `GRID_THREADS=1` = ennallaan.
+* `PREP_PARALLEL=1` (oletus): etualamaski (riippuu vain taustavaimennetusta rajauksesta) omassa säikeessään saturaation ja graniittimaskin rinnalla.
+`tools/vertailuajo.py`: ajot `v59` (= v5.9:n oletukset), `oletus`, `grid3` (GRID_THREADS=3); oletuksena ajetaan nämä kolme.
+C++-moduuli pitää kääntää uudelleen.

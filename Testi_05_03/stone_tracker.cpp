@@ -150,6 +150,13 @@ static inline void profAdd(ProfId id, long long ns) { g_prof_ns[id] += ns; g_pro
 
 // Testi_05_03 v5.6: kiven sisainen rinnakkaisuus (ristikkohaku + 2 mean-shiftia eri saikeissa); ohjaus Pythonista set_intra_parallel(0/1)
 static std::atomic<int> g_intra_parallel{0};
+// v5.10: SEURANNAN ristikkohaun HIENON vaiheen ehdokkaat GRID_THREADS saikeelle (oletus 2; 1 = perakkain kuten ennen). Kukin saie kay
+// oman X-lohkonsa lapi alkuperaisessa jarjestyksessa ja lohkojen parhaat yhdistetaan lohkojarjestyksessa samalla "aidosti suurempi
+// voittaa" -saannolla -> sama tulos kuin perakkaisella silmukalla.
+static std::atomic<int> g_grid_threads{1};
+// v5.10: kiven valmistelussa etualamaski (createForegroundFromWhitened) omassa saikeessaan saturaation + graniittimaskin rinnalla
+// (riippumattomat syotteet -> sama tulos). PREP_PARALLEL=0 pois.
+static std::atomic<int> g_prep_parallel{0};
 
 struct PT {
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
@@ -197,10 +204,6 @@ namespace {
 std::mutex g_cv_single_thread_mutex;
 int g_cv_single_thread_refcount = 0;
 int g_cv_single_thread_saved = 1;
-// v5.9: OpenCV:n saiemaara vartijan aikana (oletus 1 = ennallaan). SEURANTA_CV_THREADS=n (main.py -> set_seuranta_cv_threads):
-// kivikohtaiset OpenCV-kutsut (cvtColor, GaussianBlur, morfologia) saavat n saietta - hyodyllinen kun kivia on vahan ja ytimia vapaana.
-// Tulos sama (OpenCV jakaa rivit, laskenta ei riipu saiemaarasta).
-std::atomic<int> g_cv_guard_threads(1);
 }
 
 class ScopedSingleThreadedOpenCV {
@@ -209,7 +212,7 @@ public:
         std::lock_guard<std::mutex> lock(g_cv_single_thread_mutex);
         if (g_cv_single_thread_refcount == 0) {
             g_cv_single_thread_saved = cv::getNumThreads();
-            cv::setNumThreads(std::max(1, g_cv_guard_threads.load()));
+            cv::setNumThreads(1);
         }
         g_cv_single_thread_refcount++;
     }
@@ -553,6 +556,13 @@ struct HullProjector {
         ref_idx = idx; ref_x = X; ref_y = Y;
         return h;
     }
+    // v5.10: siirtaa projektorin tilan (vertailupiste) kuten hull(X, Y) tekisi, ilman pisteytysta. Rinnakkainen ristikko
+    // (gridSearchBestPar) toistaa naiden avulla edeltavien pisteiden tilamuutokset -> sama kärkijoukko kuin perakkain.
+    void advance(double X, double Y)
+    {
+        const bool fast = !ref_idx.empty() && std::abs(X - ref_x) < 15.0 && std::abs(Y - ref_y) < 15.0;
+        if (!fast) (void)hull(X, Y);
+    }
 };
 
 static std::pair<cv::Point2d, double> gridSearchBest(
@@ -577,6 +587,49 @@ static std::pair<cv::Point2d, double> gridSearchBest(
     }
 
     return {best_xy, best_score};
+}
+
+
+// v5.10: gridSearchBest usealla saikeella (katso g_grid_threads) - bitti-identtinen perakkaisen version kanssa.
+static std::pair<cv::Point2d, double> gridSearchBestPar(
+    const std::vector<cv::Point3d>& local_pts_search,
+    const cv::Mat& mask_crop, int off_x, int off_y,
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    const std::vector<double>& x_vals, const std::vector<double>& y_vals, int n_threads)
+{
+    const int nx = (int)x_vals.size();
+    n_threads = std::min(n_threads, nx);
+    if (n_threads <= 1 || y_vals.empty())
+        return gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals);
+    std::vector<std::pair<cv::Point2d, double>> part((size_t)n_threads);
+    auto run = [&](int k) {
+        const int a = (int)((long long)nx * k / n_threads), b = (int)((long long)nx * (k + 1) / n_threads);
+        // HullProjector muistaa vertailupisteen (hull-karjet) -> toistetaan edeltavien pisteiden tilamuutokset ensin,
+        // jolloin tama lohko kayttaa TASMALLEEN samaa kärkijoukkoa kuin perakkainen silmukka.
+        HullProjector proj_(local_pts_search, K, R, t);
+        for (int i = 0; i < a; ++i)
+            for (double Y : y_vals) proj_.advance(x_vals[(size_t)i], Y);
+        double best_score = -1.0;
+        cv::Point2d best_xy(x_vals[(size_t)a], y_vals[0]);
+        for (int i = a; i < b; ++i) {
+            const double X = x_vals[(size_t)i];
+            for (double Y : y_vals) {
+                auto hull = proj_.hull(X, Y);
+                double score = hullOverlapScore(mask_crop, hull, off_x, off_y);
+                if (score > best_score) { best_score = score; best_xy = cv::Point2d(X, Y); }
+            }
+        }
+        part[(size_t)k] = { best_xy, best_score };
+    };
+    std::vector<std::thread> th;
+    for (int k = 1; k < n_threads; ++k) th.emplace_back(run, k);
+    run(0);
+    for (auto& x : th) x.join();
+    // yhdistys: lohko 0 ensin (sen alkuarvo = (x_vals[0], y_vals[0]) kuten perakkaisessa), sitten "aidosti suurempi voittaa"
+    std::pair<cv::Point2d, double> best = part[0];
+    for (int k = 1; k < n_threads; ++k)
+        if (part[(size_t)k].second > best.second) best = part[(size_t)k];
+    return best;
 }
 
 
@@ -1426,7 +1479,7 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
             g_gpu_stats.fallbacks += 1;
         }
     }
-    auto best2 = gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2);
+    auto best2 = gridSearchBestPar(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2, g_grid_threads.load());
 
     return best2;
 }
@@ -3786,6 +3839,13 @@ static StoneUpdateResult trackStoneUpdateOneEx(
     }
 
     profAdd(P_PREP_CROP_SUPPRESS, pt.lap());
+    // v5.10: etualamaski riippuu vain crop_filtered:sta -> lasketaan omassa saikeessaan saturaation ja graniittimaskin rinnalla
+    cv::Mat fg_mask_par;
+    long long fg_ns = 0;
+    std::thread fg_thread;
+    const bool fg_par = have_bg_reference && g_prep_parallel.load();
+    if (fg_par)
+        fg_thread = std::thread([&]() { PT p; fg_mask_par = createForegroundFromWhitened(crop_filtered); fg_ns = p.lap(); });
     cv::Mat sat_u8_crop = satU8FromBgr(crop);
     cv::Mat sat_crop;
     sat_u8_crop.convertTo(sat_crop, CV_32F);
@@ -3809,11 +3869,18 @@ static StoneUpdateResult trackStoneUpdateOneEx(
     // "ei-valkoinen" kattaisi lahes koko kuvan eika olisi mielekas
     // etuala-signaali.
     cv::Mat mask_for_track = mask_crop;
-    if (have_bg_reference) {
-        cv::Mat fg_mask = createForegroundFromWhitened(crop_filtered);
-        mask_for_track = mask_crop | fg_mask;
+    if (fg_par) {
+        fg_thread.join();
+        mask_for_track = mask_crop | fg_mask_par;
+        pt.lap();
+        profAdd(P_PREP_FOREGROUND, fg_ns);
+    } else {
+        if (have_bg_reference) {
+            cv::Mat fg_mask = createForegroundFromWhitened(crop_filtered);
+            mask_for_track = mask_crop | fg_mask;
+        }
+        profAdd(P_PREP_FOREGROUND, pt.lap());
     }
-    profAdd(P_PREP_FOREGROUND, pt.lap());
 #ifdef STONE_TRACKER_DEBUG_TIMING
     auto ts1 = std::chrono::steady_clock::now();
 #endif
@@ -6244,7 +6311,8 @@ PYBIND11_MODULE(stone_tracker, m)
         if (!ok) return py::none();
         return out;
     });
-    m.def("set_seuranta_cv_threads", [](int n) { g_cv_guard_threads = std::max(1, n); }, py::arg("n"));
+    m.def("set_grid_threads", [](int n) { g_grid_threads = std::max(1, n); }, py::arg("n"));
+    m.def("set_prep_parallel", [](int on) { g_prep_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("set_intra_parallel", [](int on) { g_intra_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("prof_reset", &prof_reset);
     m.def("prof_snapshot", &prof_snapshot);
