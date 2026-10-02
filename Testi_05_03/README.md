@@ -185,3 +185,13 @@ QSV-/x264-putkessa ffmpeg muunsi BGR-ruudut YUV:ksi omalla (hitaalla) swscalella
 `cv2.cvtColor(BGR2YUV_I420)`:lla (SIMD) ja ffmpegille syötetään yuv420p -> putkeen puolet vähemmän dataa. Sandbox-mittaus (mpeg4/x264): ~2,5-3 ms/ruutu
 vähemmän CPU:ta. Värit voivat poiketa aavistuksen (PSNR BGR-putkeen 42-45 dB). Ei vaikuta seurantaan (CSV identtinen). Ei koske cv2.VideoWriter-varapolkua.
 `tools/vertailuajo.py`: ajo `intrayuv` (= intra + DEBUG_YUV=1).
+
+### v5.9: nopein asetus oletukseksi + `SEURANTA_CV_THREADS`
+Windows-vertailuajo (MAH00014, debug päällä, kaikki CSV:t identtiset): intra 640,5 s, intrablasmt 669,9 s (vanha BLAS), intraprio 692,0 s (huonompi),
+intrasw 648,4 s, intrayuv 631,7 s (nopein). Uudet oletukset = intrayuv: **`GPU_B=1`, `STAB_WORKERS=2`, `PIPE_DEPTH=6`, `INTRA_PARALLEL=1`, `DEBUG_YUV=1`**
+(GPU_B palaa CPU:lle jos OpenCL-laitetta ei löydy; DEBUG_YUV koskee vain ffmpeg-putkea). Vanhat arvot saa ympäristömuuttujilla (esim. `GPU_B=0`).
+Windows-mittauksessa kiven C++-päivitys 29 ms CPU (sandbox 14,6), josta graniittimaski 4,1 ms (sandbox 1,0) - OpenCV on SEURANNAN aikana
+pakotettu yhdelle säikeelle (ScopedSingleThreadedOpenCV), vaikka kiviä on keskimäärin 2,4 ja loogisia ytimiä 8. Uusi `SEURANTA_CV_THREADS=n`
+(oletus 1 = ennallaan) antaa näille kutsuille n säiettä; tulos sama (OpenCV jakaa rivit).
+`tools/vertailuajo.py`: uudet ajot `oletus`, `cv2t`, `cv3t`, `oletusgrid` (oletuksena ajetaan nämä). Vanhat ajot (cpu, par, intra, ...) ajetaan
+vanhoilla oletuksilla, jotta niiden merkitys ei muutu. C++-moduuli pitää kääntää uudelleen.
