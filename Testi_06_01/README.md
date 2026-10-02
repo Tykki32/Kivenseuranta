@@ -43,6 +43,19 @@ Cam Link: **1920x1080 YUY2 (pakkaamaton), 25,0 fps**, read ~40 ms (= ruutuväli)
 (1280x720-pyyntö -> 1920x1080), pienennys 1280x720:een ~3-4 ms/ruutu kamerasäikeessä. Laitenumerot: DirectShow 0 = Cam Link, 1 = webkamera;
 MSMF päinvastoin (1 = Cam Link; pitkässä mittauksessa 2 myöhästynyttä ruutua). -> `--live` (automaattinen haku, DirectShow) tai `--live 0`.
 
+## Ensimmäinen live-ajo (Windows, 2026-10-02, ~11 min, debug + tallennus)
+16 273 kameran ruutua, käsitelty 14 798, hypyssä ohitettu 59 s, pudotettu 371 (kalibroinnissa, viive max 83 s), 18 heittoa / 18 hog-analyysiä.
+**Seurannan aikana käsittely ei pysynyt tahdissa:** pääsäie 43,7 ms/ruutu (22,9 r/s) vs tiedostoajo 34,0 ms; viive ruudussa 14000 = 31 s.
+Kaikki vaiheet ~25-40 % hitaampia kuin tiedostoajossa (prosessi 5,2 ydintä vs 4,7): live-tilan lisätyö (DirectShow YUY2->BGR 1080p,
+pienennys 1080p->720p ~3,5 ms, tallennuksen BGR->NV12 ffmpegissä) + eri sisältö (87 rataa / 18 heittoa, kiviä seurannassa 74 % ruuduista).
+v6.2:
+* `--live-tallenna` syöttää ffmpegille valmiin YUV 4:2:0 -kuvan (kuten DEBUG_YUV) ja tallentaa nyt myös ensimmäiset ruudut (lähde käynnistyy
+  vasta kun tallentaja on kytketty) sekä odottaa jonon loppuun sulkiessa.
+* Aikaleimatiedostossa myös `kasittely_unix`, `viive_s` (lukuhetki - saapumishetki; lukuhetki = liukuhihnan vaihe A, ~0,5 s ennen pääsäiettä)
+  ja `odottavia_ruutuja` -> viivekäyrä suoraan tiedostosta.
+Seuraavaksi: tallenteen (`*_live.mp4`) ajo tiedostona erottaa live-tilan lisätyön ja sisällön vaikutuksen; kameran HDMI-lähtö 720p:ksi (jos
+asetus löytyy) poistaisi pienennyksen ja puolittaisi muunnoksen.
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
