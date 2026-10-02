@@ -38,6 +38,11 @@ ilman sitä avautuu valitsin kuten ennenkin).
 * `--live-sim <video>` (reaaliaikatahti) + hyppy + `--live-kesto 300`: kalibroinnin aikana viive kasvoi 41,8 s:iin (profiilin opettelu lukee 30 s
   eteenpäin), hyppy ohitti sen, seurannan aikana viive 0 s, ei pudotuksia; 6 heittoa / 6 hog-analyysiä 300 s:n aikana.
 
+## Kameratesti (Windows-kone, 2026-10-02)
+Cam Link: **1920x1080 YUY2 (pakkaamaton), 25,0 fps**, read ~40 ms (= ruutuväli), ei myöhästyneitä ruutuja (DirectShow). Kamera ei skaalaa
+(1280x720-pyyntö -> 1920x1080), pienennys 1280x720:een ~3-4 ms/ruutu kamerasäikeessä. Laitenumerot: DirectShow 0 = Cam Link, 1 = webkamera;
+MSMF päinvastoin (1 = Cam Link; pitkässä mittauksessa 2 myöhästynyttä ruutua). -> `--live` (automaattinen haku, DirectShow) tai `--live 0`.
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
