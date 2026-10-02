@@ -4288,7 +4288,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.2 (live-kamera + puskuri; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.3 (live-kamera + puskuri; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -7254,7 +7254,8 @@ def _start_live(args):
         dev = None if args.live in (None, "auto") else int(args.live)
         src = live_source.CameraSource(device=dev, cap_w=cam_w or 1920, cap_h=cam_h or 1080, out_w=out_w, out_h=out_h,
                                        target_fps=args.live_fps, buffer_s=buffer_s, keep_back_s=args.live_taakse_s,
-                                       fourcc=args.live_fourcc, backend_name=args.live_taustaj, min_keep_back_s=min_back_s)
+                                       fourcc=args.live_fourcc, backend_name=args.live_taustaj, min_keep_back_s=min_back_s,
+                                       conversion=args.live_muunnos)
         kuvaus = f"KAMERA laite {src.device}"
     if args.live_tallenna:
         try:
@@ -7292,6 +7293,11 @@ def _finish_live(src, cfg):
     print(f"Kasiteltyja ruutuja {len(st.log)}, puskurin ruutuja yhteensa {st._head}, ohitettu hypyissa {st.skipped} "
           f"({st.skipped / fps:.1f} s), pudotettu (puskuri taynna) {st.dropped}, suurin viive {st.max_lag_frames} ruutua "
           f"({st.max_lag_frames / fps:.1f} s). Lopetuksen syy: {st._stop_reason or '-'}")
+    if getattr(src, "n_conv", 0):
+        print(f"Kamerasaie (CPU/ruutu): luku {src.cpu_read / max(1, src.n_conv) * 1000:.1f} ms + muunnos/pienennys "
+              f"{src.cpu_conv / src.n_conv * 1000:.1f} ms (muunnos: {src.conversion})")
+    if cfg.get("recorder") is not None and getattr(cfg["recorder"], "n", 0):
+        print(f"Tallennussaie (CPU/ruutu): {cfg['recorder'].cpu / cfg['recorder'].n * 1000:.1f} ms")
     path = cfg["base"] + "_kivien_sijainnit_live_aikaleimat.csv"
     if st.write_log(path):
         print(f"Live-aikaleimat (kasitelty ruutu -> kameran ruutu -> seinakello): {path}")
@@ -7360,6 +7366,8 @@ if __name__ == "__main__":
     _arg_parser.add_argument("--live-kamerakoko", default="1920x1080", help="Kameralta pyydetty koko (oletus 1920x1080).")
     _arg_parser.add_argument("--live-fourcc", default=None, help="Kameralta pyydetty pakkausmuoto, esim. MJPG, YUY2, NV12 (oletus: kameran oma).")
     _arg_parser.add_argument("--live-taustaj", default=None, help="Kameran taustajarjestelma: DSHOW (oletus Windowsissa) tai MSMF.")
+    _arg_parser.add_argument("--live-muunnos", default="ajuri", choices=["ajuri", "raw", "gpu"],
+                             help="Kameran kuvan muunnos BGR:ksi: ajuri (oletus), raw (raaka YUY2 + OpenCV), gpu (raaka YUY2 + OpenCL).")
     _arg_parser.add_argument("--live-fps", type=float, default=25.0,
                              help="Kasittelyn tavoite-fps: jos kamera antaa selvasti enemman (esim. 50), kaytetaan joka n:s ruutu. 0 = kaikki.")
     _arg_parser.add_argument("--live-puskuri-s", type=float, default=90.0, help="Puskurin enimmaiskoko sekunteina (RAM: 1280x720 ~ 69 MB/s).")

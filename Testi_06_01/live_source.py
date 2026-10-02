@@ -47,6 +47,25 @@ def _fourcc_text(v):
     return t if t.isprintable() and v else "?"
 
 
+def raw_yuy2_to_bgr(raw, w, h, out_w, out_h, gpu=False):
+    """v6.3: kameran raakaruutu (YUY2, CAP_PROP_CONVERT_RGB=0) -> BGR + pienennys out_w x out_h.
+    gpu=True: muunnos ja pienennys OpenCL:lla (cv2.UMat, esim. Intel UHD) -> lahes ei CPU-kuormaa.
+    Palauttaa None jos raakaruudun koko ei vastaa YUY2:ta (w*h*2 tavua)."""
+    a = np.asarray(raw)
+    if a.size != w * h * 2:
+        return None
+    a = a.reshape(h, w, 2)
+    if gpu:
+        u = cv2.cvtColor(cv2.UMat(a), cv2.COLOR_YUV2BGR_YUY2)
+        if out_w and out_h and (out_w != w or out_h != h):
+            u = cv2.resize(u, (out_w, out_h), interpolation=cv2.INTER_AREA)
+        return np.ascontiguousarray(u.get())
+    b = cv2.cvtColor(a, cv2.COLOR_YUV2BGR_YUY2)
+    if out_w and out_h and (out_w != w or out_h != h):
+        b = cv2.resize(b, (out_w, out_h), interpolation=cv2.INTER_AREA)
+    return np.ascontiguousarray(b)
+
+
 class FrameStore:
     """Indeksoitu ruutupuskuri. Kirjoittaja: put(). Lukijat: read_next() (perakkainen) ja get(idx) (hyppiva)."""
 
@@ -219,7 +238,8 @@ class CameraSource(_SourceBase):
     """Kamera (UVC, esim. Cam Link) taustasaikeessa -> FrameStore."""
 
     def __init__(self, device=None, cap_w=1920, cap_h=1080, out_w=1280, out_h=720, target_fps=0.0,
-                 buffer_s=75.0, keep_back_s=40.0, recorder=None, fourcc=None, backend_name=None, min_keep_back_s=None):
+                 buffer_s=75.0, keep_back_s=40.0, recorder=None, fourcc=None, backend_name=None, min_keep_back_s=None,
+                 conversion="ajuri"):
         super().__init__()
         self.recorder = recorder
         backend, bname = _backend()
@@ -255,7 +275,24 @@ class CameraSource(_SourceBase):
         self.fps = self.cam_fps / self.decim
         h0, w0 = first.shape[:2]
         self.out_w, self.out_h = (out_w, out_h) if (out_w and out_h) else (w0, h0)
-        self.info = dict(laite=self.device, taustajarjestelma=bname, kameran_koko=f"{w0}x{h0}",
+        # v6.3: kuvan muunnos: "ajuri" = ajuri/OpenCV-taustajarjestelma antaa BGR:n (oletus), "raw" = raaka YUY2 + cv2.cvtColor
+        # (SIMD, monisaikeinen), "gpu" = raaka YUY2 + muunnos ja pienennys OpenCL:lla. raw/gpu palaa ajuriin jos raakakuva ei ole YUY2.
+        self.conversion = "ajuri"
+        self.cam_w, self.cam_h = w0, h0
+        if conversion in ("raw", "gpu"):
+            cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+            ok_r, raw = cap.read()
+            test = raw_yuy2_to_bgr(raw, w0, h0, self.out_w, self.out_h, gpu=(conversion == "gpu")) if ok_r and raw is not None else None
+            if test is not None:
+                self.conversion = conversion
+            else:
+                cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
+                cap.read()
+                print(f"Live: raakakuva ei ole YUY2 {w0}x{h0} (koko {None if raw is None else np.asarray(raw).shape}) -> muunnos ajurilla")
+        self.cpu_read = 0.0
+        self.cpu_conv = 0.0
+        self.n_conv = 0
+        self.info = dict(laite=self.device, taustajarjestelma=bname, kameran_koko=f"{w0}x{h0}", muunnos=self.conversion,
                          fourcc=_fourcc_text(cap.get(cv2.CAP_PROP_FOURCC)), fps_ilmoitettu=round(cam_fps, 2),
                          fps_mitattu=round(measured, 2), fps_kaytetty=self.fps, harvennus=self.decim,
                          ulos=f"{self.out_w}x{self.out_h}")
@@ -276,6 +313,11 @@ class CameraSource(_SourceBase):
         return k / max(time.time() - t0, 1e-6)
 
     def _convert(self, fr):
+        if self.conversion != "ajuri":
+            out = raw_yuy2_to_bgr(fr, self.cam_w, self.cam_h, self.out_w, self.out_h, gpu=(self.conversion == "gpu"))
+            if out is not None:
+                return out
+            raise RuntimeError("raakaruudun koko muuttui")
         if fr.shape[1] != self.out_w or fr.shape[0] != self.out_h:
             fr = cv2.resize(fr, (self.out_w, self.out_h), interpolation=cv2.INTER_AREA)
         return np.ascontiguousarray(fr)
@@ -285,7 +327,10 @@ class CameraSource(_SourceBase):
         fails = 0
         try:
             while not self._stop_evt.is_set():
+                c0 = time.thread_time()
                 ok, fr = self.cap.read()
+                c1 = time.thread_time()
+                self.cpu_read += c1 - c0
                 if not ok or fr is None:
                     fails += 1
                     if fails > 50:
@@ -296,6 +341,8 @@ class CameraSource(_SourceBase):
                 fails = 0
                 if n % self.decim == 0:
                     out = self._convert(fr)
+                    self.cpu_conv += time.thread_time() - c1
+                    self.n_conv += 1
                     if self.store.put(out, cam_index=n) and self.recorder is not None:
                         self.recorder.write(out)
                 n += 1
@@ -476,16 +523,22 @@ class FfmpegRecorder:
             self.dropped += 1
 
     def _run(self):
+        self.cpu = 0.0
+        self.n = 0
         while True:
             f = self._q.get()
             if f is None:
                 break
+            c0 = time.thread_time()
+            self.n += 1
             try:
                 if self._yuv:
                     f = cv2.cvtColor(f, cv2.COLOR_BGR2YUV_I420)
                 self._p.stdin.write(np.ascontiguousarray(f).data)
             except Exception:
                 break
+            finally:
+                self.cpu += time.thread_time() - c0
 
     def close(self):
         self._q.put(None)
