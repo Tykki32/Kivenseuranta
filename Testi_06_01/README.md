@@ -67,6 +67,15 @@ mikä vastaa mitattua lisäkuormaa (5,2 vs 4,7 ydintä). Pienennys YUV-muodossa 
 Miksi 1280x720: MAH-videot (Sony HDR-CX405 MP4) ovat 1280x720; kalibrointi, paneelireferenssi ja nopeusmittaukset on tehty sillä koolla.
 HDMI-kuva on pakkaamaton, joten pienennetty kuva on vähintään yhtä hyvä kuin MAH-tiedoston H.264 (~3 Mbit/s). `--live-koko 0` = täysi 1080p (~2x hitaampi).
 
+## v6.4: oletuksena MSMF + GPU-muunnos (Windows), väritarkistus
+Kameratesti (Windows): luku + muunnos 1280x720 BGR:ksi, koko prosessin CPU/ruutu: DSHOW + ajuri **30,3 ms** (0,76 ydintä), MSMF + ajuri 35,1 ms,
+MSMF + raaka + OpenCV 36,3 ms, **MSMF + raaka YUY2 + GPU (OpenCL) 11,2 ms (0,28 ydintä)**; DirectShow ei anna raakakuvaa (palauttaa aina BGR:n).
+* `--live-muunnos auto` (oletus): Windowsissa ensin MSMF + gpu (etsii 1920x1080-laitteen, MSMF:llä Cam Link = laite 1), jos ei onnistu
+  -> DirectShow + ajuri. `--live-taustaj` / `--live-muunnos ajuri|raw|gpu` ohittavat automaattivalinnan.
+* Väritarkistus käynnistyksessä: ajurin muuntama ruutu vs. raakaruudun oma muunnos; tavujärjestys (YUY2/YVYU/UYVY) valitaan pienimmän
+  eron mukaan (oikea ~1, vaihtuneet U/V ~8, UYVY ~46 sandboxissa) ja jos ero >= 5, palataan ajurin muunnokseen. Tulos `Live-lahde`-rivillä
+  (`muunnos`, `raakajarjestys`, `varitarkistus_keskiero`).
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).

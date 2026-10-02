@@ -4288,7 +4288,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.3 (live-kamera + puskuri; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.4 (live-kamera + puskuri; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -7252,10 +7252,33 @@ def _start_live(args):
         kuvaus = f"SIMULAATIO {args.live_sim} ({'reaaliaika' if args.live_sim_tahti else 'ei tahdistusta'})"
     else:
         dev = None if args.live in (None, "auto") else int(args.live)
-        src = live_source.CameraSource(device=dev, cap_w=cam_w or 1920, cap_h=cam_h or 1080, out_w=out_w, out_h=out_h,
-                                       target_fps=args.live_fps, buffer_s=buffer_s, keep_back_s=args.live_taakse_s,
-                                       fourcc=args.live_fourcc, backend_name=args.live_taustaj, min_keep_back_s=min_back_s,
-                                       conversion=args.live_muunnos)
+
+        def _open(backend, conv):
+            return live_source.CameraSource(device=dev, cap_w=cam_w or 1920, cap_h=cam_h or 1080, out_w=out_w, out_h=out_h,
+                                            target_fps=args.live_fps, buffer_s=buffer_s, keep_back_s=args.live_taakse_s,
+                                            fourcc=args.live_fourcc, backend_name=backend, min_keep_back_s=min_back_s,
+                                            conversion=conv)
+
+        src = None
+        if args.live_muunnos == "auto" and sys.platform.startswith("win") and not args.live_taustaj:
+            # v6.4: Windows-mittaus (kamera_testi): DSHOW + ajuri 30 ms CPU/ruutu, MSMF + raaka YUY2 + GPU 11 ms -> kokeillaan ensin MSMF + gpu.
+            # Laitenumero: MSMF numeroi laitteet eri jarjestyksessa kuin DSHOW -> annettu numero koskee vain DSHOW:ta (MSMF etsii 1920x1080-laitteen).
+            try:
+                cand = live_source.CameraSource(device=None, cap_w=cam_w or 1920, cap_h=cam_h or 1080, out_w=out_w, out_h=out_h,
+                                                 target_fps=args.live_fps, buffer_s=buffer_s, keep_back_s=args.live_taakse_s,
+                                                 fourcc=args.live_fourcc, backend_name="MSMF", min_keep_back_s=min_back_s,
+                                                 conversion="gpu")
+                if cand.conversion == "gpu":
+                    src = cand
+                else:
+                    print(f"Live: MSMF + gpu ei kaytettavissa (muunnos {cand.conversion}) -> DirectShow + ajuri")
+                    cand.close()
+            except Exception as e:
+                print(f"Live: MSMF-kameraa ei saatu auki ({e}) -> DirectShow + ajuri")
+            if src is None:
+                src = _open("DSHOW", "ajuri")
+        else:
+            src = _open(args.live_taustaj, "ajuri" if args.live_muunnos == "auto" else args.live_muunnos)
         kuvaus = f"KAMERA laite {src.device}"
     if args.live_tallenna:
         try:
@@ -7365,9 +7388,11 @@ if __name__ == "__main__":
                              help="Kasittelykoko (kameran kuva pienennetaan), oletus 1280x720 (testattu putki). 0 = kameran oma koko.")
     _arg_parser.add_argument("--live-kamerakoko", default="1920x1080", help="Kameralta pyydetty koko (oletus 1920x1080).")
     _arg_parser.add_argument("--live-fourcc", default=None, help="Kameralta pyydetty pakkausmuoto, esim. MJPG, YUY2, NV12 (oletus: kameran oma).")
-    _arg_parser.add_argument("--live-taustaj", default=None, help="Kameran taustajarjestelma: DSHOW (oletus Windowsissa) tai MSMF.")
-    _arg_parser.add_argument("--live-muunnos", default="ajuri", choices=["ajuri", "raw", "gpu"],
-                             help="Kameran kuvan muunnos BGR:ksi: ajuri (oletus), raw (raaka YUY2 + OpenCV), gpu (raaka YUY2 + OpenCL).")
+    _arg_parser.add_argument("--live-taustaj", default=None,
+                             help="Kameran taustajarjestelma: DSHOW tai MSMF (oletus: automaattinen, katso --live-muunnos auto).")
+    _arg_parser.add_argument("--live-muunnos", default="auto", choices=["auto", "ajuri", "raw", "gpu"],
+                             help="Kameran kuvan muunnos BGR:ksi: auto (oletus; Windowsissa ensin MSMF + gpu, jos ei onnistu DirectShow + ajuri), "
+                                  "ajuri, raw (raaka YUY2 + OpenCV), gpu (raaka YUY2 + OpenCL).")
     _arg_parser.add_argument("--live-fps", type=float, default=25.0,
                              help="Kasittelyn tavoite-fps: jos kamera antaa selvasti enemman (esim. 50), kaytetaan joka n:s ruutu. 0 = kaikki.")
     _arg_parser.add_argument("--live-puskuri-s", type=float, default=90.0, help="Puskurin enimmaiskoko sekunteina (RAM: 1280x720 ~ 69 MB/s).")
