@@ -4443,7 +4443,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.13 (live-kamera + puskuri, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.14 (live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -7578,6 +7578,12 @@ if __name__ == "__main__":
     _live_cfg = None
     _live_src = None
     if _args.live is not None or _args.live_sim:
+        # v6.14: live-tilassa (kone ylikuormitettu: kamera + tallennus) etualamaski samassa saikeessa - nopeustesti
+        # live-tallenteella: paasaie 38,2 -> 34,7 ms/ruutu, seurannan keskiviive 1,95 -> 1,2 s. Tulos sama. PREP_PARALLEL=1 ohittaa.
+        if "PREP_PARALLEL" not in os.environ and hasattr(stone_tracker, "set_prep_parallel"):
+            PREP_PARALLEL = False
+            stone_tracker.set_prep_parallel(0)
+            print("Live: etualamaski samassa saikeessa (PREP_PARALLEL=0, live-oletus)")
         _live_src, _live_cfg = _start_live(_args)
 
     try:

@@ -187,6 +187,19 @@ Yhteenveto `nopeustesti_yhteenveto.txt` videon kansioon (`nopeustesti_<aika>`). 
   Kone on kamera-ajossa ylikuormitettu (jokainen kivi käyttää 3–4 säiettä) → `tools/nopeustesti.py` ajot `nointra`, `noprep`,
   `vahsaie` mittaavat, onko vähempi säiemäärä nopeampi (tulokset identtiset, vain ajoitus muuttuu).
 
+## v6.14: live-tilassa etualamaski samassa säikeessä (`PREP_PARALLEL=0`)
+Nopeustesti (käyttäjän kone, live-tallenne, `--tilat live`, tallennus päällä):
+
+| ajo | pääsäie | SEURANTA ms/kutsu | ka viive seurannassa | heitot |
+|---|---|---|---|---|
+| oletus (v6.13) | 38,2 ms | 39,6 | 1,95 s | 18 |
+| nointra (`INTRA_PARALLEL=0`) | 42,1 ms | 41,5 | 6,2 s | 16 |
+| **noprep (`PREP_PARALLEL=0`)** | **34,7 ms** | **33,3** | **1,2 s** | 18 |
+| vahsaie (molemmat + `GRID_THREADS=1`) | 37,5 ms | 37,8 | 1,8 s | 17 |
+
+Ylikuormitetulla koneella etualamaskin oma säie (yksi lisäsäie per kivi) hidastaa → live-tilassa oletuksena pois
+(tiedostoajo ennallaan; `PREP_PARALLEL=1` ohittaa). Tulos on sama, vain ajoitus muuttuu.
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
