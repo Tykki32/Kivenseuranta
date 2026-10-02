@@ -47,7 +47,10 @@ def _fourcc_text(v):
     return t if t.isprintable() and v else "?"
 
 
-def raw_yuy2_to_bgr(raw, w, h, out_w, out_h, gpu=False):
+_RAW_CODES = {"YUY2": cv2.COLOR_YUV2BGR_YUY2, "YVYU": cv2.COLOR_YUV2BGR_YVYU, "UYVY": cv2.COLOR_YUV2BGR_UYVY}
+
+
+def raw_yuy2_to_bgr(raw, w, h, out_w, out_h, gpu=False, order="YUY2"):
     """v6.3: kameran raakaruutu (YUY2, CAP_PROP_CONVERT_RGB=0) -> BGR + pienennys out_w x out_h.
     gpu=True: muunnos ja pienennys OpenCL:lla (cv2.UMat, esim. Intel UHD) -> lahes ei CPU-kuormaa.
     Palauttaa None jos raakaruudun koko ei vastaa YUY2:ta (w*h*2 tavua)."""
@@ -56,11 +59,11 @@ def raw_yuy2_to_bgr(raw, w, h, out_w, out_h, gpu=False):
         return None
     a = a.reshape(h, w, 2)
     if gpu:
-        u = cv2.cvtColor(cv2.UMat(a), cv2.COLOR_YUV2BGR_YUY2)
+        u = cv2.cvtColor(cv2.UMat(a), _RAW_CODES[order])
         if out_w and out_h and (out_w != w or out_h != h):
             u = cv2.resize(u, (out_w, out_h), interpolation=cv2.INTER_AREA)
         return np.ascontiguousarray(u.get())
-    b = cv2.cvtColor(a, cv2.COLOR_YUV2BGR_YUY2)
+    b = cv2.cvtColor(a, _RAW_CODES[order])
     if out_w and out_h and (out_w != w or out_h != h):
         b = cv2.resize(b, (out_w, out_h), interpolation=cv2.INTER_AREA)
     return np.ascontiguousarray(b)
@@ -279,20 +282,43 @@ class CameraSource(_SourceBase):
         # (SIMD, monisaikeinen), "gpu" = raaka YUY2 + muunnos ja pienennys OpenCL:lla. raw/gpu palaa ajuriin jos raakakuva ei ole YUY2.
         self.conversion = "ajuri"
         self.cam_w, self.cam_h = w0, h0
+        self.raw_order = "YUY2"
+        self.color_check = None
         if conversion in ("raw", "gpu"):
+            # v6.4: VARITARKISTUS - ajurin muuntama ruutu (first) vs raakaruudun oma muunnos (seuraava ruutu, ~40 ms myohemmin):
+            # tavujarjestys (YUY2/YVYU/UYVY) valitaan pienimman eron mukaan; jos ero on silti suuri (vaarat varit), palataan ajuriin.
+            ref = cv2.resize(first, (self.out_w, self.out_h), interpolation=cv2.INTER_AREA).astype(np.int16)
             cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
             ok_r, raw = cap.read()
-            test = raw_yuy2_to_bgr(raw, w0, h0, self.out_w, self.out_h, gpu=(conversion == "gpu")) if ok_r and raw is not None else None
-            if test is not None:
+            best = None
+            if ok_r and raw is not None and np.asarray(raw).size == w0 * h0 * 2:
+                for order in _RAW_CODES:
+                    t = raw_yuy2_to_bgr(raw, w0, h0, self.out_w, self.out_h, gpu=False, order=order)
+                    d = float(np.mean(np.abs(t.astype(np.int16) - ref)))
+                    if best is None or d < best[0]:
+                        best = (d, order)
+            ok_conv = best is not None and best[0] < 5.0      # oikea jarjestys ~1 (+ liike ruutujen valilla); vaihtuneet U/V jo ~8
+            if ok_conv and conversion == "gpu":
+                try:
+                    raw_yuy2_to_bgr(raw, w0, h0, self.out_w, self.out_h, gpu=True, order=best[1])
+                except Exception as e:
+                    print(f"Live: GPU-muunnos (OpenCL) ei toimi ({e!r}) -> raaka + OpenCV (CPU)")
+                    conversion = "raw"
+            if ok_conv:
                 self.conversion = conversion
+                self.raw_order = best[1]
+                self.color_check = round(best[0], 2)
             else:
                 cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
                 cap.read()
-                print(f"Live: raakakuva ei ole YUY2 {w0}x{h0} (koko {None if raw is None else np.asarray(raw).shape}) -> muunnos ajurilla")
+                why = "ei YUY2-kokoinen" if best is None else f"varit eroavat ajurin kuvasta (keskiero {best[0]:.1f})"
+                print(f"Live: raakakuva {why} (muoto {None if raw is None else np.asarray(raw).shape}) -> muunnos ajurilla")
         self.cpu_read = 0.0
         self.cpu_conv = 0.0
         self.n_conv = 0
+        self.backend_name = bname
         self.info = dict(laite=self.device, taustajarjestelma=bname, kameran_koko=f"{w0}x{h0}", muunnos=self.conversion,
+                         raakajarjestys=(self.raw_order if self.conversion != "ajuri" else "-"), varitarkistus_keskiero=self.color_check,
                          fourcc=_fourcc_text(cap.get(cv2.CAP_PROP_FOURCC)), fps_ilmoitettu=round(cam_fps, 2),
                          fps_mitattu=round(measured, 2), fps_kaytetty=self.fps, harvennus=self.decim,
                          ulos=f"{self.out_w}x{self.out_h}")
@@ -300,6 +326,13 @@ class CameraSource(_SourceBase):
                                 blocking_producer=False,
                                 min_keep_back_frames=None if min_keep_back_s is None else int(min_keep_back_s * self.fps))
         self._thread = threading.Thread(target=self._run, daemon=True, name="live-kamera")   # kaynnistetaan start():lla
+
+    def close(self):
+        """Vapauttaa kameran (kaytetaan kun automaattivalinta kokeilee toista taustajarjestelmaa)."""
+        try:
+            self.cap.release()
+        except Exception:
+            pass
 
     @staticmethod
     def _measure_fps(cap, n):
@@ -314,7 +347,8 @@ class CameraSource(_SourceBase):
 
     def _convert(self, fr):
         if self.conversion != "ajuri":
-            out = raw_yuy2_to_bgr(fr, self.cam_w, self.cam_h, self.out_w, self.out_h, gpu=(self.conversion == "gpu"))
+            out = raw_yuy2_to_bgr(fr, self.cam_w, self.cam_h, self.out_w, self.out_h, gpu=(self.conversion == "gpu"),
+                                  order=self.raw_order)
             if out is not None:
                 return out
             raise RuntimeError("raakaruudun koko muuttui")
