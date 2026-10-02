@@ -439,7 +439,9 @@ class CameraSource(_SourceBase):
                     out = self._convert(fr)
                     self.cpu_conv += time.thread_time() - c1
                     self.n_conv += 1
-                    if self.store.put(out, cam_index=n) and self.recorder is not None:
+                    self.store.put(out, cam_index=n)
+                    # v6.13: tallenteeseen KAIKKI ruudut, myos ne jotka puskuri pudotti (taynna kalibroinnin aikana)
+                    if self.recorder is not None and not self.store.stopped:
                         self.recorder.write(out)
                 n += 1
         finally:
@@ -483,7 +485,8 @@ class FileSimSource(_SourceBase):
                     dt = t0 + n / self.fps - time.time()
                     if dt > 0:
                         time.sleep(dt)
-                if self.store.put(np.ascontiguousarray(fr), cam_index=n) and self.recorder is not None:
+                self.store.put(np.ascontiguousarray(fr), cam_index=n)
+                if self.recorder is not None and not self.store.stopped:     # v6.13: myos pudotetut ruudut tallenteeseen
                     self.recorder.write(fr)
                 n += 1
         finally:

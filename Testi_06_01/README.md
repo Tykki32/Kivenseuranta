@@ -180,6 +180,13 @@ Yhteenveto `nopeustesti_yhteenveto.txt` videon kansioon (`nopeustesti_<aika>`). 
   MAH00014: tulokset tavutasolla samat kuin v6.11.
 * `tools/nopeustesti.py`: oletusajot nyt `v610,oletus` (oletus = main.py:n nykyiset oletukset).
 
+## v6.13: tallenteeseen kaikki ruudut + säiemäärätestit
+* **Korjaus:** kun puskuri oli täynnä (kalibroinnin aikana kertynyt viive), pudotettu ruutu jäi pois myös `--live-tallenna`-tallenteesta
+  (kamera-ajo 2026-10-02 23:52: 1475 ruutua = 59 s puuttui). Nyt tallentaja saa jokaisen kameran ruudun riippumatta puskurista.
+* Kamera-ajo v6.12: pääsäie 46,4 ms/ruutu (tavoite < 40), SEURANTA 46,5 ms/kutsu; sama sisältö tiedostoajona 37,9 ms.
+  Kone on kamera-ajossa ylikuormitettu (jokainen kivi käyttää 3–4 säiettä) → `tools/nopeustesti.py` ajot `nointra`, `noprep`,
+  `vahsaie` mittaavat, onko vähempi säiemäärä nopeampi (tulokset identtiset, vain ajoitus muuttuu).
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
