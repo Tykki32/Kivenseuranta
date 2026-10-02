@@ -56,6 +56,17 @@ v6.2:
 Seuraavaksi: tallenteen (`*_live.mp4`) ajo tiedostona erottaa live-tilan lisätyön ja sisällön vaikutuksen; kameran HDMI-lähtö 720p:ksi (jos
 asetus löytyy) poistaisi pienennyksen ja puolittaisi muunnoksen.
 
+## v6.3: kameran kuvan muunnos (`--live-muunnos ajuri|raw|gpu`)
+Sisältö oli live-ajossa sama kuin MAH00014:ssä (video toistettiin kameran muistista HDMI:n kautta) -> hidastuminen johtuu live-tilan
+lisätyöstä: 1080p YUY2 -> BGR -muunnos + pienennys 720p:ksi vie sandboxissa ~13,6 ms/ruutu yhdellä ytimellä (~0,5 ydintä 25 fps:llä),
+mikä vastaa mitattua lisäkuormaa (5,2 vs 4,7 ydintä). Pienennys YUV-muodossa ennen muunnosta ei auta (14,4 ms).
+* `ajuri` (oletus): DirectShow muuntaa BGR:ksi, sitten pienennys. `raw`: raaka YUY2 (CAP_PROP_CONVERT_RGB=0) + cv2.cvtColor (SIMD, monisäikeinen).
+  `gpu`: raaka YUY2 + muunnos ja pienennys OpenCL:lla (cv2.UMat, Intel UHD). Tulos sama (sandbox: PSNR ~361 dB). Jos raakakuva ei ole YUY2, palataan ajuriin.
+* Loppuraportissa kamerasäikeen ja tallennussäikeen CPU-aika/ruutu.
+* `tools/kamera_testi.py` mittaa jokaiselle 1920x1080-laitteelle/taustajärjestelmälle tilat ajuri/raw/gpu: koko prosessin CPU ms/ruutu.
+Miksi 1280x720: MAH-videot (Sony HDR-CX405 MP4) ovat 1280x720; kalibrointi, paneelireferenssi ja nopeusmittaukset on tehty sillä koolla.
+HDMI-kuva on pakkaamaton, joten pienennetty kuva on vähintään yhtä hyvä kuin MAH-tiedoston H.264 (~3 Mbit/s). `--live-koko 0` = täysi 1080p (~2x hitaampi).
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).

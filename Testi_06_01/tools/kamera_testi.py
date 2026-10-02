@@ -108,10 +108,62 @@ def test_combo(dev, be, bname, w, h, fourcc, seconds, save):
     return res
 
 
+def measure_conversion(dev, be, bname, mode, seconds, w=1920, h=1080):
+    """v6.3: lukeminen + muunnos 1280x720 BGR:ksi live-tilan tavoin; palauttaa koko prosessin CPU-ajan / ruutu (ms).
+    mode: ajuri (ajuri antaa BGR:n), raw (raaka YUY2 + cv2.cvtColor), gpu (raaka YUY2 + OpenCL)."""
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import live_source
+    cap = cv2.VideoCapture(dev, be)
+    if not cap.isOpened():
+        return None
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+    if mode != "ajuri":
+        cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+    ok, f = cap.read()
+    if not ok or f is None:
+        cap.release()
+        return dict(tila=mode, virhe="ei kuvaa")
+    def conv(fr):
+        if mode == "ajuri":
+            return cv2.resize(fr, (1280, 720), interpolation=cv2.INTER_AREA)
+        return live_source.raw_yuy2_to_bgr(fr, w, h, 1280, 720, gpu=(mode == "gpu"))
+    try:
+        test = conv(f)
+    except Exception as e:
+        cap.release()
+        return dict(tila=mode, virhe=repr(e)[:120])
+    if test is None:
+        cap.release()
+        return dict(tila=mode, virhe=f"raakaruutu ei ole YUY2 {w}x{h} (muoto {np.asarray(f).shape}, {np.asarray(f).dtype})")
+    for _ in range(10):
+        ok, f = cap.read()
+        conv(f)
+    n = 0
+    c0, t0 = time.process_time(), time.perf_counter()
+    tc = 0.0
+    while time.perf_counter() - t0 < seconds:
+        ok, f = cap.read()
+        if not ok:
+            break
+        t1 = time.perf_counter()
+        conv(f)
+        tc += time.perf_counter() - t1
+        n += 1
+    cpu = time.process_time() - c0
+    wall = time.perf_counter() - t0
+    cap.release()
+    return dict(tila=mode, taustaj=bname, laite=dev, ruutuja=n, fps=round(n / wall, 2),
+                cpu_ms_ruutu=round(cpu / max(n, 1) * 1000, 2), cpu_ytimia=round(cpu / wall, 2),
+                muunnos_seinakello_ms=round(tc / max(n, 1) * 1000, 2))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("laite", nargs="?", type=int, default=None)
     ap.add_argument("--sekunnit", type=float, default=15.0, help="pitkan mittauksen kesto parhaalla yhdistelmalla")
+    ap.add_argument("--muunnos", type=float, default=10.0, help="muunnostapojen CPU-mittauksen kesto / tila (s)")
     ap.add_argument("--lyhyt", type=float, default=3.0, help="kunkin yhdistelman mittauksen kesto")
     args = ap.parse_args()
     out(f"KAMERATESTI {time.strftime('%Y-%m-%d %H:%M:%S')} | OpenCV {cv2.__version__} | {sys.platform}")
@@ -151,6 +203,20 @@ def main():
             tj = "" if best["taustaj"] in ("DSHOW", "V4L2") else f" --live-taustaj {best['taustaj']}"
             out(f"\nSuositus: python main.py --live {best['laite']}{tj} --paneelit <referenssi>_panel_corners.txt --debug"
                 f"   (kamera ~{r['fps_mit']:.0f} fps; live-tila kayttaa {'joka toista ruutua' if r['fps_mit'] > 37 else 'kaikkia ruutuja'} kun --live-fps 25)")
+        # v6.3: kuvan muunnoksen CPU-kustannus (live-tilan --live-muunnos ajuri|raw|gpu), kaikki 1920x1080-yhdistelmat
+        out(f"\nMuunnoksen CPU-kustannus (luku + muunnos 1280x720 BGR:ksi, {args.muunnos:.0f} s/tila; pienempi cpu_ms_ruutu = parempi):")
+        seen = set()
+        for r0 in full:
+            key = (r0["laite"], r0["taustaj"])
+            if key in seen:
+                continue
+            seen.add(key)
+            be0 = dict((n, b) for b, n in backends())[r0["taustaj"]]
+            for mode in ("ajuri", "raw", "gpu"):
+                m = measure_conversion(r0["laite"], be0, r0["taustaj"], mode, args.muunnos)
+                if m is not None:
+                    out("  " + ", ".join(f"{k}={v}" for k, v in m.items()))
+        out("Live-tilassa valitaan: --live-muunnos ajuri|raw|gpu (+ --live-taustaj MSMF jos MSMF on paras; laitenumero sen mukaan).")
     name = f"kamera_testi_{time.strftime('%Y%m%d_%H%M%S')}.txt"
     with open(name, "w", encoding="utf-8") as fh:
         fh.write("\n".join(LINES) + "\n")
