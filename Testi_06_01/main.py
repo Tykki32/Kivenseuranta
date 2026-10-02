@@ -1768,6 +1768,12 @@ GATE_TRAVEL_CM = float(os.environ.get("GATE_TRAVEL_CM", "1500"))
 GATE_MIN_ROWS = int(os.environ.get("GATE_MIN_ROWS", "300"))
 GATE_MAX_END_Y_CM = float(os.environ.get("GATE_MAX_END_Y_CM", "1100"))   # lahihogline 823 cm + marginaali
 GATE_MAX_SPEED_RATIO = float(os.environ.get("GATE_MAX_SPEED_RATIO", "0.6"))
+# v6.15: seuranta lopetetaan kun kivi on TRACK_END_PAST_NEAR_HOG_CM lahi-hoglinen ohi (0 = seurataan kuten ennen pesaan asti):
+# hog-hog-analyysi kayttaa vain pisteita lahi-hog + 50 cm ... kauko-hog - 100 cm. MAH00014: seurannan seinakello -16 %.
+# Katkaistulla radalla loppunopeus mitataan lahi-hoglinella (ei pesassa) -> hidastuvuussuhde on suurempi: MAH00014:n 24 heittoa
+# 0,36-0,61 (pelaaja ~1) -> portin raja GATE_MAX_SPEED_RATIO_CUT (0,6:lla katosi 3 heittoa, 0,7-0,85: kaikki 24, ei ylimaaraisia).
+TRACK_END_PAST_NEAR_HOG_CM = float(os.environ.get("TRACK_END_PAST_NEAR_HOG_CM", "30"))
+GATE_MAX_SPEED_RATIO_CUT = float(os.environ.get("GATE_MAX_SPEED_RATIO_CUT", "0.75"))
 GATE_RESCUE_MAX_RMS = float(os.environ.get("GATE_RESCUE_MAX_RMS", "12.0"))
 GATE_RESCUE_MIN_TARKKA = float(os.environ.get("GATE_RESCUE_MIN_TARKKA", "0.1"))
 GATE_CROSS_DEDUP_FRAMES = float(os.environ.get("GATE_CROSS_DEDUP_FRAMES", "40"))
@@ -1833,7 +1839,8 @@ def _track_throw_class(rows):
     if len(rows) < GATE_MIN_ROWS:
         return 0
     travel, yend, ratio, _ = _track_kinematics(rows)
-    if travel < GATE_TRAVEL_CM or yend > GATE_MAX_END_Y_CM or ratio > GATE_MAX_SPEED_RATIO:
+    ratio_max = GATE_MAX_SPEED_RATIO_CUT if TRACK_END_PAST_NEAR_HOG_CM > 0 else GATE_MAX_SPEED_RATIO
+    if travel < GATE_TRAVEL_CM or yend > GATE_MAX_END_Y_CM or ratio > ratio_max:
         return 0
     rms = [r["rms_px"] for _, _, r in rows if r.get("rms_px") is not None]
     if not rms:
@@ -4443,7 +4450,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.14 (live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.15 (seuranta loppuu lahi-hoglinelle; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -6515,9 +6522,15 @@ def run_pipeline(
 
                             stopped = False
 
+                            # v6.15: lahi-hoglinen jalkeen ei enaa seurata (katso TRACK_END_PAST_NEAR_HOG_CM)
+                            if (TRACK_END_PAST_NEAR_HOG_CM > 0 and s.get("confirmed")
+                                    and refined["Y_cm"] < k8.NEAR_HOGLINE_Y_CM - TRACK_END_PAST_NEAR_HOG_CM):
+                                stopped = True
+                                print(f"[frame {frame_index}] Kivi {s['stone_id']} ohitti lahi-hoglinen - lopetetaan seuranta.")
+
                             # Testi_05_03: puolitetulla ruututaajuudella (vain parilliset ruudut) historian ikkuna on parillinen ->
                             # ikkunan pituus ei koskaan tayta tasan stop_tracking_frames; sallitaan 1 ruudun vajaus.
-                            if (
+                            if not stopped and (
                                 history[-1][0] - history[0][0]
                                 >= stop_tracking_frames - (1 if SEURANTA_HALF_RATE_Y_CM > 0 else 0)
                             ):
