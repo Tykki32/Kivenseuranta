@@ -104,7 +104,9 @@ def tracking_lag(path):
                 vals.append(float(r["viive_s"]))
             except (KeyError, ValueError):
                 pass
-    start = next((i for i, v in enumerate(vals) if v < 5.0 and i > len(vals) // 20), None)
+    # seuranta alkaa hypysta: viive on suurimmillaan juuri ennen sita (kalibroinnin aikana kertynyt), sitten putoaa
+    peak = max(range(len(vals)), key=lambda i: vals[i]) if vals else 0
+    start = next((i for i in range(peak, len(vals)) if vals[i] < 5.0), None)
     if start is None:
         return {"seuranta_max_viive_s": max(vals) if vals else None}
     tail = vals[start:]
@@ -164,10 +166,14 @@ def main():
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--max-frame", type=int, default=0, help="lopeta tahan ruutuun (0 = koko video), molemmissa tiloissa")
     ap.add_argument("--no-debug", action="store_true", help="tiedostoajo ilman debug-videota")
+    ap.add_argument("--vain-yhteenveto", action="store_true",
+                    help="ei ajeta: lasketaan yhteenveto uudelleen --outdir-kansion aiemmista ajoista")
     args = ap.parse_args()
 
     video = os.path.abspath(args.video)
-    if not os.path.exists(video):
+    if args.vain_yhteenveto and not args.outdir:
+        sys.exit("--vain-yhteenveto tarvitsee --outdir <aiempi nopeustesti-kansio>")
+    if not os.path.exists(video) and not args.vain_yhteenveto:
         sys.exit(f"Videota ei loydy: {video}")
     vdir = os.path.dirname(video)
     stem = os.path.splitext(os.path.basename(video))[0]
@@ -186,7 +192,14 @@ def main():
                 tag = f"{name}_{mode}"
                 log = os.path.join(outdir, f"ajo_{tag}_loki.txt")
                 env = dict(env)
-                if mode == "tiedosto":
+                if args.vain_yhteenveto:
+                    # aiemmat ajot samasta kansiosta: luetaan loki ja aikaleimat, ei ajeta uudelleen
+                    if not os.path.exists(log):
+                        continue
+                    rc, dt = 0, 0.0
+                    lag_csv = (os.path.join(outdir, f"ajo_{tag}_kivien_sijainnit_live_aikaleimat.csv")
+                               if mode == "live" else None)
+                elif mode == "tiedosto":
                     cmd = [sys.executable, main_py, "--video", video, "--paneelit", args.paneelit,
                            "--no-debug" if args.no_debug else "--debug"]
                     if args.max_frame:
@@ -220,7 +233,7 @@ def main():
         print("\nKeskeytetty - kootaan yhteenveto valmiista ajoista.")
 
     out = [f"NOPEUSTESTI {datetime.datetime.now():%Y-%m-%d %H:%M}  video={video}  max-frame={args.max_frame or 'koko'}", ""]
-    cols = ["r/s", "A_ms", "B_ms", "C_ms", "seur_ms/kutsu", "seur_cpu_ms", "ristikko_ms", "heitot", "pudotettu", "max_viive_s",
+    cols = ["ruutuja", "r/s", "A_ms", "B_ms", "C_ms", "seur_ms/kutsu", "seur_cpu_ms", "ristikko_ms", "heitot", "pudotettu", "max_viive_s",
             "seuranta_max_viive_s", "seuranta_ka_viive_s", "viive_lopussa_s"]
     out.append("  ".join(f"{h:>14s}" for h in ["ajo", "paluu"] + cols))
     for tag, r in res.items():
