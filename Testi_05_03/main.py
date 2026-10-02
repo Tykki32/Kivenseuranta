@@ -1098,6 +1098,7 @@ SEEK_MAX_SKIP = int(os.environ.get("SEEK_MAX_SKIP", "25"))   # v5.7: havaintoruu
 SCAN_WORKERS = max(1, int(os.environ.get("SCAN_WORKERS", "3")))   # v5.7: profiilin opettelun kandidaattiskannaus rinnan (1 = perakkain, kuten ennen)
 LIVE_PIPELINE = os.environ.get("LIVE_PIPELINE", "1") == "1"
 HAKU_AHEAD = os.environ.get("HAKU_AHEAD", "1") == "1"
+CV_SINGLE_PERSIST = os.environ.get("CV_SINGLE_PERSIST", "1") == "1"   # v5.12: C++-OpenCV pysyvasti 1 saikeelle elavassa vaiheessa (0 = vaihto joka kutsulla kuten ennen)
 SIL_IN_BATCH = os.environ.get("SIL_IN_BATCH", "1") == "1"   # v5.11: SEURANNAN siluettitarkennus C++-kivisaikeissa (0 = erillinen vaihe)   # v5.11: HAKU kaynnistetaan jo liukuhihnan vaiheessa B (0 = paasaikeessa kuten ennen)  # liukuhihna: ruudun valmistelu omassa saikeessa
 VIDEO_PREFETCH = os.environ.get("VIDEO_PREFETCH", "1") == "1"  # videon luku omassa saikeessa elavassa vaiheessa
 PHOTO_APPLY_DELAY_FRAMES = int(os.environ.get("PHOTO_APPLY_DELAY_FRAMES", "10"))  # valotasapainon uusi arvo kayttoon tasan N ruudun paasta (toistettava ajo)
@@ -4278,7 +4279,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_03 v5.11 (oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_05_03 v5.12 (oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1; saturaatio rinnan; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -5696,6 +5697,8 @@ def run_pipeline(
                         f"Elava moni-kiven seuranta alkaa (frame "
                         f"{frame_index}, kulunut {time.time() - start_time:.1f} s) - CSV: {csv_output}"
                     )
+                    if CV_SINGLE_PERSIST and hasattr(stone_tracker, "set_cv_single_thread_persistent"):
+                        stone_tracker.set_cv_single_thread_persistent(1)     # v5.12: ei saiepoolin uudelleenluontia joka kutsulla
 
                     live_state = {
                         "map1": map1, "map2": map2,
