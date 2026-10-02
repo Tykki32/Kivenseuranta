@@ -1007,6 +1007,7 @@ INTRA_PARALLEL = os.environ.get("INTRA_PARALLEL", "1") == "1"
 # (PREP_PARALLEL, oletus 1). Molemmat bitti-identtisia perakkaisen version kanssa.
 GRID_THREADS = max(1, int(os.environ.get("GRID_THREADS", "2")))
 PREP_PARALLEL = os.environ.get("PREP_PARALLEL", "1") == "1"
+SAT_PARALLEL = os.environ.get("SAT_PARALLEL", "0") == "1"   # v5.13: saturaatio rinnan graniittimaskin kanssa (oletus pois: hidasti Windowsissa)
 # v5.7: Pythonin GIL-vaihtovali (sys.setswitchinterval, oletus 5 ms). Liukuhihnassa on useita Python-saikeita (A, B, debug-piirto, HAKU,
 # valotasapaino); kun paasaie palaa C++/cv2-kutsusta (GIL vapautettu), se joutuu odottamaan GIL:ia enimmillaan koko vaihtovalin jos toinen
 # saie ajaa Python-koodia. Lyhyempi vali -> paasaie (pullonkaula) saa GIL:n nopeammin takaisin. Ei vaikuta tuloksiin. 0 = Pythonin oletus.
@@ -1031,6 +1032,8 @@ _print_cpp_opencv_info()
 if hasattr(stone_tracker, "set_grid_threads"):
     stone_tracker.set_grid_threads(GRID_THREADS)
     stone_tracker.set_prep_parallel(int(PREP_PARALLEL))
+    if hasattr(stone_tracker, "set_sat_parallel"):
+        stone_tracker.set_sat_parallel(int(SAT_PARALLEL))
 if hasattr(stone_tracker, "set_intra_parallel"):
     stone_tracker.set_intra_parallel(int(INTRA_PARALLEL))
     if INTRA_PARALLEL:
@@ -4279,7 +4282,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_03 v5.12 (oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1; saturaatio rinnan; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_05_03 v5.13 (oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():

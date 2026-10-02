@@ -17,8 +17,9 @@ Ajot (kaikki samalla videolla/aikavälillä, oletuksena debug-video päällä), 
   v5.9:  oletus : main.py:n nykyiset oletukset    oletusgrid : oletus + GPU_GRID=1
   v5.10/11: v59 : oletus ilman v5.10-11:n lisayksia (GRID_THREADS=1, PREP_PARALLEL=0, HAKU_AHEAD=0, SIL_IN_BATCH=0)    grid3 : oletus + GRID_THREADS=3
   v5.12: v511 : oletus mutta CV_SINGLE_PERSIST=0 (OpenCV:n saiemaaran vaihto joka kutsulla kuten v5.11)
+  v5.13: satpar (SAT_PARALLEL=1), noprep (PREP_PARALLEL=0), grid1 (GRID_THREADS=1), nointra (INTRA_PARALLEL=0): kukin = oletus yhdella muutoksella
          (vanhat ajot cpu, par, intra, ... ajetaan vanhoilla oletuksilla GPU_B=0, STAB_WORKERS=1, PIPE_DEPTH=3, INTRA_PARALLEL=0, DEBUG_YUV=0)
-Oletus: v59,v511,oletus.
+Oletus: v59,oletus,satpar,noprep,grid1.
 Tulokset kansioon --outdir (oletus: videon kansio / vertailuajo_<aikaleima>):
   ajo_<nimi>_loki.txt          koko terminaalitulostus
   ajo_<nimi>_sijainnit.csv     kivien sijainnit (+ _hog.csv)
@@ -62,18 +63,24 @@ RUNS = [
     # v5.10: kiven sisaisen rinnakkaisuuden lisaykset (oletuksena paalla) - vertailu ilman niita ja 3 saikeen ristikolla
     ("v59", {"GRID_THREADS": "1", "PREP_PARALLEL": "0", "HAKU_AHEAD": "0", "SIL_IN_BATCH": "0", "CV_SINGLE_PERSIST": "0"}),   # = v5.9:n oletukset (LM-reunustuksen poisto mukana, ei kytkettava)
     ("grid3", {"GRID_THREADS": "3"}),                       # oletus + hieno ristikko 3 saikeelle
-    ("v511", {"CV_SINGLE_PERSIST": "0"}),                   # v5.12: = v5.11 (OpenCV:n saiemaaran vaihto joka kutsulla; saturaation rinnakkaisuus mukana)
+    ("v511", {"CV_SINGLE_PERSIST": "0"}),                   # = v5.11 (OpenCV:n saiemaaran vaihto joka kutsulla)
+    # v5.13: kiven sisaisten rinnakkaistusten erillisvaikutus (kukin = oletus yhdella muutoksella)
+    ("satpar", {"SAT_PARALLEL": "1"}),                      # saturaatio rinnan (v5.12:n oletus)
+    ("noprep", {"PREP_PARALLEL": "0"}),                     # etualamaski perakkain
+    ("grid1", {"GRID_THREADS": "1"}),                       # hieno ristikko yhdella saikeella
+    ("nointra", {"INTRA_PARALLEL": "0"}),                   # ristikko + mean-shiftit perakkain
 ]
 # v5.9: main.py:n oletukset muuttuivat (GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1). Vanhat ajot (cpu, par, intra, ...)
 # ajetaan edelleen VANHOILLA oletuksilla, jotta niiden merkitys ei muutu; ajon omat asetukset ylikirjoittavat nama.
 OLD_DEFAULTS = {"GPU_B": "0", "STAB_WORKERS": "1", "PIPE_DEPTH": "3", "INTRA_PARALLEL": "0", "DEBUG_YUV": "0"}
-NEW_DEFAULT_RUNS = {"oletus", "oletusgrid", "v59", "grid3", "v511"}
+NEW_DEFAULT_RUNS = {"oletus", "oletusgrid", "v59", "grid3", "v511", "satpar", "noprep", "grid1", "nointra"}
 OLD_DEFAULTS["GRID_THREADS"] = "1"
 OLD_DEFAULTS["PREP_PARALLEL"] = "0"
 OLD_DEFAULTS["HAKU_AHEAD"] = "0"
 OLD_DEFAULTS["SIL_IN_BATCH"] = "0"
 OLD_DEFAULTS["CV_SINGLE_PERSIST"] = "0"
-DEFAULT_RUNS = "v59,v511,oletus"
+OLD_DEFAULTS["SAT_PARALLEL"] = "0"
+DEFAULT_RUNS = "v59,oletus,satpar,noprep,grid1"
 
 
 def pick_video():
@@ -91,7 +98,7 @@ def pick_video():
 def run_main(name, env_extra, video, start, end, debug, extra, log_path):
     env = dict(os.environ)
     for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_B", "STAB_WORKERS", "PIPE_DEPTH", "INTRA_PARALLEL",
-              "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_THREADS", "BG_PRIORITY", "PY_SWITCH_INTERVAL_MS", "DEBUG_YUV", "GRID_THREADS", "PREP_PARALLEL", "HAKU_AHEAD", "SIL_IN_BATCH", "CV_SINGLE_PERSIST"):
+              "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_THREADS", "BG_PRIORITY", "PY_SWITCH_INTERVAL_MS", "DEBUG_YUV", "GRID_THREADS", "PREP_PARALLEL", "HAKU_AHEAD", "SIL_IN_BATCH", "CV_SINGLE_PERSIST", "SAT_PARALLEL"):
         if k not in env_extra:
             env.pop(k, None)
     if name not in NEW_DEFAULT_RUNS:

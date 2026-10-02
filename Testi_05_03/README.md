@@ -232,3 +232,12 @@ OpenCV-diagnostiikka (Windows, vcpkg 4.12): AVX2 dispatch mukana, **ei IPP:tä**
   (`graniteDarkness` + `createGraniteMaskFromParts`; `createGraniteMask` käyttää samoja osia).
 Koko MAH-video: CSV:t tavu tavulta identtiset v5.6:n kanssa. `tools/vertailuajo.py`: oletuksena `v59`, `v511` (= CV_SINGLE_PERSIST=0), `oletus`.
 C++-moduuli pitää kääntää uudelleen.
+
+### v5.13: saturaation rinnakkaistus pois oletuksista (`SAT_PARALLEL=0`)
+Windows-vertailuajo v5.12: v59 652,0 s, v511 (= CV_SINGLE_PERSIST=0, saturaatio rinnan) 654,7 s, oletus 622,4 s; CSV:t identtiset.
+* ConcRT-korjaus toimii: v511 -> oletus -4,9 %.
+* Saturaation rinnakkaistus hidasti: ainoa ero v5.11:n (611,6 s) ja v5.12:n v511-ajon (654,7 s) välillä (~+7 %; ristikkohaun CPU-aika/kutsu 6,6 -> 10,2 ms)
+  -> lisäsäie kilpailee hypersäikeistä/muistikaistasta jo valmiiksi rinnakkaisessa kivilaskennassa. Nyt `SAT_PARALLEL=1` erikseen, oletus pois.
+Odotus: v5.11 (611,6 s) + ConcRT-korjaus (-5 %) ~ 580 s = ~-11 % v59:ään nähden.
+`tools/vertailuajo.py`: oletuksena `v59, oletus, satpar, noprep, grid1` (kukin = oletus yhdellä muutoksella -> rinnakkaistusten erillisvaikutus);
+lisäksi `nointra` (INTRA_PARALLEL=0). C++-moduuli pitää kääntää uudelleen.
