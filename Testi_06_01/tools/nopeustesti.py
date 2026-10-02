@@ -8,11 +8,12 @@ Tilat (--tilat, oletus molemmat):
   tiedosto : tavallinen tiedostoajo (debug-video paalla). Deterministinen -> heitot ja hog-hog-ajat verrataan v610-ajoon.
   live     : --live-sim reaaliaikatahdissa + --live-tallenna (kuten kamera-ajo: ruudut tulevat 25 r/s, tallennus paalla).
              Mittaa pysyyko kasittely tahdissa: paasaikeen palveluaika, live-viive ja pudotetut ruudut.
-Ajot (--ajot, oletus v610,kiipea,prio):
+Ajot (--ajot, oletus v610,oletus):
   v610   : vanha laskenta (OVERLAP_FAST=0, FINE_CLIMB=0) = vertailukohta
   peitto : nopea peittolaskenta (OVERLAP_FAST=1, FINE_CLIMB=0) - tuloksen pitaa olla IDENTTINEN v610:n kanssa
   kiipea : peitto + ristikkohaun hieno vaihe maennousulla (FINE_CLIMB=1) = v6.11:n oletus
   prio   : kiipea + LIVE_BG_PRIORITY=1 (tallennuksen/debug-videon ffmpeg ja tallennussaie alemmalle prioriteetille)
+  oletus : main.py:n nykyiset oletukset (v6.12 = prio + esitarkistus 12-16 cm, joka koskee KAIKKIA ajoja)
   varjo  : peitto + FINE_CLIMB=2 (hieno vaihe ajetaan molemmilla tavoilla, tulos = v610; lokiin kuinka usein maennousu osuu samaan)
   ohitus : kiipea + GRID_SKIP=1 (mean-shiftien perusteella ohitettu ristikkohaku - EI kaytossa, ks. README)
 Tulokset: --outdir (oletus: videon kansio/nopeustesti_<aika>): ajo_<nimi>_<tila>_loki.txt, CSV:t ja nopeustesti_yhteenveto.txt
@@ -30,12 +31,13 @@ import sys
 CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 RUNS = [
-    ("v610", {"OVERLAP_FAST": "0", "FINE_CLIMB": "0", "GRID_SKIP": "0"}),
-    ("peitto", {"OVERLAP_FAST": "1", "FINE_CLIMB": "0", "GRID_SKIP": "0"}),
-    ("kiipea", {"OVERLAP_FAST": "1", "FINE_CLIMB": "1", "GRID_SKIP": "0"}),
+    ("v610", {"OVERLAP_FAST": "0", "FINE_CLIMB": "0", "GRID_SKIP": "0", "LIVE_BG_PRIORITY": "0"}),
+    ("peitto", {"OVERLAP_FAST": "1", "FINE_CLIMB": "0", "GRID_SKIP": "0", "LIVE_BG_PRIORITY": "0"}),
+    ("kiipea", {"OVERLAP_FAST": "1", "FINE_CLIMB": "1", "GRID_SKIP": "0", "LIVE_BG_PRIORITY": "0"}),
     ("prio", {"OVERLAP_FAST": "1", "FINE_CLIMB": "1", "GRID_SKIP": "0", "LIVE_BG_PRIORITY": "1"}),
-    ("varjo", {"OVERLAP_FAST": "1", "FINE_CLIMB": "2", "GRID_SKIP": "0"}),
-    ("ohitus", {"OVERLAP_FAST": "1", "FINE_CLIMB": "1", "GRID_SKIP": "1"}),
+    ("oletus", {}),                                    # main.py:n nykyiset oletukset (v6.12: = prio)
+    ("varjo", {"OVERLAP_FAST": "1", "FINE_CLIMB": "2", "GRID_SKIP": "0", "LIVE_BG_PRIORITY": "0"}),
+    ("ohitus", {"OVERLAP_FAST": "1", "FINE_CLIMB": "1", "GRID_SKIP": "1", "LIVE_BG_PRIORITY": "0"}),
 ]
 CLEAR_ENV = ("OVERLAP_FAST", "FINE_CLIMB", "GRID_SKIP", "GRID_SKIP_SCORE", "GRID_SKIP_AGREE_CM", "GRID_SKIP_DUMP", "LIVE_BG_PRIORITY", "BG_PRIORITY")
 
@@ -161,7 +163,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--video", required=True)
     ap.add_argument("--paneelit", required=True, help="referenssi-paneelitiedosto (*_panel_corners.txt)")
-    ap.add_argument("--ajot", default="v610,kiipea,prio")
+    ap.add_argument("--ajot", default="v610,oletus")
     ap.add_argument("--tilat", default="tiedosto,live")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--max-frame", type=int, default=0, help="lopeta tahan ruutuun (0 = koko video), molemmissa tiloissa")

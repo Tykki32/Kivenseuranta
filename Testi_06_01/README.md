@@ -165,6 +165,21 @@ Ajaa ajot `v610` (vanha laskenta), `kiipea` (v6.11) ja `prio` kahdessa tilassa: 
 v610:een) ja `live` (`--live-sim` reaaliaikatahdissa + `--live-tallenna`, kuten kamera-ajo → viive ja pudotukset).
 Yhteenveto `nopeustesti_yhteenveto.txt` videon kansioon (`nopeustesti_<aika>`). Nopea kokeilu: `--max-frame 6000`.
 
+## v6.12: nopeutukset oletuksiksi + esitarkistus 12–16 cm
+* **Oletukset yhdistävät nopeutukset:** `FINE_CLIMB=1` (v6.11) ja nyt myös `LIVE_BG_PRIORITY=1` (ffmpeg-prosessit ja tallennussäie
+  alemmalle prioriteetille). Nopeustesti (käyttäjän kone, live-tallenne, live-simulaatio + tallennus):
+
+  | ajo | pääsäie | ristikkohaun CPU | suurin / ka viive seurannassa |
+  |---|---|---|---|
+  | v610 | 38,1 ms | 14,5 ms | 8,0 / 2,9 s |
+  | kiipea (FINE_CLIMB) | 37,5 ms | 5,9 ms | 7,7 / 2,1 s |
+  | prio (= v6.12 oletus) | 35,3 ms | 5,6 ms | 8,1 / 1,3 s |
+* **Esitarkistus 12–16 cm** (`PRECHECK_R_MAX_MIN_CM/MAX_CM`; profiilikoe ja yksittäisen kiven tarkistus pysyvät 12,5–15,0 cm):
+  live-tallenteen tiedostoajossa 3 s esitarkistus (5 havaintoa) hylkäsi kiviä R = 15,1–15,4 cm, vaikka lopullinen profiili antoi
+  14,6 cm → profiili valmistui vasta ruudulla 10 026 ja seuranta kattoi vain viimeisen kolmanneksen (5 heittoa vs. live 17–18).
+  MAH00014: tulokset tavutasolla samat kuin v6.11.
+* `tools/nopeustesti.py`: oletusajot nyt `v610,oletus` (oletus = main.py:n nykyiset oletukset).
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
