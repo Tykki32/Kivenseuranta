@@ -141,7 +141,7 @@ class FrameStore:
             self._seq_next = i + 1
             lag = self._head - self._seq_next
             self.max_lag_frames = max(self.max_lag_frames, lag)
-            self.log.append((i, self._cam_idx[i], self._wall[i]))
+            self.log.append((i, self._cam_idx[i], self._wall[i], time.time(), lag))
             self._evict_locked()
             self._cond.notify_all()
         return i, f
@@ -181,9 +181,12 @@ class FrameStore:
         try:
             with open(path, "w", newline="") as fh:
                 w = csv.writer(fh)
-                w.writerow(["kasitelty_ruutu", "puskurin_indeksi", "kameran_ruutu", "seinakello_unix", "seinakello"])
-                for n, (i, ci, t) in enumerate(self.log):
-                    w.writerow([n, i, ci, f"{t:.3f}", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + f".{int((t % 1) * 1000):03d}"])
+                # v6.2: kasittelyhetki ja viive (puskurissa odottavat ruudut lukuhetkella) -> viivekayra suoraan tiedostosta
+                w.writerow(["kasitelty_ruutu", "puskurin_indeksi", "kameran_ruutu", "seinakello_unix", "seinakello",
+                            "kasittely_unix", "viive_s", "odottavia_ruutuja"])
+                for n, (i, ci, t, tp, lag) in enumerate(self.log):
+                    w.writerow([n, i, ci, f"{t:.3f}", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + f".{int((t % 1) * 1000):03d}",
+                                f"{tp:.3f}", f"{tp - t:.2f}", lag])
             return True
         except Exception as e:
             print(f"Live-aikaleimojen tallennus epaonnistui: {e!r}")
@@ -196,6 +199,11 @@ class _SourceBase:
         self._thread = None
         self._stop_evt = threading.Event()
         self.info = {}
+
+    def start(self):
+        """Kaynnistaa lukusaikeen (kutsu kun mahdollinen tallentaja on kytketty -> ensimmainenkin ruutu tallentuu)."""
+        if self._thread is not None and not self._thread.is_alive():
+            self._thread.start()
 
     def stop(self, reason="pysaytetty"):
         self._stop_evt.set()
@@ -254,8 +262,7 @@ class CameraSource(_SourceBase):
         self.store = FrameStore(self.out_w, self.out_h, self.fps, int(buffer_s * self.fps), int(keep_back_s * self.fps),
                                 blocking_producer=False,
                                 min_keep_back_frames=None if min_keep_back_s is None else int(min_keep_back_s * self.fps))
-        self._thread = threading.Thread(target=self._run, daemon=True, name="live-kamera")
-        self._thread.start()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="live-kamera")   # kaynnistetaan start():lla
 
     @staticmethod
     def _measure_fps(cap, n):
@@ -317,8 +324,7 @@ class FileSimSource(_SourceBase):
         self.store = FrameStore(self.out_w, self.out_h, self.fps, int(buffer_s * self.fps), int(keep_back_s * self.fps),
                                 blocking_producer=not realtime,
                                 min_keep_back_frames=None if min_keep_back_s is None else int(min_keep_back_s * self.fps))
-        self._thread = threading.Thread(target=self._run, daemon=True, name="live-simulaatio")
-        self._thread.start()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="live-simulaatio")   # kaynnistetaan start():lla
 
     def _run(self):
         t0 = time.time()
@@ -432,6 +438,11 @@ class FfmpegRecorder:
         import queue
         import subprocess
         self._q = queue.Queue(maxsize=int(fps * 4))
+        # v6.2: syote ffmpegille valmiina YUV 4:2:0:na (cv2.cvtColor tassa saikeessa, SIMD) -> ffmpegin hidas BGR-muunnos
+        # (swscale) jaa pois ja putkeen puolet vahemman dataa (kuten debug-videon DEBUG_YUV). Vaatii parilliset mitat.
+        self._yuv = (int(w) % 2 == 0 and int(h) % 2 == 0)
+        pix = "yuv420p" if self._yuv else "bgr24"
+        frame_bytes = int(w) * int(h) * 3 // 2 if self._yuv else int(w) * int(h) * 3
         enc_args = {
             "qsv": ["-vf", "format=nv12", "-c:v", "h264_qsv", "-global_quality", "20", "-look_ahead", "0"],
             "x264": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16"],
@@ -440,10 +451,10 @@ class FfmpegRecorder:
         self.encoder = None
         self.dropped = 0
         for enc in order:
-            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", pix,
                    "-s", f"{w}x{h}", "-r", f"{fps:.4f}", "-i", "-", "-an"] + enc_args[enc] + [path]
             try:
-                probe = subprocess.run(cmd[:-1] + ["-frames:v", "1", "-f", "null", "-"], input=bytes(w * h * 3),
+                probe = subprocess.run(cmd[:-1] + ["-frames:v", "1", "-f", "null", "-"], input=bytes(frame_bytes),
                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
                 if probe.returncode != 0:
                     continue
@@ -470,13 +481,15 @@ class FfmpegRecorder:
             if f is None:
                 break
             try:
+                if self._yuv:
+                    f = cv2.cvtColor(f, cv2.COLOR_BGR2YUV_I420)
                 self._p.stdin.write(np.ascontiguousarray(f).data)
             except Exception:
                 break
 
     def close(self):
         self._q.put(None)
-        self._t.join(10)
+        self._t.join(120)        # jonossa voi olla ~4 s ruutuja koodaamatta -> odotetaan ne loppuun (ei katkaista tallennetta)
         try:
             self._p.stdin.close()
             self._p.wait(30)
