@@ -121,6 +121,15 @@ laatuvertailu. Pelkän lähi-hoglinen vapauttaminen oli huonompi (pesät huononi
 MAH00014 koko ajo (sandbox, vrt. v5.12): samat 22 heittoa, hog-hog-aika −0,02…−0,04 s, nopeus kaukohoglinella
 −1,5 %, x kaukohoglinella −0,3…−0,9 cm. Muut kalibroinnit (peili/k1) bit-identtiset kaikilla vanhoilla moodikuvilla.
 
+## v6.8: hoglinet symmetrisesti (sama etäisyys omasta T-viivasta)
+Molemmat hoglinet ovat 640 + d cm omasta T-viivastaan (yksi yhteinen siirtymä d, |d| ≤ 20 cm). `HOGLINE_SYMMETRIC=0` = v6.7
+(riippumattomat). d mitataan oletuksena vain lähi-hoglinesta (`HOGLINE_SYMMETRIC_FAR_WEIGHT=0`; kaukainen hogline rajoittaa
+vain suoruutta/kiertoa). Valinta nimellinen vs. vapaa pesien laadulla kuten v6.7:ssä.
+
+Sandbox, d samasta radasta: v6.7 lähi +4,9…+5,9 / kauko −6…−19 (yksi +20); symmetrinen kaukopaino 1: −10…+10;
+**kaukopaino 0: +4,9…+5,9 kaikissa** (valittu). Pesien luvut eivät selvästi parane (MAH00014: RMS 1,48 cm, pyöreys 1,000,
+koko 0,9 %; v6.7 1,40 / 1,000 / 0,9 %), mutta paikka-arvio on vakaa ja hog-hog-väli = nimellinen − 2d.
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).

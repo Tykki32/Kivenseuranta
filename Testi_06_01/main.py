@@ -119,6 +119,10 @@ HOGLINE_GRAY_TARGET_COVERAGE = 0.98
 # +-HOGLINE_POSITION_TOLERANCE_CM. Kalibrointi ei pakota hoglinea nimelliseen paikkaan, vaan mittaa sen paikan
 # toleranssin sisalla (hogline rajoittaa vain suoruutta/kiertoa) ja kayttaa mitattua paikkaa kaikkialla.
 HOGLINE_POSITION_TOLERANCE_CM = 20.0
+# v6.8: hoglinet samalla etaisyydella omasta T-viivastaan (yksi yhteinen siirtyma); kaukaisen hoglinen mittauksen
+# paino yhteisessa siirtymassa (lahi = 1; kauko on 30 m paassa ja maaraytyy kuvasta heikommin).
+HOGLINE_SYMMETRIC = int(os.environ.get("HOGLINE_SYMMETRIC", "1"))
+HOGLINE_SYMMETRIC_FAR_WEIGHT = float(os.environ.get("HOGLINE_SYMMETRIC_FAR_WEIGHT", "0.0"))
 NOMINAL_NEAR_HOGLINE_Y_CM = k8.NEAR_HOGLINE_Y_CM
 NOMINAL_FAR_HOGLINE_Y_CM = k8.FAR_HOGLINE_Y_CM
 
@@ -648,6 +652,30 @@ def _hogline_target_y(H, hog_pts, nominal_y_cm, tol_cm=None):
     return float(nominal_y_cm + np.clip(np.median(y) - nominal_y_cm, -tol_cm, tol_cm))
 
 
+def _hogline_targets(H, near_pts, far_pts, tol_cm=None):
+    """v6.8: molempien hoglinien tavoite-Y. HOGLINE_SYMMETRIC=1 (oletus): hoglinet ovat SAMALLA etaisyydella
+    omasta T-viivastaan (640 + d cm) -> yksi yhteinen siirtyma d, joka lasketaan molempien viivojen mittauksista
+    painotettuna (HOGLINE_SYMMETRIC_FAR_WEIGHT; lahi-hogline mitataan tarkemmin). d rajataan +-tol_cm."""
+    if tol_cm is None:
+        tol_cm = HOGLINE_POSITION_TOLERANCE_CM
+    if not HOGLINE_SYMMETRIC:
+        return (_hogline_target_y(H, near_pts, NOMINAL_NEAR_HOGLINE_Y_CM, tol_cm),
+                _hogline_target_y(H, far_pts, NOMINAL_FAR_HOGLINE_Y_CM, tol_cm))
+    if tol_cm <= 0.0 or (len(near_pts) == 0 and len(far_pts) == 0):
+        return float(NOMINAL_NEAR_HOGLINE_Y_CM), float(NOMINAL_FAR_HOGLINE_Y_CM)
+    parts, weights = [], []
+    if len(near_pts):
+        y = k8.output_px_to_physical(k8._apply_h(H, np.asarray(near_pts, dtype=np.float64)))[:, 1]
+        parts.append(float(np.median(y)) - NOMINAL_NEAR_HOGLINE_Y_CM)      # + = kauempana lahi-T:sta
+        weights.append(1.0)
+    if len(far_pts):
+        y = k8.output_px_to_physical(k8._apply_h(H, np.asarray(far_pts, dtype=np.float64)))[:, 1]
+        parts.append(NOMINAL_FAR_HOGLINE_Y_CM - float(np.median(y)))       # + = kauempana kauko-T:sta
+        weights.append(HOGLINE_SYMMETRIC_FAR_WEIGHT if len(near_pts) else 1.0)
+    d = float(np.clip(np.average(parts, weights=weights), -tol_cm, tol_cm))
+    return float(NOMINAL_NEAR_HOGLINE_Y_CM + d), float(NOMINAL_FAR_HOGLINE_Y_CM - d)
+
+
 def set_hogline_positions(near_y_cm, far_y_cm):
     """v6.7: asettaa hoglinien paikan (k8-moduulin vakiot) -> kayttoon kaikkialla: kameran asento (k9),
     heittoportti, hog-ylitys ja hog-hog-analyysi, piirrot."""
@@ -698,8 +726,7 @@ def refine_geometric_homography_color(frame_undistorted, H_init, near_pts, near_
         hog_pts = np.concatenate([near_hog_pts, far_hog_pts]) if (
             len(near_hog_pts) or len(far_hog_pts)
         ) else np.zeros((0, 2))
-        near_hog_y = _hogline_target_y(H_current, near_hog_pts, NOMINAL_NEAR_HOGLINE_Y_CM, hog_tol_cm)
-        far_hog_y = _hogline_target_y(H_current, far_hog_pts, NOMINAL_FAR_HOGLINE_Y_CM, hog_tol_cm)
+        near_hog_y, far_hog_y = _hogline_targets(H_current, near_hog_pts, far_hog_pts, hog_tol_cm)
         hog_y = np.concatenate([
             np.full(len(near_hog_pts), near_hog_y),
             np.full(len(far_hog_pts), far_hog_y),
@@ -876,8 +903,7 @@ def calibrate_camera_from_image_with_seed(filename):
             frame_undistorted, H_v1, near_pts_frame, near_phys_pts, output_w, output_h,
             hog_tol_cm=HOGLINE_POSITION_TOLERANCE_CM, label=f"hogline +-{HOGLINE_POSITION_TOLERANCE_CM:.0f} cm"
         )
-        free_y = [_hogline_target_y(free["H_final"], free["near_hog_pts"], NOMINAL_NEAR_HOGLINE_Y_CM),
-                  _hogline_target_y(free["H_final"], free["far_hog_pts"], NOMINAL_FAR_HOGLINE_Y_CM)]
+        free_y = list(_hogline_targets(free["H_final"], free["near_hog_pts"], free["far_hog_pts"]))
         accept, _, _ = k8.candidate_is_better(
             frame_undistorted, free["H_final"], free["rms"], frame_undistorted, best["H_final"], best["rms"]
         )
@@ -4364,7 +4390,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.7 (live-kamera + puskuri; kalibrointi: hoglinet +-20 cm, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.8 (live-kamera + puskuri; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
