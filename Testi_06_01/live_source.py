@@ -92,6 +92,10 @@ class FrameStore:
         self.skipped = 0                  # skip_to_latest-hypyissa ohitetut ruudut
         self.max_lag_frames = 0
         self.log = []                     # (kasitelty indeksi, kameran ruutu, seinakello) perakkaislukijan lukemille
+        # v6.9: kiinnitetyt ruudut (pin): sailyvat vaikka historia karsitaan (kiven profiili-/varihavaintojen ruudut,
+        # joita luetaan myohemmin, jopa kymmenia sekunteja taaksepain). unpin_all() vapauttaa.
+        self._pins = set()
+        self._pinned = {}
 
     # ---------------- kirjoittaja ----------------
     def put(self, frame, cam_index=None):
@@ -136,7 +140,9 @@ class FrameStore:
     def _evict_locked(self, keep_back=None):
         floor = self._seq_next - (self.keep_back if keep_back is None else keep_back)
         while self._tail < floor and self._tail < self._head:
-            self._frames.pop(self._tail, None)
+            f = self._frames.pop(self._tail, None)
+            if self._tail in self._pins and f is not None:
+                self._pinned[self._tail] = f
             self._wall.pop(self._tail, None)
             self._cam_idx.pop(self._tail, None)
             self._tail += 1
@@ -174,10 +180,33 @@ class FrameStore:
             if not self._wait_for_locked(idx, timeout):
                 return None
             if idx < self._tail:
+                f = self._pinned.get(idx)
+                if f is not None:
+                    return f
                 raise LiveBufferError(
                     f"ruutu {idx} on jo poistettu puskurista (vanhin {self._tail}) - suurenna LIVE_TAAKSE_S"
                 )
             return self._frames[idx]
+
+    def available(self, idx, timeout=None):
+        """True kun ruutu idx on saapunut (vaikka se olisi jo poistettu); False jos syote loppui ennen sita."""
+        with self._cond:
+            return self._wait_for_locked(int(idx), timeout)
+
+    def pin(self, indices):
+        """v6.9: kiinnittaa ruudut (ei poisteta historiaa karsittaessa). Jo poistettua ruutua ei voi palauttaa."""
+        with self._cond:
+            for i in indices:
+                self._pins.add(int(i))        # jo poistettua ruutua ei palauteta: get() antaa selvan virheen kuten ennenkin
+
+    def unpin_all(self):
+        with self._cond:
+            self._pins.clear()
+            self._pinned.clear()
+
+    def pinned_count(self):
+        with self._cond:
+            return len(self._pinned)
 
     def skip_to_latest(self, keep_frames=0, new_keep_back=None):
         """Perakkaislukija hyppaa uusimpaan ruutuun (jattaa keep_frames ruutua lukematta taakse)."""
@@ -494,22 +523,32 @@ class BufferedCapture:
         return 0.0
 
     def grab(self):
-        f = self.store.get(self.pos)
-        if f is None:
+        # v6.9: grab ei hae ruutua (ohitettavat ruudut eteenpainluvussa saavat olla jo poistettu puskurista);
+        # ruutu haetaan vasta retrieve()/read()-kutsussa.
+        if not self.store.available(self.pos):
             return False
-        self._last = f
+        self._last_idx = self.pos
+        self._last = None
         self.pos += 1
         return True
 
     def retrieve(self):
         if self._last is None:
-            return False, None
+            if getattr(self, "_last_idx", None) is None:
+                return False, None
+            f = self.store.get(self._last_idx)
+            if f is None:
+                return False, None
+            self._last = f
         return True, self._last.copy()
 
     def read(self):
-        if not self.grab():
+        f = self.store.get(self.pos)
+        if f is None:
             return False, None
-        return True, self._last.copy()
+        self._last, self._last_idx = f, self.pos
+        self.pos += 1
+        return True, f.copy()
 
     def release(self):
         self._last = None
