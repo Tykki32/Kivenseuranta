@@ -1163,6 +1163,14 @@ if hasattr(stone_tracker, "set_grid_skip"):
 
     # v6.11: OLETUKSENA PAALLA. SEURANNAN ristikkohaun hieno vaihe maennousulla (~15 arviota ~100:n sijaan; LM tarkentaa paikan
     # joka tapauksessa). MAH00014: ristikkohaun CPU 12,7 -> 4,3 ms/ruutu, samat heitot (+1), hog-hog-ero <= 0,007 s.
+    # v6.16: kivien maskit (saturaatio, graniittikynnys, etualamaski) OpenCV:n SIMD-funktioilla - tulos sama (saturaatio
+    # tarkistetaan kaynnistyksessa vanhaa laskentaa vastaan). FAST_MASKS=0 = vanha tapa.
+    if hasattr(stone_tracker, "set_fast_masks"):
+        _fm = os.environ.get("FAST_MASKS", "1") == "1"
+        _simd, _us_scalar, _us_simd = stone_tracker.set_fast_masks(int(_fm))
+        if _fm:
+            print(f"SEURANTA: nopeat maskit; saturaatio {'cvtColor (SIMD)' if _simd else 'oma silmukka'} "
+                  f"(300x300: oma {_us_scalar:.0f} us, cvtColor {_us_simd:.0f} us)")
     FINE_CLIMB = int(os.environ.get("FINE_CLIMB", "1"))
     stone_tracker.set_fine_climb(FINE_CLIMB)
     if FINE_CLIMB:
@@ -1773,6 +1781,10 @@ GATE_MAX_SPEED_RATIO = float(os.environ.get("GATE_MAX_SPEED_RATIO", "0.6"))
 # Katkaistulla radalla loppunopeus mitataan lahi-hoglinella (ei pesassa) -> hidastuvuussuhde on suurempi: MAH00014:n 24 heittoa
 # 0,36-0,61 (pelaaja ~1) -> portin raja GATE_MAX_SPEED_RATIO_CUT (0,6:lla katosi 3 heittoa, 0,7-0,85: kaikki 24, ei ylimaaraisia).
 TRACK_END_PAST_NEAR_HOG_CM = float(os.environ.get("TRACK_END_PAST_NEAR_HOG_CM", "30"))
+# v6.16: kivi ei liiku taaksepain (Y kasvaa). Jos radan Y on kasvanut yli TRACK_BACKWARD_STOP_CM sekunnissa (5 viimeisen ja sekuntia
+# aiemman 5 paikan mediaanit), rata on pelaaja / takaisin vietava kivi -> seuranta lopetetaan. MAH00014: kaikilla 24 heitolla
+# taaksepain-siirtyma 0 cm (minka tahansa sekunnin aikana), 31/140 ei-heittorataa lopetetaan, seurannasta -10,6 %. 0 = pois.
+TRACK_BACKWARD_STOP_CM = float(os.environ.get("TRACK_BACKWARD_STOP_CM", "30"))
 GATE_MAX_SPEED_RATIO_CUT = float(os.environ.get("GATE_MAX_SPEED_RATIO_CUT", "0.75"))
 GATE_RESCUE_MAX_RMS = float(os.environ.get("GATE_RESCUE_MAX_RMS", "12.0"))
 GATE_RESCUE_MIN_TARKKA = float(os.environ.get("GATE_RESCUE_MIN_TARKKA", "0.1"))
@@ -4450,7 +4462,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.15 (seuranta loppuu lahi-hoglinelle; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.16 (seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -6527,6 +6539,18 @@ def run_pipeline(
                                     and refined["Y_cm"] < k8.NEAR_HOGLINE_Y_CM - TRACK_END_PAST_NEAR_HOG_CM):
                                 stopped = True
                                 print(f"[frame {frame_index}] Kivi {s['stone_id']} ohitti lahi-hoglinen - lopetetaan seuranta.")
+
+                            # v6.16: taaksepain liikkuva rata ei ole heitetty kivi (katso TRACK_BACKWARD_STOP_CM)
+                            if (not stopped and TRACK_BACKWARD_STOP_CM > 0 and len(history) >= 10
+                                    and history[-1][0] - history[0][0] >= stop_tracking_frames - 1):
+                                _y_now = float(np.median([h[2] for h in history[-5:]]))
+                                _y_then = float(np.median([h[2] for h in history[:5]]))
+                                if _y_now - _y_then > TRACK_BACKWARD_STOP_CM:
+                                    stopped = True
+                                    if not s.get("confirmed"):
+                                        s["pending_rows"] = []
+                                    print(f"[frame {frame_index}] Rata {s['stone_id']} liikkuu taaksepain "
+                                          f"({_y_now - _y_then:.0f} cm / {STOP_TRACKING_SECONDS:.0f} s) - ei heitetty kivi, lopetetaan seuranta.")
 
                             # Testi_05_03: puolitetulla ruututaajuudella (vain parilliset ruudut) historian ikkuna on parillinen ->
                             # ikkunan pituus ei koskaan tayta tasan stop_tracking_frames; sallitaan 1 ruudun vajaus.

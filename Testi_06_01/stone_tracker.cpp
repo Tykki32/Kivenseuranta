@@ -1643,7 +1643,25 @@ static const int g_granite_down = getenv("GRANITE_DOWN") ? atoi(getenv("GRANITE_
 // tarvita. S = (max-min)*sdiv[max] pyoristettyna, TASMALLEEN OpenCV:n uint8-kaava
 // (sdiv[i] = round(255*4096/i), s = (diff*sdiv[v] + 2048) >> 12), tarkistettu cvtColor-tulosta vastaan.
 // ------------------------------------------------------------------
+static bool satSimdOk();
+static double g_sat_us[2] = {0.0, 0.0};   // kaynnistysmittaus 300x300: [skalaari, cvtColor] mikrosekuntia
+static std::atomic<int> g_fast_masks{1};   // v6.16: maskit OpenCV:n SIMD-funktioilla (sama tulos; tarkistetaan kaynnistyksessa)
+
+static cv::Mat satU8FromBgrScalar(const cv::Mat& bgr);
 static cv::Mat satU8FromBgr(const cv::Mat& bgr)
+{
+    // v6.16: cvtColor(BGR2HSV) kayttaa SAMAA kokonaislukukaavaa (sdiv-taulukko, >> 12) SIMD:lla; S-kanava poimitaan.
+    // satSimdOk() vertaa kerran satunnaisella kuvalla skalaariversioon -> jos OpenCV-versio laskisi toisin, kaytetaan vanhaa.
+    if (g_fast_masks.load(std::memory_order_relaxed) && satSimdOk()) {
+        cv::Mat hsv, sat;
+        cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
+        cv::extractChannel(hsv, sat, 1);
+        return sat;
+    }
+    return satU8FromBgrScalar(bgr);
+}
+
+static cv::Mat satU8FromBgrScalar(const cv::Mat& bgr)
 {
     static int sdiv[256];
     static const bool init = []() {
@@ -1663,6 +1681,41 @@ static cv::Mat satU8FromBgr(const cv::Mat& bgr)
         }
     }
     return sat;
+}
+
+static bool satSimdOk()
+{
+    static const bool ok = []() {
+        cv::Mat img(257, 263, CV_8UC3);
+        cv::RNG rng(12345);
+        rng.fill(img, cv::RNG::UNIFORM, 0, 256);
+        for (int i = 0; i < 256; ++i)          // kaikki maksimiarvot ja harmaat (diff = 0) mukaan
+            img.at<cv::Vec3b>(i, 0) = cv::Vec3b((uchar)i, (uchar)i, (uchar)(i / 2)), img.at<cv::Vec3b>(i, 1) = cv::Vec3b((uchar)i, (uchar)i, (uchar)i);
+        cv::Mat hsv, a;
+        cv::cvtColor(img, hsv, cv::COLOR_BGR2HSV);
+        cv::extractChannel(hsv, a, 1);
+        cv::Mat b = satU8FromBgrScalar(img);
+        if (cv::countNonZero(a != b) != 0)
+            return false;
+        // sama tulos -> kaytetaan cvtColor-polkua vain jos se on TALLA koneella nopeampi (GCC vektoroi skalaarisilmukan,
+        // MSVC ei valttamatta): 300x300-kuva, paras 5 toistosta kummallekin.
+        cv::Mat big(300, 300, CV_8UC3);
+        rng.fill(big, cv::RNG::UNIFORM, 0, 256);
+        auto best = [&](auto fn) {
+            double bmin = 1e9;
+            for (int k = 0; k < 5; ++k) {
+                auto t0 = std::chrono::steady_clock::now();
+                fn();
+                bmin = std::min(bmin, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
+            }
+            return bmin;
+        };
+        const double t_simd = best([&]() { cv::Mat h, o; cv::cvtColor(big, h, cv::COLOR_BGR2HSV); cv::extractChannel(h, o, 1); });
+        const double t_scalar = best([&]() { cv::Mat o = satU8FromBgrScalar(big); });
+        g_sat_us[0] = t_scalar; g_sat_us[1] = t_simd;
+        return t_simd < t_scalar;
+    }();
+    return ok;
 }
 
 static const int g_granite_open = getenv("GRANITE_OPEN") ? atoi(getenv("GRANITE_OPEN")) : 5;
@@ -1712,8 +1765,15 @@ static cv::Mat graniteDarkness(const cv::Mat& frame_bgr)
 static cv::Mat createGraniteMaskFromParts(const cv::Mat& sat_ch, const cv::Mat& darkness, int open_override)
 {
     PT gpt;
-    cv::Mat mask = cv::Mat::zeros(darkness.size(), CV_8UC1);
-
+    cv::Mat mask;
+    if (g_fast_masks.load(std::memory_order_relaxed)) {
+        // v6.16: sama ehto OpenCV:n vektorifunktioilla (sat < MAX_SAT JA darkness > MIN_DARK -> 255)
+        cv::Mat low_sat, dark_enough;
+        cv::compare(sat_ch, cv::Scalar(STONE_MAX_SATURATION), low_sat, cv::CMP_LT);
+        cv::compare(darkness, cv::Scalar((float)STONE_MIN_DARKNESS), dark_enough, cv::CMP_GT);
+        cv::bitwise_and(low_sat, dark_enough, mask);
+    } else {
+    mask = cv::Mat::zeros(darkness.size(), CV_8UC1);
     for (int r = 0; r < mask.rows; ++r) {
         const uchar* satp = sat_ch.ptr<uchar>(r);
         const float* darkp = darkness.ptr<float>(r);
@@ -1723,6 +1783,7 @@ static cv::Mat createGraniteMaskFromParts(const cv::Mat& sat_ch, const cv::Mat& 
             bool dark_enough = darkp[c] > (float)STONE_MIN_DARKNESS;
             mp[c] = (low_saturation && dark_enough) ? 255 : 0;
         }
+    }
     }
 
     profAdd(P_GM_LOOP, gpt.lap());
@@ -1869,6 +1930,13 @@ static cv::Mat suppressStaticBackground(
 
 static cv::Mat createForegroundFromWhitened(const cv::Mat& crop_filtered_bgr)
 {
+    if (g_fast_masks.load(std::memory_order_relaxed)) {
+        // v6.16: valkaistu (255,255,255) -> 0, muut 255
+        cv::Mat white, mask;
+        cv::inRange(crop_filtered_bgr, cv::Scalar(255, 255, 255), cv::Scalar(255, 255, 255), white);
+        cv::bitwise_not(white, mask);
+        return mask;
+    }
     cv::Mat mask(crop_filtered_bgr.size(), CV_8UC1);
     for (int r = 0; r < mask.rows; ++r) {
         const cv::Vec3b* pptr = crop_filtered_bgr.ptr<cv::Vec3b>(r);
@@ -6615,6 +6683,11 @@ PYBIND11_MODULE(stone_tracker, m)
         g_grid_skip = mode; g_skip_score = score; g_skip_agree_cm = agree_cm;
     }, py::arg("mode"), py::arg("score") = 0.90, py::arg("agree_cm") = 1.0);
     m.def("set_fine_climb", [](int mode) { g_fine_climb = mode; }, py::arg("mode"));
+    m.def("set_fast_masks", [](int on) {
+        g_fast_masks = on ? 1 : 0;
+        const bool simd = satSimdOk();
+        return py::make_tuple(simd, g_sat_us[0], g_sat_us[1]);
+    }, py::arg("on"));
     m.def("fine_climb_stats", []() {
         std::lock_guard<std::mutex> lk(g_fc_mx);
         py::dict d; long long n = g_fc_n.load();

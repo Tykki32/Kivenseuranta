@@ -217,6 +217,31 @@ MAH00014 (sandbox, kaksi ajoa rinnakkain):
 Kokeiltu ja hylätty: **LM-tarkennuksen keventäminen 10–24 m:n alueella** (1 ulkokierros / ei 2. LM:ää / ≤ 10 iteraatiota):
 LM alueella −78…−85 %, mutta seuranta kokonaisuudessaan vain −6…−7 %, ja 3–4 heittoa 24:stä katosi (paikkavirhe 1 %:ssa päivityksistä > 10 cm).
 
+## v6.16: taaksepäin liikkuvat radat pois + SIMD-maskit
+**Mihin seurannan työ kuluu** (MAH00014, v6.15, kiven päivitykset luokiteltuina radan lopputuloksen mukaan):
+
+| | ratoja | päivityksiä | seurannan ajasta |
+|---|---|---|---|
+| heitot | 24 | 43 % | 39 % |
+| vahvistettu, ei heitto (pelaajat, lakaisijat, takaisin vietävät kivet) | 140 | 57 % | 60 % |
+| vahvistamaton ehdokas | 13 | 1 % | 1 % |
+
+Ei-heittoradat ovat enimmäkseen 1–10 m heitetystä kivestä 26–32 m:n alueella. Kokeillut erottelut:
+* **Taaksepäin liikkuminen (käytössä, `TRACK_BACKWARD_STOP_CM=30`):** kivi ei liiku taaksepäin. Kaikilla 24 heitolla Y:n kasvu minkä tahansa
+  sekunnin aikana on 0 cm; ei-heitoista suurella osalla 40–100 cm. Sääntö: viiden viimeisen ja sekuntia aiemman viiden paikan mediaanien ero > 30 cm
+  → seuranta lopetetaan.
+* Sovituksen laatu (rms, tarkka-osuus) ei erota: heittojen alussa (heittäjä pitää kivestä) rms 7–12 px ja lakaisijoiden peittäessä myöhemmin > 10 px.
+* Haun tauottaminen heiton lentäessä: ei käy – seuraavan heiton rata alkaa usein, kun edellisen heiton/lakaisijan rata on vielä 10–26 m:ssä.
+* Kaukohoglinen takana olevat radat heiton lentäessä: vain 5,6 %, ja riski (lakaisija voi olla kiven edellä) → ei käytössä.
+
+**SIMD-maskit (`FAST_MASKS=1`):** graniittimaskin kynnys (`cv::compare`), etualamaski (`cv::inRange`) ja saturaatio (`cvtColor` BGR→HSV, S-kanava)
+OpenCV:n vektorifunktioilla. Tulos tavutasolla sama (saturaatio tarkistetaan käynnistyksessä vanhaa laskentaa vastaan, ja nopeampi tapa valitaan
+mittaamalla: tuloste `SEURANTA: nopeat maskit; saturaatio ...`). Windowsin MSVC ei välttämättä vektoroi vanhoja silmukoita (kamera-ajossa saturaatio
+1,8 ms/kivi vs. sandbox 0,75 ms).
+
+MAH00014 (sandbox, rinnakkain): samat 24 heittoa ja hog-tulokset; kivien päivitysten aika 478 → 442 s (−7,5 %), SEURANTA 18,0 → 17,1 ms/ruutu.
+(Simuloitu säästö 10,6 %; osa lopetetuista pelaajista löytyy haulla uudelleen.)
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).
