@@ -5351,6 +5351,23 @@ static bool solveLinear(std::vector<double>& A, std::vector<double>& b, int n, s
     return true;
 }
 
+// v5.7: riippumattomat tehtavat 0..n-1 usealle saikeelle (dynaaminen jako). Jokainen tehtava kirjoittaa vain omaan
+// tulospaikkaansa -> tulos on bitti-identtinen perakkaisen silmukan kanssa.
+template <class F>
+static void parallelTasks(int n, F fn)
+{
+    unsigned hw = std::thread::hardware_concurrency();
+    int nt = std::min(n, (int)std::max(1u, std::min(8u, hw == 0 ? 2u : hw)));
+    if (nt <= 1) { for (int i = 0; i < n; ++i) fn(i); return; }
+    std::atomic<int> next(0);
+    auto worker = [&]() { for (int i = next.fetch_add(1); i < n; i = next.fetch_add(1)) fn(i); };
+    std::vector<std::thread> th;
+    th.reserve((size_t)nt - 1);
+    for (int k = 1; k < nt; ++k) th.emplace_back(worker);
+    worker();
+    for (auto& x : th) x.join();
+}
+
 } // namespace pfit
 
 
@@ -5413,13 +5430,16 @@ static py::dict fit_stone_profile_cpp(
         double X0 = p[(size_t)(3 + N_SHAPE + 2 * si)], Y0 = p[(size_t)(3 + N_SHAPE + 2 * si + 1)];
         stoneBlock(c, si, X0, Y0, u.R, u.H, u.handle, u.deltas_full, out);
     };
-    auto fullResiduals = [&](const std::vector<double>& p, std::vector<double>& r) {
+    // v5.7: par = true -> kivien lohkot rinnan (lohkot ovat toisistaan riippumattomia, kukin omaan kohtaansa r:ssa -> sama tulos)
+    auto fullResiduals = [&](const std::vector<double>& p, std::vector<double>& r, bool par = false) {
         r.assign(m, 0.0);
         Unpacked u = unpack(c, p, handle_min, handle_max);
-        for (int i = 0; i < ns; ++i) {
+        auto one = [&](int i) {
             double X0 = p[(size_t)(3 + N_SHAPE + 2 * i)], Y0 = p[(size_t)(3 + N_SHAPE + 2 * i + 1)];
             stoneBlock(c, i, X0, Y0, u.R, u.H, u.handle, u.deltas_full, &r[off[(size_t)i]]);
-        }
+        };
+        if (par) parallelTasks(ns, one);
+        else for (int i = 0; i < ns; ++i) one(i);
         for (int k = 0; k < N_SHAPE; ++k) r[m_data + (size_t)k] = p[(size_t)(3 + k)] * c.reg_eff;
     };
 
@@ -5428,14 +5448,16 @@ static py::dict fit_stone_profile_cpp(
     const double eps = 1e-6;
     {
         py::gil_scoped_release release;
-        fullResiduals(params, resid);
+        fullResiduals(params, resid, true);
         for (double v : resid) cost += v * v;
 
         std::vector<double> J(m * (size_t)np), JTJ((size_t)np * np), JTr((size_t)np), A, b, delta, tmp(m);
         for (int it = 0; it < max_iterations; ++it) {
             std::fill(J.begin(), J.end(), 0.0);
-            for (int j = 0; j < np; ++j) {
-                if (j == 0 && r_fixed > 0.0) continue;      // kiinteä R: sarake nolla
+            // v5.7: Jacobin sarakkeet rinnan - kukin sarake j kirjoittaa vain J[.., j]:hin ja lukee params/resid -taulukoita
+            // (ei muutu taman vaiheen aikana) -> bitti-identtinen perakkaisen silmukan kanssa.
+            parallelTasks(np, [&](int j) {
+                if (j == 0 && r_fixed > 0.0) return;      // kiinteä R: sarake nolla
                 double step = eps * std::max(1.0, std::abs(params[(size_t)j]));
                 std::vector<double> pp = params;
                 pp[(size_t)j] += step;
@@ -5452,7 +5474,7 @@ static py::dict fit_stone_profile_cpp(
                     fullResiduals(pp, rp);
                     for (size_t k = 0; k < m; ++k) J[k * (size_t)np + (size_t)j] = (rp[k] - resid[k]) / step;
                 }
-            }
+            });
             std::fill(JTJ.begin(), JTJ.end(), 0.0);
             std::fill(JTr.begin(), JTr.end(), 0.0);
             for (size_t k = 0; k < m; ++k) {
@@ -5477,7 +5499,7 @@ static py::dict fit_stone_profile_cpp(
                 if (!solveLinear(A, b, np, delta)) { lam *= 10.0; continue; }
                 std::vector<double> trial = params;
                 for (int a = 0; a < np; ++a) trial[(size_t)a] += delta[(size_t)a];
-                fullResiduals(trial, trial_resid);
+                fullResiduals(trial, trial_resid, true);
                 double trial_cost = 0.0;
                 for (double v : trial_resid) trial_cost += v * v;
                 if (trial_cost < cost) {

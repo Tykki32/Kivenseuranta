@@ -1069,6 +1069,8 @@ SPAWN_NB_MIN = int(os.environ.get("SPAWN_NB_MIN", "14"))
 SPAWN_NB_MAX = int(os.environ.get("SPAWN_NB_MAX", "45"))
 SPAWN_ABS_X_MAX = float(os.environ.get("SPAWN_ABS_X_MAX", "65"))
 SPAWN_SCORE_MAX = float(os.environ.get("SPAWN_SCORE_MAX", "0.9"))
+SEEK_MAX_SKIP = int(os.environ.get("SEEK_MAX_SKIP", "25"))   # v5.7: havaintoruutujen luku: eteenpain luku jos <= nain monta ruutua (0 = aina haku, kuten ennen)
+SCAN_WORKERS = max(1, int(os.environ.get("SCAN_WORKERS", "3")))   # v5.7: profiilin opettelun kandidaattiskannaus rinnan (1 = perakkain, kuten ennen)
 LIVE_PIPELINE = os.environ.get("LIVE_PIPELINE", "1") == "1"  # liukuhihna: ruudun valmistelu omassa saikeessa
 VIDEO_PREFETCH = os.environ.get("VIDEO_PREFETCH", "1") == "1"  # videon luku omassa saikeessa elavassa vaiheessa
 PHOTO_APPLY_DELAY_FRAMES = int(os.environ.get("PHOTO_APPLY_DELAY_FRAMES", "10"))  # valotasapainon uusi arvo kayttoon tasan N ruudun paasta (toistettava ajo)
@@ -3086,6 +3088,17 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
     # sitten sekvenssiluku - kalliit vaiheet (vaanto+taustavaimennus+
     # kandidaattitunnistus) tehdaan VAIN halutuille (naytteistetyille)
     # indekseille, muut framet vain dekoodataan (halpa) ohi.
+    def _scan_one(frame):
+        frame_u = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
+        return stone_tracker.scan_stone_candidates(
+            frame_u, background_reference_undistorted,
+            H_final, K, R, t,
+            min_area, max_area, min_fill_ratio, min_aspect_ratio,
+            x_min, x_max, y_min, y_max,
+            pixels_per_cm, output_x_min_cm, output_y_max_cm,
+            30.0, *play_roi
+        )
+
     def scan_indices(indices):
         if not indices:
             return {}
@@ -3094,21 +3107,29 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
         cap.set(cv2.CAP_PROP_POS_FRAMES, indices[0])
         idx = indices[0]
         last = indices[-1]
-        while idx <= last:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            if idx in wanted:
-                frame_u = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
-                cache[idx] = stone_tracker.scan_stone_candidates(
-                    frame_u, background_reference_undistorted,
-                    H_final, K, R, t,
-                    min_area, max_area, min_fill_ratio, min_aspect_ratio,
-                    x_min, x_max, y_min, y_max,
-                    pixels_per_cm, output_x_min_cm, output_y_max_cm,
-                    30.0, *play_roi
-                )
-            idx += 1
+        # v5.7: ruudut luetaan jarjestyksessa tassa saikeessa, mutta remap + kandidaattiskannaus (GIL vapaana) ajetaan
+        # SCAN_WORKERS-saikeessa rinnan. Ruudut ovat toisistaan riippumattomia ja tulos tallennetaan ruudun indeksilla -> sama tulos.
+        pending = {}
+        ex = ThreadPoolExecutor(max_workers=SCAN_WORKERS) if SCAN_WORKERS > 1 else None
+        try:
+            while idx <= last:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                if idx in wanted:
+                    if ex is None:
+                        cache[idx] = _scan_one(frame)
+                    else:
+                        pending[idx] = ex.submit(_scan_one, frame)
+                        if len(pending) >= 2 * SCAN_WORKERS:      # rajoitetaan muistissa odottavia ruutuja
+                            oldest = min(pending)
+                            cache[oldest] = pending.pop(oldest).result()
+                idx += 1
+            for i in sorted(pending):
+                cache[i] = pending[i].result()
+        finally:
+            if ex is not None:
+                ex.shutdown(wait=True)
         return cache
 
     def build_track_from_cache(cache, half_window_frames):
@@ -3429,6 +3450,30 @@ def alpha_contour(ao, level):
     return c, float(area)
 
 
+class _ForwardFrameReader:
+    """v5.7: ruutu indeksilla. Jos haluttu ruutu on lahella edessapain (<= SEEK_MAX_SKIP ruutua), luetaan eteenpain (grab) - halvempi
+    kuin cap.set(CAP_PROP_POS_FRAMES) (~45 ms: haku avainruutuun + dekoodaus eteenpain). Muuten haku kuten ennen. Sama ruutu
+    (H.264-dekoodaus on deterministinen) -> sama tulos."""
+
+    def __init__(self, cap):
+        self.cap = cap
+        self.next_idx = None        # seuraavan read()-kutsun ruutu (None = tuntematon -> haku)
+
+    def read(self, idx):
+        idx = int(idx)
+        if self.next_idx is None or idx < self.next_idx or idx - self.next_idx > SEEK_MAX_SKIP:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        else:
+            while self.next_idx < idx:
+                if not self.cap.grab():
+                    self.next_idx = None
+                    return False, None
+                self.next_idx += 1
+        ok, frame = self.cap.read()
+        self.next_idx = idx + 1 if ok else None
+        return ok, frame
+
+
 def attach_alpha_observations(video_path, calib, observations):
     """Lukee havaintojen ruudut (frame_idx) ja liittaa jokaiseen alfa-kartan ('alpha_obs'). Hylkaa: ei graniittia /
     tausta ei mitattavissa, suhde ALPHA_RATIO_MIN..MAX:n ulkopuolella, sääntö 1 (tumma alue kiven ymparilla).
@@ -3441,9 +3486,9 @@ def attach_alpha_observations(video_path, calib, observations):
     ref_u = calib["frame_undistorted"]
     out = []
     st_ = {"in": len(observations), "ei_kuvaa": 0, "ei_graniittia": 0, "suhde": 0, "tumma": 0, "ala": 0}
+    reader = _ForwardFrameReader(cap)
     for o in observations:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(o["frame_idx"]))
-        ok, frame = cap.read()
+        ok, frame = reader.read(o["frame_idx"])
         if not ok:
             st_["ei_kuvaa"] += 1
             continue
@@ -3609,6 +3654,7 @@ def build_stone_color_reference(video_file, calib, pose, local_pts_body,
     n_observations_skipped_resolution = 0
 
     cap = cv2.VideoCapture(video_file)
+    reader = _ForwardFrameReader(cap)
 
     for obs in observations:
 
@@ -3638,8 +3684,7 @@ def build_stone_color_reference(video_file, calib, pose, local_pts_body,
             n_observations_skipped_resolution += 1
             continue
 
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(obs["frame_idx"]))
-        ok, frame = cap.read()
+        ok, frame = reader.read(obs["frame_idx"])
 
         if not ok:
             continue
@@ -4206,7 +4251,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_03 v5.6 (pohja: Testi_05_02 v5.2; GPU-vaihe B valinnainen; STAB_WORKERS/PIPE_DEPTH/INTRA_PARALLEL) (2026-10-01)"
+SOFTWARE_VERSION = "Testi_05_03 v5.7 (pohja: v5.6; BLAS 1 saie, siluettitarkennus kiville rinnan, kalibroinnin rinnakkaistus; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -4418,6 +4463,7 @@ class _LivePipeline:
         _e[0] += time.perf_counter() - t0; _e[1] += 1
 
     def _run_a(self):
+        hog_analyysi.lower_thread_priority()      # v5.7: taustasaie (A) -> SEURANTA saa ytimet ensin
         if STAB_WORKERS > 1:
             return self._run_a_parallel()
         try:
@@ -4455,7 +4501,7 @@ class _LivePipeline:
         joten tulos on identtinen. A:n palveluaika = taman saikeen oma kierto (sis. odotuksen tyontekijoita), tyontekijoiden yhteenlaskettu aika raportoidaan 'bg:'-rivilla."""
         import collections
         from concurrent.futures import ThreadPoolExecutor
-        ex = ThreadPoolExecutor(max_workers=STAB_WORKERS)
+        ex = ThreadPoolExecutor(max_workers=STAB_WORKERS, initializer=hog_analyysi.lower_thread_priority)
         pending = collections.deque()
 
         def _job(gray):
@@ -4510,6 +4556,7 @@ class _LivePipeline:
 
     def _run_b(self):
         import queue as _queue
+        hog_analyysi.lower_thread_priority()      # v5.7: taustasaie (B)
         try:
             while not self._stop.is_set():
                 t0 = time.perf_counter()
@@ -4574,6 +4621,7 @@ class _FramePrefetcher:
 
     def _run(self):
         import queue as _queue
+        hog_analyysi.lower_thread_priority()      # v5.7: taustasaie (videon luku)
         while not self._stop.is_set():
             try:
                 f = self._engine.read()
@@ -4834,7 +4882,7 @@ def run_pipeline(
     # HAKU-kutsu voi olla kerrallaan kesken (SEARCH_EVERY_N_FRAMES
     # varmistaa etta edellinen on aina jo koottu ennen seuraavaa).
     haku_executor = ThreadPoolExecutor(max_workers=1)
-    photo_executor = ThreadPoolExecutor(max_workers=1)
+    photo_executor = ThreadPoolExecutor(max_workers=1, initializer=hog_analyysi.lower_thread_priority)
     frame_prefetcher = None
     photo_future = None
     live_prep = _LivePrep(photo_executor, fps, width, height)
