@@ -4288,7 +4288,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.5 (live-kamera + puskuri; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.6 (live-kamera + puskuri; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
@@ -7257,7 +7257,7 @@ def _start_live(args):
             return live_source.CameraSource(device=dev, cap_w=cam_w or 1920, cap_h=cam_h or 1080, out_w=out_w, out_h=out_h,
                                             target_fps=args.live_fps, buffer_s=buffer_s, keep_back_s=args.live_taakse_s,
                                             fourcc=args.live_fourcc, backend_name=backend, min_keep_back_s=min_back_s,
-                                            conversion=conv)
+                                            conversion=conv, raw_order=args.live_raakajarjestys)
 
         src = None
         if args.live_muunnos == "auto" and sys.platform.startswith("win") and not args.live_taustaj:
@@ -7267,7 +7267,7 @@ def _start_live(args):
                 cand = live_source.CameraSource(device=None, cap_w=cam_w or 1920, cap_h=cam_h or 1080, out_w=out_w, out_h=out_h,
                                                  target_fps=args.live_fps, buffer_s=buffer_s, keep_back_s=args.live_taakse_s,
                                                  fourcc=args.live_fourcc, backend_name="MSMF", min_keep_back_s=min_back_s,
-                                                 conversion="gpu")
+                                                 conversion="gpu", raw_order=args.live_raakajarjestys)
                 if cand.conversion == "gpu":
                     src = cand
                 else:
@@ -7393,6 +7393,8 @@ if __name__ == "__main__":
     _arg_parser.add_argument("--live-muunnos", default="auto", choices=["auto", "ajuri", "raw", "gpu"],
                              help="Kameran kuvan muunnos BGR:ksi: auto (oletus; Windowsissa ensin MSMF + gpu, jos ei onnistu DirectShow + ajuri), "
                                   "ajuri, raw (raaka YUY2 + OpenCV), gpu (raaka YUY2 + OpenCL).")
+    _arg_parser.add_argument("--live-raakajarjestys", default=None, choices=["YUY2", "YVYU", "UYVY"],
+                             help="Pakota raakakuvan tavujarjestys (ohittaa automaattisen valinnan; vain selvasti vaara kuva hylataan).")
     _arg_parser.add_argument("--live-fps", type=float, default=25.0,
                              help="Kasittelyn tavoite-fps: jos kamera antaa selvasti enemman (esim. 50), kaytetaan joka n:s ruutu. 0 = kaikki.")
     _arg_parser.add_argument("--live-puskuri-s", type=float, default=90.0, help="Puskurin enimmaiskoko sekunteina (RAM: 1280x720 ~ 69 MB/s).")

@@ -242,7 +242,7 @@ class CameraSource(_SourceBase):
 
     def __init__(self, device=None, cap_w=1920, cap_h=1080, out_w=1280, out_h=720, target_fps=0.0,
                  buffer_s=75.0, keep_back_s=40.0, recorder=None, fourcc=None, backend_name=None, min_keep_back_s=None,
-                 conversion="ajuri"):
+                 conversion="ajuri", raw_order=None):
         super().__init__()
         self.recorder = recorder
         backend, bname = _backend()
@@ -303,13 +303,25 @@ class CameraSource(_SourceBase):
                 for _ in range(3):
                     ok_r, raw = raw_cap.read()
             ds = []
+            chan = {}
             if raw is not None and np.asarray(raw).size == w0 * h0 * 2:
                 for order in _RAW_CODES:
+                    if raw_order and order != raw_order:
+                        continue
                     t = raw_yuy2_to_bgr(raw, w0, h0, self.out_w, self.out_h, gpu=False, order=order)
-                    ds.append((float(np.mean(np.abs(t.astype(np.int16) - ref))), order))
+                    diff = t.astype(np.int16) - ref
+                    # v6.6: MEDIAANI (liikkuvat alueet eivat vaaristä) + kanavittainen etumerkillinen keskiero (systemaattinen savyero)
+                    ds.append((float(np.median(np.abs(diff).mean(axis=2))), order))
+                    chan[order] = [round(float(diff[:, :, c].mean()), 1) for c in range(3)]
                 ds.sort()
             best = ds[0] if ds else None
-            ok_conv = best is not None and (best[0] < 5.0 or (len(ds) > 1 and best[0] < 0.5 * ds[1][0] and best[0] < 20.0))
+            if raw_order:
+                ok_conv = best is not None and best[0] < 20.0      # pakotettu jarjestys: hylataan vain selvasti vaara kuva
+            else:
+                ok_conv = best is not None and best[0] < 20.0 and (best[0] < 4.0 or (len(ds) > 1 and best[0] < 0.7 * ds[1][0]))
+            if best is not None:
+                print("Live: varitarkistus (mediaaniero ajurin kuvaan; pienin = oikea tavujarjestys): "
+                      + ", ".join(f"{o} {d:.1f}" for d, o in ds) + f" | {best[1]} kanavittain B/G/R {chan.get(best[1])}")
             if ok_conv and conversion == "gpu":
                 try:
                     raw_yuy2_to_bgr(raw, w0, h0, self.out_w, self.out_h, gpu=True, order=best[1])
