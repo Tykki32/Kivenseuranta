@@ -137,6 +137,34 @@ Puskuri säilyttää 40 s historiaa, mutta täyttyessään (kalibroinnin viive 5
 pintavarireferenssin jälkeen (`unpin_all`). Lisäksi `BufferedCapture.grab()` ei enää hae ohitettavaa ruutua
 (eteenpäinluvussa välissä olevat ruudut saavat olla jo poistettu). Sandbox: MAH00014 `--live-sim --live-taakse-s 31` läpi.
 
+## v6.11: seurannan laskennan keventäminen + nopeustesti (`tools/nopeustesti.py`)
+Kamera-ajossa (tallennus päällä) kone on täysin kuormitettu ja kaikki laskenta hidastui ~30 % → laskentaa on vähennettävä.
+Kolme muutosta (sandbox, MAH00014 koko video, ilman debug-videota):
+
+1. **Prioriteetti (`LIVE_BG_PRIORITY=1`, oletus pois):** tallennuksen ja debug-videon ffmpeg-prosessit (Windows
+   BELOW_NORMAL_PRIORITY_CLASS) sekä tallennussäie alemmalle prioriteetille. Kamerasäiettä ei lasketa (ajuri pudottaisi ruutuja).
+   Ei muuta tuloksia. Mitataan nopeustestin ajossa `prio`.
+2. **Peittolaskenta (`OVERLAP_FAST=1`, oletus):** `hullOverlapScore` yhdellä uudelleenkäytettävällä pohjalla (ei kahta väliaikaista
+   kuvaa + countNonZero). Tulos tavutasolla identtinen. Hyöty jäi pieneksi: 0,014 ms/arvio molemmilla tavoilla.
+3. **Ristikkohaun ohitus (`GRID_SKIP`) kokeiltiin – EI käytössä:** varjotila (21 363 kiven päivitystä): mean-shiftien pistemäärä
+   on harvoin korkea (mediaani 0,66) ja ristikkohaun tulos valitaan ~44 %:ssa päivityksistä. Kynnyksellä 0,90 / 1 cm ohitettaisiin
+   vain 1 % päivityksistä ja niistä 46 % muuttuisi (jopa 32 cm). **Tilalle: hienon vaiheen mäennousu (`FINE_CLIMB=1`, oletus).**
+   SEURANNAN ristikkohaun hieno vaihe kävi läpi kaikki ~100 ehdokasta (1,5 cm välein ±7 cm); nyt mäennousu karkean parhaan
+   pisteen ympäriltä: 14,6 arviota/haku. LM tarkentaa paikan joka tapauksessa.
+   * ristikkohaun CPU 12,7 → 4,3 ms/ruutu (säästö ~8 ms suoritinaikaa ruudulta; auttaa täysin kuormitetulla koneella).
+     Kiven päivityksen seinäkello vain 25,0 → 22,6 ms (ristikko ajettiin jo mean-shiftien rinnalla); sandboxin tiedostoajossa
+     (kone ei täysin kuormitettu) pääsäie 29,9 → 29,4 ms/ruutu. Vaikutus kamera-ajoon mitataan nopeustestin live-tilalla.
+   * heitot: kaikki 23 perustason hog-heittoa löytyvät (+1 uusi); suurin ero hog-hog 0,007 s, nopeus 0,002 m/s,
+     x kaukohoglinella 0,38 cm, suunta 0,04°. Varjotila (`FINE_CLIMB=2`): sama piste 48 %, ero ka 3 cm – LM tasoittaa.
+
+**Nopeustesti omalla koneella** (sama testi kaikille, videotiedostolla):
+```
+python tools/nopeustesti.py --video D:\Tikku\Live\live_20261002_163845_live.mp4 --paneelit D:\Tikku\Suorita\MAH00014_leikattu_panel_corners.txt
+```
+Ajaa ajot `v610` (vanha laskenta), `kiipea` (v6.11) ja `prio` kahdessa tilassa: `tiedosto` (deterministinen → heitot verrataan
+v610:een) ja `live` (`--live-sim` reaaliaikatahdissa + `--live-tallenna`, kuten kamera-ajo → viive ja pudotukset).
+Yhteenveto `nopeustesti_yhteenveto.txt` videon kansioon (`nopeustesti_<aika>`). Nopea kokeilu: `--max-frame 6000`.
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).

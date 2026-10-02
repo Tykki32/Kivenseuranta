@@ -341,7 +341,8 @@ class FfmpegPipeWriter:
     def __init__(self, path, fps, size, encoder):
         self._dead = False
         self._yuv = _yuv_input(size[0], size[1])
-        self._p = _sp.Popen(_ffmpeg_cmd(size[0], size[1], fps, encoder, path), stdin=_sp.PIPE, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        self._p = _sp.Popen(_ffmpeg_cmd(size[0], size[1], fps, encoder, path), stdin=_sp.PIPE, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                            **bg_popen_kwargs())
 
     def write(self, img):
         if self._dead:
@@ -383,10 +384,10 @@ def open_debug_writer(path, fps, size):
 # ei kokonaishyotya; koneella jossa on vapaita loogisia ytimia vaikutus voi olla toinen (vertailuajo: ajo "prio").
 # Windows: THREAD_PRIORITY_BELOW_NORMAL; Linux: saikeen nice +BG_NICE (oletus 5).
 
-def lower_thread_priority():
-    """Laskee KUTSUVAN saikeen prioriteettia (vain kun BG_PRIORITY=1). Virheet ohitetaan hiljaa."""
+def lower_thread_priority(env_name="BG_PRIORITY"):
+    """Laskee KUTSUVAN saikeen prioriteettia (vain kun env_name=1, oletus BG_PRIORITY). Virheet ohitetaan hiljaa."""
     import os as _o, sys as _s
-    if _o.environ.get("BG_PRIORITY", "0") != "1":
+    if _o.environ.get(env_name, "0") != "1":
         return
     try:
         if _s.platform == "win32":
@@ -397,6 +398,17 @@ def lower_thread_priority():
             _o.setpriority(_o.PRIO_PROCESS, threading.get_native_id(), int(_o.environ.get("BG_NICE", "5")))
     except Exception:
         pass
+
+
+def bg_popen_kwargs():
+    """v6.11: LIVE_BG_PRIORITY=1 -> ffmpeg-aliprosessit (debug-video, live-tallennus) alemmalle prioriteetille
+    (Windows BELOW_NORMAL_PRIORITY_CLASS, muuten nice +5). Vaikuttaa vain ajoitukseen; kuvat ja tulokset samat."""
+    import os as _o, sys as _s
+    if _o.environ.get("LIVE_BG_PRIORITY", "0") != "1":
+        return {}
+    if _s.platform == "win32":
+        return {"creationflags": getattr(_sp, "BELOW_NORMAL_PRIORITY_CLASS", 0x00004000)}
+    return {"preexec_fn": lambda: _o.nice(5)}
 
 
 class AsyncVideoWriter:

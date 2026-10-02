@@ -148,6 +148,24 @@ static std::atomic<long long> g_prof_n[P_COUNT];
 
 static inline void profAdd(ProfId id, long long ns) { g_prof_ns[id] += ns; g_prof_n[id] += 1; }
 
+// v6.11: hullOverlapScore ilman valiaikaisia kuvia (yksi uudelleenkaytettava pohja, arvot 1 = turvavyohyke, 2 = hulli) -> sama tulos
+static std::atomic<int> g_overlap_fast{1};
+// v6.11: yhdistelmahaun (locate_mode 5) ristikkohaun ohitus: 0 = pois, 1 = paalla (ristikko keskeytetaan kun mean-shiftit ovat yksimielisia
+// ja hyvia), 2 = varjotila (ristikko ajetaan aina, kirjataan mita ohitus olisi muuttanut -> grid_skip_dump()).
+static std::atomic<int> g_grid_skip{0};
+static double g_skip_score = 0.90;     // molempien mean-shiftien pistemaara >= tama
+static double g_skip_agree_cm = 1.0;   // mean-shiftien tulosten etaisyys <= tama
+struct GridSkipRec { double s1, s2, d12, pdev, grid_s, grid_d; int changed; double change_cm; };
+static std::mutex g_skip_mx;
+static std::vector<GridSkipRec> g_skip_recs;
+static std::atomic<long long> g_skip_n_eval{0}, g_skip_n_skip{0};
+// v6.11: SEURANNAN ristikkohaun HIENO vaihe maennousulla (8 naapuria, siirrytaan parhaaseen kunnes ei parane) kaikkien ~100 ehdokkaan
+// sijaan: 0 = pois (kaikki ehdokkaat), 1 = paalla, 2 = varjotila (molemmat, kirjataan ero -> fine_climb_stats()).
+static std::atomic<int> g_fine_climb{0};
+static std::atomic<long long> g_fc_n{0}, g_fc_same{0}, g_fc_evals{0}, g_fc_full_evals{0};
+static std::mutex g_fc_mx;
+static double g_fc_sum_d = 0.0, g_fc_max_d = 0.0, g_fc_sum_ds = 0.0, g_fc_max_ds = 0.0;
+
 // Testi_05_03 v5.6: kiven sisainen rinnakkaisuus (ristikkohaku + 2 mean-shiftia eri saikeissa); ohjaus Pythonista set_intra_parallel(0/1)
 static std::atomic<int> g_intra_parallel{0};
 // v5.10: SEURANNAN ristikkohaun HIENON vaiheen ehdokkaat GRID_THREADS saikeelle (oletus 2; 1 = perakkain kuten ennen). Kukin saie kay
@@ -442,6 +460,41 @@ static double hullOverlapScore(
     for (size_t i = 0; i < hull_int.size(); ++i)
         shifted[i] = cv::Point(hull_int[i].x - x0, hull_int[i].y - y0);
 
+    if (g_overlap_fast.load(std::memory_order_relaxed)) {
+        // v6.11: yksi saiekohtainen pohja: turvavyohyke ensin arvolla 1, hulli paalle arvolla 2. Arvo 2 = hullin sisalla (kuten
+        // erillinen hullikuva), arvo 1 = turvavyohykkeessa mutta ei hullissa (= in_band) -> laskurit tasmalleen samat.
+        std::vector<cv::Point> margin_sh(margin_int.size());
+        for (size_t i = 0; i < margin_int.size(); ++i)
+            margin_sh[i] = cv::Point(margin_int[i].x - x0, margin_int[i].y - y0);
+        const int W = x1 - x0, Hh = y1 - y0;
+        thread_local std::vector<uchar> buf;
+        if (buf.size() < (size_t)W * (size_t)Hh) buf.resize((size_t)W * (size_t)Hh);
+        cv::Mat cv_(Hh, W, CV_8UC1, buf.data());
+        cv_.setTo(cv::Scalar(0));
+        const cv::Point* mp = margin_sh.data(); int mn = (int)margin_sh.size();
+        cv::fillPoly(cv_, &mp, &mn, 1, cv::Scalar(1));
+        const cv::Point* hp = shifted.data(); int hn = (int)shifted.size();
+        cv::fillPoly(cv_, &hp, &hn, 1, cv::Scalar(2));
+        int h_area = 0, ov = 0, band = 0, out_ov = 0;
+        for (int r = 0; r < Hh; ++r) {
+            const uchar* c = cv_.ptr<uchar>(r);
+            const uchar* m = mask_crop.ptr<uchar>(y0 + r) + x0;
+            for (int k = 0; k < W; ++k) {
+                const int v = c[k];
+                const int mm = m[k] > 0;
+                h_area += (v == 2);
+                ov += (v == 2) & mm;
+                band += (v == 1);
+                out_ov += (v == 1) & mm;
+            }
+        }
+        if (h_area == 0)
+            return 0.0;
+        double ins = (double)ov / (double)h_area;
+        double outs = band > 0 ? (double)out_ov / (double)band : 0.0;
+        return ins - HULL_OUTSIDE_PENALTY_WEIGHT * outs;
+    }
+
     std::vector<cv::Point> margin_shifted(margin_int.size());
     for (size_t i = 0; i < margin_int.size(); ++i)
         margin_shifted[i] = cv::Point(margin_int[i].x - x0, margin_int[i].y - y0);
@@ -610,9 +663,11 @@ static std::pair<cv::Point2d, double> gridSearchBestPar(
     const std::vector<cv::Point3d>& local_pts_search,
     const cv::Mat& mask_crop, int off_x, int off_y,
     const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
-    const std::vector<double>& x_vals, const std::vector<double>& y_vals, int n_threads)
+    const std::vector<double>& x_vals, const std::vector<double>& y_vals, int n_threads,
+    const std::atomic<bool>* cancel = nullptr)
 {
     const int nx = (int)x_vals.size();
+    if (cancel && cancel->load()) return { cv::Point2d(0.0, 0.0), -1.0 };
     n_threads = std::min(n_threads, nx);
     if (n_threads <= 1 || y_vals.empty())
         return gridSearchBest(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals, y_vals);
@@ -627,6 +682,7 @@ static std::pair<cv::Point2d, double> gridSearchBestPar(
         double best_score = -1.0;
         cv::Point2d best_xy(x_vals[(size_t)a], y_vals[0]);
         for (int i = a; i < b; ++i) {
+            if (cancel && cancel->load(std::memory_order_relaxed)) break;     // v6.11: tulos hylataan joka tapauksessa
             const double X = x_vals[(size_t)i];
             for (double Y : y_vals) {
                 auto hull = proj_.hull(X, Y);
@@ -1367,8 +1423,11 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
     const cv::Mat& mask_crop, int off_x, int off_y,
     double x_center, double x_half_range, double y_center, double y_half_range,
     double coarse_step, double fine_step,
-    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t)
+    const cv::Matx33d& K, const cv::Matx33d& R, const cv::Vec3d& t,
+    const std::atomic<bool>* cancel = nullptr)
 {
+    // v6.11: cancel (yhdistelmahaun ohitus) -> haku lopetetaan heti; kutsuja hylkaa tuloksen, joten keskeytyskohta ei vaikuta tulokseen.
+    auto cancelled = [cancel]() { return cancel && cancel->load(std::memory_order_relaxed); };
     auto x_vals = arangeVec(x_center - x_half_range, x_center + x_half_range + 1e-6, coarse_step);
     auto y_vals = arangeVec(y_center - y_half_range, y_center + y_half_range + 1e-6, coarse_step);
 
@@ -1406,6 +1465,7 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
         int max_ring = std::max({ ix0, nx - 1 - ix0, iy0, ny - 1 - iy0 });
 
         for (int ring = 0; ring <= max_ring && !early_stop; ++ring) {
+            if (cancelled()) return { cv::Point2d(x_center, y_center), -1.0 };
             for (int i = std::max(0, ix0 - ring); i <= std::min(nx - 1, ix0 + ring) && !early_stop; ++i) {
                 for (int j = std::max(0, iy0 - ring); j <= std::min(ny - 1, iy0 + ring); ++j) {
 
@@ -1435,6 +1495,7 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
             double cscore = best_score;
 
             while (true) {
+                if (cancelled()) return { cv::Point2d(x_center, y_center), -1.0 };
 
                 int ni_best = ci, nj_best = cj;
                 double n_best_score = cscore;
@@ -1494,7 +1555,55 @@ static std::pair<cv::Point2d, double> locateByGridSearchTrackingFast(
             g_gpu_stats.fallbacks += 1;
         }
     }
-    auto best2 = gridSearchBestPar(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2, g_grid_threads.load());
+    if (cancelled()) return { cv::Point2d(x_center, y_center), -1.0 };
+    const int fc = g_fine_climb.load(std::memory_order_relaxed);
+    std::pair<cv::Point2d, double> climb;
+    long long climb_evals = 0;
+    if (fc && !x_vals2.empty() && !y_vals2.empty()) {
+        // maennousu hienossa ristikossa karkean parhaan pisteen lahimmasta ruudusta
+        const int nx2 = (int)x_vals2.size(), ny2 = (int)y_vals2.size();
+        std::vector<double> sc((size_t)nx2 * ny2, std::numeric_limits<double>::quiet_NaN());
+        HullProjector hp(local_pts_search, K, R, t);
+        auto ev = [&](int i, int j) {
+            double& v = sc[(size_t)i * ny2 + j];
+            if (std::isnan(v)) {
+                v = hullOverlapScore(mask_crop, hp.hull(x_vals2[(size_t)i], y_vals2[(size_t)j]), off_x, off_y);
+                ++climb_evals;
+            }
+            return v;
+        };
+        int ci = (int)std::lround((best1.first.x - x_vals2[0]) / fine_step);
+        int cj = (int)std::lround((best1.first.y - y_vals2[0]) / fine_step);
+        ci = std::max(0, std::min(nx2 - 1, ci)); cj = std::max(0, std::min(ny2 - 1, cj));
+        double cs = ev(ci, cj);
+        while (true) {
+            int bi = ci, bj = cj; double bs = cs;
+            for (int di = -1; di <= 1; ++di)
+                for (int dj = -1; dj <= 1; ++dj) {
+                    if (!di && !dj) continue;
+                    int ni = ci + di, nj = cj + dj;
+                    if (ni < 0 || nj < 0 || ni >= nx2 || nj >= ny2) continue;
+                    double v = ev(ni, nj);
+                    if (v > bs) { bs = v; bi = ni; bj = nj; }
+                }
+            if (bi == ci && bj == cj) break;
+            ci = bi; cj = bj; cs = bs;
+        }
+        climb = { cv::Point2d(x_vals2[(size_t)ci], y_vals2[(size_t)cj]), cs };
+        if (fc == 1) {
+            g_fc_n++; g_fc_evals += climb_evals;
+            return climb;
+        }
+    }
+    auto best2 = gridSearchBestPar(local_pts_search, mask_crop, off_x, off_y, K, R, t, x_vals2, y_vals2, g_grid_threads.load(), cancel);
+    if (fc == 2) {
+        const double d = std::hypot(climb.first.x - best2.first.x, climb.first.y - best2.first.y);
+        const double ds = best2.second - climb.second;
+        g_fc_n++; g_fc_evals += climb_evals; g_fc_full_evals += (long long)(x_vals2.size() * y_vals2.size());
+        if (d == 0.0) g_fc_same++;
+        std::lock_guard<std::mutex> lk(g_fc_mx);
+        g_fc_sum_d += d; g_fc_max_d = std::max(g_fc_max_d, d); g_fc_sum_ds += ds; g_fc_max_ds = std::max(g_fc_max_ds, ds);
+    }
 
     return best2;
 }
@@ -4036,13 +4145,27 @@ static StoneUpdateResult trackStoneUpdateOneEx(
         // (set_intra_parallel(1)); syotteet ja ehdokkaiden jarjestys/valinta ovat samat -> tulos identtinen.
         std::pair<cv::Point2d, double> g;
         MeanShiftResult m1, m2;
+        // v6.11: ristikkohaun ohitus. Ehto riippuu VAIN mean-shiftien tuloksista (ei ajoituksesta) -> tulos on deterministinen.
+        const int skip_mode = have_pred ? g_grid_skip.load() : 0;
+        auto skip_ok = [&]() {
+            return m1.score >= g_skip_score && m2.score >= g_skip_score
+                && std::hypot(m1.xy.x - m2.xy.x, m1.xy.y - m2.xy.y) <= g_skip_agree_cm;
+        };
+        bool grid_skipped = false;
         if (g_intra_parallel.load()) {
             long long ns1 = 0, ns2 = 0;
+            std::atomic<bool> cancel{false};
+            std::atomic<int> ms_left{have_pred ? 2 : 1};
+            auto ms_done = [&]() {
+                if (--ms_left == 0 && skip_mode == 1 && skip_ok())
+                    cancel = true;              // molemmat valmiit ja yksimielisia -> ristikko keskeytetaan
+            };
             std::thread th1([&]() {
                 PT p;
                 m1 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
                     X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params);
                 ns1 = p.lap();
+                ms_done();
             });
             std::thread th2;
             if (have_pred)
@@ -4052,17 +4175,37 @@ static StoneUpdateResult trackStoneUpdateOneEx(
                         X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params,
                         X0 + pred_dX, Y0 + pred_dY);
                     ns2 = p.lap();
+                    ms_done();
                 });
             g = locateByGridSearchTrackingFast(
                 local_pts_search, mask_for_track, roi.x, roi.y,
                 X0 + pred_dX, track_half_range_x_cm, Y0 + pred_dY, track_half_range_y_cm,
-                coarse_step_cm, fine_step_cm, K, R, t
+                coarse_step_cm, fine_step_cm, K, R, t, skip_mode == 1 ? &cancel : nullptr
             );
             profAdd(P_LOC_ENS_GRID, pt.lap());
             th1.join();
             if (have_pred) th2.join();
             profAdd(P_LOC_MS1, ns1);
             if (have_pred) profAdd(P_LOC_MS2, ns2);
+            grid_skipped = (skip_mode == 1 && skip_ok());
+        } else if (skip_mode == 1) {
+            // perakkain: mean-shiftit ensin, ristikko vain jos ne eivat ole yksimielisia
+            m1 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+                X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params);
+            profAdd(P_LOC_MS1, pt.lap());
+            m2 = meanShiftLocate(local_pts_search, mask_for_track, roi.x, roi.y,
+                X0, Y0, track_half_range_x_cm, track_half_range_y_cm, K, R, t, ms_params,
+                X0 + pred_dX, Y0 + pred_dY);
+            profAdd(P_LOC_MS2, pt.lap());
+            grid_skipped = skip_ok();
+            if (!grid_skipped) {
+                g = locateByGridSearchTrackingFast(
+                    local_pts_search, mask_for_track, roi.x, roi.y,
+                    X0 + pred_dX, track_half_range_x_cm, Y0 + pred_dY, track_half_range_y_cm,
+                    coarse_step_cm, fine_step_cm, K, R, t
+                );
+                profAdd(P_LOC_ENS_GRID, pt.lap());
+            }
         } else {
             g = locateByGridSearchTrackingFast(
                 local_pts_search, mask_for_track, roi.x, roi.y,
@@ -4080,7 +4223,10 @@ static StoneUpdateResult trackStoneUpdateOneEx(
                 profAdd(P_LOC_MS2, pt.lap());
             }
         }
-        adjust(g, 0);
+        if (skip_mode) g_skip_n_eval++;
+        if (grid_skipped) g_skip_n_skip++;
+        if (!grid_skipped)
+            adjust(g, 0);
         adjust({ m1.xy, m1.score }, 1);
         out.iters = m1.iters; out.converged = m1.converged;
         if (have_pred) {
@@ -4088,14 +4234,32 @@ static StoneUpdateResult trackStoneUpdateOneEx(
             out.iters += m2.iters;
         }
         // hyvaksyttavat: pistemaara >= kynnys; jos ei yhtaan, paras raaka pistemaara (kuten ennenkin)
-        const Cand* pick = nullptr;
-        for (auto& c : cands)
-            if (c.score >= score_threshold && (!pick || c.adj > pick->adj))
-                pick = &c;
-        if (!pick)
-            for (auto& c : cands)
-                if (!pick || c.score > pick->score)
-                    pick = &c;
+        auto choose = [&](size_t first) -> const Cand* {
+            const Cand* pk = nullptr;
+            for (size_t k = first; k < cands.size(); ++k)
+                if (cands[k].score >= score_threshold && (!pk || cands[k].adj > pk->adj))
+                    pk = &cands[k];
+            if (!pk)
+                for (size_t k = first; k < cands.size(); ++k)
+                    if (!pk || cands[k].score > pk->score)
+                        pk = &cands[k];
+            return pk;
+        };
+        const Cand* pick = choose(0);
+        if (skip_mode == 2) {
+            // varjotila: kirjataan tilanne ja mita ristikon pois jattaminen olisi muuttanut (cands[0] = ristikko)
+            const Cand* alt = choose(1);
+            GridSkipRec rec;
+            rec.s1 = m1.score; rec.s2 = m2.score;
+            rec.d12 = std::hypot(m1.xy.x - m2.xy.x, m1.xy.y - m2.xy.y);
+            rec.pdev = std::hypot(m1.xy.x - (X0 + pred_dX), m1.xy.y - (Y0 + pred_dY));
+            rec.grid_s = g.second;
+            rec.grid_d = std::hypot(g.first.x - m1.xy.x, g.first.y - m1.xy.y);
+            rec.changed = (alt->xy != pick->xy) ? 1 : 0;
+            rec.change_cm = std::hypot(alt->xy.x - pick->xy.x, alt->xy.y - pick->xy.y);
+            std::lock_guard<std::mutex> lk(g_skip_mx);
+            g_skip_recs.push_back(rec);
+        }
         best = { pick->xy, pick->score };
         out.used_fallback = (pick->src == 0);   // tassa moodissa: valittiin ristikkohaun tulos
     } else if (locate_mode == 3) {
@@ -6445,6 +6609,32 @@ PYBIND11_MODULE(stone_tracker, m)
     m.def("set_sat_parallel", [](int on) { g_sat_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("set_prep_parallel", [](int on) { g_prep_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("set_intra_parallel", [](int on) { g_intra_parallel = on ? 1 : 0; }, py::arg("on"));
+    // v6.11: nopea peittolaskenta (sama tulos) ja yhdistelmahaun ristikkohaun ohitus (0/1/2 = pois/paalla/varjotila)
+    m.def("set_overlap_fast", [](int on) { g_overlap_fast = on ? 1 : 0; }, py::arg("on"));
+    m.def("set_grid_skip", [](int mode, double score, double agree_cm) {
+        g_grid_skip = mode; g_skip_score = score; g_skip_agree_cm = agree_cm;
+    }, py::arg("mode"), py::arg("score") = 0.90, py::arg("agree_cm") = 1.0);
+    m.def("set_fine_climb", [](int mode) { g_fine_climb = mode; }, py::arg("mode"));
+    m.def("fine_climb_stats", []() {
+        std::lock_guard<std::mutex> lk(g_fc_mx);
+        py::dict d; long long n = g_fc_n.load();
+        d["kutsuja"] = n; d["sama_piste"] = g_fc_same.load();
+        d["arvioita_ka"] = n ? (double)g_fc_evals.load() / n : 0.0;
+        d["kaikki_arvioita_ka"] = n ? (double)g_fc_full_evals.load() / n : 0.0;
+        d["ero_cm_ka"] = n ? g_fc_sum_d / n : 0.0; d["ero_cm_max"] = g_fc_max_d;
+        d["pisteero_ka"] = n ? g_fc_sum_ds / n : 0.0; d["pisteero_max"] = g_fc_max_ds;
+        return d;
+    });
+    m.def("grid_skip_stats", []() {
+        py::dict d; d["arvioitu"] = g_skip_n_eval.load(); d["ohitettu"] = g_skip_n_skip.load(); return d;
+    });
+    m.def("grid_skip_dump", []() {
+        std::lock_guard<std::mutex> lk(g_skip_mx);
+        py::list out;
+        for (auto& r : g_skip_recs)
+            out.append(py::make_tuple(r.s1, r.s2, r.d12, r.pdev, r.grid_s, r.grid_d, r.changed, r.change_cm));
+        return out;
+    });
     m.def("prof_reset", &prof_reset);
     m.def("prof_snapshot", &prof_snapshot);
     m.doc() = "C++-porttaus SEURANTA- ja HAKU-vaiheiden kuumasta polusta (Task 5+6)";

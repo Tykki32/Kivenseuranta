@@ -611,7 +611,9 @@ class FfmpegRecorder:
                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
                 if probe.returncode != 0:
                     continue
-                self._p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                import hog_analyysi
+                self._p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                           **hog_analyysi.bg_popen_kwargs())     # v6.11: LIVE_BG_PRIORITY=1 -> alempi prioriteetti
                 self.encoder = enc
                 break
             except Exception:
@@ -631,6 +633,8 @@ class FfmpegRecorder:
     def _run(self):
         self.cpu = 0.0
         self.n = 0
+        import hog_analyysi
+        hog_analyysi.lower_thread_priority("LIVE_BG_PRIORITY")     # v6.11: jonossa ~4 s varaa -> saa odottaa SEURANTAA
         while True:
             f = self._q.get()
             if f is None:
