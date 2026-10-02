@@ -1147,6 +1147,9 @@ if hasattr(stone_tracker, "set_intra_parallel"):
 # OHITUS EI OLE KAYTOSSA: varjotila (MAH00014, 21363 paivitysta) - mean-shiftien pistemaara on harvoin korkea (mediaani 0,66) ja
 # ristikkohaun tulos valitaan ~44 %:ssa paivityksista; kynnyksella 0,90 / 1 cm ohitettaisiin vain 1 % ja niista 46 % muuttuisi.
 OVERLAP_FAST = os.environ.get("OVERLAP_FAST", "1") == "1"
+# v6.12: OLETUKSENA PAALLA - ffmpeg-aliprosessit (debug-video, live-tallennus) ja tallennussaie alemmalle prioriteetille (nopeustesti,
+# live-simulaatio + tallennus: paasaie 37,5 -> 35,3 ms/ruutu, seurannan keskiviive 2,1 -> 1,3 s). LIVE_BG_PRIORITY=0 = pois.
+os.environ.setdefault("LIVE_BG_PRIORITY", "1")
 GRID_SKIP = int(os.environ.get("GRID_SKIP", "0"))
 GRID_SKIP_SCORE = float(os.environ.get("GRID_SKIP_SCORE", "0.90"))
 GRID_SKIP_AGREE_CM = float(os.environ.get("GRID_SKIP_AGREE_CM", "1.0"))
@@ -1371,6 +1374,10 @@ PROFILE_SAMPLES_PER_STONE = 40   # Testi_03_04: oli 25 (alfa-saantojen hylkaykse
 # turhia, mutta karsivat selvasti fysiikan vastaiset tulokset).
 PROFILE_R_MAX_MIN_CM = 12.5   # Testi_03_03: oli 10.0
 PROFILE_R_MAX_MAX_CM = 15.0   # Testi_03_03: oli 20.0 (saannot: ymparysmitta <= 91.44 cm -> R <= 14.55 cm)
+# v6.12: 3 s ESITARKISTUKSEN oma, loysempi sadevali: 5 havainnon sovitus heittelee (live-tallenteella hylattiin kivia R = 15,1-15,4 cm,
+# vaikka lopullinen profiili antoi 14,6 cm -> seuranta alkoi vasta ruudulla 10 027). Lopullinen tarkistus pysyy 12,5-15,0 cm.
+PRECHECK_R_MAX_MIN_CM = 12.0
+PRECHECK_R_MAX_MAX_CM = 16.0
 
 # Kayttajan huomio (tarkea arkkitehtuurikorjaus): koko radan HIDASTA
 # segmentointipohjaista skannausta EI kannata jatkaa keraamaan monta
@@ -3410,7 +3417,8 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
             pose, precheck_observations,
             max_rms_px=STONE_TRACK_PRECHECK_MAX_RMS_PX,
             min_samples=STONE_TRACK_PRECHECK_MIN_SAMPLES,
-            label="  esitarkistus (%.0fs)" % STONE_TRACK_PRECHECK_WINDOW_SECONDS
+            label="  esitarkistus (%.0fs)" % STONE_TRACK_PRECHECK_WINDOW_SECONDS,
+            r_min_cm=PRECHECK_R_MAX_MIN_CM, r_max_cm=PRECHECK_R_MAX_MAX_CM
         )
 
         if not precheck_ok:
@@ -3732,7 +3740,8 @@ def alpha_contour_observations(observations, level):
 
 
 def try_fit_profile(pose, stones, max_rms_px=PROFILE_MAX_RMS_PX,
-                     min_samples=PROFILE_MIN_SAMPLES, label="profiilikoe"):
+                     min_samples=PROFILE_MIN_SAMPLES, label="profiilikoe",
+                     r_min_cm=None, r_max_cm=None):
     """Yrittaa sovittaa 3D-profiilin annettuihin havaintoihin - palauttaa
     (profile, riittava_bool). Riittavyys: min_samples verran havaintoja
     JA jaannosvirhe max_rms_px:n sisalla. Kaytetaan SEKA yksittaisen
@@ -3747,9 +3756,9 @@ def try_fit_profile(pose, stones, max_rms_px=PROFILE_MAX_RMS_PX,
 
     rms_ok = profile["residual_rms_px"] <= max_rms_px
 
-    r_max_ok = (
-        PROFILE_R_MAX_MIN_CM <= profile["R_max_cm"] <= PROFILE_R_MAX_MAX_CM
-    )
+    r_lo = PROFILE_R_MAX_MIN_CM if r_min_cm is None else r_min_cm
+    r_hi = PROFILE_R_MAX_MAX_CM if r_max_cm is None else r_max_cm
+    r_max_ok = r_lo <= profile["R_max_cm"] <= r_hi
 
     riittava = rms_ok and r_max_ok
 
@@ -3758,7 +3767,7 @@ def try_fit_profile(pose, stones, max_rms_px=PROFILE_MAX_RMS_PX,
         f"RMS={profile['residual_rms_px']:.2f}px "
         f"(kynnys {max_rms_px}px), "
         f"R_max={profile['R_max_cm']:.2f}cm "
-        f"(sallittu {PROFILE_R_MAX_MIN_CM}-{PROFILE_R_MAX_MAX_CM}cm) -> "
+        f"(sallittu {r_lo}-{r_hi}cm) -> "
         f"{'RIITTAVA' if riittava else 'ei riittava'}"
     )
 
@@ -4434,7 +4443,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.11 (live-kamera + puskuri, havaintoruutujen kiinnitys; nopea peittolaskenta + ristikkohaun ohitus; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.12 (live-kamera + puskuri, havaintoruutujen kiinnitys; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
