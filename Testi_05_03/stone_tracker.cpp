@@ -197,6 +197,10 @@ namespace {
 std::mutex g_cv_single_thread_mutex;
 int g_cv_single_thread_refcount = 0;
 int g_cv_single_thread_saved = 1;
+// v5.9: OpenCV:n saiemaara vartijan aikana (oletus 1 = ennallaan). SEURANTA_CV_THREADS=n (main.py -> set_seuranta_cv_threads):
+// kivikohtaiset OpenCV-kutsut (cvtColor, GaussianBlur, morfologia) saavat n saietta - hyodyllinen kun kivia on vahan ja ytimia vapaana.
+// Tulos sama (OpenCV jakaa rivit, laskenta ei riipu saiemaarasta).
+std::atomic<int> g_cv_guard_threads(1);
 }
 
 class ScopedSingleThreadedOpenCV {
@@ -205,7 +209,7 @@ public:
         std::lock_guard<std::mutex> lock(g_cv_single_thread_mutex);
         if (g_cv_single_thread_refcount == 0) {
             g_cv_single_thread_saved = cv::getNumThreads();
-            cv::setNumThreads(1);
+            cv::setNumThreads(std::max(1, g_cv_guard_threads.load()));
         }
         g_cv_single_thread_refcount++;
     }
@@ -6240,6 +6244,7 @@ PYBIND11_MODULE(stone_tracker, m)
         if (!ok) return py::none();
         return out;
     });
+    m.def("set_seuranta_cv_threads", [](int n) { g_cv_guard_threads = std::max(1, n); }, py::arg("n"));
     m.def("set_intra_parallel", [](int on) { g_intra_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("prof_reset", &prof_reset);
     m.def("prof_snapshot", &prof_snapshot);

@@ -14,7 +14,9 @@ Ajot (kaikki samalla videolla/aikavälillä, oletuksena debug-video päällä), 
   v5.7:  blasmt / intrablasmt : cpu / intra vanhalla BLAS-asetuksella (OpenBLAS 8 säiettä, kuten <= v5.6) -> BLAS-korjauksen vaikutus
          intraprio : intra + BG_PRIORITY=1 (taustasäikeet alemmalle prioriteetille)    intrasw : intra + PY_SWITCH_INTERVAL_MS=1
   v5.8:  intrayuv : intra + DEBUG_YUV=1 (debug-video ffmpegille valmiina YUV:na; vain qsv/x264-putki)
-Oletus: cpu,par,intra,intragrid.
+  v5.9:  oletus : main.py:n uudet oletukset (= intrayuv)    cv2t / cv3t : oletus + SEURANTA_CV_THREADS=2 / 3    oletusgrid : oletus + GPU_GRID=1
+         (vanhat ajot cpu, par, intra, ... ajetaan vanhoilla oletuksilla GPU_B=0, STAB_WORKERS=1, PIPE_DEPTH=3, INTRA_PARALLEL=0, DEBUG_YUV=0)
+Oletus: oletus,cv2t,cv3t,oletusgrid.
 Tulokset kansioon --outdir (oletus: videon kansio / vertailuajo_<aikaleima>):
   ajo_<nimi>_loki.txt          koko terminaalitulostus
   ajo_<nimi>_sijainnit.csv     kivien sijainnit (+ _hog.csv)
@@ -52,8 +54,17 @@ RUNS = [
     ("intrasw", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1", "PY_SWITCH_INTERVAL_MS": "1"}),
     # v5.8: debug-video ffmpegille valmiina YUV 4:2:0:na (BGR-muunnos cv2:lla, ei ffmpegin swscalella) - koskee ffmpeg-putkea (qsv/x264)
     ("intrayuv", {"GPU_B": "1", "STAB_WORKERS": "2", "PIPE_DEPTH": "6", "INTRA_PARALLEL": "1", "DEBUG_YUV": "1"}),
+    # v5.9: uudet oletukset (= intrayuv). Naissa ajoissa EI kayteta OLD_DEFAULTS-pohjaa.
+    ("oletus", {}),
+    ("cv2t", {"SEURANTA_CV_THREADS": "2"}),           # oletus + OpenCV 2 saietta kivikohtaisissa C++-kutsuissa
+    ("cv3t", {"SEURANTA_CV_THREADS": "3"}),           # oletus + OpenCV 3 saietta
+    ("oletusgrid", {"GPU_GRID": "1"}),                # oletus + ristikkohaun hieno vaihe GPU:lla
 ]
-DEFAULT_RUNS = "cpu,par,intra,intragrid"
+# v5.9: main.py:n oletukset muuttuivat (GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1). Vanhat ajot (cpu, par, intra, ...)
+# ajetaan edelleen VANHOILLA oletuksilla, jotta niiden merkitys ei muutu; ajon omat asetukset ylikirjoittavat nama.
+OLD_DEFAULTS = {"GPU_B": "0", "STAB_WORKERS": "1", "PIPE_DEPTH": "3", "INTRA_PARALLEL": "0", "DEBUG_YUV": "0"}
+NEW_DEFAULT_RUNS = {"oletus", "cv2t", "cv3t", "oletusgrid"}
+DEFAULT_RUNS = "oletus,cv2t,cv3t,oletusgrid"
 
 
 def pick_video():
@@ -71,9 +82,11 @@ def pick_video():
 def run_main(name, env_extra, video, start, end, debug, extra, log_path):
     env = dict(os.environ)
     for k in ("GPU_GRID", "GPU_GRID_VERIFY", "GPU_B", "STAB_WORKERS", "PIPE_DEPTH", "INTRA_PARALLEL",
-              "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_THREADS", "BG_PRIORITY", "PY_SWITCH_INTERVAL_MS", "DEBUG_YUV"):
+              "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_THREADS", "BG_PRIORITY", "PY_SWITCH_INTERVAL_MS", "DEBUG_YUV", "SEURANTA_CV_THREADS"):
         if k not in env_extra:
             env.pop(k, None)
+    if name not in NEW_DEFAULT_RUNS:
+        env.update(OLD_DEFAULTS)
     env.update(env_extra)
     env["PYTHONUNBUFFERED"] = "1"
     cmd = [sys.executable, os.path.join(CODE_DIR, "main.py"), "--video", video]
@@ -208,7 +221,7 @@ def main():
     ap.add_argument("--end", default="00:21:00")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-debug", action="store_true", help="aja ilman debug-videota")
-    ap.add_argument("--runs", default=DEFAULT_RUNS, help="ajettavat ajot pilkuilla (cpu,gpu,gpub,gpuall,verify,par,par3,parcpu,intra,intragrid,blasmt,intrablasmt,intraprio,intrasw,intrayuv); oletus " + DEFAULT_RUNS)
+    ap.add_argument("--runs", default=DEFAULT_RUNS, help="ajettavat ajot pilkuilla (cpu,gpu,gpub,gpuall,verify,par,par3,parcpu,intra,intragrid,blasmt,intrablasmt,intraprio,intrasw,intrayuv,oletus,cv2t,cv3t,oletusgrid); oletus " + DEFAULT_RUNS)
     ap.add_argument("--main-args", default="", help="lisäargumentit main.py:lle lainausmerkeissä, esim. \"--max-frame 3000\"")
     args = ap.parse_args()
 

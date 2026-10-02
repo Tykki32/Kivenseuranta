@@ -314,7 +314,7 @@ def _yuv_input(w, h):
     syotetaan valmis yuv420p: ffmpegin hitaampi BGR-muunnos (swscale) jaa pois ja putkeen menee puolet vahemman tavuja.
     Varit voivat poiketa aavistuksen (eri muunnoskaava/krominanssin naytteistys). Vain debug-video, ei vaikuta seurantaan.
     Vaatii parilliset mitat."""
-    return _os.environ.get("DEBUG_YUV", "0") == "1" and int(w) % 2 == 0 and int(h) % 2 == 0
+    return _os.environ.get("DEBUG_YUV", "1") == "1" and int(w) % 2 == 0 and int(h) % 2 == 0
 
 
 def _ffmpeg_cmd(w, h, fps, encoder, out_path):

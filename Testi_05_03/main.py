@@ -991,21 +991,28 @@ if hasattr(stone_tracker, "set_color_gate"):
 # GPU_GRID_DEVICE=gpu|cpu|any (oletus gpu).
 
 # Testi_05_03: GPU_B=1 siirtaa vaiheen B (warpAffine+remap + varjotoleranssi-taustanvaimennus + valotasapaino) OpenCL:lle (esim. Intel UHD); tulos bitti-identtinen CPU:n (OpenCV 4.x) kanssa.
-GPU_B = os.environ.get("GPU_B", "0") == "1"
+# v5.9: OLETUKSENA PAALLA (nopein asetus Windows-vertailuajossa; jos OpenCL-laitetta ei loydy, palataan CPU-polkuun). GPU_B=0 pois.
+GPU_B = os.environ.get("GPU_B", "1") == "1"
 
 # Testi_05_03 v5.5: liukuhihnan asetukset (kokeiluun, katso tools/vertailuajo.py).
 #   STAB_WORKERS=n : stabilointi (vaihekorrelaatio, vaihe A) n ruudulle rinnan (oletus 1 = ennallaan); ruudut ovat toisistaan riippumattomia (kukin vs. moodikuva), jarjestys sailyy -> tulos identtinen.
 #   PIPE_DEPTH=n   : vaiheiden valisten jonojen koko (oletus 3); isompi tasoittaa vaiheiden aikavaihtelua.
-STAB_WORKERS = max(1, int(os.environ.get("STAB_WORKERS", "1")))
-PIPE_DEPTH = max(1, int(os.environ.get("PIPE_DEPTH", "3")))
+#   v5.9: oletukset 2 ja 6 (nopein Windows-vertailuajossa; aiemmin 1 ja 3).
+STAB_WORKERS = max(1, int(os.environ.get("STAB_WORKERS", "2")))
+PIPE_DEPTH = max(1, int(os.environ.get("PIPE_DEPTH", "6")))
 # Testi_05_03 v5.6: INTRA_PARALLEL=1 ajaa kiven kolme hakua (ristikko + 2 mean-shiftia) rinnan eri saikeissa (oletus pois; tulos identtinen).
-INTRA_PARALLEL = os.environ.get("INTRA_PARALLEL", "0") == "1"
+#   v5.9: OLETUKSENA PAALLA (INTRA_PARALLEL=0 pois).
+INTRA_PARALLEL = os.environ.get("INTRA_PARALLEL", "1") == "1"
+# v5.9: OpenCV:n saiemaara SEURANNAN/HAKUn kivikohtaisissa C++-kutsuissa (oletus 1 = ennallaan; tulos sama). Kokeiluun: SEURANTA_CV_THREADS=2/3.
+SEURANTA_CV_THREADS = max(1, int(os.environ.get("SEURANTA_CV_THREADS", "1")))
 # v5.7: Pythonin GIL-vaihtovali (sys.setswitchinterval, oletus 5 ms). Liukuhihnassa on useita Python-saikeita (A, B, debug-piirto, HAKU,
 # valotasapaino); kun paasaie palaa C++/cv2-kutsusta (GIL vapautettu), se joutuu odottamaan GIL:ia enimmillaan koko vaihtovalin jos toinen
 # saie ajaa Python-koodia. Lyhyempi vali -> paasaie (pullonkaula) saa GIL:n nopeammin takaisin. Ei vaikuta tuloksiin. 0 = Pythonin oletus.
 PY_SWITCH_INTERVAL_MS = float(os.environ.get("PY_SWITCH_INTERVAL_MS", "0"))
 if PY_SWITCH_INTERVAL_MS > 0:
     sys.setswitchinterval(PY_SWITCH_INTERVAL_MS / 1000.0)
+if hasattr(stone_tracker, "set_seuranta_cv_threads"):
+    stone_tracker.set_seuranta_cv_threads(SEURANTA_CV_THREADS)
 if hasattr(stone_tracker, "set_intra_parallel"):
     stone_tracker.set_intra_parallel(int(INTRA_PARALLEL))
     if INTRA_PARALLEL:
@@ -4251,7 +4258,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_05_03 v5.7 (pohja: v5.6; BLAS 1 saie, siluettitarkennus kiville rinnan, kalibroinnin rinnakkaistus; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_05_03 v5.9 (oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1; tulokset identtiset v5.6:n kanssa) (2026-10-02)"
 
 
 def _version_string():
