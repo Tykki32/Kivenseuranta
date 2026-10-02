@@ -204,12 +204,22 @@ namespace {
 std::mutex g_cv_single_thread_mutex;
 int g_cv_single_thread_refcount = 0;
 int g_cv_single_thread_saved = 1;
+// v5.12: PYSYVA yksisaikeisuus elavassa vaiheessa (set_cv_single_thread_persistent(1), main.py elavan seurannan alussa).
+// Windowsin vcpkg-OpenCV kayttaa "Concurrency"-saiekehysta (ConcRT), jossa JOKAINEN cv::setNumThreads luo uuden
+// saiepoolin/ajastimen - vartija vaihtoi saiemaaraa 1 <-> 8 jokaisella SEURANTA-/HAKU-kutsulla (~2x/ruutu). Elavassa
+// vaiheessa C++-moduulin OpenCV-kutsut ajetaan joka tapauksessa vartijan alla yhdella saikeella, joten asetetaan 1 kerran
+// eika palauteta: sama tulos, ei poolin uudelleenluontia (eika samanaikaista vaihtoa videon luvun kanssa).
+bool g_cv_single_thread_persistent = false;
 }
 
 class ScopedSingleThreadedOpenCV {
 public:
     ScopedSingleThreadedOpenCV() {
         std::lock_guard<std::mutex> lock(g_cv_single_thread_mutex);
+        if (g_cv_single_thread_persistent) {
+            g_cv_single_thread_refcount++;
+            return;
+        }
         if (g_cv_single_thread_refcount == 0) {
             g_cv_single_thread_saved = cv::getNumThreads();
             cv::setNumThreads(1);
@@ -219,6 +229,8 @@ public:
     ~ScopedSingleThreadedOpenCV() {
         std::lock_guard<std::mutex> lock(g_cv_single_thread_mutex);
         g_cv_single_thread_refcount--;
+        if (g_cv_single_thread_persistent)
+            return;
         if (g_cv_single_thread_refcount == 0) {
             cv::setNumThreads(g_cv_single_thread_saved);
         }
@@ -1547,15 +1559,26 @@ static const int g_granite_close = getenv("GRANITE_CLOSE") ? atoi(getenv("GRANIT
 // MUISTIINPANO (Testi_03_04, tutkittava): tausta (sumennus sigma=25) arvioidaan 4x PIENENNETYLLA kuvalla (g_granite_down) -> ero tarkkaan sumennukseen on keskimaarin 0.035, mutta
 // jopa ~14 harmaasavya jyrkkien reunojen (isojen tummien kohteiden, esim. lakaisijan takki) vieressa. Kivien kohdalla ero ei nayttanyt (IoU mallin siluettiin sama 119 HAKU-osumalla),
 // mutta maskin kayttaytymista tummien kohteiden vieressa (taustan arvio laskee -> kiven tummuus pienenee -> reunapikselit putoavat) ei ole tutkittu. Katso README_alfa_profiili.md.
+// v5.12: graniittimaskin "tummuus"-osa (harmaasavy, taustan sumennus, erotus) omana funktionaan -> voidaan laskea rinnan
+// saturaation kanssa (createGraniteMaskFromParts yhdistaa). createGraniteMask kayttaa samoja osia -> sama tulos.
+static cv::Mat graniteDarkness(const cv::Mat& frame_bgr);
+static cv::Mat createGraniteMaskFromParts(const cv::Mat& sat_ch, const cv::Mat& darkness, int open_override);
+
 static cv::Mat createGraniteMask(const cv::Mat& frame_bgr, const cv::Mat* sat_in = nullptr, int open_override = -1)
 {
-    cv::Mat sat_ch, gray, gray_f, bg, darkness;
-    PT gpt;
-
+    cv::Mat sat_ch;
     if (sat_in != nullptr && !sat_in->empty())
         sat_ch = *sat_in;                  // Testi_03_02: saturaatio laskettu jo kerran (jaettu computeSat:n kanssa)
     else
         sat_ch = satU8FromBgr(frame_bgr);
+    cv::Mat darkness = graniteDarkness(frame_bgr);
+    return createGraniteMaskFromParts(sat_ch, darkness, open_override);
+}
+
+static cv::Mat graniteDarkness(const cv::Mat& frame_bgr)
+{
+    cv::Mat gray, gray_f, bg, darkness;
+    PT gpt;
     cv::cvtColor(frame_bgr, gray, cv::COLOR_BGR2GRAY);
     gray.convertTo(gray_f, CV_32F);
     profAdd(P_GM_CVT, gpt.lap());
@@ -1571,9 +1594,13 @@ static cv::Mat createGraniteMask(const cv::Mat& frame_bgr, const cv::Mat* sat_in
     }
     darkness = bg - gray_f;
     profAdd(P_GM_BLUR, gpt.lap());
+    return darkness;
+}
 
-
-    cv::Mat mask = cv::Mat::zeros(frame_bgr.size(), CV_8UC1);
+static cv::Mat createGraniteMaskFromParts(const cv::Mat& sat_ch, const cv::Mat& darkness, int open_override)
+{
+    PT gpt;
+    cv::Mat mask = cv::Mat::zeros(darkness.size(), CV_8UC1);
 
     for (int r = 0; r < mask.rows; ++r) {
         const uchar* satp = sat_ch.ptr<uchar>(r);
@@ -3906,13 +3933,25 @@ static StoneUpdateResult trackStoneUpdateOneEx(
     const bool fg_par = have_bg_reference && g_prep_parallel.load();
     if (fg_par)
         fg_thread = std::thread([&]() { PT p; fg_mask_par = createForegroundFromWhitened(crop_filtered); fg_ns = p.lap(); });
-    cv::Mat sat_u8_crop = satU8FromBgr(crop);
-    cv::Mat sat_crop;
-    sat_u8_crop.convertTo(sat_crop, CV_32F);
+    cv::Mat sat_u8_crop, sat_crop, mask_crop;
     const bool same_image = (crop_filtered.data == crop.data);
-    profAdd(P_PREP_SAT, pt.lap());
-    cv::Mat mask_crop = createGraniteMask(crop_filtered, same_image ? &sat_u8_crop : nullptr);
-    profAdd(P_PREP_GRANITE, pt.lap());
+    if (same_image && g_prep_parallel.load()) {
+        // v5.12: saturaatio (oma saie) rinnan graniittimaskin tummuusosan kanssa; yhdistys samalla funktiolla kuin
+        // createGraniteMask(crop_filtered, &sat_u8_crop) -> sama tulos.
+        long long sat_ns = 0;
+        std::thread sat_thread([&]() { PT p; sat_u8_crop = satU8FromBgr(crop); sat_u8_crop.convertTo(sat_crop, CV_32F); sat_ns = p.lap(); });
+        cv::Mat darkness = graniteDarkness(crop_filtered);
+        sat_thread.join();
+        mask_crop = createGraniteMaskFromParts(sat_u8_crop, darkness, -1);
+        profAdd(P_PREP_SAT, sat_ns);
+        profAdd(P_PREP_GRANITE, pt.lap());
+    } else {
+        sat_u8_crop = satU8FromBgr(crop);
+        sat_u8_crop.convertTo(sat_crop, CV_32F);
+        profAdd(P_PREP_SAT, pt.lap());
+        mask_crop = createGraniteMask(crop_filtered, same_image ? &sat_u8_crop : nullptr);
+        profAdd(P_PREP_GRANITE, pt.lap());
+    }
 
     // Kayttajan ehdottama korjaus (katso keskusteluhistoria ja
     // createForegroundFromWhitened:in oma kommentti ylla): yhdistetaan
@@ -6388,6 +6427,17 @@ PYBIND11_MODULE(stone_tracker, m)
         g_sil_cfg = c;
     });
     m.def("opencv_build_info", []() { return std::string(cv::getBuildInformation()); });   // v5.11: diagnostiikka (AVX2/IPP/saiekehys)
+    m.def("set_cv_single_thread_persistent", [](int on) {
+        std::lock_guard<std::mutex> lock(g_cv_single_thread_mutex);
+        if (on && !g_cv_single_thread_persistent) {
+            if (g_cv_single_thread_refcount == 0) g_cv_single_thread_saved = cv::getNumThreads();
+            cv::setNumThreads(1);
+            g_cv_single_thread_persistent = true;
+        } else if (!on && g_cv_single_thread_persistent) {
+            g_cv_single_thread_persistent = false;
+            if (g_cv_single_thread_refcount == 0) cv::setNumThreads(g_cv_single_thread_saved);
+        }
+    }, py::arg("on"));
     m.def("set_grid_threads", [](int n) { g_grid_threads = std::max(1, n); }, py::arg("n"));
     m.def("set_prep_parallel", [](int on) { g_prep_parallel = on ? 1 : 0; }, py::arg("on"));
     m.def("set_intra_parallel", [](int on) { g_intra_parallel = on ? 1 : 0; }, py::arg("on"));

@@ -219,3 +219,16 @@ valmistelu ~7 ms -> haku (ristikko 6,2 ms) -> LM 13,8 ms (josta 200 px:n reunust
 Diagnostiikka: käynnistyksessä tulostuu `C++-moduulin OpenCV: ...` (Baseline/Dispatched = SIMD-optimoinnit, Intel IPP, säiekehys).
 Graniittimaski (cvtColor + GaussianBlur) oli Windowsissa 4,7x sandboxia hitaampi, kun muut vaiheet ~2x -> epäily: vcpkg:n OpenCV ilman AVX2/IPP:tä.
 `tools/vertailuajo.py`: oletuksena ajot `v59` (vanha) ja `oletus` (uusi). C++-moduuli pitää kääntää uudelleen.
+
+### v5.12: OpenCV:n säiepoolia ei luoda uudelleen joka kutsulla (`CV_SINGLE_PERSIST=1`) + saturaatio rinnan
+Windows-vertailuajo v5.11: oletus 611,6 s vs v59 650,9 s (-6,0 %), CSV:t identtiset. Pääsäie 36,3 -> 34,0 ms/ruutu.
+OpenCV-diagnostiikka (Windows, vcpkg 4.12): AVX2 dispatch mukana, **ei IPP:tä**, `Parallel framework: Concurrency` (ConcRT).
+* IPP:tä ei suositella: sandbox-testissä IPP muutti `cv2.resize(INTER_LINEAR)`-suurennuksen float-tuloksia (~2 milj. eri arvoa) eikä ollut nopeampi.
+* `CV_SINGLE_PERSIST=1` (oletus): `ScopedSingleThreadedOpenCV` vaihtoi C++-OpenCV:n säiemäärää 1 <-> 8 jokaisella SEURANTA-/HAKU-kutsulla;
+  ConcRT-taustalla jokainen `cv::setNumThreads` luo uuden ajastimen/säiepoolin (pthreads-taustalla halpa, siksi ei näkynyt sandboxissa;
+  sama mekanismi kaatoi v5.9:n `SEURANTA_CV_THREADS`-kokeilun). Nyt elävän seurannan alussa asetetaan 1 säie kerran eikä palauteta.
+  Kutsut ajettiin jo ennestään yhdellä säikeellä -> sama tulos. (Pythonin cv2 on erillinen kirjasto, ei vaikutusta A/B-vaiheisiin.)
+* `PREP_PARALLEL=1` laajennettu: saturaatio lasketaan omassa säikeessään graniittimaskin tummuusosan (harmaasävy + taustan sumennus) rinnalla
+  (`graniteDarkness` + `createGraniteMaskFromParts`; `createGraniteMask` käyttää samoja osia).
+Koko MAH-video: CSV:t tavu tavulta identtiset v5.6:n kanssa. `tools/vertailuajo.py`: oletuksena `v59`, `v511` (= CV_SINGLE_PERSIST=0), `oletus`.
+C++-moduuli pitää kääntää uudelleen.
