@@ -76,6 +76,12 @@ MSMF + raaka + OpenCV 36,3 ms, **MSMF + raaka YUY2 + GPU (OpenCL) 11,2 ms (0,28 
   eron mukaan (oikea ~1, vaihtuneet U/V ~8, UYVY ~46 sandboxissa) ja jos ero >= 5, palataan ajurin muunnokseen. Tulos `Live-lahde`-rivillä
   (`muunnos`, `raakajarjestys`, `varitarkistus_keskiero`).
 
+## v6.5: raakatila asetetaan ennen ensimmäistä lukua
+Ensimmäinen v6.4-ajo: MSMF antoi raakatilassa `(1, 8294400)` = 1920x1080x4 (RGB32) -> paluu DirectShow + ajuri. Syy: CAP_PROP_CONVERT_RGB=0
+asetettiin vasta kun virta oli jo käynnissä BGR-tilassa (MSMF alustaa virran uudelleen RGB32:ksi; kameratesti asetti sen ennen lukua ja sai YUY2:n).
+Nyt raakatilassa kamera suljetaan ja avataan uudelleen raakatila valmiiksi asetettuna; väritarkistuksen vertailukuva on tunnistuksessa luettu
+BGR-ruutu (~1-2 s aiemmin) ja järjestys hyväksytään jos keskiero < 5 tai selvästi (< 0,5x) pienempi kuin seuraavaksi paras.
+
 ## Avoimet / testattavaa kameralla
 * Kameran todellinen fps ja pakkausmuoto (aja `tools/kamera_testi.py`), 1080p -> 720p -pienennyksen kustannus, käsittelynopeus vs. kameran fps
   (putki ~26-27 r/s debug-videolla Windows-koneella -> 25 fps:n kamera pysyy juuri ja juuri tahdissa).

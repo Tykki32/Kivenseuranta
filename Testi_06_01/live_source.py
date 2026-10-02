@@ -285,19 +285,31 @@ class CameraSource(_SourceBase):
         self.raw_order = "YUY2"
         self.color_check = None
         if conversion in ("raw", "gpu"):
-            # v6.4: VARITARKISTUS - ajurin muuntama ruutu (first) vs raakaruudun oma muunnos (seuraava ruutu, ~40 ms myohemmin):
-            # tavujarjestys (YUY2/YVYU/UYVY) valitaan pienimman eron mukaan; jos ero on silti suuri (vaarat varit), palataan ajuriin.
+            # v6.5: raakatila (CAP_PROP_CONVERT_RGB=0) pitaa asettaa ENNEN ensimmaista lukua - jo kaynnistetty MSMF-virta alustuu
+            # uudelleen ja antaa RGB32:ta (havaittu: muoto (1, 8294400) = 1920x1080x4). Siksi kamera avataan uudelleen raakatilassa.
+            # VARITARKISTUS: vertailukuva = tunnistuksessa ajurin muuntama ruutu (first, ~1-2 s aiemmin; kamera paikallaan).
+            # Tavujarjestys (YUY2/YVYU/UYVY) valitaan pienimman keskieron mukaan ja hyvaksytaan jos ero < 5 TAI selvasti pienempi
+            # kuin seuraavaksi parhaan (liike ruutujen valilla nostaa kaikkia eroja saman verran; sandbox: oikea 1,0, U/V vaihtunut 8,4).
             ref = cv2.resize(first, (self.out_w, self.out_h), interpolation=cv2.INTER_AREA).astype(np.int16)
-            cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
-            ok_r, raw = cap.read()
-            best = None
-            if ok_r and raw is not None and np.asarray(raw).size == w0 * h0 * 2:
+            cap.release()                                   # sama laite ei aukea kahdesti samanaikaisesti
+            raw_cap = cv2.VideoCapture(self.device, backend)
+            raw = None
+            if raw_cap.isOpened():
+                if fourcc:
+                    raw_cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+                raw_cap.set(cv2.CAP_PROP_FRAME_WIDTH, cap_w)
+                raw_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cap_h)
+                raw_cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+                for _ in range(3):
+                    ok_r, raw = raw_cap.read()
+            ds = []
+            if raw is not None and np.asarray(raw).size == w0 * h0 * 2:
                 for order in _RAW_CODES:
                     t = raw_yuy2_to_bgr(raw, w0, h0, self.out_w, self.out_h, gpu=False, order=order)
-                    d = float(np.mean(np.abs(t.astype(np.int16) - ref)))
-                    if best is None or d < best[0]:
-                        best = (d, order)
-            ok_conv = best is not None and best[0] < 5.0      # oikea jarjestys ~1 (+ liike ruutujen valilla); vaihtuneet U/V jo ~8
+                    ds.append((float(np.mean(np.abs(t.astype(np.int16) - ref))), order))
+                ds.sort()
+            best = ds[0] if ds else None
+            ok_conv = best is not None and (best[0] < 5.0 or (len(ds) > 1 and best[0] < 0.5 * ds[1][0] and best[0] < 20.0))
             if ok_conv and conversion == "gpu":
                 try:
                     raw_yuy2_to_bgr(raw, w0, h0, self.out_w, self.out_h, gpu=True, order=best[1])
@@ -305,14 +317,23 @@ class CameraSource(_SourceBase):
                     print(f"Live: GPU-muunnos (OpenCL) ei toimi ({e!r}) -> raaka + OpenCV (CPU)")
                     conversion = "raw"
             if ok_conv:
+                cap = raw_cap
+                self.cap = cap
                 self.conversion = conversion
                 self.raw_order = best[1]
                 self.color_check = round(best[0], 2)
             else:
-                cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
+                raw_cap.release()
+                cap = cv2.VideoCapture(self.device, backend)        # takaisin ajurin muunnokseen (BGR)
+                if fourcc:
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, cap_w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cap_h)
                 cap.read()
-                why = "ei YUY2-kokoinen" if best is None else f"varit eroavat ajurin kuvasta (keskiero {best[0]:.1f})"
-                print(f"Live: raakakuva {why} (muoto {None if raw is None else np.asarray(raw).shape}) -> muunnos ajurilla")
+                self.cap = cap
+                why = ("ei YUY2-kokoinen (muoto " + str(None if raw is None else np.asarray(raw).shape) + ")") if best is None else \
+                    "varit eroavat ajurin kuvasta (" + ", ".join(f"{o} {d:.1f}" for d, o in ds) + ")"
+                print(f"Live: raakakuva {why} -> muunnos ajurilla")
         self.cpu_read = 0.0
         self.cpu_conv = 0.0
         self.n_conv = 0
