@@ -14,6 +14,8 @@ Ajot (--ajot, oletus v610,oletus):
   kiipea : peitto + ristikkohaun hieno vaihe maennousulla (FINE_CLIMB=1) = v6.11:n oletus
   prio   : kiipea + LIVE_BG_PRIORITY=1 (tallennuksen/debug-videon ffmpeg ja tallennussaie alemmalle prioriteetille)
   oletus : main.py:n nykyiset oletukset (v6.12 = prio + esitarkistus 12-16 cm, joka koskee KAIKKIA ajoja)
+  nointra / noprep / vahsaie : oletus + vahemman saikeita (INTRA_PARALLEL=0 / PREP_PARALLEL=0 / molemmat + GRID_THREADS=1) -
+           tulokset identtiset oletuksen kanssa, vain ajoitus muuttuu (kamera-ajossa kone on ylikuormitettu)
   varjo  : peitto + FINE_CLIMB=2 (hieno vaihe ajetaan molemmilla tavoilla, tulos = v610; lokiin kuinka usein maennousu osuu samaan)
   ohitus : kiipea + GRID_SKIP=1 (mean-shiftien perusteella ohitettu ristikkohaku - EI kaytossa, ks. README)
 Tulokset: --outdir (oletus: videon kansio/nopeustesti_<aika>): ajo_<nimi>_<tila>_loki.txt, CSV:t ja nopeustesti_yhteenveto.txt
@@ -36,10 +38,14 @@ RUNS = [
     ("kiipea", {"OVERLAP_FAST": "1", "FINE_CLIMB": "1", "GRID_SKIP": "0", "LIVE_BG_PRIORITY": "0"}),
     ("prio", {"OVERLAP_FAST": "1", "FINE_CLIMB": "1", "GRID_SKIP": "0", "LIVE_BG_PRIORITY": "1"}),
     ("oletus", {}),                                    # main.py:n nykyiset oletukset (v6.12: = prio)
+    # v6.13: saiemaaran vaikutus kuormitetulla koneella (kamera-ajo): kiven sisainen rinnakkaisuus / etualamaski omassa saikeessaan pois
+    ("nointra", {"INTRA_PARALLEL": "0"}),
+    ("noprep", {"PREP_PARALLEL": "0"}),
+    ("vahsaie", {"INTRA_PARALLEL": "0", "PREP_PARALLEL": "0", "GRID_THREADS": "1"}),
     ("varjo", {"OVERLAP_FAST": "1", "FINE_CLIMB": "2", "GRID_SKIP": "0", "LIVE_BG_PRIORITY": "0"}),
     ("ohitus", {"OVERLAP_FAST": "1", "FINE_CLIMB": "1", "GRID_SKIP": "1", "LIVE_BG_PRIORITY": "0"}),
 ]
-CLEAR_ENV = ("OVERLAP_FAST", "FINE_CLIMB", "GRID_SKIP", "GRID_SKIP_SCORE", "GRID_SKIP_AGREE_CM", "GRID_SKIP_DUMP", "LIVE_BG_PRIORITY", "BG_PRIORITY")
+CLEAR_ENV = ("INTRA_PARALLEL", "PREP_PARALLEL", "GRID_THREADS", "OVERLAP_FAST", "FINE_CLIMB", "GRID_SKIP", "GRID_SKIP_SCORE", "GRID_SKIP_AGREE_CM", "GRID_SKIP_DUMP", "LIVE_BG_PRIORITY", "BG_PRIORITY")
 
 
 def run(cmd, env_extra, log_path):
