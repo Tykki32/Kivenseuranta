@@ -138,15 +138,18 @@ def main():
         out("\nYhtaan toimivaa kameraa ei loytynyt.")
     else:
         full = [r for r in results if r["saatu"] == "1920x1080"] or results
-        best = max(full, key=lambda r: (r["fps_mit"], -r["read_ka_ms"]))
-        out(f"\nParas 1920x1080-yhdistelma: {best}")
+        # tasapelissa (fps pyoristettyna) DirectShow (live-tilan oletus Windowsissa), sitten vahiten myohastyneita ruutuja
+        best = max(full, key=lambda r: (round(float(r["fps_mit"])), r["taustaj"] == "DSHOW", -r["myohassa"], -float(r["read_ka_ms"])))
+        out("\nHUOM: laitenumero riippuu taustajarjestelmasta (DSHOW ja MSMF numeroivat laitteet eri jarjestyksessa).")
+        out(f"Paras 1920x1080-yhdistelma: " + ", ".join(f"{k}={v}" for k, v in best.items()))
         out(f"Pitka mittaus {args.sekunnit:.0f} s ...")
         be = dict((n, b) for b, n in backends())[best["taustaj"]]
         fcc = best["pyydetty"].split("/")[1]
         r = test_combo(best["laite"], be, best["taustaj"], 1920, 1080, None if fcc == "oletus" else fcc, args.sekunnit, save=False)
         if r:
             out("  " + ", ".join(f"{k}={v}" for k, v in r.items()))
-            out(f"\nSuositus: python main.py --live {best['laite']} --paneelit <referenssi>_panel_corners.txt --debug"
+            tj = "" if best["taustaj"] in ("DSHOW", "V4L2") else f" --live-taustaj {best['taustaj']}"
+            out(f"\nSuositus: python main.py --live {best['laite']}{tj} --paneelit <referenssi>_panel_corners.txt --debug"
                 f"   (kamera ~{r['fps_mit']:.0f} fps; live-tila kayttaa {'joka toista ruutua' if r['fps_mit'] > 37 else 'kaikkia ruutuja'} kun --live-fps 25)")
     name = f"kamera_testi_{time.strftime('%Y%m%d_%H%M%S')}.txt"
     with open(name, "w", encoding="utf-8") as fh:
