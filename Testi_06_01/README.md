@@ -217,6 +217,16 @@ MAH00014 (sandbox, kaksi ajoa rinnakkain):
 Kokeiltu ja hylätty: **LM-tarkennuksen keventäminen 10–24 m:n alueella** (1 ulkokierros / ei 2. LM:ää / ≤ 10 iteraatiota):
 LM alueella −78…−85 %, mutta seuranta kokonaisuudessaan vain −6…−7 %, ja 3–4 heittoa 24:stä katosi (paikkavirhe 1 %:ssa päivityksistä > 10 cm).
 
+## v6.19: radan suuntaan liikkuva rata suojattu
+v6.18:n tiedostoajossa 3 heittoa hukkui kesken liu'un: kahdesti oikea liukuva kivi yhdistettiin duplikaattina vanhempaan,
+jo pysähtyneeseen rataan (vanhin id säilyi), kerran se poistettiin paikanvarauksessa ("huonoin sovitus").
+Nyt rata, jonka Y on pienentynyt ≥ `TRACK_PROTECT_FORWARD_CM` (30 cm) viimeisen 1 s aikana:
+* säilyy duplikaattien yhdistämisessä, jos toinen ei liiku (muuten vanha sääntö)
+* ei joudu paikanvarauksessa poistettavaksi, jos muita vaihtoehtoja on.
+
+MAH00014: `PROFIILI_TIHEA=0` 24/24 (x kaukohogilla ero ≤ 0,04 cm), tiheä profiili 21/24 → **23/24**. Jäljelle jäänyt
+(621 s) katoaa n. 1 m ennen lähi-hoglinea (rata hyppää toiseen kohteeseen), eli kyseessä on seurannan herkkyys, ei sääntö.
+
 ## v6.18: tiheä C++-profiiliskannaus pelialueelta
 Profiilivaiheessa pelialue (X ±2 m, Y 4–20 m) skannataan nyt **C++:lla 0,2 s välein** (`stone_tracker.scan_stone_candidates`,
 sama kuin kandidaatin seurannassa; 7,2 ms/skannaus) entisen 2 s Python-skannausparin sijaan. Kandidaatit ketjutetaan lyhyiksi
