@@ -2090,6 +2090,23 @@ NEW_STONE_DEDUP_CM = float(os.environ.get("NEW_STONE_DEDUP_CM", "20.0"))
 # alkuperainen Testi_02_02-kayttaytyminen: NEW_STONE_DEDUP_CM=100 DUP_MERGE_CM=0.
 DUP_MERGE_CM = float(os.environ.get("DUP_MERGE_CM", "30"))
 DUP_MERGE_FRAMES = int(os.environ.get("DUP_MERGE_FRAMES", "3"))
+# v6.19: radan suuntaan (Y pienenee) liikkuva rata on suojattu: duplikaattien yhdistamisessa se sailyy (eika vanhin id), ja
+# paikanvarauksessa sita ei poisteta jos muita vaihtoehtoja on. Raja: Y pienentynyt >= TRACK_PROTECT_FORWARD_CM viimeisen
+# position_history-ikkunan (1 s) aikana. MAH00014: ilman tata oikea liukuva kivi yhdistettiin pysahtyneeseen vanhempaan
+# rataan / poistettiin kesken liu'un (3 heittoa). 0 = pois (kuten ennen).
+TRACK_PROTECT_FORWARD_CM = float(os.environ.get("TRACK_PROTECT_FORWARD_CM", "30"))
+
+
+def _forward_motion_cm(st):
+    """Radan liike radan suuntaan (Y pienenee) viimeisen historiaikkunan aikana, cm (5 ensimmaisen ja 5 viimeisen mediaanit)."""
+    h = st.get("position_history") or []
+    if len(h) < 10 or h[-1][0] - h[0][0] < 20:
+        return 0.0
+    return float(np.median([q[2] for q in h[:5]]) - np.median([q[2] for q in h[-5:]]))
+
+
+def _is_protected_mover(st):
+    return TRACK_PROTECT_FORWARD_CM > 0 and _forward_motion_cm(st) >= TRACK_PROTECT_FORWARD_CM
 
 # Kayttajan pyynnosta: kun kivi on ollut lahes paikallaan (liikkunut
 # alle STOP_TRACKING_DISPLACEMENT_CM) STOP_TRACKING_SECONDS ajan,
@@ -4714,7 +4731,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.18 (tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
+SOFTWARE_VERSION = "Testi_06_01 v6.19 (radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
 
 
 def _version_string():
@@ -4755,6 +4772,10 @@ def _pick_eviction_victim(active_stones):
     def med_rms(st):
         h = list(st.get("rms_hist", []))
         return float(np.median(h)) if h else 1e9
+    # v6.19: radan suuntaan liikkuvaa rataa ei poisteta, jos muita vaihtoehtoja on (katso TRACK_PROTECT_FORWARD_CM)
+    movers = [st for st in active_stones if _is_protected_mover(st)]
+    if movers and len(movers) < len(active_stones):
+        active_stones = [st for st in active_stones if not _is_protected_mover(st)]
     unconfirmed = [st for st in active_stones if not st["confirmed"]]
     if unconfirmed:
         # huonoin sovitus (tai ei sovitusta) ensin; tasatilanteessa vanhin (pienin id)
@@ -6977,8 +6998,11 @@ def run_pipeline(
                             else:
                                 cnt.pop(b["stone_id"], None)
                             if close and cnt.get(b["stone_id"], 0) >= DUP_MERGE_FRAMES:
-                                # havioaja: vahvistamaton ensin, muuten uudempi id
-                                if a["confirmed"] != b["confirmed"]:
+                                # havioaja: v6.19 ensin pysahtynyt kuin radan suuntaan liikkuva, sitten vahvistamaton, muuten uudempi id
+                                _ma, _mb = _is_protected_mover(a), _is_protected_mover(b)
+                                if _ma != _mb:
+                                    loser = b if _ma else a
+                                elif a["confirmed"] != b["confirmed"]:
                                     loser = a if not a["confirmed"] else b
                                 else:
                                     loser = b if b["stone_id"] > a["stone_id"] else a
