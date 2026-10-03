@@ -221,6 +221,22 @@ class FrameStore:
             self._cond.notify_all()
             return target
 
+    def skip_to(self, idx, timeout=None):
+        """v6.17: perakkaislukija hyppaa ruutuun idx (odottaa kunnes se on saapunut). Palauttaa idx:n tai None jos syote loppui."""
+        with self._cond:
+            idx = max(int(idx), self._seq_next)
+            if not self._wait_for_locked(idx, timeout):
+                return None
+            self.skipped += idx - self._seq_next
+            self._seq_next = idx
+            self._evict_locked()
+            self._cond.notify_all()
+            return idx
+
+    def latest_index(self):
+        with self._cond:
+            return self._head - 1
+
     def lag_frames(self):
         with self._cond:
             return self._head - self._seq_next
