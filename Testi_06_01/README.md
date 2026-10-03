@@ -227,7 +227,8 @@ ole: hylätty rata merkitään kokeilluksi niin kauan kuin se pysyy ketjussa. Sk
 Kandidaatin seuranta (`track_stone_in_video_windowed`) skannaa ruudut vasta kun rata niitä tarvitsee (`PROFIILI_LAISKA=1`):
 tulos täsmälleen sama (MAH00014: CSV identtinen), mutta kadonnut rata ei enää lue/odota koko ±30 s ikkunaa.
 
-MAH00014 live-sim (9000 ruutua): elävä seuranta alkaa **106,7 s** (ennen 145 s), hyppy alussa 18,9 s (ennen 58 s).
+MAH00014 live-sim (9000 ruutua): elävä seuranta alkaa **121,4 s** (ennen 145 s), hyppy alussa 33,6 s (ennen 58 s);
+pysähdysrajalla (`PROFIILI_PYSAHDYS_S=2`) 106,7 s / 18,9 s.
 Tiedostoajossa tiheä skannaus valitsee eri toisen kiven profiiliin (ruutu 2196 vs 2176) → profiili hieman eri
 (R 13,65 vs 13,53 cm) ja seuranta reagoi siihen herkästi: 21/24 heittoa (puuttuvat 130,5 s, 139,85 s, 621 s; muiden
 x kaukohogilla ±0,6 cm). Vertailuun `PROFIILI_TIHEA=0`.
