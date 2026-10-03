@@ -217,6 +217,17 @@ MAH00014 (sandbox, kaksi ajoa rinnakkain):
 Kokeiltu ja hylätty: **LM-tarkennuksen keventäminen 10–24 m:n alueella** (1 ulkokierros / ei 2. LM:ää / ≤ 10 iteraatiota):
 LM alueella −78…−85 %, mutta seuranta kokonaisuudessaan vain −6…−7 %, ja 3–4 heittoa 24:stä katosi (paikkavirhe 1 %:ssa päivityksistä > 10 cm).
 
+## v6.20: hakualueen rajat koskevat myös seurannan lopullista paikkaa
+Ristikkohaku ja mean-shift pysyivät jo hakualueen sisällä (X 30 cm/s, Y 300 cm/s, eli ±1,2 / ±12 cm ruudussa + ennuste),
+mutta niiden jälkeinen tarkennus (lähimmän kivirungon sovitus) saattoi siirtää paikan minne tahansa; tarkistettiin vain
+100 cm taaksepäin. MAH00014 621 s: harja peitti kiven ja tarkennus hyppäsi harjaan 22,3 cm sivulle yhdessä ruudussa →
+heitto katosi. Nyt tarkennettu paikka saa olla enintään `TRACK_WINDOW_MARGIN_CM` (5 cm) hakualueen ulkopuolella
+(alue viimeisestä paikasta tai ennusteesta), muuten havainto hylätään (MISS). `TRACK_WINDOW_MARGIN_CM=-1` = pois,
+`TRACK_WINDOW_LOG=1` tulostaa hylkäykset.
+
+MAH00014: **24/24 molemmilla profiloinneilla** (tiheä: ennen 23/24). Hylkäyksiä 2748, joista 95 % roskaradoilla; heittokivillä
+133 (~1 % niiden päivityksistä). x kaukohogilla ero vanhaan ≤ 0,34 cm (vanha profiili) / ≤ 0,67 cm (tiheä profiili).
+
 ## v6.19: radan suuntaan liikkuva rata suojattu
 v6.18:n tiedostoajossa 3 heittoa hukkui kesken liu'un: kahdesti oikea liukuva kivi yhdistettiin duplikaattina vanhempaan,
 jo pysähtyneeseen rataan (vanhin id säilyi), kerran se poistettiin paikanvarauksessa ("huonoin sovitus").
