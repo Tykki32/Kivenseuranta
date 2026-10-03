@@ -1267,6 +1267,8 @@ if hasattr(stone_tracker, "set_grid_skip"):
         print(f"SEURANTA: ristikkohaun hieno vaihe maennousulla ({'PAALLA' if FINE_CLIMB == 1 else 'VARJOTILA'})")
 
     def _grid_skip_report():
+        if TRACK_WINDOW_MARGIN_CM >= 0:
+            print(f"SEURANTA: hakualueen ulkopuolelle tarkentuneita havaintoja hylatty {_window_rejects[0]}")
         fc = stone_tracker.fine_climb_stats()
         if fc["kutsuja"]:
             print(f"Hieno ristikko maennousulla: {fc['kutsuja']} hakua, {fc['arvioita_ka']:.1f} arviota/haku"
@@ -1665,6 +1667,10 @@ TRACK_MAX_SPEED_Y_CM_S = 300.0  # kayttajan helposti muutettava arvo (3 m/s)
 TRACK_MAX_SPEED_X_FRACTION_OF_Y = 0.10
 TRACK_MAX_SPEED_X_CM_S = TRACK_MAX_SPEED_Y_CM_S * TRACK_MAX_SPEED_X_FRACTION_OF_Y
 TRACK_MAX_BACKWARD_CM = 100.0
+# v6.20: tarkennetun paikan suurin sallittu ylitys hakualueesta (cm, kumpaankin suuntaan erikseen); < 0 = ei tarkistusta.
+TRACK_WINDOW_MARGIN_CM = float(os.environ.get("TRACK_WINDOW_MARGIN_CM", "5"))
+TRACK_WINDOW_LOG = os.environ.get("TRACK_WINDOW_LOG", "0") == "1"
+_window_rejects = [0]
 
 # ============================================================
 # ABSOLUUTTINEN KESKIVIIVAETAISYYSRAJA (kayttajan pyynnosta, katso
@@ -4731,7 +4737,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.19 (radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
+SOFTWARE_VERSION = "Testi_06_01 v6.20 (seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
 
 
 def _version_string():
@@ -6469,6 +6475,12 @@ def run_pipeline(
                         TRACK_MAX_SPEED_X_CM_S * elapsed_seconds_arr, TRACK_HALF_RANGE_MAX_CM
                     )
 
+                    _seuranta_pred = (
+                        _stone_prediction(
+                            seuranta_stones, frame_index,
+                            half_range_x_arr, half_range_y_arr
+                        ) if TRACKER_MODE == "ensemble" else None
+                    )
                     t_seuranta0 = time.time()
                     batch_results = _seuranta_dispatch(
                         frame_index, [s["stone_id"] for s in seuranta_stones],
@@ -6486,12 +6498,7 @@ def run_pipeline(
                             haku_seuranta_diff_threshold
                         ),
                         X0_arr, Y0_arr, half_range_x_arr, half_range_y_arr,
-                        pred=(
-                            _stone_prediction(
-                                seuranta_stones, frame_index,
-                                half_range_x_arr, half_range_y_arr
-                            ) if TRACKER_MODE == "ensemble" else None
-                        )
+                        pred=_seuranta_pred
                     )
                     total_seuranta_time += time.time() - t_seuranta0
                     _e = _PROF.setdefault("py: SEURANTA dispatch+C++ seinakello", [0.0, 0])
@@ -6596,6 +6603,24 @@ def run_pipeline(
                                     refined["found"] = False          # lahella portti koskee myos tarkkoja ruutuja
                                 elif not refined.get("tarkka"):
                                     refined["X_cm"], refined["Y_cm"] = _tx, _ty
+
+                        # v6.20: hakualueen rajat koskevat myos LOPULLISTA (tarkennettua) paikkaa, ei vain hakua: tarkennus
+                        # (lahimman kivirungon sovitus) voi tarttua viereiseen kohteeseen (MAH00014 621 s: harja, 22 cm
+                        # sivulle yhdessa ruudussa). Paikka saa olla enintaan TRACK_WINDOW_MARGIN_CM hakualueen ulkopuolella
+                        # (alue viimeisesta paikasta tai ennusteesta) -> muuten havainto hylataan (MISS).
+                        if refined["found"] and TRACK_WINDOW_MARGIN_CM >= 0:
+                            _x0, _y0 = float(X0_arr[_si]), float(Y0_arr[_si])
+                            _px = _x0 + (float(_seuranta_pred[0][_si]) if _seuranta_pred is not None else 0.0)
+                            _py = _y0 + (float(_seuranta_pred[1][_si]) if _seuranta_pred is not None else 0.0)
+                            _ex = min(abs(refined["X_cm"] - _x0), abs(refined["X_cm"] - _px)) - float(half_range_x_arr[_si])
+                            _ey = min(abs(refined["Y_cm"] - _y0), abs(refined["Y_cm"] - _py)) - float(half_range_y_arr[_si])
+                            if _ex > TRACK_WINDOW_MARGIN_CM or _ey > TRACK_WINDOW_MARGIN_CM:
+                                refined = dict(refined)
+                                refined["found"] = False
+                                _window_rejects[0] += 1
+                                if TRACK_WINDOW_LOG:
+                                    print(f"[frame {frame_index}] Kivi {s['stone_id']}: tarkennettu paikka hakualueen "
+                                          f"ulkopuolella (X {_ex:+.1f} cm, Y {_ey:+.1f} cm yli) -> hylataan.")
 
                         # --------------------------------
                         # KUMULATIIVINEN "EI TAAKSEPAIN" -TARKISTUS
