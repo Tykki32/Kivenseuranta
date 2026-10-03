@@ -1503,7 +1503,7 @@ PRECHECK_R_MAX_MAX_CM = 16.0
 # profiili ei ylisovitu yhden kiven omiin (esim. kulman/valaistuksen
 # aiheuttamiin) satunnaisvirheisiin, joten se yleistyy paremmin MUIHIN
 # kiviin joita ELAVA SEURANTA sen jalkeen kayttaa.
-PROFILE_MIN_ACCEPTED_STONES = 2
+PROFILE_MIN_ACCEPTED_STONES = int(os.environ.get("PROFIILI_KIVIA", "2"))
 
 # Testatessa oikealla videolla loytyi KAKSI ongelmaa jotka nama
 # kynnysarvot/mekanismit korjaavat:
@@ -1539,7 +1539,7 @@ PROFILE_MIN_ACCEPTED_STONES = 2
 # portti on POOLED-sovituksen oma, tiukempi PROFILE_MAX_RMS_PX
 # (katso try_fit_profile) - joten kynnysta voi nostaa tanne asti
 # ilman etta koko sovituksen lopullinen tarkkuus karsii.
-SOLO_TRACK_MAX_RMS_PX = 3.0   # Testi_03_03: oli 12.0
+SOLO_TRACK_MAX_RMS_PX = float(os.environ.get("SOLO_TRACK_MAX_RMS_PX", "3.0"))   # Testi_03_03: oli 12.0
 
 # HUOM (kayttajan huomio: n. 9 heittoa videolla, mutta vain 2
 # hyvaksyttiin): 750 framea (30s) osoittautui liian pitkaksi -
@@ -1558,6 +1558,22 @@ SOLO_TRACK_MAX_RMS_PX = 3.0   # Testi_03_03: oli 12.0
 # sovitusta, ei saastuta sita - toisin kuin aiempi ongelma
 # vaarilla ei-kivi-kandidaateilla).
 STONE_SCAN_COOLDOWN_FRAMES = 150   # 6s 25fps:lla
+
+# v6.18: TIHEA PROFIILISKANNAUS (kayttajan pyynto: "tarkistaisi niin usein kuin ehtii radan ... vain radan alueelta ja
+# tarkistus olisi c++"). PROFIILI_TIHEA=1: pelialue skannataan C++:lla (stone_tracker.scan_stone_candidates, sama kuin
+# kandidaatin seurannassa) joka PROFIILI_TIHEA_VALI_S sekunti, kandidaatit ketjutetaan lyhyiksi radoiksi, ja liikkuva rata
+# (>= PROFIILI_TIHEA_MIN_HAV havaintoa, siirtyma >= STONE_MOTION_THRESHOLD_CM, paaosin Y-suuntaan) tarkistetaan heti.
+# Yhteista 6 s jaahdytysta ei ole: hylatty rata merkitaan kokeilluksi niin kauan kuin se pysyy ketjussa.
+# 0 = vanha 2 s skannauspari + jaahdytys.
+PROFIILI_TIHEA = os.environ.get("PROFIILI_TIHEA", "1") == "1"
+PROFIILI_TIHEA_VALI_S = float(os.environ.get("PROFIILI_TIHEA_VALI_S", "0.2"))
+PROFIILI_TIHEA_MIN_HAV = int(os.environ.get("PROFIILI_TIHEA_MIN_HAV", "4"))
+# v6.18: kandidaatin seuranta skannaa ruudut vasta kun rata niita tarvitsee (0 = koko ikkuna ensin, kuten ennen) ja loppuu
+# kun kivi on pysahtynyt (liikkunut < PROFIILI_PYSAHDYS_CM viimeisen PROFIILI_PYSAHDYS_S aikana; 0 = ei, kuten ennen).
+PROFIILI_LAISKA = os.environ.get("PROFIILI_LAISKA", "1") == "1"
+# MAH00014: pysahdysraja 2 s (samat siemenet) kadotti 4 heittoa 24:sta (varireferenssiin 24 havaintoa 51:n sijaan) -> oletus 0.
+PROFIILI_PYSAHDYS_S = float(os.environ.get("PROFIILI_PYSAHDYS_S", "0"))
+PROFIILI_PYSAHDYS_CM = float(os.environ.get("PROFIILI_PYSAHDYS_CM", "10.0"))
 
 # ============================================================
 # ELAVA MONI-KIVEN SEURANTA + CSV
@@ -3330,10 +3346,118 @@ STONE_TRACK_PRECHECK_MAX_RMS_PX = 8.0   # Testi_03_03: oli 24.0
 STONE_TRACK_SAMPLE_STRIDE = 1
 
 
+class _DenseProfileScanner:
+    """v6.18: tihea C++-skannaus profiilivaiheessa (katso PROFIILI_TIHEA). Pitaa lyhyet kandidaattiradat ja antaa siemenen
+    (ruutu, paikka) kun jokin rata liikkuu. Skannaustulokset jaetaan kandidaatin seurannalle (prefill_cache)."""
+
+    KEEP_S = 40.0
+
+    def __init__(self, calib, pose, frame_w, frame_h, fps):
+        self.fps = fps
+        self.step_frames = max(1, int(round(fps * PROFIILI_TIHEA_VALI_S)))
+        self.max_gap = max(self.step_frames, int(round(fps * 1.0)))
+        camera_matrix = calib["camera_matrix"]
+        dist_coeffs = np.array([calib["best_k1"], 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self.map1, self.map2 = k94._build_undistort_maps(camera_matrix, dist_coeffs, (frame_w, frame_h))
+        x_min, x_max, y_min, y_max = _play_area_bounds()
+        self.args = (
+            calib["frame_undistorted"], calib["H_final"], pose["K"], pose["R"], pose["t"],
+            k9.STONE_TRACK_MIN_AREA, 200000, k9.STONE_TRACK_MIN_FILL_RATIO, k9.STONE_TRACK_MIN_ASPECT_RATIO,
+            x_min, x_max, y_min, y_max, k8.PIXELS_PER_CM, k8.OUTPUT_X_MIN_CM, k8.OUTPUT_Y_MAX_CM,
+            30.0, *_play_area_roi(pose, frame_w, frame_h),
+        )
+        self.cache = {}
+        self.tracklets = []       # {"obs": [(ruutu, (X, Y))], "tried": bool}
+        self.tried_tracks = []    # tarkistettujen ratojen {ruutu: (X, Y)}
+        self.next_frame = 0
+        self.n_scans = 0
+        self.t_scan = 0.0
+
+    def due(self, frame_idx):
+        return frame_idx >= self.next_frame
+
+    def _scan(self, frame):
+        frame_u = cv2.remap(frame, self.map1, self.map2, interpolation=cv2.INTER_LINEAR)
+        return stone_tracker.scan_stone_candidates(frame_u, *self.args)
+
+    def mark_tried_track(self, track):
+        if track:
+            self.tried_tracks.append({t["frame_idx"]: t["pos_cm"] for t in track})
+            del self.tried_tracks[:-20]
+
+    def _overlaps_tried(self, f, pos):
+        for tt in self.tried_tracks:
+            for df in (0, -1, 1, -2, 2):
+                q = tt.get(f + df)
+                if q is not None and math.hypot(q[0] - pos[0], q[1] - pos[1]) < k9.STONE_TRACK_MAX_JUMP_CM:
+                    return True
+        return False
+
+    def step(self, frame_idx, frame):
+        """Skannaa ruudun ja palauttaa (siemenpaikka, siemenruutu) tai (None, None)."""
+        self.next_frame = frame_idx + self.step_frames
+        cands = self.cache.get(frame_idx)
+        if cands is None:
+            t0 = time.perf_counter()
+            cands = self._scan(frame)
+            self.t_scan += time.perf_counter() - t0
+            self.n_scans += 1
+            self.cache[frame_idx] = cands
+        if len(self.cache) > 4 * self.KEEP_S * self.fps / self.step_frames:
+            lim = frame_idx - int(self.KEEP_S * self.fps)
+            for k in [k for k in self.cache if k < lim]:
+                del self.cache[k]
+
+        # ketjutus: lahin pari ensin (kivi liikkuu enintaan ~12 cm/ruutu)
+        live = [tl for tl in self.tracklets if 0 < frame_idx - tl["obs"][-1][0] <= self.max_gap]
+        pairs = []
+        for ti, tl in enumerate(live):
+            f0, p0 = tl["obs"][-1]
+            lim = 30.0 + 12.0 * (frame_idx - f0)
+            for ci, c in enumerate(cands):
+                d = math.hypot(c["pos_cm"][0] - p0[0], c["pos_cm"][1] - p0[1])
+                if d <= lim:
+                    pairs.append((d, ti, ci))
+        pairs.sort()
+        used_t, used_c = set(), set()
+        for d, ti, ci in pairs:
+            if ti in used_t or ci in used_c:
+                continue
+            used_t.add(ti)
+            used_c.add(ci)
+            live[ti]["obs"].append((frame_idx, tuple(cands[ci]["pos_cm"][:2])))
+            del live[ti]["obs"][:-50]
+        for ci, c in enumerate(cands):
+            if ci not in used_c:
+                live.append({"obs": [(frame_idx, tuple(c["pos_cm"][:2]))], "tried": False})
+        self.tracklets = live
+
+        # liikkuva rata -> siemen (suurin siirtyma ensin)
+        best = None
+        for tl in live:
+            if tl["tried"] or len(tl["obs"]) < PROFIILI_TIHEA_MIN_HAV or tl["obs"][-1][0] != frame_idx:
+                continue
+            f1, p1 = tl["obs"][-1]
+            f0, p0 = next(o for o in tl["obs"] if f1 - o[0] <= int(round(2.0 * self.fps)))
+            dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+            disp = math.hypot(dx, dy)
+            if disp < STONE_MOTION_THRESHOLD_CM or abs(dy) < abs(dx):
+                continue
+            if self._overlaps_tried(f1, p1):
+                tl["tried"] = True
+                continue
+            if best is None or disp > best[0]:
+                best = (disp, tl)
+        if best is None:
+            return None, None
+        best[1]["tried"] = True
+        return best[1]["obs"][-1][1], frame_idx
+
+
 def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
                                    seed_pos_cm, window_seconds=STONE_TRACK_WINDOW_SECONDS,
                                    background_reference_undistorted=None,
-                                   skip_precheck=False):
+                                   skip_precheck=False, prefill_cache=None):
 
     max_jump_cm = k9.STONE_TRACK_MAX_JUMP_CM * STONE_TRACK_SAMPLE_STRIDE
     max_misses = k9.STONE_TRACK_MAX_MISSES
@@ -3406,12 +3530,21 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
             30.0, *play_roi
         )
 
+    # v6.18: yhteinen valimuisti (ruutu -> kandidaatit). PROFIILI_LAISKA=1: ruudut skannataan vasta kun rata niita tarvitsee
+    # (1 s palasina) -> rata loppuu kun kivi katoaa, eika koko +-30 s ikkunaa tarvitse lukea/odottaa (live: tulevat ruudut).
+    # prefill_cache: tihean profiiliskannauksen jo skannaamat ruudut (sama C++-skannaus samoille ruuduille -> sama tulos).
+    cache = {}
+    if prefill_cache:
+        cache.update(prefill_cache)
+    read_pos = [None]   # ruutu jonka seuraava cap.read() antaa (None = tuntematon -> haku)
+
     def scan_indices(indices):
+        indices = [i for i in indices if i not in cache]
         if not indices:
-            return {}
+            return
         wanted = set(indices)
-        cache = {}
-        cap.set(cv2.CAP_PROP_POS_FRAMES, indices[0])
+        if read_pos[0] != indices[0]:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, indices[0])
         idx = indices[0]
         last = indices[-1]
         # v5.7: ruudut luetaan jarjestyksessa tassa saikeessa, mutta remap + kandidaattiskannaus (GIL vapaana) ajetaan
@@ -3422,7 +3555,9 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
             while idx <= last:
                 ok, frame = cap.read()
                 if not ok:
+                    read_pos[0] = None
                     break
+                read_pos[0] = idx + 1
                 if idx in wanted:
                     if ex is None:
                         cache[idx] = _scan_one(frame)
@@ -3437,14 +3572,27 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
         finally:
             if ex is not None:
                 ex.shutdown(wait=True)
-        return cache
+        for i in indices:      # lukematta jaaneet (videon loppu) -> ei kandidaatteja, ei uutta lukuyritysta
+            cache.setdefault(i, [])
 
-    def build_track_from_cache(cache, half_window_frames):
+    lazy_chunk = max(1, int(round(fps * 1.0 / STONE_TRACK_SAMPLE_STRIDE)))
+    stop_frames = int(round(PROFIILI_PYSAHDYS_S * fps))
+
+    def build_track_from_cache(half_window_frames):
 
         start_frame = max(0, seed_frame_idx - half_window_frames)
         end_frame = min(n_frames - 1, seed_frame_idx + half_window_frames)
+        if not PROFIILI_LAISKA:
+            scan_indices(build_indices(half_window_frames))
 
-        def candidates_at(i):
+        def candidates_at(i, step=1):
+            if i not in cache:
+                st = STONE_TRACK_SAMPLE_STRIDE
+                if step > 0:
+                    idxs = list(range(i, min(end_frame, i + (lazy_chunk - 1) * st) + 1, st))
+                else:
+                    idxs = list(range(i, max(start_frame, i - (lazy_chunk - 1) * st) - 1, -st))[::-1]
+                scan_indices(idxs)
             return cache.get(i, [])
 
         seed_cands = candidates_at(seed_frame_idx)
@@ -3466,10 +3614,11 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
             last_pos = seed["pos_cm"]
             misses = 0
             idx = seed_frame_idx + step * STONE_TRACK_SAMPLE_STRIDE
+            k_old = 0      # v6.18: pysahdystarkistuksen vertailuhavainto (>= stop_frames vanhempi)
 
             while start_frame <= idx <= end_frame and misses < max_misses:
 
-                cands = candidates_at(idx)
+                cands = candidates_at(idx, step)
 
                 if cands:
 
@@ -3489,6 +3638,15 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
                         track.append(best)
                         last_pos = best["pos_cm"]
                         misses = 0
+                        if stop_frames > 0:
+                            # v6.18: kivi pysahtynyt (liikkunut < PROFIILI_PYSAHDYS_CM viimeisen PROFIILI_PYSAHDYS_S aikana)
+                            # -> lopetetaan: paikallaan olevat havainnot eivat tuo profiiliin uusia katselukulmia
+                            while k_old + 1 < len(track) and abs(idx - track[k_old + 1]["frame_idx"]) >= stop_frames:
+                                k_old += 1
+                            if abs(idx - track[k_old]["frame_idx"]) >= stop_frames:
+                                p0 = track[k_old]["pos_cm"]
+                                if math.hypot(last_pos[0] - p0[0], last_pos[1] - p0[1]) < PROFIILI_PYSAHDYS_CM:
+                                    break
                     else:
                         misses += 1
                 else:
@@ -3512,9 +3670,7 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
     # ------------------------------------------------
 
     precheck_half_frames = int(round(STONE_TRACK_PRECHECK_WINDOW_SECONDS * fps))
-    precheck_indices = build_indices(precheck_half_frames)
-    precheck_cache = scan_indices(precheck_indices)
-    precheck_track = build_track_from_cache(precheck_cache, precheck_half_frames)
+    precheck_track = build_track_from_cache(precheck_half_frames)
 
     if (not skip_precheck) and len(precheck_track) >= STONE_TRACK_PRECHECK_MIN_SAMPLES:
 
@@ -3548,15 +3704,13 @@ def track_stone_in_video_windowed(video_path, calib, pose, seed_frame_idx,
     # ------------------------------------------------
 
     window_frames = int(round(window_seconds * fps))
-    full_indices = build_indices(window_frames)
-    remaining_indices = [i for i in full_indices if i not in precheck_cache]
-
-    full_cache = dict(precheck_cache)
-    full_cache.update(scan_indices(remaining_indices))
+    full_track = build_track_from_cache(window_frames)
 
     cap.release()
+    if prefill_cache is not None:
+        prefill_cache.update(cache)      # v6.18: skannatut ruudut talteen tihealle skannaukselle (ei tehda uudelleen)
 
-    return build_track_from_cache(full_cache, window_frames)
+    return full_track
 
 
 PROFILE_FIT_CPP = os.environ.get("PROFILE_FIT_CPP", "1") == "1"   # C++-sovitus (fit_stone_profile_cpp), 0 = Python-versio
@@ -4560,7 +4714,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.17 (kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03)"
+SOFTWARE_VERSION = "Testi_06_01 v6.18 (tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
 
 
 def _version_string():
@@ -5085,6 +5239,7 @@ def run_pipeline(
     )
     next_stone_scan_frame = 0
     prev_scan_candidates = None
+    dense_scanner = None      # v6.18: PROFIILI_TIHEA
     accumulated_stones = []
     haku_refiner = None
     track_refiner = None
@@ -5722,37 +5877,48 @@ def run_pipeline(
 
             elif profile_result is None:
 
-                if frame_index >= next_stone_scan_frame:
-
-                    # Kandidaattitunnistuksen syote stabiloidaan SAMALLA
-                    # matriisilla kuin moodikuva-referenssi aikanaan
-                    # laskettiin (engine.add_mode_frame) - muuten
-                    # taustavertailu (suppress_static_background) ei
-                    # osu kohdalleen, ja pikselikoordinaatit eivat
-                    # vastaa poseen kalibrointireferenssia.
-                    stabilized_scan_frame = cv2.warpAffine(
-                        frame, stabilization_matrix, (width, height)
+                if PROFIILI_TIHEA and dense_scanner is None:
+                    dense_scanner = _DenseProfileScanner(
+                        calib_result["calib"], calib_result["pose"], width, height, fps
                     )
+                    print(f"Tihea profiiliskannaus: pelialue C++:lla {dense_scanner.step_frames} ruudun valein.")
 
-                    curr_candidates = _scan_stone_candidates(
-                        stabilized_scan_frame, calib_result["calib"],
-                        calib_result["pose"],
-                        background_reference=calib_result["calib"]["frame"]
-                    )
+                if (frame_index >= next_stone_scan_frame) if dense_scanner is None else dense_scanner.due(frame_index):
 
-                    seed_pos = find_moving_candidate(
-                        prev_scan_candidates, curr_candidates
-                    )
+                    seed_frame_idx = frame_index
+                    if dense_scanner is not None:
+                        seed_pos, seed_frame_idx = dense_scanner.step(frame_index, frame)
+                    else:
 
-                    # ------------------------------------------
-                    # JAAHDYTYS: katso taman tiedoston alkupaan
-                    # kommentti MIKSI taman on oltava frame-ikkuna-
-                    # pohjainen (ei sijaintipohjainen) - nopeasti
-                    # liikkuva ei-kivi karkaisi sijaintikynnyksesta.
-                    # ------------------------------------------
+                        # Kandidaattitunnistuksen syote stabiloidaan SAMALLA
+                        # matriisilla kuin moodikuva-referenssi aikanaan
+                        # laskettiin (engine.add_mode_frame) - muuten
+                        # taustavertailu (suppress_static_background) ei
+                        # osu kohdalleen, ja pikselikoordinaatit eivat
+                        # vastaa poseen kalibrointireferenssia.
+                        stabilized_scan_frame = cv2.warpAffine(
+                            frame, stabilization_matrix, (width, height)
+                        )
 
-                    if frame_index < next_allowed_scan_track_frame:
-                        seed_pos = None
+                        curr_candidates = _scan_stone_candidates(
+                            stabilized_scan_frame, calib_result["calib"],
+                            calib_result["pose"],
+                            background_reference=calib_result["calib"]["frame"]
+                        )
+
+                        seed_pos = find_moving_candidate(
+                            prev_scan_candidates, curr_candidates
+                        )
+
+                        # ------------------------------------------
+                        # JAAHDYTYS: katso taman tiedoston alkupaan
+                        # kommentti MIKSI taman on oltava frame-ikkuna-
+                        # pohjainen (ei sijaintipohjainen) - nopeasti
+                        # liikkuva ei-kivi karkaisi sijaintikynnyksesta.
+                        # ------------------------------------------
+
+                        if frame_index < next_allowed_scan_track_frame:
+                            seed_pos = None
 
                     if seed_pos is not None:
 
@@ -5767,12 +5933,17 @@ def run_pipeline(
                         track = track_stone_in_video_windowed(
                             video_file, calib_result["calib"],
                             calib_result["pose"],
-                            seed_frame_idx=frame_index,
+                            seed_frame_idx=seed_frame_idx,
                             seed_pos_cm=seed_pos,
                             background_reference_undistorted=(
                                 calib_result["calib"]["frame_undistorted"]
+                            ),
+                            prefill_cache=(
+                                None if dense_scanner is None else dense_scanner.cache
                             )
                         )
+                        if dense_scanner is not None:
+                            dense_scanner.mark_tried_track(track)
 
                         print(
                             f"  seuranta valmis: {len(track)} havaintoa."
@@ -5898,6 +6069,11 @@ def run_pipeline(
                                         )
 
                                         profile_result = profile
+                                        if dense_scanner is not None and dense_scanner.n_scans:
+                                            print(
+                                                f"  tihea skannaus: {dense_scanner.n_scans} skannausta, "
+                                                f"{1000.0 * dense_scanner.t_scan / dense_scanner.n_scans:.1f} ms/kpl"
+                                            )
 
                                     else:
 
@@ -5909,7 +6085,8 @@ def run_pipeline(
                                             f"{PROFILE_MIN_ACCEPTED_STONES})."
                                         )
 
-                    prev_scan_candidates = curr_candidates
+                    if dense_scanner is None:
+                        prev_scan_candidates = curr_candidates
                     if seed_pos is not None and live_source.active() is not None and LIVE_PROFIILI_UUSIN:
                         # v6.17: kandidaatin tarkistus vei aikaa -> uusi skannauspari aloitetaan uusimmasta ruudusta
                         prev_scan_candidates = None
