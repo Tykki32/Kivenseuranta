@@ -1,5 +1,11 @@
 # Testi_07_01 (pohja Testi_06_01 v6.20)
 
+## v7.2: kalibroinnin moodikuva 2 min ajalta
+Moodikuvan näytteet kerätään ensimmäisen **120 s** ajalta (ennen 60 s), 5 s välein → enintään 25 näytettä (ennen 13).
+Liikkuvat kohteet (pelaajat, kivet) häviävät moodikuvasta varmemmin. `CALIB_MODE_DURATION_SECONDS=60` = vanha.
+Kalibrointi valmistuu vastaavasti n. 60 s myöhemmin. MAH00014 live-sim: 24 näytettä, hoglinet nimellisessä paikassa
+RMS 1,49 cm (ennen 1,93 cm nimellisenä, 1,48 cm ±20 cm -valinnalla).
+
 ## v7.1: debug-video puhelimen selaimeen (`--katselu`)
 Debug-videota voi katsoa elävänä samassa wifissä olevalla puhelimella selaimessa, muutaman sekunnin viiveellä.
 
