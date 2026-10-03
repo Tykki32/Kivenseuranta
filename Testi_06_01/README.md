@@ -217,6 +217,23 @@ MAH00014 (sandbox, kaksi ajoa rinnakkain):
 Kokeiltu ja hylätty: **LM-tarkennuksen keventäminen 10–24 m:n alueella** (1 ulkokierros / ei 2. LM:ää / ≤ 10 iteraatiota):
 LM alueella −78…−85 %, mutta seuranta kokonaisuudessaan vain −6…−7 %, ja 3–4 heittoa 24:stä katosi (paikkavirhe 1 %:ssa päivityksistä > 10 cm).
 
+## v6.17: kalibrointi 3,5x nopeammaksi (profiilivaihe ei jää niin paljon jälkeen)
+Profiilivaiheen aika MAH00014:llä (vanha, yhteensä 101 s): kalibrointi 43,7 s, `track_stone_in_video_windowed` 14,6 s,
+vaihekorrelaatio 12,7 s, alfa+sovitus+värireferenssi ~11,5 s, **skannaukset vain 0,6 s** (Python `_candidates_in_frame`
+35 ms/kpl, vain pelialue X ±2 m, Y 4–20 m). Kalibroinnista 44 s oli `measure_house_quality` → `_grid_search_shared_ellipse_shape`
+(162 000 Python-lstsq-kutsua).
+* `measure_house_quality` muistiin (sama ruutu + sama H → sama tulos): 44,6 → 22,3 s, tulokset identtiset.
+* Ellipsihaku vektoroituna (normaaliyhtälöt keskitetyistä momenteista, eräratkaisu `np.linalg.solve`, virheessä vanha koodi):
+  yhteensä **44,6 → 12,8 s** (`CALIB_VEC=0` = vanha). 9 moodikuvasta 8: identtinen H ja hoglinet; 1 (live_20261002_163845)
+  vaihtoi ±20 cm -valinnan nimelliseen, koska mittarit ovat täsmälleen samat (RMS 1,530, pyöreys 0,958) ja `candidate_is_better`
+  on tasapelissä liukulukuerojen takia.
+* MAH00014 live-sim: elävä seuranta alkaa 145 s kohdalla (ennen 170 s).
+
+Kokeiltu ja jätetty pois oletuksista:
+* `STAB_EVERY=2` (stabilointi joka toiselle ruudulle): 2 heittoa 24:stä katosi → oletus 1.
+* `LIVE_PROFIILI_UUSIN=1` (profiilin skannauspari uusimmasta ruudusta −5 s): profiili valmis 155 s vs 145 s, koska kalibroinnin
+  aikana ohi menneet kivet ohitetaan → oletus 0.
+
 ## v6.16: taaksepäin liikkuvat radat pois + SIMD-maskit
 **Mihin seurannan työ kuluu** (MAH00014, v6.15, kiven päivitykset luokiteltuina radan lopputuloksen mukaan):
 

@@ -59,6 +59,96 @@ k92 = k94.k92
 k9 = k94.k9
 k8 = k94.k8
 
+# v6.17: kalibroinnin pesien laatumittaus (k8.measure_house_quality: kaukopesan ellipsien ristikkosovitus Pythonissa, ~2,7 s/kutsu)
+# toistui samalle homografialle (candidate_is_better mittaa myos jo mitatun parhaan) -> tulos valimuistiin (ruutu-olio + H).
+# Mittaus on deterministinen -> tulos tasmalleen sama; MAH00014:n kalibrointi 54 s -> katso README.
+_orig_measure_house_quality = k8.measure_house_quality
+_mhq_cache = {}
+
+
+def _measure_house_quality_cached(frame_undistorted, H_final):
+    key = (id(frame_undistorted), np.asarray(H_final, dtype=np.float64).tobytes())
+    ent = _mhq_cache.get(key)
+    if ent is not None and ent[0] is frame_undistorted:
+        return dict(ent[1])
+    q = _orig_measure_house_quality(frame_undistorted, H_final)
+    if len(_mhq_cache) > 64:
+        _mhq_cache.clear()
+    _mhq_cache[key] = (frame_undistorted, q)
+    return dict(q)
+
+
+k8.measure_house_quality = _measure_house_quality_cached
+
+
+def _grid_search_shared_ellipse_shape_vec(point_groups, theta_center_deg, theta_half_range_deg, theta_step_deg,
+                                          k_center, k_half_range, k_step):
+    """v6.17: k8._grid_search_shared_ellipse_shape vektoroituna: kaikki (theta, k) -parit kerralla. Kiinnitetylla (theta, k):lla
+    (cx, cy, a_i) on lineaarinen pienimman neliosumman tehtava -> normaaliyhtalot pisteiden momenteista (keskitetty
+    koordinaatisto), ratkaisu batchina; geometrinen jaannos kaikille pareille matriisina. Valinta kuten alkuperaisessa
+    (ensimmainen pienin, theta ulompi silmukka). Ero alkuperaiseen vain liukulukupyoristyksessa (lstsq vs normaaliyhtalot)."""
+    thetas = k8.make_range(theta_center_deg, theta_half_range_deg, theta_step_deg)
+    ks = k8.make_range(k_center, k_half_range, k_step)
+    ks = ks[(ks > 0.05) & (ks <= 1.0)]
+    if len(thetas) == 0 or len(ks) == 0:
+        return None
+    TH_DEG = np.repeat(thetas.astype(np.float64), len(ks))
+    TH = np.radians(TH_DEG)
+    KK = np.tile(ks.astype(np.float64), len(thetas))
+    ct, st = np.cos(TH), np.sin(TH)
+    k2 = KK * KK
+    p = k2 * ct * ct + st * st
+    q = k2 * st * st + ct * ct
+    r = ct * st * (k2 - 1.0)
+    allp = np.vstack([np.asarray(g, dtype=np.float64)[:, :2] for g in point_groups])
+    mx, my = float(allp[:, 0].mean()), float(allp[:, 1].mean())
+    G = len(point_groups)
+    M = len(TH)
+    Xs = [np.asarray(g, dtype=np.float64)[:, 0] - mx for g in point_groups]
+    Ys = [np.asarray(g, dtype=np.float64)[:, 1] - my for g in point_groups]
+    X = np.concatenate(Xs); Y = np.concatenate(Ys)
+    Sxx, Syy, Sxy = (X * X).sum(), (Y * Y).sum(), (X * Y).sum()
+    Sxxx, Syyy, Sxxy, Sxyy = (X ** 3).sum(), (Y ** 3).sum(), (X * X * Y).sum(), (X * Y * Y).sum()
+    A = np.zeros((M, 2 + G, 2 + G))
+    b = np.zeros((M, 2 + G))
+    A[:, 0, 0] = 4.0 * (p * p * Sxx + 2.0 * p * r * Sxy + r * r * Syy)
+    A[:, 0, 1] = A[:, 1, 0] = 4.0 * (p * q * Sxy + p * r * Sxx + r * q * Syy + r * r * Sxy)
+    A[:, 1, 1] = 4.0 * (q * q * Syy + 2.0 * q * r * Sxy + r * r * Sxx)
+    b[:, 0] = 2.0 * (p * p * Sxxx + (p * q + 2.0 * r * r) * Sxyy + 3.0 * p * r * Sxxy + r * q * Syyy)
+    b[:, 1] = 2.0 * (r * p * Sxxx + (q * p + 2.0 * r * r) * Sxxy + 3.0 * q * r * Sxyy + q * q * Syyy)
+    for gi in range(G):
+        xg, yg = Xs[gi], Ys[gi]
+        sx, sy = xg.sum(), yg.sum()
+        A[:, 0, 2 + gi] = A[:, 2 + gi, 0] = -2.0 * (p * sx + r * sy)
+        A[:, 1, 2 + gi] = A[:, 2 + gi, 1] = -2.0 * (q * sy + r * sx)
+        A[:, 2 + gi, 2 + gi] = float(len(xg))
+        b[:, 2 + gi] = -(p * (xg * xg).sum() + q * (yg * yg).sum() + 2.0 * r * (xg * yg).sum())
+    try:
+        sol = np.linalg.solve(A, b[:, :, None])[:, :, 0]
+    except np.linalg.LinAlgError:
+        return _orig_grid_search_shared_ellipse_shape(point_groups, theta_center_deg, theta_half_range_deg, theta_step_deg,
+                                                      k_center, k_half_range, k_step)
+    cxc, cyc = sol[:, 0], sol[:, 1]
+    tsq = p * cxc * cxc + q * cyc * cyc + 2.0 * r * cxc * cyc
+    a = np.sqrt(np.maximum(tsq[:, None] - sol[:, 2:], 1e-6)) / KK[:, None]          # (M, G)
+    total = np.zeros(M)
+    for gi in range(G):
+        dx = Xs[gi][None, :] - cxc[:, None]
+        dy = Ys[gi][None, :] - cyc[:, None]
+        u = dx * ct[:, None] + dy * st[:, None]
+        v = -dx * st[:, None] + dy * ct[:, None]
+        rho = np.sqrt(u * u + (v / KK[:, None]) ** 2)
+        total += ((rho - a[:, gi:gi + 1]) ** 2).sum(axis=1)
+    mse = total / max(len(X), 1)
+    i = int(np.argmin(mse))
+    return (float(mse[i]), float(TH_DEG[i]), float(KK[i]), float(cxc[i] + mx), float(cyc[i] + my),
+            [float(v_) for v_ in a[i]])
+
+
+_orig_grid_search_shared_ellipse_shape = k8._grid_search_shared_ellipse_shape
+if os.environ.get("CALIB_VEC", "1") == "1":
+    k8._grid_search_shared_ellipse_shape = _grid_search_shared_ellipse_shape_vec
+
 
 # ============================================================
 # KAUKAISEN PESAN LOYTAMINEN + KOKO HOMOGRAFIAN RATKAISU
@@ -1263,6 +1353,14 @@ HAKU_AHEAD = os.environ.get("HAKU_AHEAD", "1") == "1"
 # (kalibroinnin aikana kertynyt viive pois; 0 = jatketaan perakkain, simulaation tarkistusajoon). LIVE_TAAKSE_SEURANTA_S:
 # kuinka paljon historiaa puskuri pitaa elavan seurannan aikana (kalibroinnin aikana --live-taakse-s, oletus 40 s).
 LIVE_HYPPY = os.environ.get("LIVE_HYPPY", "1") == "1"
+# v6.17 (kokeilu, OLETUKSENA POIS): live-tilan PROFIILIVAIHEESSA skannauspari aloitetaan puskurin uusimmasta ruudusta - 5 s
+# (valiruudut ohitetaan). MAH00014 live-sim: profiili valmis ruudussa 2896 / 155 s vs 2177 / 145 s ilman (ohitus kadottaa
+# kalibroinnin aikana ohi menneet kivet) -> 0 = perakkain kuten ennen.
+LIVE_PROFIILI_UUSIN = os.environ.get("LIVE_PROFIILI_UUSIN", "0") == "1"
+# v6.17 (kokeilu, OLETUKSENA POIS): stabilointi vain joka STAB_EVERY:nnelle ruudulle, valissa edellinen siirtyma. MAH00014:
+# muutos ruudusta toiseen 95 %:ssa < 0,36 px -> pidatetty siirtyma usein kymmenyksia pikselia pielessa, taustanvaimennus
+# moodikuvaan ei osu kohdalleen: STAB_EVERY=2 kadotti 2 heittoa 24:sta. 1 = joka ruutu.
+STAB_EVERY = max(1, int(os.environ.get("STAB_EVERY", "1")))
 LIVE_TAAKSE_SEURANTA_S = float(os.environ.get("LIVE_TAAKSE_SEURANTA_S", "2"))
 CV_SINGLE_PERSIST = os.environ.get("CV_SINGLE_PERSIST", "1") == "1"   # v5.12: C++-OpenCV pysyvasti 1 saikeelle elavassa vaiheessa (0 = vaihto joka kutsulla kuten ennen)
 SIL_IN_BATCH = os.environ.get("SIL_IN_BATCH", "1") == "1"   # v5.11: SEURANNAN siluettitarkennus C++-kivisaikeissa (0 = erillinen vaihe)   # v5.11: HAKU kaynnistetaan jo liukuhihnan vaiheessa B (0 = paasaikeessa kuten ennen)  # liukuhihna: ruudun valmistelu omassa saikeessa
@@ -4462,7 +4560,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_06_01 v6.16 (seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-02)"
+SOFTWARE_VERSION = "Testi_06_01 v6.17 (kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03)"
 
 
 def _version_string():
@@ -4656,6 +4754,8 @@ class _LivePipeline:
         self._live_state = live_state
         self._calib_result = calib_result
         self._index = first_index
+        self._first_index = first_index
+        self._last_dxy = None             # v6.17: STAB_EVERY - viimeisin laskettu siirtyma
         _PIPE_STATS.update(wall0=time.perf_counter(), cpu0=time.process_time(), qC_sum=0, qC_n=0, qA_sum=0, qA_n=0, cpu_a=None, cpu_b=None, depth=depth)
         self._ta = threading.Thread(target=self._run_a, daemon=True)
         self._tb = threading.Thread(target=self._run_b, daemon=True)
@@ -4687,12 +4787,15 @@ class _LivePipeline:
                     self._put(self._qa, None, "pipe A: odottaa vaihetta B (jono taynna)")
                     return
 
-                t0 = time.perf_counter()
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                _e = _PROF.setdefault("pipe A: gray cvtColor", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
-
-                t0 = time.perf_counter()
-                dx, dy = _phase_correlate_cached(self._ref_gray, gray)
+                if self._last_dxy is None or (self._index - self._first_index) % STAB_EVERY == 0:
+                    t0 = time.perf_counter()
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    _e = _PROF.setdefault("pipe A: gray cvtColor", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
+                    t0 = time.perf_counter()
+                    self._last_dxy = _phase_correlate_cached(self._ref_gray, gray)
+                else:
+                    t0 = time.perf_counter()        # v6.17: valiruutu -> edellinen siirtyma (STAB_EVERY)
+                dx, dy = self._last_dxy
                 stab = np.array([[1.0, 0.0, -dx], [0.0, 1.0, -dy]], dtype=np.float64)
                 _e = _PROF.setdefault("pipe A: stabilointi (vaihekorrelaatio)", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
 
@@ -4724,7 +4827,11 @@ class _LivePipeline:
         def _emit_oldest():
             idx, frame, fut = pending.popleft()
             t0 = time.perf_counter()
-            (dx, dy), dt_work = fut.result()
+            if fut is None:                  # v6.17: valiruutu (STAB_EVERY) -> edellinen siirtyma
+                (dx, dy), dt_work = self._last_dxy, 0.0
+            else:
+                (dx, dy), dt_work = fut.result()
+                self._last_dxy = (dx, dy)
             _e = _PROF.setdefault("pipe A: stabilointi (vaihekorrelaatio)", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
             _e = _PROF.setdefault("bg: stabilointi tyoaika (rinnakkaiset tyontekijat, ei lisaa)", [0.0, 0]); _e[0] += dt_work; _e[1] += 1
             stab = np.array([[1.0, 0.0, -dx], [0.0, 1.0, -dy]], dtype=np.float64)
@@ -4745,6 +4852,13 @@ class _LivePipeline:
                     self._put(self._qa, None, "pipe A: odottaa vaihetta B (jono taynna)")
                     return
 
+                if not first and (self._index - self._first_index) % STAB_EVERY != 0:
+                    pending.append((self._index, frame, None))      # v6.17: ei vaihekorrelaatiota (eika harmaasavya) talle ruudulle
+                    self._index += 1
+                    while len(pending) >= STAB_WORKERS + STAB_EVERY - 1:
+                        _emit_oldest()
+                    continue
+
                 t0 = time.perf_counter()
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 _e = _PROF.setdefault("pipe A: gray cvtColor", [0.0, 0]); _e[0] += time.perf_counter() - t0; _e[1] += 1
@@ -4758,7 +4872,7 @@ class _LivePipeline:
                 else:
                     pending.append((self._index, frame, ex.submit(_job, gray)))
                 self._index += 1
-                while len(pending) >= STAB_WORKERS:
+                while len(pending) >= STAB_WORKERS + STAB_EVERY - 1:
                     _emit_oldest()
         except BaseException as e:      # valitetaan eteenpain
             self._put(self._qa, e, "pipe A: odottaa vaihetta B (jono taynna)")
@@ -5135,11 +5249,27 @@ def run_pipeline(
             t_frame_wall0 = time.perf_counter()
             _t_post0 = None
             pipe_item = None
+            _lv = live_source.active()
+            if (_lv is not None and LIVE_PROFIILI_UUSIN and frame_pipeline is None and calib_result is not None
+                    and profile_result is None):
+                # v6.17: skannauspari (liikkuvan kandidaatin tunnistus vertaa kahta skannausta STONE_SCAN_INTERVAL_SECONDS
+                # valein): parin ensimmainen skannaus puskurin uusimmasta ruudusta, toinen TASAN skannausvalin paasta.
+                if prev_scan_candidates is None:
+                    # parin 1. skannaus (skannausvali + esitarkistus) sekuntia uusimmasta taaksepain -> kandidaatin 3 s
+                    # esitarkistuksen ruudut ovat jo puskurissa eika niita tarvitse odottaa kamerasta
+                    _back = int(round((STONE_SCAN_INTERVAL_SECONDS + STONE_TRACK_PRECHECK_WINDOW_SECONDS) * fps))
+                    _want = max(next_stone_scan_frame, _lv.store.latest_index() - _back, frame_index)
+                else:
+                    _want = max(next_stone_scan_frame, frame_index)
+                if _want > frame_index:
+                    _got = _lv.store.skip_to(_want)
+                    if _got is not None:
+                        frame_index = _got
             t_read0 = time.perf_counter()
             if frame_pipeline is not None:
                 pipe_item = frame_pipeline.get()
                 frame = None if pipe_item is None else pipe_item["frame"]
-            elif calib_result is not None and VIDEO_PREFETCH:
+            elif calib_result is not None and VIDEO_PREFETCH and live_source.active() is None:
                 if frame_prefetcher is None:
                     frame_prefetcher = _FramePrefetcher(engine)
                 frame = frame_prefetcher.read()
@@ -5780,6 +5910,9 @@ def run_pipeline(
                                         )
 
                     prev_scan_candidates = curr_candidates
+                    if seed_pos is not None and live_source.active() is not None and LIVE_PROFIILI_UUSIN:
+                        # v6.17: kandidaatin tarkistus vei aikaa -> uusi skannauspari aloitetaan uusimmasta ruudusta
+                        prev_scan_candidates = None
                     next_stone_scan_frame = frame_index + stone_scan_interval_frames
 
             # ------------------------------------------------
