@@ -217,6 +217,26 @@ MAH00014 (sandbox, kaksi ajoa rinnakkain):
 Kokeiltu ja hylätty: **LM-tarkennuksen keventäminen 10–24 m:n alueella** (1 ulkokierros / ei 2. LM:ää / ≤ 10 iteraatiota):
 LM alueella −78…−85 %, mutta seuranta kokonaisuudessaan vain −6…−7 %, ja 3–4 heittoa 24:stä katosi (paikkavirhe 1 %:ssa päivityksistä > 10 cm).
 
+## v6.18: tiheä C++-profiiliskannaus pelialueelta
+Profiilivaiheessa pelialue (X ±2 m, Y 4–20 m) skannataan nyt **C++:lla 0,2 s välein** (`stone_tracker.scan_stone_candidates`,
+sama kuin kandidaatin seurannassa; 7,2 ms/skannaus) entisen 2 s Python-skannausparin sijaan. Kandidaatit ketjutetaan lyhyiksi
+radoiksi; liikkuva rata (≥ 4 havaintoa, siirtymä ≥ 15 cm, pääosin Y-suuntaan) tarkistetaan heti. Yhteistä 6 s jäähdytystä ei
+ole: hylätty rata merkitään kokeilluksi niin kauan kuin se pysyy ketjussa. Skannaustulokset käytetään uudelleen seurannassa.
+`PROFIILI_TIHEA=0` = vanha tapa, `PROFIILI_TIHEA_VALI_S` (0,2), `PROFIILI_TIHEA_MIN_HAV` (4).
+
+Kandidaatin seuranta (`track_stone_in_video_windowed`) skannaa ruudut vasta kun rata niitä tarvitsee (`PROFIILI_LAISKA=1`):
+tulos täsmälleen sama (MAH00014: CSV identtinen), mutta kadonnut rata ei enää lue/odota koko ±30 s ikkunaa.
+
+MAH00014 live-sim (9000 ruutua): elävä seuranta alkaa **121,4 s** (ennen 145 s), hyppy alussa 33,6 s (ennen 58 s);
+pysähdysrajalla (`PROFIILI_PYSAHDYS_S=2`) 106,7 s / 18,9 s.
+Tiedostoajossa tiheä skannaus valitsee eri toisen kiven profiiliin (ruutu 2196 vs 2176) → profiili hieman eri
+(R 13,65 vs 13,53 cm) ja seuranta reagoi siihen herkästi: 21/24 heittoa (puuttuvat 130,5 s, 139,85 s, 621 s; muiden
+x kaukohogilla ±0,6 cm). Vertailuun `PROFIILI_TIHEA=0`.
+
+Kokeiltu ja jätetty pois: seurannan lopetus kun kivi pysähtynyt (`PROFIILI_PYSAHDYS_S=2`): samoilla siemenillä 4 heittoa
+24:stä katosi (värireferenssiin 24 havaintoa 51:n sijaan) → oletus 0. `PROFIILI_KIVIA=3` ja `SOLO_TRACK_MAX_RMS_PX=0.8`
+eivät auttaneet (21/24 ja 20/24).
+
 ## v6.17: kalibrointi 3,5x nopeammaksi (profiilivaihe ei jää niin paljon jälkeen)
 Profiilivaiheen aika MAH00014:llä (vanha, yhteensä 101 s): kalibrointi 43,7 s, `track_stone_in_video_windowed` 14,6 s,
 vaihekorrelaatio 12,7 s, alfa+sovitus+värireferenssi ~11,5 s, **skannaukset vain 0,6 s** (Python `_candidates_in_frame`
