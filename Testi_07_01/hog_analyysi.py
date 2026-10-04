@@ -448,20 +448,8 @@ class FfmpegPipeWriter:
     def __init__(self, path, fps, size, encoder):
         self._dead = False
         self._yuv = _yuv_input(size[0], size[1])
-        cmd = _ffmpeg_cmd(size[0], size[1], fps, encoder, path)
-        import katselu as _katselu
-        _k = _katselu.active()
-        if _k is not None:
-            # Testi_07_01: sama koodattu virta myos HLS-paloiksi puhelimen selaimelle (tee-muxer, ei toista koodausta).
-            # Avainruutu joka HLS-palan alkuun (-g), SPS/PPS sivutietona (mp4) - mpegts lisaa ne itse avainruutuihin.
-            gop = max(1, int(round(float(fps) * _katselu.HLS_SEGMENT_S)))
-            mp4 = _os.path.abspath(path).replace("\\", "/")      # ffmpeg ajetaan HLS-kansiossa -> absoluuttinen polku
-            cmd = cmd[:-1] + ["-g", str(gop), "-flags", "+global_header", "-map", "0:v", "-f", "tee",
-                              f"[f=mp4]'{mp4}'|{_k.hls_output()}"]
-            _k.hls_enabled = True
-            print(f"Katselu: HLS-palat samasta koodauksesta ({_katselu.HLS_SEGMENT_S:g} s palat, avainruutu {gop} ruudun valein)")
-        self._p = _sp.Popen(cmd, stdin=_sp.PIPE, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
-                            cwd=(_k.hls_dir if _k is not None else None), **bg_popen_kwargs())
+        self._p = _sp.Popen(_ffmpeg_cmd(size[0], size[1], fps, encoder, path), stdin=_sp.PIPE, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                            **bg_popen_kwargs())
 
     def write(self, img):
         if self._dead:
@@ -530,12 +518,6 @@ def bg_popen_kwargs():
     return {"preexec_fn": lambda: _o.nice(5)}
 
 
-try:
-    import katselu as _katselu_mod      # Testi_07_01: puhelinkatselu (katselu.py)
-except Exception:
-    _katselu_mod = None
-
-
 class AsyncVideoWriter:
     """cv2.VideoWriter kahdessa taustasaikeessa: (1) piirto/kokoonpano, (2) kirjoitus (koodaus). Pääsäie vain jonottaa tyon (submit)
     tai valmiin kuvan (write); jono taynna -> odottaa."""
@@ -566,8 +548,6 @@ class AsyncVideoWriter:
             img = self._qw.get()
             if img is None:
                 break
-            if _katselu_mod is not None and _katselu_mod.active() is not None:
-                _katselu_mod.active().offer_frame(img)      # Testi_07_01: MJPEG-varakeino (vain viittaus, kun katsojia)
             self._w.write(img)
 
     def write(self, img):

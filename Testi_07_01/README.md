@@ -1,5 +1,18 @@
 # Testi_07_01 (pohja Testi_06_01 v6.20)
 
+## v7.5: puhelinnäkymä kerran sekunnissa, ei debug-videota
+`--katselu` ei enää tee videota eikä kytke debug-videota päälle. Sama näkymä kuin debug-videossa (kuva, kivien ääriviivat,
+tulospaneelit sekuntilaskureineen) piirretään omassa taustasäikeessään **kerran sekunnissa** (seinäkello) ja pakataan JPEG:ksi
+(1100 px leveä, ~50 kt); puhelimen sivu hakee uuden kuvan kerran sekunnissa. Jos piirto on vielä kesken, kyseinen sekunti
+ohitetaan – pääsäie ei koskaan odota. HLS-video ja MJPEG-tila poistettu (v7.1). Mitattu: 11,6 ms/kuva = ~1 % yhdestä ytimestä
+(ennen debug-video 25 kuvaa/s + ffmpeg ≈ 0,2 ydintä + pääsäikeen odotus).
+
+Suositeltu ajo (ei debug-videota, ei raakatallennetta koneelle):
+```
+python main.py --live --katselu
+```
+Asetukset: `KATSELU_VALI_S` (1.0), `KATSELU_LEVEYS` (1100), `KATSELU_LAATU` (75). Debug-videon saa edelleen `--debug`-valitsimella.
+
 ## v7.4: paneelit klikataan kamerakuvasta ennen live-vaihetta (ei tarvita paneelitiedostoa)
 Live-tilassa ilman `--paneelit`-valitsinta ohjelma ottaa kamerasta **yhden kuvan ennen live-vaiheen alkua** ja avaa sen
 ikkunaan: klikkaa paneelien keskelle (jokainen klikkaus tarkennetaan samalla paneelintunnistuksella kuin automaattihaku),
