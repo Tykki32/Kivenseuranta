@@ -1,5 +1,9 @@
 # Testi_07_01 (pohja Testi_06_01 v6.20)
 
+## v7.6: puhelinnäkymä koko näytölle napautuksella
+Napauta kuvaa → sivu menee koko näytön tilaan (selaimen osoitepalkki ja järjestelmäpalkit piiloon, myös Firefox Androidissa);
+uusi napautus palauttaa. Alareunan tilarivissä vihje "napauta = koko näyttö", kun ei olla koko näytössä. Sivu ei vierity.
+
 ## v7.5: puhelinnäkymä kerran sekunnissa, ei debug-videota
 `--katselu` ei enää tee videota eikä kytke debug-videota päälle. Sama näkymä kuin debug-videossa (kuva, kivien ääriviivat,
 tulospaneelit sekuntilaskureineen) piirretään omassa taustasäikeessään **kerran sekunnissa** (seinäkello) ja pakataan JPEG:ksi
