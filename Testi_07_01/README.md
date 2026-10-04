@@ -1,5 +1,17 @@
 # Testi_07_01 (pohja Testi_06_01 v6.20)
 
+## v7.4: paneelit klikataan kamerakuvasta ennen live-vaihetta (ei tarvita paneelitiedostoa)
+Live-tilassa ilman `--paneelit`-valitsinta ohjelma ottaa kamerasta **yhden kuvan ennen live-vaiheen alkua** ja avaa sen
+ikkunaan: klikkaa paneelien keskelle (jokainen klikkaus tarkennetaan samalla paneelintunnistuksella kuin automaattihaku),
+suositus vähintään 6 paneelia, **Enter** = valmis, **Esc** = peruuta. Vasta tämän jälkeen käynnistyvät puskuri, tallennus ja
+moodikuvan keruu – valinnan aikaa ei puskuroida eikä tallenneta.
+```
+python main.py --live --live-tallenna --katselu
+```
+Tallennetaan `<nimi>_panel_corners.txt` (ja kuva `<nimi>_paneelikuva.png`); samalla kamera-asettelulla tiedoston voi seuraavalla
+kerralla antaa `--paneelit`-arvoksi, jolloin paneelit haetaan automaattisesti. Testattu live-simulaatiolla (klikkaukset
+simuloitu): paneelit 7/7, kalibrointi ja seuranta normaalisti.
+
 ## v7.3: kadonnut kivi unohdetaan 1 s:ssa, "sekuntia sitten" -laskuri, hidastuvuus kitkamallista, putki 50
 * `TRACK_LOST_GRACE_SECONDS` 3 → **1 s**: jos kivi katoaa (esim. ihminen jää seisomaan eteen), rata pudotetaan sekunnissa
   (HAKU löytää sen uudelleen). MAH00014: heitot ja hog-tulokset samat kuin 3 s:lla (x kaukohogilla ero ≤ 0,24 cm),

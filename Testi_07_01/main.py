@@ -4747,7 +4747,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_07_01 v7.3 (kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
+SOFTWARE_VERSION = "Testi_07_01 v7.4 (live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
 
 
 def _version_string():
@@ -7854,6 +7854,23 @@ def _start_live(args):
         else:
             src = _open(args.live_taustaj, "ajuri" if args.live_muunnos == "auto" else args.live_muunnos)
         kuvaus = f"KAMERA laite {src.device}"
+    if not args.paneelit:
+        # Testi_07_01 v7.4: ei paneelitiedostoa -> paneelit klikataan YHDESTA kamerakuvasta ENNEN live-vaiheen alkua
+        # (ei puskurointia eika tallennusta valinnan aikana). Valinta tallennetaan <nimi>_panel_corners.txt:ksi, jonka main()
+        # lataa suoraan (ei automaattitunnistusta referenssista). Sama tiedosto kelpaa seuraavalla kerralla --paneelit-arvoksi.
+        try:
+            still = src.grab_still()
+            cv2.imwrite(base + "_paneelikuva.png", still)
+            print()
+            print("Paneelien valinta: klikkaa paneelien keskelle kuvassa (suositus vahintaan "
+                  f"{MIN_AUTO_PANELS_BEFORE_MANUAL}), Enter = valmis, Esc = peruuta. Live-vaihe alkaa vasta valinnan jalkeen.")
+            panels = select_panels_manually(cv2.cvtColor(still, cv2.COLOR_BGR2GRAY), still,
+                                            window_name="Klikkaa paneelit (Enter=valmis, Esc=peruuta)")
+        except BaseException:
+            src.close()
+            raise
+        fn = save_panel_data(panels, base + ".mp4")
+        print(f"Paneelit tallennettu: {fn} ({len(panels)} kpl). Seuraavalla kerralla samalla kamera-asettelulla: --paneelit \"{fn}\"")
     if args.live_tallenna:
         try:
             recorder = live_source.FfmpegRecorder(base + "_live.mp4", src.store.width, src.store.height, src.store.fps)
@@ -7979,7 +7996,8 @@ if __name__ == "__main__":
     _arg_parser.add_argument("--live-nimi", default=None, help="Tulostiedostojen nimipohja (oletus live_<paiva>_<aika>).")
     _arg_parser.add_argument("--live-tallenna", action="store_true", help="Tallenna kasiteltava kuva myos videoksi (<pohja>_live.mp4, QSV/x264).")
     _arg_parser.add_argument("--paneelit", default=None,
-                             help="Referenssi-paneelitiedosto (*_panel_corners.txt) ilman valitsinta (live-tilassa tarpeen).")
+                             help="Referenssi-paneelitiedosto (*_panel_corners.txt) ilman valitsinta. Live-tilassa ilman tata paneelit "
+                                  "klikataan yhdesta kamerakuvasta ennen live-vaiheen alkua (Testi_07_01 v7.4).")
 
     _arg_parser.add_argument("--katselu", nargs="?", type=int, const=8080, default=None,
                              help="Testi_07_01: debug-video puhelimen selaimeen samassa wifissa (portti, oletus 8080). "
