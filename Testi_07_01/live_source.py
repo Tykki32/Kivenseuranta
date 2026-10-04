@@ -417,6 +417,18 @@ class CameraSource(_SourceBase):
         except Exception:
             pass
 
+    def grab_still(self, n_flush=10):
+        """Testi_07_01 v7.4: yksi kuva kamerasta ENNEN kaynnistysta (start) paneelien valintaan - ei puskuriin eika tallenteeseen.
+        n_flush vanhaa ruutua luetaan ohi (ajurin jonossa voi olla vanhoja kuvia)."""
+        fr = None
+        for _ in range(max(1, n_flush)):
+            ok, f = self.cap.read()
+            if ok and f is not None:
+                fr = f
+        if fr is None:
+            raise RuntimeError("Kamerasta ei saatu kuvaa paneelien valintaan.")
+        return self._convert(fr).copy()
+
     @staticmethod
     def _measure_fps(cap, n):
         t0 = time.time()
@@ -491,6 +503,22 @@ class FileSimSource(_SourceBase):
                                 blocking_producer=not realtime,
                                 min_keep_back_frames=None if min_keep_back_s is None else int(min_keep_back_s * self.fps))
         self._thread = threading.Thread(target=self._run, daemon=True, name="live-simulaatio")   # kaynnistetaan start():lla
+
+    def grab_still(self, n_flush=0):
+        """Testi_07_01 v7.4: simulaation ensimmainen ruutu paneelien valintaan; video kelataan takaisin alkuun."""
+        ok, fr = self.cap.read()
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        if not ok:
+            raise RuntimeError("Simulaatiovideosta ei saatu kuvaa paneelien valintaan.")
+        if fr.shape[1] != self.out_w or fr.shape[0] != self.out_h:
+            fr = cv2.resize(fr, (self.out_w, self.out_h), interpolation=cv2.INTER_AREA)
+        return np.ascontiguousarray(fr)
+
+    def close(self):
+        try:
+            self.cap.release()
+        except Exception:
+            pass
 
     def _run(self):
         t0 = time.time()
