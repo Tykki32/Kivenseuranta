@@ -44,6 +44,86 @@ def _time_at(a, b, c, y, t_lo, t_hi):
     return float(min(cands, key=lambda t: abs(t - mid)))
 
 
+# ------------------------------------------------------------------
+# Testi_07_01 v7.3: HIDASTUVUUS KITKAMALLISTA. Kitkakerroin mu(v) = A + B ln(v) (v = hetkellinen nopeus m/s, havaittu muoto),
+# liikeyhtalo dv/dt = -g mu(v). Sovitetaan heiton Y(t)-dataan (samat pisteet kuin toisen asteen sovituksessa) parametrit
+# y0, v0, A, B (Levenberg-Marquardt, numeerinen integrointi RK4). Raportoitava hidastuvuus = g mu(DECEL_REF_V_MS).
+# ------------------------------------------------------------------
+G_MS2 = 9.81
+DECEL_REF_V_MS = 1.5          # hidastuvuus ilmoitetaan talla nopeudella
+_FRIC_DT = 0.04               # integrointiaskel (s)
+
+
+def _fric_y(params, tt):
+    """Mallin Y(t) (cm) annetuilla ajoilla. params = (y0_cm, v0_ms, A, B). None jos nopeus putoaa nollaan."""
+    y0, v0, A, B = params
+    if v0 <= 0.05:
+        return None
+    n = int(np.ceil(tt.max() / _FRIC_DT)) + 1
+    h = _FRIC_DT
+    ts = np.arange(n + 1) * h
+    vs = np.empty(n + 1); vs[0] = v0
+    f = lambda v: -G_MS2 * (A + B * np.log(v))
+    v = v0
+    for i in range(n):
+        k1 = f(v); v2 = v + 0.5 * h * k1
+        if v2 <= 0.01: return None
+        k2 = f(v2); v3 = v + 0.5 * h * k2
+        if v3 <= 0.01: return None
+        k3 = f(v3); v4 = v + h * k3
+        if v4 <= 0.01: return None
+        k4 = f(v4)
+        v = v + h / 6.0 * (k1 + 2 * k2 + 2 * k3 + k4)
+        if v <= 0.01:
+            return None
+        vs[i + 1] = v
+    pos = np.concatenate([[0.0], np.cumsum(0.5 * (vs[1:] + vs[:-1]) * h)])      # kuljettu matka (m)
+    return y0 - 100.0 * np.interp(tt, ts, pos)
+
+
+def fit_log_friction(tt, y, v0_ms, decel0_ms2, iters=40):
+    """Palauttaa dict(A, B, y0_cm, v0_ms, rms_cm) tai None. tt: s (alkaen 0), y: cm."""
+    p = np.array([float(y[0]), float(v0_ms), max(1e-4, float(decel0_ms2) / G_MS2), 0.0])
+    steps = np.array([0.5, 0.002, 1e-5, 1e-5])
+
+    def resid(q):
+        m = _fric_y(q, tt)
+        return None if m is None else m - y
+
+    r = resid(p)
+    if r is None:
+        return None
+    cost = float(r @ r); lam = 1e-3
+    for _ in range(iters):
+        J = np.empty((len(y), 4))
+        for j in range(4):
+            q = p.copy(); q[j] += steps[j]
+            rj = resid(q)
+            if rj is None:
+                return None
+            J[:, j] = (rj - r) / steps[j]
+        JtJ = J.T @ J; g = J.T @ r
+        improved = False
+        for _try in range(8):
+            try:
+                d = -np.linalg.solve(JtJ + lam * np.diag(np.diag(JtJ) + 1e-12), g)
+            except np.linalg.LinAlgError:
+                lam *= 10; continue
+            rn = resid(p + d)
+            if rn is not None and float(rn @ rn) < cost:
+                p = p + d; r = rn; cost_new = float(rn @ rn)
+                lam = max(lam / 3, 1e-9); improved = True
+                break
+            lam *= 10
+        if not improved:
+            break
+        if abs(cost - cost_new) < 1e-6 * max(cost, 1e-9):
+            cost = cost_new
+            break
+        cost = cost_new
+    return dict(y0_cm=float(p[0]), v0_ms=float(p[1]), A=float(p[2]), B=float(p[3]), rms_cm=float(np.sqrt(cost / len(y))))
+
+
 def _r_of(tt, y, a, b, c):
     ss_res = float(np.sum((y - (a * tt * tt + b * tt + c)) ** 2)); ss_tot = float(np.sum((y - y.mean()) ** 2))
     return float(np.sqrt(max(1.0 - ss_res / ss_tot, 0.0))) if ss_tot > 0 else 0.0
@@ -90,7 +170,16 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=MIN_R, tee_cm=None, min_pro
     v = lambda tx: -(2 * a * tx + b)                       # cm/s (positiivinen = kohti lahempaa pesaa)
     v_far = v(t_far)
     decel = (v(t_hi_y) - v(t_lo_y)) / (t_lo_y - t_hi_y) if t_lo_y != t_hi_y else 0.0
-    out.update(ok_y=True, v_far_hog_ms=v_far / 100.0, decel_ms2=decel / 100.0,
+    # Testi_07_01 v7.3: hidastuvuus kitkamallista mu(v) = A + B ln v nopeudella DECEL_REF_V_MS (vanha keskiarvo talteen vertailuun)
+    decel_avg = decel / 100.0
+    decel_out = decel_avg
+    fr = fit_log_friction(tt, y, -b / 100.0, decel_avg)
+    if fr is not None and fr["rms_cm"] <= 1.5 * out["rms_cm"] + 0.5:
+        decel_out = G_MS2 * (fr["A"] + fr["B"] * np.log(DECEL_REF_V_MS))
+        out.update(mu_a=fr["A"], mu_b=fr["B"], kitka_rms_cm=fr["rms_cm"])
+    else:
+        out.update(mu_a=float("nan"), mu_b=float("nan"), kitka_rms_cm=float("nan"))
+    out.update(ok_y=True, v_far_hog_ms=v_far / 100.0, decel_ms2=float(decel_out), decel_keskim_ms2=float(decel_avg),
                hog_hog_s=float(t_near - t_far), t_far_hog_s=float(t_far + t0), t_near_hog_s=float(t_near + t0),
                v_near_hog_ms=v(t_near) / 100.0)
 
@@ -148,7 +237,7 @@ def format_lines(res, stone_id=None):
     liuku = f"{res['liuku_x_tee_cm']:+.1f} cm (suunta {res['liuku_dir_deg']:+.2f} deg, n = {res['liuku_n']})" if "liuku_x_tee_cm" in res else "ei laskettu"
     lines = [hdr,
              f"nopeus kaukohogilla: {res['v_far_hog_ms']:.2f} m/s",
-             f"keskihidastuvuus: {res['decel_ms2']:.3f} m/s^2",
+             f"hidastuvuus ({DECEL_REF_V_MS:g} m/s): {res['decel_ms2']:.3f} m/s^2",
              f"hog-hog aika: {res['hog_hog_s']:.2f} s",
              f"suunta kaukohogilla: {abs(d):.2f} deg kohti {side}",
              f"liuku (suoran X T-viivalla, alusta hog+1m): {liuku}"]
@@ -227,12 +316,24 @@ def entry_lines(res):
             f"merkki: {res.get('x_straight_at_tee_cm', float('nan')):+.1f} cm"]
 
 
-def render_panel(entries):
-    """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x PANEL_W) kuvan; jokainen heitto omassa laatikossa."""
+def entry_age_s(res, now_video_s=None):
+    """Testi_07_01 v7.3: montako sekuntia sitten kivi ylitti kaukohoglinen. Live: seinakello (t_far_wall) vs nyt;
+    tiedosto: videoaika (t_far_hog_s) vs kasiteltava ruutu. None jos ei tiedossa."""
+    import time as _t
+    if res.get("t_far_wall") is not None:
+        return max(0, int(_t.time() - res["t_far_wall"]))
+    if now_video_s is not None and res.get("t_far_hog_s") is not None:
+        return max(0, int(now_video_s - res["t_far_hog_s"]))
+    return None
+
+
+def render_panel(entries, ages=None):
+    """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x PANEL_W) kuvan; jokainen heitto omassa laatikossa.
+    ages: sekunnit kaukohoglinen ylityksesta (sama jarjestys), naytetaan kiven ID:n vieressa."""
     img = np.zeros((DEBUG_H, PANEL_W, 3), np.uint8)
     box_h = LINE_H * 6 + 2 * BOX_PAD
     y = BOX_GAP
-    for res in entries:
+    for k, res in enumerate(entries):
         if y + box_h > DEBUG_H:
             break
         cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (45, 45, 45), -1)
@@ -240,6 +341,11 @@ def render_panel(entries):
         for i, s in enumerate(entry_lines(res)):
             cv2.putText(img, s, (BOX_GAP + BOX_PAD + 4, y + BOX_PAD + 20 + i * LINE_H), FONT, FONT_SCALE,
                         (0, 255, 255) if i == 0 else (255, 255, 255), FONT_THICK)
+        if ages is not None and k < len(ages) and ages[k] is not None:
+            txt = f"{ages[k]} s"
+            (tw, _), _ = cv2.getTextSize(txt, FONT, FONT_SCALE, FONT_THICK)
+            cv2.putText(img, txt, (PANEL_W - BOX_GAP - BOX_PAD - 4 - tw, y + BOX_PAD + 20), FONT, FONT_SCALE,
+                        (0, 255, 255), FONT_THICK)
         y += box_h + BOX_GAP
     return img
 
@@ -277,7 +383,7 @@ class DebugComposer:
         # skaalaus ennen kaantoa: (src_w x src_h) -> (video_h x video_w) = (DEBUG_H x video_w) kaantamattomana: leveys DEBUG_H, korkeus video_w
         self._pre_w, self._pre_h = DEBUG_H, self.video_w
 
-    def compose(self, base_bgr, labels, header, results, plus_right):
+    def compose(self, base_bgr, labels, header, results, plus_right, now_video_s=None):
         H0, W0 = base_bgr.shape[:2]
         small = cv2.resize(base_bgr, (self._pre_w, self._pre_h), interpolation=cv2.INTER_LINEAR)     # 1080 x 608
         vid = cv2.rotate(small, cv2.ROTATE_90_COUNTERCLOCKWISE)                                   # 608 x 1080 (leveys x korkeus)
@@ -289,9 +395,10 @@ class DebugComposer:
         self.canvas[:, PANEL_W:PANEL_W + self.video_w] = vid
         for side, x0 in (("L", 0), ("R", PANEL_W + self.video_w)):
             ents = [r for r in results if throw_side(r, plus_right) == side][::-1]
-            key = tuple((r["stone_id"], r["frame"]) for r in ents)
-            if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui
-                self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents)
+            ages = [entry_age_s(r, now_video_s) for r in ents]
+            key = tuple((r["stone_id"], r["frame"], a) for r, a in zip(ents, ages))
+            if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui (sekuntilaskuri: kerran sekunnissa)
+                self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents, ages)
                 self._key[side] = key
         return self.canvas
 

@@ -1193,7 +1193,7 @@ GPU_B = os.environ.get("GPU_B", "1") == "1"
 #   PIPE_DEPTH=n   : vaiheiden valisten jonojen koko (oletus 3); isompi tasoittaa vaiheiden aikavaihtelua.
 #   v5.9: oletukset 2 ja 6 (nopein Windows-vertailuajossa; aiemmin 1 ja 3).
 STAB_WORKERS = max(1, int(os.environ.get("STAB_WORKERS", "2")))
-PIPE_DEPTH = max(1, int(os.environ.get("PIPE_DEPTH", "6")))
+PIPE_DEPTH = max(1, int(os.environ.get("PIPE_DEPTH", "50")))   # Testi_07_01 v7.3: 6 -> 50 (2 s puskuri vaiheiden valissa, kayttajan pyynto)
 # Testi_05_03 v5.6: INTRA_PARALLEL=1 ajaa kiven kolme hakua (ristikko + 2 mean-shiftia) rinnan eri saikeissa (oletus pois; tulos identtinen).
 #   v5.9: OLETUKSENA PAALLA (INTRA_PARALLEL=0 pois).
 INTRA_PARALLEL = os.environ.get("INTRA_PARALLEL", "1") == "1"
@@ -1626,7 +1626,9 @@ MAX_CONCURRENT_STONES = 8
 # ennenkin) jos peitto kestaa PIDEMPAAN kuin tama reilu ikkuna.
 # ============================================================
 
-TRACK_LOST_GRACE_SECONDS = 3.0
+# Testi_07_01 v7.3: 3.0 -> 1.0 s (kayttajan pyynto): kadonnut kivi unohdetaan sekunnissa - jos ihminen jaa seisomaan kiven
+# eteen, rata saa kadota (HAKU loytaa sen uudelleen kun se nakyy); vahemman turhaa seurantatyota.
+TRACK_LOST_GRACE_SECONDS = float(os.environ.get("TRACK_LOST_GRACE_SECONDS", "1.0"))
 
 # ============================================================
 # NOPEUSRAJOITETTU SEURANTA-HAKUALUE + "EI TAAKSEPAIN" (kayttajan
@@ -2025,7 +2027,7 @@ HOG_OVERLAY_SECONDS = float(os.environ.get("HOG_OVERLAY_SECONDS", "5"))
 HOG_SAVE_SNAPSHOT = os.environ.get("HOG_SAVE_SNAPSHOT", "1") == "1"
 
 
-def _render_debug_frame(frame_u, gain, bias, items, pose, header, results, plus_right, composer, local_pts_body):
+def _render_debug_frame(frame_u, gain, bias, items, pose, header, results, plus_right, composer, local_pts_body, now_video_s=None):
     """Debug-videon yksi ruutu (ajetaan taustasaikeessa): valokorjattu kuva + ennustetut ääriviivat + paneelit."""
     if gain is not None:
         img = apply_photometric_correction(frame_u, gain, bias)
@@ -2040,7 +2042,7 @@ def _render_debug_frame(frame_u, gain, bias, items, pose, header, results, plus_
         hull_i = hull.astype(np.int32)
         cv2.polylines(img, [hull_i], True, color, 2)
         labels.append((int(hull_i[:, 0, 0].min()), int(hull_i[:, 0, 1].min()) - 8, label, color))
-    return composer.compose(img, labels, header, results, plus_right)
+    return composer.compose(img, labels, header, results, plus_right, now_video_s)
 
 
 def _hog_check(s, frame_index, fps, near_hog, far_hog, overlays, results, frame_img, csv_output, pose):
@@ -2053,6 +2055,12 @@ def _hog_check(s, frame_index, fps, near_hog, far_hog, overlays, results, frame_
     if "hog_result" not in s and y <= near_hog + hog_analyysi.NEAR_MARGIN_CM:
         res = hog_analyysi.analyze_hog(rows, near_hog, far_hog, tee_cm=k8.NEAR_HOUSE_Y_CM)
         res["stone_id"] = s["stone_id"]; res["frame"] = frame_index
+        if res.get("ok") and live_source.active() is not None:
+            # Testi_07_01 v7.3: kaukohoglinen ylityksen SEINAKELLOAIKA (kameran ruutu) debug-paneelin "sekuntia sitten" -laskuria varten:
+            # nykyisen ruudun kaappausaika - (nykyisen ruudun aika - ylityksen aika) videoajassa.
+            _cap = live_source.active().store.capture_time(rows[-1][0])
+            if _cap is not None:
+                res["t_far_wall"] = _cap - (float(rows[-1][1]) - float(res["t_far_hog_s"]))
         s["hog_result"] = res
         if res.get("ok"):                 # TULOSTETAAN VAIN jos R_y > 0.99, R_x > 0.99 ja R_y * R_x > 0.99 (muuten ei mitaan)
             results.append(res)
@@ -2077,7 +2085,7 @@ def _hog_write_csv(results, csv_output):
     path = os.path.splitext(csv_output)[0] + "_hog.csv"
     cols = ["stone_id", "frame", "R", "R_ennen_suodatusta", "n_kaytetty", "n_pudotettu", "v_far_hog_ms", "decel_ms2", "hog_hog_s", "t_far_hog_s", "t_near_hog_s", "v_near_hog_ms", "a", "b", "c",
             "R_x", "R_x_ennen_suodatusta", "R_tulo", "x_far_hog_cm", "dir_far_hog_deg", "slope_dxdy", "x_straight_at_tee_cm", "px", "qx", "rx",
-            "liuku_x_tee_cm", "liuku_dir_deg", "liuku_n", "liuku_rms_cm"]
+            "liuku_x_tee_cm", "liuku_dir_deg", "liuku_n", "liuku_rms_cm", "decel_keskim_ms2", "mu_a", "mu_b", "kitka_rms_cm"]
     with open(path, "w", newline="") as hf:
         w = csv.writer(hf); w.writerow(cols)
         for r in results:
@@ -4739,7 +4747,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_07_01 v7.2 (moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
+SOFTWARE_VERSION = "Testi_07_01 v7.3 (kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
 
 
 def _version_string():
@@ -7262,7 +7270,7 @@ def run_pipeline(
                         _render_debug_frame, frame_u, live_prep.photo_gain, live_prep.photo_bias, list(debug_draw_items),
                         pose, f"frame {frame_index}  t={timestamp:.2f}s  kivia={len(active_stones)}",
                         list(hog_results), hog_analyysi.plus_x_is_right(pose["K"], pose["R"], pose["t"]),
-                        debug_composer, local_pts_body)
+                        debug_composer, local_pts_body, timestamp)
                     _e = _PROF.setdefault("py: debug-video (piirto + kirjoitus)", [0.0, 0]); _e[0] += time.perf_counter() - _t_dbg0; _e[1] += 1
 
             _e = _PROF.setdefault("FRAME_KOKO", [0.0, 0])

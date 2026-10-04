@@ -1,5 +1,19 @@
 # Testi_07_01 (pohja Testi_06_01 v6.20)
 
+## v7.3: kadonnut kivi unohdetaan 1 s:ssa, "sekuntia sitten" -laskuri, hidastuvuus kitkamallista, putki 50
+* `TRACK_LOST_GRACE_SECONDS` 3 → **1 s**: jos kivi katoaa (esim. ihminen jää seisomaan eteen), rata pudotetaan sekunnissa
+  (HAKU löytää sen uudelleen). MAH00014: heitot ja hog-tulokset samat kuin 3 s:lla (x kaukohogilla ero ≤ 0,24 cm),
+  kivipäivityksiä 20 199 → 16 855 (−17 %), SEURANTA 17,5 → 16,1 ms/ruutu.
+* Debug-videon paneelissa kiven ID:n vieressä **sekunnit kaukohoglinen ylityksestä**: live-tilassa seinäkelloon verrattuna
+  (ylityksen kameraruudun aika vs. nyt), tiedostoajossa käsiteltävään ruutuun. Paneeli piirretään uudelleen kerran sekunnissa.
+* **Hidastuvuus kitkamallista**: kitkakerroin μ(v) = A + B·ln(v), liikeyhtälö dv/dt = −g·μ(v). A ja B sovitetaan jokaiselle heitolle
+  samoihin Y(t)-pisteisiin kuin hog-hog-sovitus (Levenberg–Marquardt, RK4-integrointi, ~50 ms/heitto). Näytetty hidastuvuus =
+  g·μ(1,5 m/s). Muut luvut (nopeus kaukohogilla, hog-hog) ennallaan. Hog-CSV:ssä lisäksi `decel_keskim_ms2` (vanha keskiarvo),
+  `mu_a`, `mu_b`, `kitka_rms_cm`. MAH00014 (19 heittoa): B aina negatiivinen (kitka kasvaa nopeuden laskiessa, −0,0055…0),
+  sovitusvirhe pienempi kuin toisen asteen sovituksella (esim. 2,74 → 2,01 cm), hidastuvuus 0,067–0,087 m/s²
+  (ero vanhaan keskiarvoon −0,004…+0,002). Jos sovitus epäonnistuu, käytetään vanhaa keskiarvoa.
+* `PIPE_DEPTH` oletus 6 → **50** (2 s puskuri vaiheiden välissä, n. 800 Mt muistia).
+
 ## v7.2: kalibroinnin moodikuva 2 min ajalta
 Moodikuvan näytteet kerätään ensimmäisen **120 s** ajalta (ennen 60 s), 5 s välein → enintään 25 näytettä (ennen 13).
 Liikkuvat kohteet (pelaajat, kivet) häviävät moodikuvasta varmemmin. `CALIB_MODE_DURATION_SECONDS=60` = vanha.

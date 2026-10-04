@@ -237,6 +237,11 @@ class FrameStore:
         with self._cond:
             return self._head - 1
 
+    def capture_time(self, idx):
+        """Testi_07_01: ruudun saapumisaika (time.time()) tai None jos ruutu on jo poistettu."""
+        with self._cond:
+            return self._wall.get(int(idx))
+
     def lag_frames(self):
         with self._cond:
             return self._head - self._seq_next
