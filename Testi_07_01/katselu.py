@@ -48,7 +48,9 @@ _PAGE = """<!doctype html>
 <title>Kivenseuranta</title>
 <style>
  html,body{margin:0;background:#111;color:#ddd;font:14px system-ui,sans-serif}
- #k{display:block;width:100%;max-height:calc(100vh - 32px);object-fit:contain;background:#000}
+ html,body{height:100%;overflow:hidden}
+ #k{display:block;width:100vw;height:calc(100vh - 30px);object-fit:contain;background:#000}
+ :fullscreen #k{height:calc(100vh - 30px)}
  #t{position:fixed;left:0;right:0;bottom:0;padding:6px 10px;background:rgba(0,0,0,.7)}
 </style></head><body>
 <img id="k" alt="">
@@ -56,6 +58,11 @@ _PAGE = """<!doctype html>
 <script>
 const k=document.getElementById('k'),t=document.getElementById('t');
 let last=-1,busy=false;
+// v7.6: napautus = koko naytto (selaimen osoitepalkki piiloon), uusi napautus palauttaa
+function kokoNaytto(){const d=document,e=d.documentElement;
+  if(d.fullscreenElement||d.webkitFullscreenElement){(d.exitFullscreen||d.webkitExitFullscreen).call(d)}
+  else{const f=e.requestFullscreen||e.webkitRequestFullscreen;if(f)f.call(e,{navigationUI:'hide'})}}
+document.body.addEventListener('click',kokoNaytto);
 async function paivita(){
   if(busy)return;busy=true;
   try{
@@ -67,6 +74,7 @@ async function paivita(){
         im.src='kuva.jpg?n='+j.kuva});
       last=j.kuva}
     if(j.ika>3)txt+=' - kuva '+Math.round(j.ika)+' s vanha';
+    if(!(document.fullscreenElement||document.webkitFullscreenElement))txt+=' \u00b7 napauta = koko n\u00e4ytt\u00f6';
     t.textContent=txt;
   }catch(e){t.textContent='Ei yhteytta koneeseen'}
   busy=false}
