@@ -4747,7 +4747,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_07_01 v7.4 (live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
+SOFTWARE_VERSION = "Testi_07_01 v7.5 (katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
 
 
 def _version_string():
@@ -5310,6 +5310,7 @@ def run_pipeline(
     csv_file = None
     debug_video_writer = None
     debug_composer = None
+    katselu_composer = None       # Testi_07_01 v7.5: puhelinnakyma (kerran sekunnissa, ei videota)
     hog_overlays = []      # Testi_05_01: hog-hog -tekstit (debug-video), katso HOG-HOG -ANALYYSI
     hog_results = []
 
@@ -6233,6 +6234,8 @@ def run_pipeline(
                         debug_composer = hog_analyysi.DebugComposer(width, height)
                         print(f"Debug-video: stabiloitu+korjattu, ei maskeja, kaannetty 90 astetta vastapaivaan, {_dbg_total_w}x{_dbg_vh} (video {_dbg_vw}x{_dbg_vh} + paneelit {hog_analyysi.PANEL_W} px/puoli)")
 
+                    if katselu.active() is not None:
+                        katselu_composer = hog_analyysi.DebugComposer(width, height)
                     katselu.set_state("Seuranta kaynnissa")
                     print()
                     print(
@@ -7273,6 +7276,16 @@ def run_pipeline(
                         debug_composer, local_pts_body, timestamp)
                     _e = _PROF.setdefault("py: debug-video (piirto + kirjoitus)", [0.0, 0]); _e[0] += time.perf_counter() - _t_dbg0; _e[1] += 1
 
+                # Testi_07_01 v7.5: puhelinnakyma - sama kuva kuin debug-videossa, mutta piirretaan vain kerran sekunnissa
+                # (seinakello) omassa saikeessaan ja pakataan JPEG:ksi; jos edellinen piirto on kesken, tama ruutu ohitetaan.
+                _kv = katselu.active()
+                if _kv is not None and katselu_composer is not None and _kv.due():
+                    _kv.submit(
+                        _render_debug_frame, frame_u, live_prep.photo_gain, live_prep.photo_bias, list(debug_draw_items),
+                        pose, f"frame {frame_index}  t={timestamp:.2f}s  kivia={len(active_stones)}",
+                        list(hog_results), hog_analyysi.plus_x_is_right(pose["K"], pose["R"], pose["t"]),
+                        katselu_composer, local_pts_body, timestamp)
+
             _e = _PROF.setdefault("FRAME_KOKO", [0.0, 0])
             _e[0] += time.perf_counter() - t_frame_wall0; _e[1] += 1
             frame_index += 1
@@ -8000,8 +8013,8 @@ if __name__ == "__main__":
                                   "klikataan yhdesta kamerakuvasta ennen live-vaiheen alkua (Testi_07_01 v7.4).")
 
     _arg_parser.add_argument("--katselu", nargs="?", type=int, const=8080, default=None,
-                             help="Testi_07_01: debug-video puhelimen selaimeen samassa wifissa (portti, oletus 8080). "
-                                  "Osoite tulostetaan kaynnistyksessa. Vaatii debug-videon (ei --no-debug).")
+                             help="Testi_07_01: seurannan nakyma puhelimen selaimeen samassa wifissa (portti, oletus 8080). "
+                                  "Nakyma paivittyy kerran sekunnissa; debug-videota ei tallenneta (ellei --debug).")
 
     _args = _arg_parser.parse_args()
 
@@ -8010,10 +8023,6 @@ if __name__ == "__main__":
     if _args.no_debug:
         _args.debug = False
     if _args.katselu is not None:
-        if _args.debug is False:
-            print("Katselu: VAROITUS - debug-video on pois (--no-debug), joten katseltavaa kuvaa ei tule.")
-        elif not _args.debug:
-            _args.debug = True          # --katselu kytkee debug-videon paalle (katseltava kuva)
         if katselu.start(_args.katselu) is not None:
             katselu.set_state("Kalibroidaan")
 
