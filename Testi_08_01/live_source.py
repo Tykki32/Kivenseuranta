@@ -298,6 +298,11 @@ class _SourceBase:
             self._thread.join(timeout)
 
 
+# v8.8: kun kamera antaa enemman ruutuja kuin kasitellaan (esim. 50p -> --live-fps 25), ohitettavat ruudut luetaan grab():lla
+# ilman kuvan kopiointia. LIVE_GRAB_OHITUS=0 = vanha tapa (read() jokaiselle ruudulle).
+LIVE_GRAB_OHITUS = os.environ.get("LIVE_GRAB_OHITUS", "1") == "1"
+
+
 class CameraSource(_SourceBase):
     """Kamera (UVC, esim. Cam Link) taustasaikeessa -> FrameStore."""
 
@@ -410,6 +415,8 @@ class CameraSource(_SourceBase):
         self.cpu_read = 0.0
         self.cpu_conv = 0.0
         self.n_conv = 0
+        self.cpu_grab = 0.0          # v8.8: harvennuksessa ohitettujen ruutujen grab()-aika
+        self.n_grab = 0
         self.backend_name = bname
         self.info = dict(laite=self.device, taustajarjestelma=bname, kameran_koko=f"{w0}x{h0}", muunnos=self.conversion,
                          raakajarjestys=(self.raw_order if self.conversion != "ajuri" else "-"), varitarkistus_keskiero=self.color_check,
@@ -479,7 +486,18 @@ class CameraSource(_SourceBase):
         try:
             while not self._stop_evt.is_set():
                 c0 = time.thread_time()
-                ok, fr = self.cap.read()
+                if self.decim > 1 and n % self.decim != 0 and LIVE_GRAB_OHITUS:
+                    # v8.8: harvennuksessa pois jaava ruutu: grab() (ruutu jonosta pois) ilman retrieve()-kopiota/muunnosta
+                    ok = self.cap.grab()
+                    self.cpu_grab += time.thread_time() - c0
+                    if ok:
+                        self.n_grab += 1
+                        fails = 0
+                        n += 1
+                        continue
+                    fr = None
+                else:
+                    ok, fr = self.cap.read()
                 c1 = time.thread_time()
                 self.cpu_read += c1 - c0
                 if not ok or fr is None:

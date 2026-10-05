@@ -1,5 +1,17 @@
 # Testi_08_01 (pohja Testi_07_01 v7.9, testattu toimivaksi)
 
+## v8.8: kamera 50p + harvennuksen ohitus grab():lla
+Sony HDR-CX405:n HDMI-lähtö 50i → **50p** (kameran asetus): Cam Link antaa 1920×1080 lomittamatonta kuvaa 50 fps (kameratesti
+2026-10-05: 50,0 fps, ei myöhästyneitä ruutuja). 50i:ssä liikkuvien kivien reunoissa oli kampa (puolikuvat 20 ms eri aikaan).
+Live käyttää joka toisen ruudun (`--live-fps 25`, `harvennus=2`).
+
+Ensimmäinen 50p-live-ajo (50i-tallenteen toisto kamerasta, 641 s): 16 heittoa, katselunäkymän suurin viive 0,6 s. Vaihe A
+(luku + stabilointi) 37,0 ms → kapasiteetti 27,0 r/s (aiemmin hitain vaihe 29,8 r/s): kamerasäie luki kaikki 50 ruutua
+(`read()`, 13,8 ms CPU per käsitelty ruutu).
+
+v8.8: harvennuksessa pois jäävät ruudut luetaan `grab()`:lla (ruutu pois ajurin jonosta ilman `retrieve()`-kopiota).
+Loppuraporttiin `harvennuksessa ohitetut N ruutua grab():lla x ms/ruutu`. `LIVE_GRAB_OHITUS=0` = vanha tapa.
+
 ## v8.7: kierteet hog–hog-välillä
 
 Kiven pyöriminen arvioidaan kahvan muodon toistumisesta:
