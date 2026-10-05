@@ -1,5 +1,24 @@
 # Testi_08_01 (pohja Testi_07_01 v7.9, testattu toimivaksi)
 
+## v8.4: X-suunta kurvimallista (vakio sivukiihtyvyys)
+Hog-analyysin X-sovitus (x ja suunta kaukohogilla, merkki) tehdään fysikaalisesta mallista: kitka hidastaa radan suuntaisesti,
+kurvi on vakiosuuruinen sivukiihtyvyys k kohtisuoraan kulkusuuntaa vastaan → kulkusuunnan kulma θ' = k/|v|, X'(t) = v(t)·θ(t),
+v(t) Y-sovituksesta. Kolme parametria kuten ennen (x, alkukulma, k); sama sovitusalue ja 10 huonointa pistettä pois.
+Vanha toisen asteen yhtälö vastasi vakiokaarevuutta (ympyränkaari) eikä ennustanut kaukohogia hyvin. `KURVIMALLI=0` = vanha.
+Heiton hyväksyntä (R_x) lasketaan edelleen kuten ennen → samat heitot.
+
+Havaittu X kaukohogilla (±60 cm, ei sovituksessa) − ennuste:
+
+| | vanha 2. aste | kurvimalli |
+|---|---|---|
+| live 2026-10-04 (66 heittoa) | rms 2,39 cm | **1,72 cm** |
+| MAH00014 (19 heittoa) | rms 3,59 cm | **0,77 cm** |
+
+Suunta kaukohogilla muuttuu rms 0,5–0,7° (max 1,9°). Sivukiihtyvyys |k| mediaani 0,009 m/s². Hog-CSV:hen `kurvi_k_ms2`,
+`kurvi_rms_cm` sekä vanhan mallin `x_far_hog_cm_2aste`, `dir_far_hog_deg_2aste`. Täysi MAH00014-ajo: 20/20 heittoa, hog-hog ja
+nopeus ennallaan. Live-aineiston keskimääräinen −1,1 cm johtuu mittauksesta kaukohogilla (heittäjä kiven takana +
+kalibrointi), ei mallista.
+
 ## v8.3: kalibrointi kameran täydellä resoluutiolla (live)
 Moodikuvan näytekohdissa (5 s välein, ~25 kpl) kamerasäie muuntaa ruudun myös täydellä resoluutiolla (1920×1080); pääsilmukka
 stabiloi sen samalla, skaalatulla siirrolla, ja niiden mediaanista tehdään `<nimi>_kalibrointi_moodikuva_taysi.png`. Kalibrointi
