@@ -494,9 +494,20 @@ class DebugComposer:
             cv2.putText(vid, txt, (max(2, min(self.video_w - 120, xr)), max(14, min(self.video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
         cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
         self.canvas[:, PANEL_W:PANEL_W + self.video_w] = vid
+        import time as _time
+        self.boxes = []          # Testi_08_02 t10: laatikoiden paikat ja iat puhelinnakyman korostusta varten
+        self.boxes_t = _time.time()
+        box_h = LINE_H * 7 + 2 * BOX_PAD
         for side, x0 in (("L", 0), ("R", PANEL_W + self.video_w)):
             ents = [r for r in results if throw_side(r, plus_right) == side][::-1]
             ages = [entry_age_s(r, now_video_s) for r in ents]
+            for k_, (r_, a_) in enumerate(zip(ents, ages)):
+                yb = BOX_GAP + k_ * (box_h + BOX_GAP)
+                if yb + box_h > DEBUG_H:
+                    break
+                if a_ is not None:
+                    self.boxes.append(dict(x=x0 + BOX_GAP, y=yb, w=PANEL_W - 2 * BOX_GAP, h=box_h, ika=float(a_),
+                                           wall=r_.get("t_far_wall")))
             key = tuple((r["stone_id"], r["frame"], a) for r, a in zip(ents, ages))
             if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui (sekuntilaskuri: kerran sekunnissa)
                 self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents, ages, plus_right=plus_right)
