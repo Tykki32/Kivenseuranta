@@ -372,8 +372,8 @@ def entry_lines(res):
             f"nopeus: {res['v_far_hog_ms']:.2f} m/s",
             f"hidastuvuus: {res['decel_ms2']:.3f} m/s^2",
             f"hog-hog: {res['hog_hog_s']:.2f} s",
-            f"liuku: {res['liuku_x_tee_cm']:+.1f} cm" if "liuku_x_tee_cm" in res else "liuku: -",
-            f"merkki: {res.get('x_straight_at_tee_cm', float('nan')):+.1f} cm",
+            f"liuku: {res['liuku_x_tee_cm']:+.0f} cm" if "liuku_x_tee_cm" in res else "liuku: -",
+            f"merkki: {res.get('x_straight_at_tee_cm', float('nan')):+.0f} cm",
             kierre_text(res)[0]]
 
 
