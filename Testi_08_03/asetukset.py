@@ -1,8 +1,13 @@
 """KAIKKI SAADETTAVAT ASETUKSET YHDESSA PAIKASSA.
 
-Muuta arvoja tassa tiedostossa (ei ymparistomuuttujia). Arvot ovat Testi_08_02:n testatut oletukset. Etaisyydet cm,
-ajat s, pikselimaarat 1280x720-kuvassa ellei toisin mainita. Rata: Y kasvaa kohti kaukaista paata (heittopaa),
-X = 0 keskiviivalla; lahempi pesa (kameran puoli) on pienemmalla Y:lla.
+Muuta arvoja tassa tiedostossa (ymparistomuuttujia ei kayteta; poikkeus: GPU_LAITE=cpu OpenCL-testaukseen).
+Arvot ovat Testi_08_02:n testatut oletukset. Etaisyydet cm, ajat s, pikselimaarat 1280x720-kuvassa ellei toisin
+mainita. Rata: Y kasvaa kohti kaukaista paata (heittopaa), X = 0 keskiviivalla; lahempi pesa (kameran puoli) on
+pienemmalla Y:lla.
+
+Kalibroinnin ja kuvantunnistuksen sisaiset vakiot (renkaiden varikynnykset, hakuruudukot, LM-parametrit) ovat
+omissa moduuleissaan (kalibrointi_perus.py, kalibrointi.py, paneelit.py, profiili.py, siluetti.py, cpp/*.hpp):
+ne ovat algoritmin osia, eivat kayton aikana saadettavia.
 
 Osiot:
   1. Kalibrointi (moodikuva, kamera, hoglinet)
