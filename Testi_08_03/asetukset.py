@@ -200,8 +200,13 @@ KAHVA_Z_LISA_CM = 0.0                # ympyran keskipisteen korkeus H_total:n yl
 KIERRE_HIDASTUVUUS = 0.02            # pyorimisen hidastuvuus rad/s^2 (MAH00014:n 12 selvan kiven yhteinen arvo)
 KIERRE_Y_MAX_CM = 2300.0             # kierrepiirre kerataan vasta kun kivi on lahempana (kahva erottuu ~23 m:sta)
 KIERRE_TAYSI_Y_MAX_CM = 2300.0       # sama taysresoluutioiselle piirteelle
-KIERRE_MIN_RUUDUT = 80
-KIERRE_MIN_R2 = 0.03                 # kierrearvion sovituksen vahimmaisselitysaste
+KIERRE_MIN_RUUDUT = 60               # vahintaan nain monta ruutua jatkuvuussuodatuksen jalkeen
+KIERRE_MIN_R2 = 0.02                 # kierrearvion sovituksen vahimmaisselitysaste (sekoitetut ruudut: <= 0,002)
+KIERRE_MIN_EROTTUVUUS = 2.5          # paras huippu / paras muu huippu (ei +-30 %, x2, /2)
+KIERRE_P_MIN_S = 0.6                 # loppukierrosajan hakuvali (s): laaja, ei oletusta kierrosmaarasta
+KIERRE_P_MAX_S = 40.0
+KIERRE_P_N = 500
+KIERRE_PALA_RIVIT = 0.62             # akselin suuntaisesta palasta kaytetaan ylimmat rivit (kahvan profiili)
 
 # =====================================================================================================================
 # 8. PAIKALLINEN TAYSI RESOLUUTIO (live; paikallinen.py)

@@ -177,20 +177,21 @@ class PaikallinenTaysi:
             if isinstance(r, dict) and r.get("rms_px") is not None:
                 r["rms_px"] = r["rms_px"] / self.s
 
-    def kierre_piirre(self, frame_index, stab_M, cx, cy, rp):
-        """Kierrepiirre taysresoluutioisesta kuvasta (cx, cy, rp 720p-kuvassa) tai None."""
+    def kierre_piirre(self, frame_index, stab_M, cx, cy, rp, gx, gy):
+        """Kierrepiirre taysresoluutioisesta kuvasta (cx, cy, rp, gx, gy 720p-kuvassa) tai None."""
         if frame_index <= self.alku:
             return None
         Mi = self._inv_stab(stab_M)
         s_ = self.s
         X, Y, R = cx * s_, cy * s_, rp * s_
-        ax, ay = int(np.floor(X - R)) - 3, int(np.floor(Y - R)) - 3
-        bx, by = int(np.ceil(X + R)) + 4, int(np.ceil(Y + R)) + 4
+        Rk = 1.42 * R                  # akselin suuntainen pala voi olla vino: puolilavistaja
+        ax, ay = int(np.floor(X - Rk)) - 3, int(np.floor(Y - Rk)) - 3
+        bx, by = int(np.ceil(X + Rk)) + 4, int(np.ceil(Y + Rk)) + 4
         a0, b0 = max(0, ax), max(0, ay)
         patch = self._alue(frame_index + self.offset, Mi, ax, ay, bx, by)
         if patch is None:
             return None
-        return kierre.kierre_piirre(patch, X - a0, Y - b0, R)
+        return kierre.kierre_piirre(patch, X - a0, Y - b0, gx * s_ - a0, gy * s_ - b0, R)
 
     def raportti(self):
         st = self.stat
