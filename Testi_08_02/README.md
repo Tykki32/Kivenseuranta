@@ -1,3 +1,8 @@
+# Testi_08_02 t7: paneelin kierteet värikoodattuina
+
+Paneelin rivi `kierteita:` näyttää täyden resoluution arvon **vihreällä**, jos se on saatu; muuten 720p-arvon **punaisella**;
+ilman arvoa `kierteita: -` valkoisella. Sama puhelimen katselusivulla.
+
 # Testi_08_02 t6: täyden resoluution kierteet 23 m:stä
 
 Live 2026-10-05 15:34 (t5, 18 heittoa): sääntö "ei uusia ratoja liikkuvan heittokiven taakse" hylkäsi 86 ehdokasta;
