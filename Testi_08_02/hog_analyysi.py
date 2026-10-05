@@ -388,7 +388,7 @@ def entry_lines(res):
             f"hidastuvuus: {res['decel_ms2']:.3f} m/s^2",
             f"hog-hog: {res['hog_hog_s']:.2f} s",
             f"liuku: {res['liuku_x_tee_cm']:+.0f} cm" if "liuku_x_tee_cm" in res else "liuku: -",
-            f"merkki: {res.get('x_straight_at_tee_cm', float('nan')):+.0f} cm",
+            f"irroitus: {res.get('x_straight_at_tee_cm', float('nan')):+.0f} cm",
             kierre_text(res)[0]]
 
 
@@ -412,16 +412,22 @@ def entry_age_s(res, now_video_s=None):
     return None
 
 
-def liuku_segments(res, plus_right):
-    """Testi_08_02 t9: [(teksti, vari)] liuku-riville: vasemman hakin (kaannetyssa videossa) arvo punaisella, oikean vihrealla."""
+def liuku_segments(res, plus_right, nayta=(True, True)):
+    """Testi_08_02 t9: [(teksti, vari)] liuku-riville: vasemman hakin (kaannetyssa videossa) arvo punaisella, oikean vihrealla.
+    t12: nayta = (vasenkatinen, oikeakatinen) - kumpi hakin luku naytetaan (puhelimen valintaruudut)."""
     if "liuku_x_tee_cm_hakki_p" not in res:
         return [(entry_lines(res)[4], (255, 255, 255))]
     vas, oik = ("m", "p") if plus_right is None or bool(plus_right) else ("p", "m")
-    return [("liuku: ", (255, 255, 255)), (f"{res['liuku_x_tee_cm_hakki_' + vas]:+.0f}", (0, 0, 255)), (" ", (255, 255, 255)),
-            (f"{res['liuku_x_tee_cm_hakki_' + oik]:+.0f}", (0, 220, 0)), (" cm", (255, 255, 255))]
+    out = [("liuku:", (255, 255, 255))]
+    for tag, col, on in ((vas, (0, 0, 255), nayta[0]), (oik, (0, 220, 0), nayta[1])):
+        if on:
+            out += [(" ", (255, 255, 255)), (f"{res['liuku_x_tee_cm_hakki_' + tag]:+.0f}", col)]
+    if len(out) > 1:
+        out.append((" cm", (255, 255, 255)))
+    return out
 
 
-def render_panel(entries, ages=None, plus_right=None):
+def render_panel(entries, ages=None, plus_right=None, nayta=(True, True)):
     """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x PANEL_W) kuvan; jokainen heitto omassa laatikossa.
     ages: sekunnit kaukohoglinen ylityksesta (sama jarjestys), naytetaan kiven ID:n vieressa."""
     img = np.zeros((DEBUG_H, PANEL_W, 3), np.uint8)
@@ -437,7 +443,7 @@ def render_panel(entries, ages=None, plus_right=None):
             _x = BOX_GAP + BOX_PAD + 4
             _y = y + BOX_PAD + 20 + i * LINE_H
             if i == 4:
-                for _t, _c in liuku_segments(res, plus_right):
+                for _t, _c in liuku_segments(res, plus_right, nayta):
                     cv2.putText(img, _t, (_x, _y), FONT, FONT_SCALE, _c, FONT_THICK)
                     _x += cv2.getTextSize(_t, FONT, FONT_SCALE, FONT_THICK)[0][0]
                 continue
@@ -486,7 +492,7 @@ class DebugComposer:
         self._pre_w, self._pre_h = DEBUG_H, self.video_w
 
     def _geom(self, res, plus_right, W0):
-        """Testi_08_02 t11: liukusuorat (vasen hakki punainen, oikea vihrea) ja merkki (oranssi) kuvapisteina kankaalla.
+        """Testi_08_02 t11: liukusuorat (vasen hakki punainen, oikea vihrea) ja irroitus (oranssi) kuvapisteina kankaalla.
         self.project(X, Y) -> (u, v) lahdekuvassa (asetetaan _render_debug_frame:ssa); ilman sita tyhja."""
         pr = getattr(self, "project", None)
         if pr is None or "liuku_x_tee_cm_hakki_p" not in res or "tee_y_cm" not in res:
@@ -500,10 +506,10 @@ class DebugComposer:
             return {}
         vas, oik = ("m", "p") if plus_right is None or bool(plus_right) else ("p", "m")
         viivat = []
-        for tag, col in ((vas, "#ff2020"), (oik, "#20e020")):
+        for tag, col, puoli in ((vas, "#ff2020", "v"), (oik, "#20e020", "o")):
             xt = res["liuku_x_tee_cm_hakki_" + tag]
             sl = -np.tan(np.radians(res["liuku_dir_deg_hakki_" + tag]))
-            viivat.append(dict(p=[cv_(xt + sl * (hy - tee), hy), cv_(xt, tee)], c=col))
+            viivat.append(dict(p=[cv_(xt + sl * (hy - tee), hy), cv_(xt, tee)], c=col, s=puoli))
         g = dict(viivat=viivat)
         if res.get("x_straight_at_tee_cm") is not None:
             g["risti"] = cv_(res["x_straight_at_tee_cm"], tee)
@@ -533,9 +539,10 @@ class DebugComposer:
                 if a_ is not None:
                     self.boxes.append(dict(x=x0 + BOX_GAP, y=yb, w=PANEL_W - 2 * BOX_GAP, h=box_h, ika=float(a_),
                                            wall=r_.get("t_far_wall"), **self._geom(r_, plus_right, W0)))
-            key = tuple((r["stone_id"], r["frame"], a) for r, a in zip(ents, ages))
+            nayta = tuple(getattr(self, "nayta", (True, True)))     # t12: puhelimen vasen-/oikeakatinen-valinta
+            key = (nayta,) + tuple((r["stone_id"], r["frame"], a) for r, a in zip(ents, ages))
             if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui (sekuntilaskuri: kerran sekunnissa)
-                self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents, ages, plus_right=plus_right)
+                self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents, ages, plus_right=plus_right, nayta=nayta)
                 self._key[side] = key
         return self.canvas
 
