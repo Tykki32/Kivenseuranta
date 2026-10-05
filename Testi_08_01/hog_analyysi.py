@@ -298,6 +298,8 @@ def format_lines(res, stone_id=None):
              f"liuku (suoran X T-viivalla, alusta hog+1m): {liuku}"]
     if "x_straight_at_tee_cm" in res:
         lines.append(f"merkki (suoran X T-viivalla, hogin jalkeen): {res['x_straight_at_tee_cm']:+.1f} cm")
+    if res.get("kierteet") is not None:
+        lines.append(f"kierteita hog-hog: {res['kierteet']:.1f} (kierrosaika {res['kierrosaika_far_s']:.1f} s -> {res['kierrosaika_near_s']:.1f} s)")
     lines.append(f"R_y = {res['R']:.5f}  R_x = {res['R_x']:.5f}  tulo = {res['R_tulo']:.5f}")
     return lines
 
@@ -368,7 +370,8 @@ def entry_lines(res):
             f"hidastuvuus: {res['decel_ms2']:.3f} m/s^2",
             f"hog-hog: {res['hog_hog_s']:.2f} s",
             f"liuku: {res['liuku_x_tee_cm']:+.1f} cm" if "liuku_x_tee_cm" in res else "liuku: -",
-            f"merkki: {res.get('x_straight_at_tee_cm', float('nan')):+.1f} cm"]
+            f"merkki: {res.get('x_straight_at_tee_cm', float('nan')):+.1f} cm",
+            f"kierteita: {res['kierteet']:.1f}" if res.get("kierteet") is not None else "kierteita: -"]
 
 
 def entry_age_s(res, now_video_s=None):
@@ -386,7 +389,7 @@ def render_panel(entries, ages=None):
     """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x PANEL_W) kuvan; jokainen heitto omassa laatikossa.
     ages: sekunnit kaukohoglinen ylityksesta (sama jarjestys), naytetaan kiven ID:n vieressa."""
     img = np.zeros((DEBUG_H, PANEL_W, 3), np.uint8)
-    box_h = LINE_H * 6 + 2 * BOX_PAD
+    box_h = LINE_H * 7 + 2 * BOX_PAD
     y = BOX_GAP
     for k, res in enumerate(entries):
         if y + box_h > DEBUG_H:
