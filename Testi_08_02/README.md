@@ -1,3 +1,11 @@
+# Testi_08_02 t11: korostettujen heittojen liukusuorat ja merkki puhelimessa
+
+* Alku/Loppu oletuksena **25** ja **40** s (puhelimen tallentamat arvot ohittavat oletuksen).
+* Korostetuille laatikoille piirretään kuvaan ohut **punainen** (vasen hakki) ja **vihreä** (oikea hakki) liukusuora
+  hakista lähemmälle T-viivalle sekä **oranssi kolmisakarainen risti** merkin kohtaan (suoran X T-viivalla hogin jälkeen).
+  Pisteet projisoidaan jäätasolle (Z = 0) kalibroinnin kameramallilla; tila.json:n laatikoissa `viivat` ja `risti`.
+* Korjaus: kuvan vaihdon jälkeen piirto tehdään uudelleen kuvan latauduttua (muuten korostus jäi välillä piirtämättä).
+
 # Testi_08_02 t10: puhelinnäkymän korostus iän mukaan
 
 Katselusivun alapalkissa kentät **Alku** ja **Loppu** (sekunteja). Paneelilaatikot, joiden ikä (sekunteja kaukohogin

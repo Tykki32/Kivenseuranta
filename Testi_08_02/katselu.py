@@ -137,7 +137,8 @@ _PAGE = """<!doctype html>
 const k=document.getElementById('k'),t=document.getElementById('s'),o=document.getElementById('o');
 const ia=document.getElementById('a'),ib=document.getElementById('b');
 // Testi_08_02 t10: korostus - paneelilaatikot joiden ika (s kaukohogin ylityksesta) on Alku..Loppu
-try{ia.value=localStorage.getItem('alku')||'';ib.value=localStorage.getItem('loppu')||''}catch(e){}
+ia.value='25';ib.value='40';
+try{const a0=localStorage.getItem('alku'),b0=localStorage.getItem('loppu');if(a0!==null)ia.value=a0;if(b0!==null)ib.value=b0}catch(e){}
 for(const el of [ia,ib]){el.addEventListener('click',e=>e.stopPropagation());
   el.addEventListener('input',()=>{try{localStorage.setItem('alku',ia.value);localStorage.setItem('loppu',ib.value)}catch(e){}piirra()})}
 let laatikot=[];
@@ -147,9 +148,17 @@ function piirra(){
   const r=k.getBoundingClientRect(),s=Math.min(r.width/k.naturalWidth,r.height/k.naturalHeight);
   const ox=r.left+(r.width-k.naturalWidth*s)/2,oy=r.top+(r.height-k.naturalHeight*s)/2;
   c.lineWidth=5;c.strokeStyle='#ff30ff';c.fillStyle='rgba(255,48,255,0.18)';
+  const P=q=>[ox+q[0]*s,oy+q[1]*s];
   for(const q of laatikot){if(q.ika>=Math.min(a,b)&&q.ika<=Math.max(a,b)){
-    const x=ox+q.x*s,y=oy+q.y*s,w=q.w*s,h=q.h*s;c.fillRect(x,y,w,h);c.strokeRect(x+2,y+2,w-4,h-4)}}}
-window.addEventListener('resize',piirra);
+    const x=ox+q.x*s,y=oy+q.y*s,w=q.w*s,h=q.h*s;c.fillRect(x,y,w,h);c.strokeRect(x+2,y+2,w-4,h-4);
+    // liukusuorat (vasen hakki punainen, oikea vihrea) ja merkki (oranssi kolmisakarainen risti)
+    c.save();c.beginPath();c.rect(r.left,r.top,r.width,r.height);c.clip();
+    for(const v of (q.viivat||[])){const p0=P(v.p[0]),p1=P(v.p[1]);c.beginPath();c.moveTo(p0[0],p0[1]);c.lineTo(p1[0],p1[1]);
+      c.lineWidth=1.5;c.strokeStyle=v.c;c.stroke()}
+    if(q.risti){const m=P(q.risti),L=9;c.lineWidth=2.5;c.strokeStyle='#ff9900';c.beginPath();
+      for(const d of [-90,30,150]){const t=d*Math.PI/180;c.moveTo(m[0],m[1]);c.lineTo(m[0]+L*Math.cos(t),m[1]+L*Math.sin(t))}c.stroke()}
+    c.restore();c.lineWidth=5;c.strokeStyle='#ff30ff'}}}
+window.addEventListener('resize',piirra);k.addEventListener('load',piirra);   // kuvan vaihdon jalkeen koko tiedossa vasta load-tapahtumassa
 let last=-1,busy=false;
 // v7.6: napautus = koko naytto (selaimen osoitepalkki piiloon), uusi napautus palauttaa
 function kokoNaytto(){const d=document,e=d.documentElement;
@@ -256,7 +265,7 @@ class KatseluServer:
     def status(self):
         with self._lock:
             now = time.time()
-            lt = [dict(x=b["x"], y=b["y"], w=b["w"], h=b["h"],
+            lt = [dict(x=b["x"], y=b["y"], w=b["w"], h=b["h"], viivat=b.get("viivat", []), risti=b.get("risti"),
                        ika=int(now - b["wall"]) if b.get("wall") is not None else int(b["ika"] + (now - self._boxes_t)))
                   for b in self._boxes]
             return {"tila": self._state, "kuva": self._n, "ika": (now - self._t) if self._n >= 0 else None, "laatikot": lt}
@@ -299,7 +308,14 @@ class KatseluServer:
                     sk = KUVA_LEVEYS / float(w)
                     img = cv2.resize(img, (KUVA_LEVEYS, int(round(h * KUVA_LEVEYS / w))), interpolation=cv2.INTER_AREA)
                 comp = next((a for a in args if hasattr(a, "boxes")), None)
-                boxes = [dict(b, x=b["x"] * sk, y=b["y"] * sk, w=b["w"] * sk, h=b["h"] * sk) for b in getattr(comp, "boxes", [])]
+                def _sc(b):
+                    d = dict(b, x=b["x"] * sk, y=b["y"] * sk, w=b["w"] * sk, h=b["h"] * sk)
+                    if "viivat" in b:
+                        d["viivat"] = [dict(v, p=[[q[0] * sk, q[1] * sk] for q in v["p"]]) for v in b["viivat"]]
+                    if "risti" in b:
+                        d["risti"] = [b["risti"][0] * sk, b["risti"][1] * sk]
+                    return d
+                boxes = [_sc(b) for b in getattr(comp, "boxes", [])]
                 boxes_t = getattr(comp, "boxes_t", time.time())
                 ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, KUVA_LAATU])
                 if ok:
