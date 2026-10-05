@@ -1,5 +1,13 @@
 # Testi_07_01 (pohja Testi_06_01 v6.20)
 
+## v7.8: kitkamallin B kiinteä vakio −0,001
+B on oletettavasti lähes vakio → kovakoodattu `MU_B = −0,001` (hog_analyysi.py) kaikille heitoille; heittokohtaisesti
+sovitetaan vain A. Mittaukset (yhteissovitus, B yhteinen): live 2026-10-04 (66 heittoa) paras B = −0,0011, MAH00014 (19)
+−0,0027. Vaikutus hidastuvuuteen @1,5 m/s verrattuna aineiston parhaaseen B:hen: hitaat heitot ≤ 0,4 % (live) / ≤ 3,9 % (MAH),
+lyönnit (live) ≤ 1,2 %. Lyönneillä 1,5 m/s on ekstrapolointia: jos todellinen B olisi −0,0027, 3,3 m/s lyönnin hidastuvuus
+olisi n. 18 % liian pieni. Live-aineisto uudelleen: hitaat 0,061–0,084, lyönnit 0,063–0,083 m/s² (v7.6: lyönnit −0,41…+0,93),
+~20 ms/heitto. Hog-CSV:n sarake `kitka_b_kiintea` poistettu (B aina kiinteä).
+
 ## v7.7: kitkamalli nopeille heitoille (B kiinnitetty)
 Live-ajossa 2026-10-04 (66 hog-tulosta) nopeiden heittojen (2,5–3,6 m/s kaukohogilla, lyönnit) hidastuvuus kitkamallista oli
 järjetön (−0,41…+0,93 m/s²): kivi ei hog-hog-välillä hidastu lähellekään 1,5 m/s:a, joten B ja arvo 1,5 m/s:ssa ovat
