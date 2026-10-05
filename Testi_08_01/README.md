@@ -12,7 +12,7 @@ Kiven pyöriminen arvioidaan kahvan muodon toistumisesta:
 * Pyöriminen hidastuu vakiohidastuvuudella `KIERRE_HIDASTUVUUS` = **0,02 rad/s²** (kovakoodattu; MAH00014:n 12 selvän
   kiven yhteinen arvo, 90 % luottamusväli 0,012–0,028). Kierrosaika sovitetaan ruutuparien samankaltaisuuteen, ja
   kierteet = ∫ω dt / 2π kaukohogista lähi-hogiin (alkuosa ekstrapoloidaan mallilla).
-* Laskenta hog-analyysin yhteydessä (n. 30–60 ms per heitto). Heikko signaali (R² < `KIERRE_MIN_R2`=0,03) → ei arvoa.
+* Laskenta hog-analyysin yhteydessä (n. 0,2 s per heitto pääsäikeessä; putken puskuri 2 s riittää). Heikko signaali (R² < `KIERRE_MIN_R2`=0,03) → ei arvoa.
 * Paneeliin rivi `kierteita: 2.2` (`-` jos ei arvoa); hog-CSV:hen `kierteet`, `kierrosaika_far_s`,
   `kierrosaika_near_s`, `kierre_r2`. Pois päältä: `KIERRE_SEURANTA=0`.
 
