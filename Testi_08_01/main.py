@@ -2356,13 +2356,109 @@ def _hog_check(s, frame_index, fps, near_hog, far_hog, overlays, results, frame_
                 print(f"[hog] still-kuvan tallennus epaonnistui: {e_}")
 
 
+# ------------------------------------------------------------
+# Testi_08_01 v8.6: KAHVAN VARI JA NAKYVYYS. Jokaisessa seurantaruudussa kiven pyorimisakselin ylapaa (kiven keskipiste
+# korkeudella H_total, kiviprofiilista) ja sen ymparilla vaakasuora ympyra, sateena kahvan sade (kahvan_r profiilista),
+# keskipiste projisoidaan kuvaan; ympyra kuvassa (v8.6b: ei projisoitu ellipsi). Ympyran sisalta kerataan varikkaiden pikseleiden savyt (HSV: S >= KAHVA_MIN_S, V >= KAHVA_MIN_V
+# - jaa ja graniitti ovat harmaita). Radan paattyessa kahvan savy = savy jonka +-KAHVA_H_TOL valilla on eniten pikseleita koko
+# radalta; jokaiselle ruudulle lasketaan montako pikselia osuu tahan valiin -> <csv>_kahva.csv (ruutu, kivi, savy, pikselit,
+# ellipsin pinta-ala). Hog-CSV:hen kahva_h ja kahva_vari. OpenCV:n H-asteikko 0-179 (punainen kiertaa 0/179 ympari).
+# ------------------------------------------------------------
+KAHVA_SEURANTA = os.environ.get("KAHVA_SEURANTA", "1") == "1"
+KAHVA_H_TOL = int(os.environ.get("KAHVA_H_TOL", "10"))
+KAHVA_MIN_S = int(os.environ.get("KAHVA_MIN_S", "80"))
+KAHVA_MIN_V = int(os.environ.get("KAHVA_MIN_V", "60"))
+# KAHVA_Z_EXTRA_CM: ympyran keskipisteen korkeus H_total:n ylapuolella. MAH00014 (projisoitu ellipsi): kahvan varin osuus
+# +0 cm 39 %, +4 cm 27 %, +8 cm 5 %, +12 cm 0,2 % -> akselin ylapaa (H_total) on oikea kohta.
+KAHVA_Z_EXTRA_CM = float(os.environ.get("KAHVA_Z_EXTRA_CM", "0"))
+_KAHVA_ANG = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False)
+
+
+def _kahva_hist(frame_u, pose, X, Y, Z, r_cm):
+    """(nollasta poikkeavat savylokerot, maarat, ympyran pinta-ala px) tai None. Ympyra suoraan kuvassa (ei projisoitu
+    ellipsi, kayttajan pyynto): keskipiste = pyorimisakselin ylapaa (X, Y, Z) kuvaan projisoituna, sade = kahvan sade
+    sivusuunnassa kuvaan projisoituna (pikseleina). Mukaan tuleva muu (jaa, graniitti) on harmaata -> saturaatioraja erottaa."""
+    pts = np.array([[X, Y, Z], [X + r_cm, Y, Z], [X - r_cm, Y, Z]], dtype=np.float64)
+    u, v = k9._project_3d(pose["K"], pose["R"], pose["t"], pts)
+    if not (np.all(np.isfinite(u)) and np.all(np.isfinite(v))):
+        return None
+    cx, cy = float(u[0]), float(v[0])
+    rp = max(1.0, 0.5 * float(np.hypot(u[1] - u[2], v[1] - v[2])))
+    h_img, w_img = frame_u.shape[:2]
+    x0, x1 = int(max(0, np.floor(cx - rp))), int(min(w_img, np.ceil(cx + rp) + 1))
+    y0, y1 = int(max(0, np.floor(cy - rp))), int(min(h_img, np.ceil(cy + rp) + 1))
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    circ = (xx - cx) ** 2 + (yy - cy) ** 2 <= rp * rp
+    hsv = cv2.cvtColor(frame_u[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+    sel = circ & (hsv[:, :, 1] >= KAHVA_MIN_S) & (hsv[:, :, 2] >= KAHVA_MIN_V)
+    hist = np.bincount(hsv[:, :, 0][sel].ravel(), minlength=180)
+    nz = np.nonzero(hist)[0]
+    _dbg = os.environ.get("KAHVA_DEBUG")
+    if _dbg:                    # tarkistuskuvat: ympyra + ymparisto suurennettuna
+        _m = 25
+        X0, Y0 = max(0, x0 - _m), max(0, y0 - _m)
+        crop = frame_u[Y0:min(h_img, y1 + _m), X0:min(w_img, x1 + _m)].copy()
+        crop = cv2.resize(crop, None, fx=6, fy=6, interpolation=cv2.INTER_NEAREST)
+        cv2.circle(crop, (int(round((cx - X0) * 6)), int(round((cy - Y0) * 6))), int(round(rp * 6)), (0, 255, 0), 1)
+        os.makedirs(_dbg, exist_ok=True)
+        cv2.imwrite(os.path.join(_dbg, f"k_{int(Y)}_{int(X)}.png"), crop)
+    return nz.astype(np.uint8), hist[nz].astype(np.uint16), int(np.count_nonzero(circ))
+
+
+def _kahva_vari_nimi(h):
+    if h is None:
+        return ""
+    return ("punainen" if h <= 8 or h >= 170 else "oranssi" if h <= 20 else "keltainen" if h <= 34 else
+            "vihrea" if h <= 85 else "sininen" if h <= 130 else "violetti" if h <= 155 else "pinkki")
+
+
+def _kahva_window(hist, h, tol):
+    idx = (np.arange(h - tol, h + tol + 1) % 180)
+    return int(hist[idx].sum())
+
+
+def _kahva_write(stone_registry, hog_results, csv_output):
+    """Radan kahvan savy + ruutukohtaiset pikselimaarat (katso KAHVA_SEURANTA)."""
+    path = os.path.splitext(csv_output)[0] + "_kahva.csv"
+    hues = {}
+    n_rows = 0
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["frame", "stone_id", "kahva_h", "kahva_vari", "kahva_px", "ympyra_px"])
+        for sid, st in sorted(stone_registry.items()):
+            obs = st.get("kahva")
+            if not obs:
+                continue
+            tot = np.zeros(180, np.int64)
+            for _, nz, cnt, _a in obs:
+                tot[nz] += cnt
+            if tot.sum() == 0:
+                continue
+            win = np.array([_kahva_window(tot, h_, KAHVA_H_TOL) for h_ in range(180)])
+            h_best = int(np.argmax(win))
+            hues[sid] = h_best
+            idx = set(int(i) for i in (np.arange(h_best - KAHVA_H_TOL, h_best + KAHVA_H_TOL + 1) % 180))
+            name = _kahva_vari_nimi(h_best)
+            for fr, nz, cnt, area in obs:
+                px = int(sum(int(c) for b, c in zip(nz, cnt) if int(b) in idx))
+                w.writerow([fr, sid, h_best, name, px, area])
+                n_rows += 1
+    for r in hog_results:
+        h_ = hues.get(r.get("stone_id"))
+        r["kahva_h"] = h_
+        r["kahva_vari"] = _kahva_vari_nimi(h_)
+    print(f"Kahvan vari: {len(hues)} rataa, {n_rows} ruutua -> {path}")
+
+
 def _hog_write_csv(results, csv_output):
     if not results:
         return
     path = os.path.splitext(csv_output)[0] + "_hog.csv"
     cols = ["stone_id", "frame", "R", "R_ennen_suodatusta", "n_kaytetty", "n_pudotettu", "v_far_hog_ms", "decel_ms2", "hog_hog_s", "t_far_hog_s", "t_near_hog_s", "v_near_hog_ms", "a", "b", "c",
             "R_x", "R_x_ennen_suodatusta", "R_tulo", "x_far_hog_cm", "dir_far_hog_deg", "slope_dxdy", "x_straight_at_tee_cm", "px", "qx", "rx",
-            "liuku_x_tee_cm", "liuku_dir_deg", "liuku_n", "liuku_rms_cm", "decel_keskim_ms2", "mu_a", "mu_b", "kitka_rms_cm", "kurvi_k_ms2", "kurvi_rms_cm", "x_far_hog_cm_2aste", "dir_far_hog_deg_2aste"]
+            "liuku_x_tee_cm", "liuku_dir_deg", "liuku_n", "liuku_rms_cm", "decel_keskim_ms2", "mu_a", "mu_b", "kitka_rms_cm", "kurvi_k_ms2", "kurvi_rms_cm", "x_far_hog_cm_2aste", "dir_far_hog_deg_2aste", "kahva_h", "kahva_vari"]
     with open(path, "w", newline="") as hf:
         w = csv.writer(hf); w.writerow(cols)
         for r in results:
@@ -5024,7 +5120,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_08_01 v8.5 (katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
+SOFTWARE_VERSION = "Testi_08_01 v8.6 (kahvan vari ja nakyvyys: ympyra kuvassa akselin ylapaassa; katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-05)"
 
 
 def _version_string():
@@ -6986,6 +7082,15 @@ def run_pipeline(
 
                         if refined["found"]:
 
+                            if KAHVA_SEURANTA and frame_u is not None:
+                                try:
+                                    _kh = _kahva_hist(frame_u, pose, refined["X_cm"], refined["Y_cm"], live_state["H_total"] + KAHVA_Z_EXTRA_CM,
+                                                      live_state["handle_r_frac"] * live_state["R_max"])
+                                    if _kh is not None:
+                                        s.setdefault("kahva", []).append((frame_index,) + _kh)
+                                except Exception:
+                                    pass
+
                             s["last_xy"] = (
                                 refined["X_cm"], refined["Y_cm"]
                             )
@@ -7745,6 +7850,11 @@ def run_pipeline(
             )
 
         if HOG_ANALYSIS:
+            if KAHVA_SEURANTA and stone_registry:
+                try:
+                    _kahva_write(stone_registry, hog_results, csv_output)
+                except Exception as _e_k:
+                    print(f"Kahvan varin kirjoitus epaonnistui: {_e_k!r}")
             _hog_write_csv(hog_results, csv_output)
 
         if debug_video_writer is not None:
