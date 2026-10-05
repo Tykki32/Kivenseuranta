@@ -924,3 +924,12 @@ Windows-vertailuajo v5.12: v59 652,0 s, v511 (= CV_SINGLE_PERSIST=0, saturaatio 
 Odotus: v5.11 (611,6 s) + ConcRT-korjaus (-5 %) ~ 580 s = ~-11 % v59:ään nähden.
 `tools/vertailuajo.py`: oletuksena `v59, oletus, satpar, noprep, grid1` (kukin = oletus yhdellä muutoksella -> rinnakkaistusten erillisvaikutus);
 lisäksi `nointra` (INTRA_PARALLEL=0). C++-moduuli pitää kääntää uudelleen.
+
+## t12: irroitus, korostus ulospäin, vasen-/oikeakätinen
+
+* Paneelin rivi `merkki` on nyt **`irroitus`** (sama arvo: hogin jälkeisen suoran X lähemmällä T-viivalla). CSV-sarakkeiden nimet ennallaan.
+* Puhelimen korostusreunus piirretään laatikon **ulkopuolelle** (ei peitä tekstiä).
+* Puhelimen alapalkissa valintaruudut **Vasenkätinen** ja **Oikeakätinen** (oletus molemmat päällä, muistetaan selaimessa):
+  vasenkätinen näyttää vasemman hakin punaisen liukuviivan ja paneelin punaisen liukuluvun, oikeakätinen oikean hakin vihreät.
+  Kumpikin, jompikumpi tai ei kumpaakaan. Valinta lähtee koneelle `tila.json?v=&o=`-kyselyssä ja vaikuttaa seuraavaan
+  piirrettävään kuvaan (≤ 1 s); jos useampi puhelin on auki, viimeisin valinta pätee paneelin lukuihin.
