@@ -1,5 +1,11 @@
 # Testi_08_01 (pohja Testi_07_01 v7.9, testattu toimivaksi)
 
+## v8.5: puhelimen/tabletin näyttö pysyy päällä katselusivulla
+Ensimmäinen napautus (sama joka vie koko näytölle) pyytää selaimelta Wake Lockin; koska se toimii vain https:llä ja kotiverkon
+osoite on http, varakeinona sivulla toistuu silmukassa pieni mykistetty video (16×16, 2 s, WebM + MP4, ~2 kt, sivun mukana),
+joka pitää näytön päällä (sama tekniikka kuin NoSleep.js). Tilarivillä "näyttö päällä (video)". Testattu headless-Chromiumilla
+lähiverkko-osoitteella: Wake Lock ei käytettävissä → video toistuu. Toimivuus pitää varmistaa omalla laitteella.
+
 ## v8.4: X-suunta kurvimallista (vakio sivukiihtyvyys)
 Hog-analyysin X-sovitus (x ja suunta kaukohogilla, merkki) tehdään fysikaalisesta mallista: kitka hidastaa radan suuntaisesti,
 kurvi on vakiosuuruinen sivukiihtyvyys k kohtisuoraan kulkusuuntaa vastaan → kulkusuunnan kulma θ' = k/|v|, X'(t) = v(t)·θ(t),

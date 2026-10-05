@@ -15,6 +15,7 @@ import json
 import time
 import socket
 import threading
+import base64
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import cv2
@@ -24,6 +25,78 @@ KUVA_LEVEYS = int(os.environ.get("KATSELU_LEVEYS", "1100"))          # JPEG-kuva
 KUVA_LAATU = int(os.environ.get("KATSELU_LAATU", "75"))              # JPEG-laatu
 
 _server = None
+
+# v8.5: naytto paalle -varakeino. Wake Lock -rajapinta toimii vain https:lla (ja localhostilla); kotiverkon http-osoitteessa
+# selain ei anna sita. Varakeinona sivulla toistetaan silmukassa pienta (16x16, 2 s, 2,5 kt) mykistettya videota: kun video
+# toistuu, puhelin/tabletti ei sammuta nayttoa (sama tekniikka kuin NoSleep.js-kirjastossa). Kaynnistyy ensimmaisesta napautuksesta.
+_HEREILLA_MP4 = base64.b64decode(
+    "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAZ0bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAB9AAAQAAAQAA"
+    "AAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAA"
+    "Apl0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAB9AAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAA"
+    "AAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAfQAAAAAAABAAAAAAIRbWRpYQAAACBtZGhk"
+    "AAAAAAAAAAAAAAAAAAAoAAAAUABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABvG1p"
+    "bmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAXxzdGJsAAAAuHN0c2QA"
+    "AAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGli"
+    "eDI2NAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAK/+EAFmdCwArZHsBEAAADAAQAAAMAKDxImSABAAVoy4PLIAAAABBwYXNwAAAA"
+    "AQAAAAEAAAAUYnRydAAAAAAAAAtYAAALWAAAABhzdHRzAAAAAAAAAAEAAAAKAAAIAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0"
+    "c2MAAAAAAAAAAQAAAAEAAAABAAAAAQAAADxzdHN6AAAAAAAAAAAAAAAKAAACgwAAAAoAAAAKAAAACQAAAAkAAAAJAAAACQAAAAkA"
+    "AAAJAAAACQAAADhzdGNvAAAAAAAAAAoAAAa5AAAJRAAACVYAAAlkAAAJdQAACYIAAAmTAAAJoAAACbEAAAnCAAADBXRyYWsAAABc"
+    "dGtoZAAAAAMAAAAAAAAAAAAAAAIAAAAAAAAH0AAAAAAAAAAAAAAAAQEAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAA"
+    "AEAAAAAAAAAAAAAAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAB9AAAAQAAAEAAAAAAn1tZGlhAAAAIG1kaGQAAAAAAAAAAAAA"
+    "AAAAAB9AAABCgFXEAAAAAAAtaGRscgAAAAAAAAAAc291bgAAAAAAAAAAAAAAAFNvdW5kSGFuZGxlcgAAAAIobWluZgAAABBzbWhk"
+    "AAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAAHsc3RibAAAAH5zdHNkAAAAAAAAAAEAAABubXA0"
+    "YQAAAAAAAAABAAAAAAAAAAAAAQAQAAAAAB9AAAAAAAA2ZXNkcwAAAAADgICAJQACAASAgIAXQBUAAAAAAB9AAAABPwWAgIAFFYhW"
+    "5QAGgICAAQIAAAAUYnRydAAAAAAAAB9AAAABPwAAACBzdHRzAAAAAAAAAAIAAAAQAAAEAAAAAAEAAAKAAAAAfHN0c2MAAAAAAAAA"
+    "CQAAAAEAAAABAAAAAQAAAAIAAAACAAAAAQAAAAQAAAABAAAAAQAAAAUAAAACAAAAAQAAAAYAAAABAAAAAQAAAAcAAAACAAAAAQAA"
+    "AAgAAAABAAAAAQAAAAkAAAACAAAAAQAAAAsAAAABAAAAAQAAAFhzdHN6AAAAAAAAAAAAAAARAAAAFQAAAAQAAAAEAAAABAAAAAQA"
+    "AAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAA8c3RjbwAAAAAAAAALAAAGpAAACTwAAAlO"
+    "AAAJYAAACW0AAAl+AAAJiwAACZwAAAmpAAAJugAACcsAAAAac2dwZAEAAAByb2xsAAAAAgAAAAH//wAAABxzYmdwAAAAAHJvbGwA"
+    "AAABAAAAEQAAAAEAAABidWR0YQAAAFptZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAAC1pbHN0AAAA"
+    "Jal0b28AAAAdZGF0YQAAAAEAAAAATGF2ZjYwLjE2LjEwMAAAAAhmcmVlAAADM21kYXTeAgBMYXZjNjAuMzEuMTAyAAIwQA4AAAJw"
+    "BgX//2zcRem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTY0IHIzMTA4IDMxZTE5ZjkgLSBILjI2NC9NUEVHLTQgQVZDIGNvZGVj"
+    "IC0gQ29weWxlZnQgMjAwMy0yMDIzIC0gaHR0cDovL3d3dy52aWRlb2xhbi5vcmcveDI2NC5odG1sIC0gb3B0aW9uczogY2FiYWM9"
+    "MCByZWY9MyBkZWJsb2NrPTE6MDowIGFuYWx5c2U9MHgxOjB4MTExIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0xLjAwOjAu"
+    "MDAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0wIGNxbT0wIGRlYWR6b25lPTIx"
+    "LDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS0yIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90"
+    "aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBi"
+    "ZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj01IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19s"
+    "b29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBp"
+    "cF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAC2WIhAR8mKAANiOAARggBwEYIAcAAAAGQZo4CPqAARggBwEYIAcAAAAGQZpUAj6g"
+    "ARggBwAAAAVBmmAR9QEYIAcBGCAHAAAABUGagBH1ARggBwAAAAVBmqAR9QEYIAcBGCAHAAAABUGawBH1ARggBwAAAAVBmuAR9QEY"
+    "IAcBGCAHAAAABUGbABD1ARggBwEYIAcAAAAFQZsgP9QBGCAH"
+)
+
+_HEREILLA_WEBM = base64.b64decode(        # sama WebM-muodossa (VP8) selaimille joilla ei ole H.264:aa
+    "GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQRChYECGFOAZwEAAAAAAAg5EU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZU"
+    "rmtTrIHYTbuMU6uEElTDZ1OsggGETbuMU6uEHFO7a1Osgggj7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1M"
+    "YXZmNjAuMTYuMTAwV0GNTGF2ZjYwLjE2LjEwMESJiECfYAAAAAAAFlSua0CmrgEAAAAAAAA414EBc8WIw2v2ZWJTzkicgQAitZyD"
+    "dW5kiIEAhoVWX1ZQOIOBASPjg4QL68IA4ImwgRC6gRCagQKuAQAAAAAAAFzXgQJzxYjAgZVj49Up2ZyBACK1nIN1bmSIgQCGhkFf"
+    "T1BVU1aqg2MuoFa7hATEtACDgQLhkZ+BAbWIQOdwAAAAAABiZIEQY6KTT3B1c0hlYWQBATgBgLsAAAAAABJUw2dA1nNzoGPAgGfI"
+    "mkWjh0VOQ09ERVJEh41MYXZmNjAuMTYuMTAwc3PWY8CLY8WIw2v2ZWJTzkhnyKFFo4dFTkNPREVSRIeUTGF2YzYwLjMxLjEwMiBs"
+    "aWJ2cHhnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAyLjAwMDAwMDAwMABzc9djwItjxYjAgZVj49Up2WfIokWjh0VOQ09ERVJEh5VM"
+    "YXZjNjAuMzEuMTAyIGxpYm9wdXNnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAyLjAwODAwMDAwMAAfQ7Z1Rb3ngQCji4IAAIAIC+S5"
+    "oLyEo6OBAACAEAIAnQEqEAAQAABHCIWFiIWEiAICAAwNYAD+/6tQgKOKggAVgAgHxrMOxqOKggApgAgHxrMOxqOKggA9gAgHxrMO"
+    "xqOKggBRgAgHxrMOxqOKggBlgAgHxrMOxqOKggB5gAgHxrMOxqOKggCNgAgHxrMOxqOKggChgAgHxrMOxqOKggC1gAgHxrMOxqOK"
+    "ggDJgAgHxrMOxqOVgQDIALEBAAEQEAAYABhYL/QACAAAo4qCAN2ACAfGsw7Go4qCAPGACAfGsw7Go4qCAQWACAfGsw7Go4qCARmA"
+    "CAfGsw7Go4qCAS2ACAfGsw7Go4qCAUGACAfGsw7Go4qCAVWACAfGsw7Go4qCAWmACAfGsw7Go4qCAX2ACAfGsw7Go4qCAZGACAfG"
+    "sw7Go5WBAZAAsQEAARAQABgAGFgv9AAIAACjioIBpYAIB8azDsajioIBuYAIB8azDsajioIBzYAIB8azDsajioIB4YAIB8azDsaj"
+    "ioIB9YAIB8azDsajioICCYAIB8azDsajioICHYAIB8azDsajioICMYAIB8azDsajioICRYAIB8azDsajioICWYAIB8azDsajlYEC"
+    "WACxAQABEBAAGAAYWC/0AAgAAKOKggJtgAgHxrMOxqOKggKBgAgHxrMOxqOKggKVgAgHxrMOxqOKggKpgAgHxrMOxqOKggK9gAgH"
+    "xrMOxqOKggLRgAgHxrMOxqOKggLlgAgHxrMOxqOKggL5gAgHxrMOxqOKggMNgAgHxrMOxqOKggMhgAgHxrMOxqOVgQMgALEBAAEQ"
+    "EAAYABhYL/QACAAAo4qCAzWACAfGsw7Go4qCA0mACAfGsw7Go4qCA12ACAfGsw7Go4qCA3GACAfGsw7Go4qCA4WACAfGsw7Go4qC"
+    "A5mACAfGsw7Go4qCA62ACAfGsw7Go4qCA8GACAfGsw7Go4qCA9WACAfGsw7Go4qCA+mACAfGsw7Go5WBA+gAsQEAARAQABgAGFgv"
+    "9AAIAACjioID/YAIB8azDsajioIEEYAIB8azDsajioIEJYAIB8azDsajioIEOYAIB8azDsajioIETYAIB8azDsajioIEYYAIB8az"
+    "DsajioIEdYAIB8azDsajioIEiYAIB8azDsajioIEnYAIB8azDsajioIEsYAIB8azDsajlYEEsACxAQABEBAAGAAYWC/0AAgAAKOK"
+    "ggTFgAgHxrMOxqOKggTZgAgHxrMOxqOKggTtgAgHxrMOxqOKggUBgAgHxrMOxqOKggUVgAgHxrMOxqOKggUpgAgHxrMOxqOKggU9"
+    "gAgHxrMOxqOKggVRgAgHxrMOxqOKggVlgAgHxrMOxqOKggV5gAgHxrMOxqOVgQV4ALEBAAEQEBRgAGFgv9AAIAAAo4qCBY2ACAfG"
+    "sw7Go4qCBaGACAfGsw7Go4qCBbWACAfGsw7Go4qCBcmACAfGsw7Go4qCBd2ACAfGsw7Go4qCBfGACAfGsw7Go4qCBgWACAfGsw7G"
+    "o4qCBhmACAfGsw7Go4qCBi2ACAfGsw7Go4qCBkGACAfGsw7Go5WBBkAAsQEAARAQABgAGFgv9AAIAACjioIGVYAIB8azDsajioIG"
+    "aYAIB8azDsajioIGfYAIB8azDsajioIGkYAIB8azDsajioIGpYAIB8azDsajioIGuYAIB8azDsajioIGzYAIB8azDsajioIG4YAI"
+    "B8azDsajioIG9YAIB8azDsajioIHCYAIB8azDsajlYEHCACxAQABEBAAGAAYWC/0AAgAAKOKggcdgAgHxrMOxqOKggcxgAgHxrMO"
+    "xqOKggdFgAgHxrMOxqOKggdZgAgHxrMOxqOKggdtgAgHxrMOxqOKggeBgAgHxrMOxqOKggeVgAgHxrMOxqOKggepgAgHxrMOxqOK"
+    "gge9gAgHxrMOxqCToYqCB9EACAfGsw7GdaKEAM3+YBxTu2uRu4+zgQC3iveBAfGCAmDwgRA="
+)
 
 
 def active():
@@ -52,9 +125,11 @@ _PAGE = """<!doctype html>
  #k{display:block;width:100vw;height:calc(100vh - 30px);object-fit:contain;background:#000}
  :fullscreen #k{height:calc(100vh - 30px)}
  #t{position:fixed;left:0;right:0;bottom:0;padding:6px 10px;background:rgba(0,0,0,.7)}
+ #h{position:fixed;right:0;bottom:0;width:2px;height:2px;opacity:0.01;pointer-events:none}
 </style></head><body>
 <img id="k" alt="">
 <div id="t">Yhdistetaan...</div>
+<video id="h" muted loop playsinline preload="auto"><source src="hereilla.webm" type="video/webm"><source src="hereilla.mp4" type="video/mp4"></video>
 <script>
 const k=document.getElementById('k'),t=document.getElementById('t');
 let last=-1,busy=false;
@@ -62,7 +137,14 @@ let last=-1,busy=false;
 function kokoNaytto(){const d=document,e=d.documentElement;
   if(d.fullscreenElement||d.webkitFullscreenElement){(d.exitFullscreen||d.webkitExitFullscreen).call(d)}
   else{const f=e.requestFullscreen||e.webkitRequestFullscreen;if(f)f.call(e,{navigationUI:'hide'})}}
-document.body.addEventListener('click',kokoNaytto);
+// v8.5: naytto paalla - Wake Lock (vain https) tai varakeinona silmukkavideo; kaynnistyy ensimmaisesta napautuksesta
+let lukko=null,hereilla='';
+async function pidaHereilla(){
+  if('wakeLock' in navigator){try{lukko=await navigator.wakeLock.request('screen');hereilla='n\u00e4ytt\u00f6 p\u00e4\u00e4ll\u00e4';return}catch(e){}}
+  const h=document.getElementById('h');h.muted=true;
+  try{await h.play();hereilla='n\u00e4ytt\u00f6 p\u00e4\u00e4ll\u00e4 (video)'}catch(e){hereilla='n\u00e4ytt\u00f6 voi sammua'}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&hereilla)pidaHereilla()});
+document.body.addEventListener('click',()=>{kokoNaytto();pidaHereilla()});
 async function paivita(){
   if(busy)return;busy=true;
   try{
@@ -75,6 +157,7 @@ async function paivita(){
       last=j.kuva}
     if(j.ika>3)txt+=' - kuva '+Math.round(j.ika)+' s vanha';
     if(!(document.fullscreenElement||document.webkitFullscreenElement))txt+=' \u00b7 napauta = koko n\u00e4ytt\u00f6';
+    if(hereilla)txt+=' \u00b7 '+hereilla;
     t.textContent=txt;
   }catch(e){t.textContent='Ei yhteytta koneeseen'}
   busy=false}
@@ -105,6 +188,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, "text/html; charset=utf-8", _PAGE.encode("utf-8"))
             elif path == "/tila.json":
                 self._send(200, "application/json", json.dumps(srv.status()).encode("utf-8"))
+            elif path == "/hereilla.webm":
+                self._send(200, "video/webm", _HEREILLA_WEBM)
+            elif path == "/hereilla.mp4":
+                self._send(200, "video/mp4", _HEREILLA_MP4)
             elif path == "/kuva.jpg":
                 jpg, _n, _t = srv.latest()
                 if jpg is None:
