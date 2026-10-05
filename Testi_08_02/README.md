@@ -1,3 +1,12 @@
+# Testi_08_02 t3: täyden resoluution rengas 10 s
+
+Ensimmäinen live-ajo t2:lla (2026-10-05, 14 min, 50p-kamera, 20 heittoa): reaaliaika pysyi (viive 0, ei pudotuksia),
+kamerasäikeen `grab()`-ohitus 0,6 ms/ruutu (luku 13,8 → 5,2 ms per käsitelty ruutu; vaihe A 37,0 → 33,8 ms = 29,6 r/s).
+Paikallinen täysi resoluutio: 5811 seurantaruutua täydellä resoluutiolla, **2315 (28 %) 720p:na**, koska täysresoluutioinen
+ruutu oli jo poistettu 4 s:n renkaasta (ruuhkahetkinä kamera + jonot ylittivät renkaan). Lisätyö pääsäikeessä 1,86 ms/ruutu.
+→ `PAIK_RENGAS_S` 4 → 10 s (250 ruutua, raaka YUY2 ~1 GB). Loppuraportissa nyt myös, kuinka paljon kamera oli edellä
+720p:ksi jääneissä ruuduissa.
+
 # Testi_08_02 t2: SEURANTA paikallisesti täydellä resoluutiolla
 
 Putki (stabilointi, warp, varjosuodatus, HAKU, katselu, kahva) toimii 1280×720:ssa kuten Testi_08_01:ssä. SEURANTA saa
