@@ -135,6 +135,33 @@ def fit_log_friction(tt, y, v0_ms, decel0_ms2, iters=40, fixed_B=None):
     return dict(y0_cm=float(p[0]), v0_ms=float(p[1]), A=float(p[2]), B=float(p[3]), rms_cm=float(np.sqrt(cost / len(y))))
 
 
+# ------------------------------------------------------------------
+# Testi_08_01 v8.4: KURVIMALLI X-SUUNTAAN. Aiempi X = p u^2 + q u + r (u = Y) vastaa vakiokaarevuutta (ympyranKaari) eika
+# ennustanut kaukohogia hyvin (sovitusalue paattyy 1 m ennen sita). Uusi fysikaalinen malli radan omissa koordinaateissa:
+# kitka hidastaa radan suuntaisesti, kurvi on vakiosuuruinen sivukiihtyvyys a_n = k kohtisuoraan kulkusuuntaa vastaan ->
+# kulkusuunnan kulma theta' = k / |v|, X'(t) = v(t) theta(t) (pieni kulma), v(t) Y-sovituksesta. Kolme parametria kuten ennen
+# (x, alkukulma, k). Mitattu (sama sovitusalue, kaukohog ekstrapoloitu): virhe kaukohogilla rms 2,7 -> 1,6 cm (live
+# 2026-10-04, 64 heittoa) ja 3,8 -> 0,7 cm (MAH00014). k ~ 0,009 m/s^2, hajonta heittojen valilla ~20 %.
+# KURVIMALLI=0 = vanha toisen asteen yhtalo.
+# ------------------------------------------------------------------
+import os as _os_km
+KURVIMALLI = _os_km.environ.get("KURVIMALLI", "1") == "1"
+
+
+def _ctz(g, f):
+    return np.concatenate([[0.0], np.cumsum((f[1:] + f[:-1]) / 2.0 * np.diff(g))])
+
+
+def curl_basis(a, b, t_lo, t_hi, n=3000):
+    """Palauttaa (g, S, G, H): S = kuljettu matka (cm), G = int dt / v (s / (m/s)), H = int v G dt; v = -(2 a t + b) cm/s."""
+    g = np.linspace(t_lo, t_hi, n)
+    v = np.maximum(-(2.0 * a * g + b), 2.0)            # cm/s
+    S = _ctz(g, v)
+    G = _ctz(g, 1.0 / (v / 100.0))
+    H = _ctz(g, v * G)
+    return g, S, G, H
+
+
 def _r_of(tt, y, a, b, c):
     ss_res = float(np.sum((y - (a * tt * tt + b * tt + c)) ** 2)); ss_tot = float(np.sum((y - y.mean()) ** 2))
     return float(np.sqrt(max(1.0 - ss_res / ss_tot, 0.0))) if ss_tot > 0 else 0.0
@@ -221,6 +248,23 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=MIN_R, tee_cm=None, min_pro
     slope = qx / 100.0                                      # dX/dY kaukohoglinella (u = 0), cm / cm
     x_far = float(rx)
     dir_deg = float(np.degrees(np.arctan(-slope)))          # kulkusuunta (Y pienenee): + = kohti +X
+    out.update(x_far_hog_cm_2aste=x_far, dir_far_hog_deg_2aste=dir_deg)
+    if KURVIMALLI:
+        # v8.4: kurvimalli (katso KURVIMALLI): X(t) = x0 + theta0 S(t) + k H(t); sama pistejoukko ja 10 huonointa pois
+        txa = np.array([p_[0] for p_ in pts_x]) - t0
+        xxa = np.array([p_[2] for p_ in pts_x])
+        g, S, G, Hh = curl_basis(a, b, min(txa.min(), t_far) - 0.05, txa.max() + 0.05)
+        A = np.column_stack([np.ones_like(txa), np.interp(txa, g, S), np.interp(txa, g, Hh)])
+        co, *_ = np.linalg.lstsq(A, xxa, rcond=None)
+        if nd > 0:
+            kk = np.sort(np.argsort(np.abs(xxa - A @ co))[: len(xxa) - nd])
+            co, *_ = np.linalg.lstsq(A[kk], xxa[kk], rcond=None)
+        x_far = float(co[0] + co[1] * np.interp(t_far, g, S) + co[2] * np.interp(t_far, g, Hh))
+        theta_far = float(co[1] + co[2] * np.interp(t_far, g, G))
+        slope = -theta_far                                  # dX/dY = X'/Y' = v theta / (-v)
+        dir_deg = float(np.degrees(np.arctan(theta_far)))
+        out.update(kurvi_k_ms2=float(co[2]), kurvi_rms_cm=float(np.sqrt(np.mean((xxa[kk] - A[kk] @ co) ** 2))) if nd > 0
+                   else float(np.sqrt(np.mean((xxa - A @ co) ** 2))))
     out.update(x_far_hog_cm=x_far, slope_dxdy=float(slope), dir_far_hog_deg=dir_deg)
     if tee_cm is not None:
         out["tee_y_cm"] = float(tee_cm)
