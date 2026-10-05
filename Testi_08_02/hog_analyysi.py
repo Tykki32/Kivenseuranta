@@ -285,6 +285,7 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=MIN_R, tee_cm=None, min_pro
             out.update(liuku_x_tee_cm=float(sl * tee_cm + ic), liuku_dir_deg=float(np.degrees(np.arctan(-sl))), liuku_n=int(len(yl)),
                        liuku_rms_cm=float(np.std(xl - (sl * yl + ic))))
             hakki_y = far_hog_cm + HOG_TEESTA_CM + TAKARAJA_TEESTA_CM + HAKKI_TAKARAJASTA_CM
+            out["hakki_y_cm"] = float(hakki_y)
             for tag, hx in (("p", HAKKI_SIVU_CM), ("m", -HAKKI_SIVU_CM)):
                 sh, ih = np.polyfit(np.append(yl, hakki_y), np.append(xl, hx), 1)
                 out[f"liuku_x_tee_cm_hakki_{tag}"] = float(sh * tee_cm + ih)
@@ -484,6 +485,30 @@ class DebugComposer:
         # skaalaus ennen kaantoa: (src_w x src_h) -> (video_h x video_w) = (DEBUG_H x video_w) kaantamattomana: leveys DEBUG_H, korkeus video_w
         self._pre_w, self._pre_h = DEBUG_H, self.video_w
 
+    def _geom(self, res, plus_right, W0):
+        """Testi_08_02 t11: liukusuorat (vasen hakki punainen, oikea vihrea) ja merkki (oranssi) kuvapisteina kankaalla.
+        self.project(X, Y) -> (u, v) lahdekuvassa (asetetaan _render_debug_frame:ssa); ilman sita tyhja."""
+        pr = getattr(self, "project", None)
+        if pr is None or "liuku_x_tee_cm_hakki_p" not in res or "tee_y_cm" not in res:
+            return {}
+
+        def cv_(X, Y):
+            u, v = pr(X, Y)
+            return [PANEL_W + v * self.scale, (W0 - 1 - u) * self.scale]
+        tee, hy = res["tee_y_cm"], res.get("hakki_y_cm")
+        if hy is None:
+            return {}
+        vas, oik = ("m", "p") if plus_right is None or bool(plus_right) else ("p", "m")
+        viivat = []
+        for tag, col in ((vas, "#ff2020"), (oik, "#20e020")):
+            xt = res["liuku_x_tee_cm_hakki_" + tag]
+            sl = -np.tan(np.radians(res["liuku_dir_deg_hakki_" + tag]))
+            viivat.append(dict(p=[cv_(xt + sl * (hy - tee), hy), cv_(xt, tee)], c=col))
+        g = dict(viivat=viivat)
+        if res.get("x_straight_at_tee_cm") is not None:
+            g["risti"] = cv_(res["x_straight_at_tee_cm"], tee)
+        return g
+
     def compose(self, base_bgr, labels, header, results, plus_right, now_video_s=None):
         H0, W0 = base_bgr.shape[:2]
         small = cv2.resize(base_bgr, (self._pre_w, self._pre_h), interpolation=cv2.INTER_LINEAR)     # 1080 x 608
@@ -507,7 +532,7 @@ class DebugComposer:
                     break
                 if a_ is not None:
                     self.boxes.append(dict(x=x0 + BOX_GAP, y=yb, w=PANEL_W - 2 * BOX_GAP, h=box_h, ika=float(a_),
-                                           wall=r_.get("t_far_wall")))
+                                           wall=r_.get("t_far_wall"), **self._geom(r_, plus_right, W0)))
             key = tuple((r["stone_id"], r["frame"], a) for r, a in zip(ents, ages))
             if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui (sekuntilaskuri: kerran sekunnissa)
                 self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents, ages, plus_right=plus_right)
