@@ -943,3 +943,16 @@ lisäksi `nointra` (INTRA_PARALLEL=0). C++-moduuli pitää kääntää uudelleen
   joten pelaajat, harjat ja kivet jäävät viivojen eteen.
 * Kustannus: puhelinkuvan piirto kerran sekunnissa omassa säikeessään, n. +3 ms/kuva (OpenCV-operaatiot). Seurantaan ei vaikutusta.
 * Debug-videoon viivoja ei piirretä (ei Alku/Loppu-valintaa).
+
+## t14: puhelimen keskikuva Alku-sekuntia myöhässä
+
+* Puhelinnäkymän keskellä oleva video näytetään **Alku-sekuntia myöhässä**: kun laatikon ikä saavuttaa Alku-arvon, videolla kivi
+  ylittää juuri kaukohoglinen, ja samaan aikaan laatikko korostuu ja liukuviivat piirtyvät.
+* Toteutus: puhelinkuvan videoalue (kääntö + skaalaus + ääriviivat) tallennetaan kerran sekunnissa JPEG:nä rengaspuskuriin
+  kameran kaappausajan (seinäkello) mukaan, `KATSELU_VIIVE_MAX_S` = 180 s (n. 15 Mt). Näytetään uusin kuva, jonka
+  kaappausaika ≤ nyt − Alku. Liikemaski (t13) lasketaan näytettävästä, viivästetystä kuvasta.
+* Videon oikeassa yläkulmassa `viive: N s` = näytettävän kuvan todellinen ikä. Keltainen normaalisti, **punainen** jos kuva on yli
+  1,5 s enemmän myöhässä kuin Alku (esim. käsittely jäljessä enemmän kuin Alku, tai puskurissa ei ole sopivaa kuvaa) — tällöin
+  näytetään uusin saatavilla oleva kuva eikä mikään kaadu. Virheellinen Alku → viive 0.
+* Huom: laatikko syntyy vasta kun kivi ohittaa lähemmän hoglinen (≈ hog-hog-aika, 13–15 s), joten Alku-arvon kannattaa olla sitä suurempi.
+* Debug-videoon ei viivettä.
