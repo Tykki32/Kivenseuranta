@@ -2670,6 +2670,17 @@ DUP_MERGE_FRAMES = int(os.environ.get("DUP_MERGE_FRAMES", "3"))
 TRACK_PROTECT_FORWARD_CM = float(os.environ.get("TRACK_PROTECT_FORWARD_CM", "30"))
 
 
+# Testi_08_02 t4: HAKUn uusi ehdokas hylataan, jos se on HAKU_TAKANA_MIN_CM..HAKU_TAKANA_MAX_CM liikkuvan (vahvistettu,
+# radan suuntaan liikkuva, katso _is_protected_mover) kiven takana (Y suurempi) ja alle HAKU_TAKANA_SIVU_CM sivussa.
+# Live 2026-10-05 14:46 (20 heittoa): 163 vaaraa rataa, 71 % syntyi heiton aikana kiven taakse (mediaani 4 m, 90 % 1,7-11,6 m,
+# sivussa 17 cm) = heittaja ja harjaajat kaukopaassa. Oikea paallekkainen heitto alkoi aina >= 13,8 m edellisen taakse.
+# Saanto 0,5-8 m / 1 m: heittoja 0/20 menisi, vaaria ratoja pois noin puolet. HAKU_TAKANA_MAX_CM=0 = pois.
+HAKU_TAKANA_MIN_CM = float(os.environ.get("HAKU_TAKANA_MIN_CM", "50"))
+HAKU_TAKANA_MAX_CM = float(os.environ.get("HAKU_TAKANA_MAX_CM", "800"))
+HAKU_TAKANA_SIVU_CM = float(os.environ.get("HAKU_TAKANA_SIVU_CM", "100"))
+_HAKU_TAKANA_STAT = [0]
+
+
 def _forward_motion_cm(st):
     """Radan liike radan suuntaan (Y pienenee) viimeisen historiaikkunan aikana, cm (5 ensimmaisen ja 5 viimeisen mediaanit)."""
     h = st.get("position_history") or []
@@ -5331,7 +5342,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_08_02 v8.8-t3 (rengas 10 s; PAIKALLINEN TAYSI RESOLUUTIO: putki 720p, SEURANTA kivien hakualueilla kameran taydella resoluutiolla; t1: stabiloinnin siirto STAB_LEVEYS-levyisesta kuvasta; pohja Testi_08_01 v8.8: live: harvennuksessa ohitettavat kameraruudut grab():lla; kierteet hog-hog-valilla kahvan gradienttipiirteesta, hidastuvuus 0,02 rad/s^2; kahvan vari ja nakyvyys: ympyra kuvassa akselin ylapaassa, sade 2x kahva, netto = pikselit - levyn ellipsi; katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-05)"
+SOFTWARE_VERSION = "Testi_08_02 v8.8-t4 (HAKU: ei uusia ratoja 0,5-8 m liikkuvan heittokiven takana; rengas 10 s; PAIKALLINEN TAYSI RESOLUUTIO: putki 720p, SEURANTA kivien hakualueilla kameran taydella resoluutiolla; t1: stabiloinnin siirto STAB_LEVEYS-levyisesta kuvasta; pohja Testi_08_01 v8.8: live: harvennuksessa ohitettavat kameraruudut grab():lla; kierteet hog-hog-valilla kahvan gradienttipiirteesta, hidastuvuus 0,02 rad/s^2; kahvan vari ja nakyvyys: ympyra kuvassa akselin ylapaassa, sade 2x kahva, netto = pikselit - levyn ellipsi; katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-05)"
 
 
 def _version_string():
@@ -7870,6 +7881,18 @@ def run_pipeline(
                                 math.hypot(bx - nx, by - ny) < NEW_STONE_SAME_SCAN_CM
                                 for nx, ny in new_this_scan
                             )
+                            # Testi_08_02 t4: ehdokas liikkuvan heittokiven takana (heittaja liukuu kiven perassa, harjaajat) -> ei uutta rataa
+                            if not already_tracked and HAKU_TAKANA_MAX_CM > 0:
+                                for _hs in active_stones:
+                                    if not (_hs.get("confirmed") and _is_protected_mover(_hs)):
+                                        continue
+                                    _dy = refined["Y_cm"] - _hs["last_xy"][1]
+                                    if HAKU_TAKANA_MIN_CM < _dy < HAKU_TAKANA_MAX_CM and abs(refined["X_cm"] - _hs["last_xy"][0]) < HAKU_TAKANA_SIVU_CM:
+                                        already_tracked = True
+                                        _HAKU_TAKANA_STAT[0] += 1
+                                        print(f"[frame {frame_index}] HAKU-ehdokas ({refined['X_cm']:.1f}, {refined['Y_cm']:.1f}) hylatty: "
+                                              f"{_dy:.0f} cm liikkuvan heittokiven {_hs['stone_id']} takana")
+                                        break
                             if (
                                 not already_tracked
                                 and EVICT_AT_CAP
@@ -7890,6 +7913,7 @@ def run_pipeline(
                                 already_tracked
                                 or len(active_stones) >= MAX_CONCURRENT_STONES
                             )
+
 
                             if HAKU_LOG:
                                 near = min(
@@ -8659,6 +8683,9 @@ def _finish_live(src, cfg):
     print(f"Kasiteltyja ruutuja {len(st.log)}, puskurin ruutuja yhteensa {st._head}, ohitettu hypyissa {st.skipped} "
           f"({st.skipped / fps:.1f} s), pudotettu (puskuri taynna) {st.dropped}, suurin viive {st.max_lag_frames} ruutua "
           f"({st.max_lag_frames / fps:.1f} s). Lopetuksen syy: {st._stop_reason or '-'}")
+    if HAKU_TAKANA_MAX_CM > 0:
+        print(f"HAKU: liikkuvan heittokiven takana hylattyja ehdokkaita {_HAKU_TAKANA_STAT[0]} "
+              f"({HAKU_TAKANA_MIN_CM:.0f}-{HAKU_TAKANA_MAX_CM:.0f} cm takana, sivussa < {HAKU_TAKANA_SIVU_CM:.0f} cm)")
     if _PAIK_STAT["taysi"] or _PAIK_STAT["720p"]:
         _n = max(1, _PAIK_STAT["alueita"])
         print(f"Paikallinen taysi resoluutio: SEURANTA-ruutuja taydella resoluutiolla {_PAIK_STAT['taysi']}, 720p:na {_PAIK_STAT['720p']} "

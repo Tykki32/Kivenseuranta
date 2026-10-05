@@ -1,3 +1,29 @@
+# Testi_08_02 t4: HAKU ei luo uusia ratoja liikkuvan heittokiven taakse
+
+Live 2026-10-05 14:46 (20 heittoa): seurannan viive kasvoi ruuhkissa (90 % < 4,9 s, max 10 s); viiveen kasvu korreloi
+seurattavien ratojen määrän kanssa (r = 0,62, 100 ruudun viiveellä = putken jonot). 183 vahvistetusta radasta 163 ei ollut
+heittoja: kaikki syntyivät kaukopäähän (Y 28–34 m), 71 % heiton aikana **kiven taakse** (mediaani 4 m, 90 % 1,7–11,6 m,
+sivussa 17 cm, 1–7 s heiton alusta) = heittäjä liukuu kiven perässä + harjaajat. Oikea päällekkäinen heitto alkoi aina
+≥ 13,8 m edellisen kiven taakse ja ≥ 6 s sen jälkeen.
+
+Sääntö: HAKUn uusi ehdokas hylätään, jos se on `HAKU_TAKANA_MIN_CM`–`HAKU_TAKANA_MAX_CM` (50–800 cm) vahvistetun,
+radan suuntaan liikkuvan kiven (`_is_protected_mover`) takana ja alle `HAKU_TAKANA_SIVU_CM` (100 cm) sivussa. Tarkistus
+ennen paikanvarausta (ei poista toista rataa turhaan). `HAKU_TAKANA_MAX_CM=0` = pois.
+
+| MAH00014 (koko video) | ilman sääntöä | säännöllä |
+|---|---|---|
+| vahvistettuja ratoja | 134 | **76** |
+| heittoja | 20 | 20 (hog-tulokset identtiset) |
+| kiviä / SEURANTA-kutsu | 2,20 | **1,53** |
+| SEURANTA ms/kutsu | 19,7 | **16,5** |
+| hylättyjä ehdokkaita | – | 82 |
+
+## Live 14:46 vs MAH00014-tiedostoajo (Testi_08_01 v8.7): samat 20 heittoa
+Live-video on sama harjoitus (kameran 50i-tallenne HDMI:n kautta), alkaa 14,48 s myöhemmin. Kaikki 20 heittoa
+pariutuvat (ajoitus ±0,11 s). Kierteet samat (mediaaniero 0,02, 11 paria), kahvan värit samat. Systemaattiset erot
+(kalibroinnit eri lähteistä): nopeus live −0,028 m/s (kh 0,008), hog-hog −0,016 s, sivusuunta live 3,4 % pienempi
+(merkki 0,966 × MAH, suunta 0,966 ×), X kaukohogilla +3 cm.
+
 # Testi_08_02 t3: täyden resoluution rengas 10 s
 
 Ensimmäinen live-ajo t2:lla (2026-10-05, 14 min, 50p-kamera, 20 heittoa): reaaliaika pysyi (viive 0, ei pudotuksia),
