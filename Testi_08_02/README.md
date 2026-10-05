@@ -1,3 +1,12 @@
+# Testi_08_02 t5: kierteet myös täyden resoluution kuvasta (rinnakkain 720p:n kanssa)
+
+Kun paikallinen täysi resoluutio on käytössä, kahvan kierrepiirre (32×32 gradienttipala) lasketaan myös täysresoluutioisesta
+ruudusta (sama stabilointi + linssikorjaus kuin seurannassa, kahvan ympyrä × 1,5). Keruu `KIERRE_TAYSI_Y_MAX_CM` = 31 m:stä
+(720p: 23 m), koska kahva erottuu kauempaa. Arvio samalla menetelmällä (puolikierroksen toisto, hidastuvuus 0,02 rad/s²).
+Hog-CSV:hen `kierteet_taysi`, `kierrosaika_far_s_taysi`, `kierrosaika_near_s_taysi`, `kierre_r2_taysi`, `kierre_ruutuja_taysi`;
+terminaaliin oma rivi. Paneelissa edelleen 720p:n arvo. `KIERRE_TAYSI=0` = pois.
+0001.mp4 (live-sim): heitto 2: 720p 2,34 kierrosta (R² 0,070), täysi 2,31 (R² 0,052, 306 ruutua); heitto 1: ei arvoa kummallakaan.
+
 # Testi_08_02 t4: HAKU ei luo uusia ratoja liikkuvan heittokiven taakse
 
 Live 2026-10-05 14:46 (20 heittoa): seurannan viive kasvoi ruuhkissa (90 % < 4,9 s, max 10 s); viiveen kasvu korreloi

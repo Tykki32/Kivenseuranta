@@ -300,6 +300,9 @@ def format_lines(res, stone_id=None):
         lines.append(f"merkki (suoran X T-viivalla, hogin jalkeen): {res['x_straight_at_tee_cm']:+.1f} cm")
     if res.get("kierteet") is not None:
         lines.append(f"kierteita hog-hog: {res['kierteet']:.1f} (kierrosaika {res['kierrosaika_far_s']:.1f} s -> {res['kierrosaika_near_s']:.1f} s)")
+    if res.get("kierteet_taysi") is not None:
+        lines.append(f"kierteita hog-hog (taysi resoluutio): {res['kierteet_taysi']:.1f} (kierrosaika {res['kierrosaika_far_s_taysi']:.1f} s -> "
+                     f"{res['kierrosaika_near_s_taysi']:.1f} s)")
     lines.append(f"R_y = {res['R']:.5f}  R_x = {res['R_x']:.5f}  tulo = {res['R_tulo']:.5f}")
     return lines
 

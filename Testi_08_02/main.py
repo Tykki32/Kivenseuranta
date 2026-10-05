@@ -1141,6 +1141,43 @@ def _paik_alusta(calib_result, store, fps):
                 canvas=np.full((H, W, 3), 255, np.uint8), prev=[])
 
 
+def _paik_alue(paik, store, frame_index, Mi, ax, ay, bx, by):
+    """Testi_08_02 t5: stabiloitu + linssikorjattu taysresoluutioinen alue [ay:by, ax:bx] BGR:na tai None (ei puskurissa)."""
+    W, H = paik["W"], paik["H"]
+    ax, ay, bx, by = max(0, ax), max(0, ay), min(W, bx), min(H, by)
+    if bx - ax < 4 or by - ay < 4:
+        return None
+    mx = paik["map1"][ay:by, ax:bx]
+    my = paik["map2"][ay:by, ax:bx]
+    sx = Mi[0, 0] * mx + Mi[0, 1] * my + Mi[0, 2]
+    sy = Mi[1, 0] * mx + Mi[1, 1] * my + Mi[1, 2]
+    rx0 = int(max(0, np.floor(sx.min()) - 2)); rx1 = int(min(W, np.ceil(sx.max()) + 3))
+    ry0 = int(max(0, np.floor(sy.min()) - 2)); ry1 = int(min(H, np.ceil(sy.max()) + 3))
+    if rx1 - rx0 < 2 or ry1 - ry0 < 2:
+        return None
+    roi, ox = store.get_hires_roi(frame_index, rx0, ry0, rx1, ry1)
+    if roi is None:
+        return None
+    return cv2.remap(roi, (sx - ox).astype(np.float32), (sy - ry0).astype(np.float32), cv2.INTER_LINEAR,
+                     borderMode=cv2.BORDER_REPLICATE)
+
+
+def _kierre_piirre_taysi(paik, store, frame_index, stab_M, cx, cy, rp):
+    """Testi_08_02 t5: kierrepiirre (sama kuin _kierre_piirre) taysresoluutioisesta kuvasta. cx, cy, rp 720p-kuvassa."""
+    M = np.asarray(stab_M, dtype=np.float64)[:2].copy()
+    M[:, 2] *= paik["s"]
+    Mi = cv2.invertAffineTransform(M)
+    s_ = paik["s"]
+    X, Y, R = cx * s_, cy * s_, rp * s_
+    ax, ay = int(np.floor(X - R)) - 3, int(np.floor(Y - R)) - 3
+    bx, by = int(np.ceil(X + R)) + 4, int(np.ceil(Y + R)) + 4
+    a0, b0 = max(0, ax), max(0, ay)
+    patch = _paik_alue(paik, store, frame_index, Mi, ax, ay, bx, by)
+    if patch is None:
+        return None
+    return _kierre_piirre(patch, X - a0, Y - b0, R)
+
+
 def _paik_kehys(paik, store, frame_index, stab_M, X0, Y0, hx, hy, R_max, H_total, pose, gain, bias):
     """Seurannan taysresoluutioinen kuva (valkoinen pohja + kivien hakualueet) tai None (ruutua ei puskurissa)."""
     cv_ = paik["canvas"]
@@ -2439,6 +2476,19 @@ def _hog_check(s, frame_index, fps, near_hog, far_hog, overlays, results, frame_
                 res["kierrosaika_near_s"] = kr["kierrosaika_near_s"]
                 res["kierre_r2"] = kr["r2"]
             s.pop("kierre", None)
+            if KIERRE_TAYSI and s.get("kierre_taysi"):
+                try:
+                    krt = _kierre_arvio(s["kierre_taysi"], fps, float(res["t_far_hog_s"]), float(res["t_near_hog_s"]))
+                except Exception as e_:
+                    krt = None
+                    print(f"[kierre] taysi resoluutio: arvio epaonnistui: {e_!r}")
+                if krt is not None:
+                    res["kierteet_taysi"] = krt["kierrokset"]
+                    res["kierrosaika_far_s_taysi"] = krt["kierrosaika_far_s"]
+                    res["kierrosaika_near_s_taysi"] = krt["kierrosaika_near_s"]
+                    res["kierre_r2_taysi"] = krt["r2"]
+                res["kierre_ruutuja_taysi"] = len(s["kierre_taysi"])
+            s.pop("kierre_taysi", None)
         s["hog_result"] = res
         if res.get("ok"):                 # TULOSTETAAN VAIN jos R_y > 0.99, R_x > 0.99 ja R_y * R_x > 0.99 (muuten ei mitaan)
             results.append(res)
@@ -2490,6 +2540,10 @@ KIERRE_HIDASTUVUUS = 0.02             # rad/s^2, kovakoodattu (MAH00014, katso y
 KIERRE_Y_MAX_CM = float(os.environ.get("KIERRE_Y_MAX_CM", "2300"))
 KIERRE_MIN_RUUDUT = 80
 KIERRE_MIN_R2 = float(os.environ.get("KIERRE_MIN_R2", "0.03"))
+# Testi_08_02 t5: kierteet myos taysresoluutioisesta kuvasta (paikallinen taysi resoluutio), rinnakkain 720p:n kanssa.
+# Kahva erottuu taydella resoluutiolla kauempaa -> keruu KIERRE_TAYSI_Y_MAX_CM:sta (oletus 3100 = kaukohogin takaa).
+KIERRE_TAYSI = os.environ.get("KIERRE_TAYSI", "1") == "1"
+KIERRE_TAYSI_Y_MAX_CM = float(os.environ.get("KIERRE_TAYSI_Y_MAX_CM", "3100"))
 _KIERRE_W = np.exp(np.linspace(np.log(2 * np.pi / 14.0), np.log(2 * np.pi / 2.0), 240))   # koko kierros 2-14 s
 
 
@@ -2587,7 +2641,7 @@ def _kahva_hist(frame_u, pose, X, Y, Z, r_cm, piirre=False):
         os.makedirs(_dbg, exist_ok=True)
         cv2.imwrite(os.path.join(_dbg, f"k_{int(Y)}_{int(X)}.png"), crop)
     pv = _kierre_piirre(frame_u, cx, cy, rp) if piirre else None
-    return nz.astype(np.uint8), hist[nz].astype(np.uint16), int(np.count_nonzero(circ)), int(round(levy)), pv
+    return nz.astype(np.uint8), hist[nz].astype(np.uint16), int(np.count_nonzero(circ)), int(round(levy)), pv, (cx, cy, rp)
 
 
 def _kahva_vari_nimi(h):
@@ -2642,7 +2696,8 @@ def _hog_write_csv(results, csv_output):
     cols = ["stone_id", "frame", "R", "R_ennen_suodatusta", "n_kaytetty", "n_pudotettu", "v_far_hog_ms", "decel_ms2", "hog_hog_s", "t_far_hog_s", "t_near_hog_s", "v_near_hog_ms", "a", "b", "c",
             "R_x", "R_x_ennen_suodatusta", "R_tulo", "x_far_hog_cm", "dir_far_hog_deg", "slope_dxdy", "x_straight_at_tee_cm", "px", "qx", "rx",
             "liuku_x_tee_cm", "liuku_dir_deg", "liuku_n", "liuku_rms_cm", "decel_keskim_ms2", "mu_a", "mu_b", "kitka_rms_cm", "kurvi_k_ms2", "kurvi_rms_cm", "x_far_hog_cm_2aste", "dir_far_hog_deg_2aste", "kahva_h", "kahva_vari",
-            "kierteet", "kierrosaika_far_s", "kierrosaika_near_s", "kierre_r2"]
+            "kierteet", "kierrosaika_far_s", "kierrosaika_near_s", "kierre_r2",
+            "kierteet_taysi", "kierrosaika_far_s_taysi", "kierrosaika_near_s_taysi", "kierre_r2_taysi", "kierre_ruutuja_taysi"]
     with open(path, "w", newline="") as hf:
         w = csv.writer(hf); w.writerow(cols)
         for r in results:
@@ -5342,7 +5397,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_08_02 v8.8-t4 (HAKU: ei uusia ratoja 0,5-8 m liikkuvan heittokiven takana; rengas 10 s; PAIKALLINEN TAYSI RESOLUUTIO: putki 720p, SEURANTA kivien hakualueilla kameran taydella resoluutiolla; t1: stabiloinnin siirto STAB_LEVEYS-levyisesta kuvasta; pohja Testi_08_01 v8.8: live: harvennuksessa ohitettavat kameraruudut grab():lla; kierteet hog-hog-valilla kahvan gradienttipiirteesta, hidastuvuus 0,02 rad/s^2; kahvan vari ja nakyvyys: ympyra kuvassa akselin ylapaassa, sade 2x kahva, netto = pikselit - levyn ellipsi; katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-05)"
+SOFTWARE_VERSION = "Testi_08_02 v8.8-t5 (kierteet myos taysresoluutioisesta kuvasta; HAKU: ei uusia ratoja 0,5-8 m liikkuvan heittokiven takana; rengas 10 s; PAIKALLINEN TAYSI RESOLUUTIO: putki 720p, SEURANTA kivien hakualueilla kameran taydella resoluutiolla; t1: stabiloinnin siirto STAB_LEVEYS-levyisesta kuvasta; pohja Testi_08_01 v8.8: live: harvennuksessa ohitettavat kameraruudut grab():lla; kierteet hog-hog-valilla kahvan gradienttipiirteesta, hidastuvuus 0,02 rad/s^2; kahvan vari ja nakyvyys: ympyra kuvassa akselin ylapaassa, sade 2x kahva, netto = pikselit - levyn ellipsi; katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-05)"
 
 
 def _version_string():
@@ -7410,8 +7465,18 @@ def run_pipeline(
                             if KAHVA_SEURANTA and frame_u is not None:
                                 try:
                                     _kp = KIERRE_SEURANTA and refined["Y_cm"] <= KIERRE_Y_MAX_CM and "hog_result" not in s
+                                    _kpt = (KIERRE_SEURANTA and KIERRE_TAYSI and paik is not None and refined["Y_cm"] <= KIERRE_TAYSI_Y_MAX_CM
+                                            and "hog_result" not in s and frame_index > paik.get("alku", 10 ** 12))
                                     _kh = _kahva_hist(frame_u, pose, refined["X_cm"], refined["Y_cm"], live_state["H_total"] + KAHVA_Z_EXTRA_CM,
                                                       live_state["handle_r_frac"] * live_state["R_max"], piirre=_kp)
+                                    if _kh is not None and _kpt:
+                                        _pvt = _kierre_piirre_taysi(paik, live_source.active().store, frame_index + paik["offset"],
+                                                                    stabilization_matrix, *_kh[5])
+                                        if _pvt is not None:
+                                            _klt = s.setdefault("kierre_taysi", [])
+                                            _klt.append((frame_index, _pvt))
+                                            if len(_klt) > 1200:
+                                                del _klt[0]
                                     if _kh is not None:
                                         s.setdefault("kahva", []).append((frame_index,) + _kh[:4])
                                         if _kh[4] is not None:
