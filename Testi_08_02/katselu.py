@@ -142,7 +142,7 @@ const ia=document.getElementById('a'),ib=document.getElementById('b');
 ia.value='25';ib.value='40';
 try{const a0=localStorage.getItem('alku'),b0=localStorage.getItem('loppu');if(a0!==null)ia.value=a0;if(b0!==null)ib.value=b0}catch(e){}
 for(const el of [ia,ib]){el.addEventListener('click',e=>e.stopPropagation());
-  el.addEventListener('input',()=>{try{localStorage.setItem('alku',ia.value);localStorage.setItem('loppu',ib.value)}catch(e){}piirra()})}
+  el.addEventListener('input',()=>{try{localStorage.setItem('alku',ia.value);localStorage.setItem('loppu',ib.value)}catch(e){}piirra();paivita()})}
 // t12: vasenkatinen = vasemman hakin viiva ja luku (punainen), oikeakatinen = oikean (vihrea); valinta myos koneelle paneelin lukuja varten
 const cv=document.getElementById('cv'),co=document.getElementById('co');
 try{const v0=localStorage.getItem('vasen'),o0=localStorage.getItem('oikea');if(v0!==null)cv.checked=v0==='1';if(o0!==null)co.checked=o0==='1'}catch(e){}
@@ -159,13 +159,8 @@ function piirra(){
   const P=q=>[ox+q[0]*s,oy+q[1]*s];
   for(const q of laatikot){if(q.ika>=Math.min(a,b)&&q.ika<=Math.max(a,b)){
     const x=ox+q.x*s,y=oy+q.y*s,w=q.w*s,h=q.h*s;c.fillRect(x,y,w,h);c.strokeRect(x-2.5,y-2.5,w+5,h+5);   // reunus laatikon ulkopuolelle
-    // liukusuorat (vasen hakki punainen, oikea vihrea; valintaruutujen mukaan) ja irroitus (oranssi kolmisakarainen risti)
-    c.save();c.beginPath();c.rect(r.left,r.top,r.width,r.height);c.clip();
-    for(const v of (q.viivat||[])){if((v.s==='v'&&!cv.checked)||(v.s==='o'&&!co.checked))continue;const p0=P(v.p[0]),p1=P(v.p[1]);c.beginPath();c.moveTo(p0[0],p0[1]);c.lineTo(p1[0],p1[1]);
-      c.lineWidth=1.5;c.strokeStyle=v.c;c.stroke()}
-    if(q.risti){const m=P(q.risti),L=9;c.lineWidth=2.5;c.strokeStyle='#ff9900';c.beginPath();
-      for(const d of [-90,30,150]){const t=d*Math.PI/180;c.moveTo(m[0],m[1]);c.lineTo(m[0]+L*Math.cos(t),m[1]+L*Math.sin(t))}c.stroke()}
-    c.restore();c.lineWidth=5;c.strokeStyle='#ff30ff'}}}
+    }}}
+
 window.addEventListener('resize',piirra);k.addEventListener('load',piirra);   // kuvan vaihdon jalkeen koko tiedossa vasta load-tapahtumassa
 let last=-1,busy=false;
 // v7.6: napautus = koko naytto (selaimen osoitepalkki piiloon), uusi napautus palauttaa
@@ -183,7 +178,7 @@ document.body.addEventListener('click',()=>{kokoNaytto();pidaHereilla()});
 async function paivita(){
   if(busy)return;busy=true;
   try{
-    const r=await fetch('tila.json?v='+(cv.checked?1:0)+'&o='+(co.checked?1:0),{cache:'no-store'});const j=await r.json();
+    const r=await fetch('tila.json?v='+(cv.checked?1:0)+'&o='+(co.checked?1:0)+'&a='+encodeURIComponent(ia.value)+'&b='+encodeURIComponent(ib.value),{cache:'no-store'});const j=await r.json();
     let txt=j.tila;
     if(j.kuva<0){txt+=' (kuva alkaa kun seuranta alkaa)'}
     else if(j.kuva!==last){
@@ -226,6 +221,12 @@ class _Handler(BaseHTTPRequestHandler):
                 q = dict(x.split("=", 1) for x in self.path.split("?", 1)[1].split("&") if "=" in x) if "?" in self.path else {}
                 if "v" in q and "o" in q:          # t12: puhelimen vasen-/oikeakatinen-valinta paneelin liukulukuihin
                     srv.nayta = (q["v"] == "1", q["o"] == "1")
+                try:                                # t13: Alku/Loppu -> korostettujen liukuviivat piirretaan koneella
+                    _a, _b = float(q["a"]), float(q["b"])
+                    srv.korostus = (min(_a, _b), max(_a, _b))
+                except (KeyError, ValueError):
+                    if "a" in q:
+                        srv.korostus = None
                 self._send(200, "application/json", json.dumps(srv.status()).encode("utf-8"))
             elif path == "/hereilla.webm":
                 self._send(200, "video/webm", _HEREILLA_WEBM)
@@ -252,6 +253,7 @@ class KatseluServer:
         self._boxes = []          # Testi_08_02 t10: paneelilaatikot (x, y, w, h JPEG-pikseleina + ika) korostusta varten
         self._boxes_t = 0.0
         self.nayta = (True, True)  # t12: (vasenkatinen, oikeakatinen) puhelimen valintaruuduista
+        self.korostus = None       # t13: (alku, loppu) s puhelimesta; liukuviivat korostetuille laatikoille
         self._n = -1
         self._t = 0.0
         self.httpd = ThreadingHTTPServer(("0.0.0.0", self.port), _Handler)
@@ -316,6 +318,7 @@ class KatseluServer:
                 for a in args:                      # t12: valinta paneelin liukulukuihin ennen piirtoa
                     if hasattr(a, "_geom"):
                         a.nayta = self.nayta
+                        a.korostus = self.korostus
                 img = fn(*args)
                 h, w = img.shape[:2]
                 sk = 1.0
