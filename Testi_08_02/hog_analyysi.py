@@ -427,34 +427,41 @@ def liuku_segments(res, plus_right, nayta=(True, True)):
     return out
 
 
-def render_panel(entries, ages=None, plus_right=None, nayta=(True, True)):
-    """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x PANEL_W) kuvan; jokainen heitto omassa laatikossa.
-    ages: sekunnit kaukohoglinen ylityksesta (sama jarjestys), naytetaan kiven ID:n vieressa."""
-    img = np.zeros((DEBUG_H, PANEL_W, 3), np.uint8)
-    box_h = LINE_H * 7 + 2 * BOX_PAD
-    y = BOX_GAP
+# t16: paneelin mitat. PANEELI_NORMAALI = debug-video (ennallaan); PANEELI_PUHELIN = tuplafontti puhelinnakymaan
+# (rivivali hieman tiiviimpi, jotta 3 laatikkoa mahtuu kummallekin puolelle; leveys pisimman rivin mukaan).
+PANEELI_NORMAALI = dict(pw=PANEL_W, lh=LINE_H, bp=BOX_PAD, bg=BOX_GAP, fs=FONT_SCALE, ft=FONT_THICK, ty=20, rt=2)
+PANEELI_PUHELIN = dict(pw=570, lh=44, bp=12, bg=10, fs=2 * FONT_SCALE, ft=3, ty=30, rt=3)
+
+
+def render_panel(entries, ages=None, plus_right=None, nayta=(True, True), L=None):
+    """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x pw) kuvan; jokainen heitto omassa laatikossa.
+    ages: sekunnit kaukohoglinen ylityksesta (sama jarjestys), naytetaan kiven ID:n vieressa. L: paneelin mitat (oletus normaali)."""
+    L = L or PANEELI_NORMAALI
+    pw, lh, bp, bg, fs, ft = L["pw"], L["lh"], L["bp"], L["bg"], L["fs"], L["ft"]
+    img = np.zeros((DEBUG_H, pw, 3), np.uint8)
+    box_h = lh * 7 + 2 * bp
+    y = bg
     for k, res in enumerate(entries):
         if y + box_h > DEBUG_H:
             break
-        cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (45, 45, 45), -1)
-        cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (0, 200, 255), 2)
+        cv2.rectangle(img, (bg, y), (pw - bg, y + box_h), (45, 45, 45), -1)
+        cv2.rectangle(img, (bg, y), (pw - bg, y + box_h), (0, 200, 255), L["rt"])
         _lines = entry_lines(res)
         for i, s in enumerate(_lines):
-            _x = BOX_GAP + BOX_PAD + 4
-            _y = y + BOX_PAD + 20 + i * LINE_H
+            _x = bg + bp + 4
+            _y = y + bp + L["ty"] + i * lh
             if i == 4:
                 for _t, _c in liuku_segments(res, plus_right, nayta):
-                    cv2.putText(img, _t, (_x, _y), FONT, FONT_SCALE, _c, FONT_THICK)
-                    _x += cv2.getTextSize(_t, FONT, FONT_SCALE, FONT_THICK)[0][0]
+                    cv2.putText(img, _t, (_x, _y), FONT, fs, _c, ft)
+                    _x += cv2.getTextSize(_t, FONT, fs, ft)[0][0]
                 continue
             _col = (0, 255, 255) if i == 0 else (kierre_text(res)[1] if i == len(_lines) - 1 else (255, 255, 255))
-            cv2.putText(img, s, (_x, _y), FONT, FONT_SCALE, _col, FONT_THICK)
+            cv2.putText(img, s, (_x, _y), FONT, fs, _col, ft)
         if ages is not None and k < len(ages) and ages[k] is not None:
             txt = f"{ages[k]} s"
-            (tw, _), _ = cv2.getTextSize(txt, FONT, FONT_SCALE, FONT_THICK)
-            cv2.putText(img, txt, (PANEL_W - BOX_GAP - BOX_PAD - 4 - tw, y + BOX_PAD + 20), FONT, FONT_SCALE,
-                        (0, 255, 255), FONT_THICK)
-        y += box_h + BOX_GAP
+            (tw, _), _ = cv2.getTextSize(txt, FONT, fs, ft)
+            cv2.putText(img, txt, (pw - bg - bp - 4 - tw, y + bp + L["ty"]), FONT, fs, (0, 255, 255), ft)
+        y += box_h + bg
     return img
 
 
@@ -485,13 +492,19 @@ import os as _os_env
 
 LIIKE_KYNNYS = int(_os_env.environ.get("KATSELU_LIIKE_KYNNYS", "40"))    # t13: ero taustaan (0-255, suurin kanava) = liikkuva kohde
 VIIVA_BGR = {"v": (32, 32, 255), "o": (32, 224, 32)}
-VIIVE_MAX_S = float(_os_env.environ.get("KATSELU_VIIVE_MAX_S", "180"))     # t14: puhelimen viivastetyn keskikuvan puskuri (s)                       # t13: vasen hakki punainen, oikea vihrea
+VIIVE_MAX_S = float(_os_env.environ.get("KATSELU_VIIVE_MAX_S", "180"))     # t14: puhelimen viivastetyn keskikuvan puskuri (s)
+RISTI_L = 24                                                                # t16: irroitusristin sakaran pituus (px, oli 12)
 
 
 class DebugComposer:
-    def __init__(self, src_w, src_h):
+    def __init__(self, src_w, src_h, puhelin=False):
         self.src_w, self.src_h = int(src_w), int(src_h)
         self.video_w, self.video_h, self.scale, self.total_w = debug_layout(src_w, src_h)
+        # t16: puhelinnakyma - tuplafontti paneeleissa (leveammat paneelit), kivilla ei aariviivoja, ID kiven oikealla puolella
+        self.puhelin = bool(puhelin)
+        self.L = PANEELI_PUHELIN if self.puhelin else PANEELI_NORMAALI
+        self.pw = self.L["pw"]
+        self.total_w = self.video_w + 2 * self.pw
         self.canvas = np.zeros((self.video_h, self.total_w, 3), np.uint8)
         self._key = {"L": None, "R": None}
         # skaalaus ennen kaantoa: (src_w x src_h) -> (video_h x video_w) = (DEBUG_H x video_w) kaantamattomana: leveys DEBUG_H, korkeus video_w
@@ -506,7 +519,7 @@ class DebugComposer:
 
         def cv_(X, Y):
             u, v = pr(X, Y)
-            return [PANEL_W + v * self.scale, (W0 - 1 - u) * self.scale]
+            return [self.pw + v * self.scale, (W0 - 1 - u) * self.scale]
         tee, hy = res["tee_y_cm"], res.get("hakki_y_cm")
         if hy is None:
             return {}
@@ -574,16 +587,16 @@ class DebugComposer:
             for v in g.get("viivat", []):
                 if (v["s"] == "v" and not nayta[0]) or (v["s"] == "o" and not nayta[1]):
                     continue
-                p0 = (int(round(v["p"][0][0] - PANEL_W)), int(round(v["p"][0][1])))
-                p1 = (int(round(v["p"][1][0] - PANEL_W)), int(round(v["p"][1][1])))
+                p0 = (int(round(v["p"][0][0] - self.pw)), int(round(v["p"][0][1])))
+                p1 = (int(round(v["p"][1][0] - self.pw)), int(round(v["p"][1][1])))
                 cv2.line(ov, p0, p1, VIIVA_BGR[v["s"]], 2, cv2.LINE_AA)
                 cv2.line(lm, p0, p1, 255, 4)
                 n += 1
             if g.get("risti") is not None:
-                mx, my = g["risti"][0] - PANEL_W, g["risti"][1]
+                mx, my = g["risti"][0] - self.pw, g["risti"][1]
                 for d in (-90, 30, 150):
                     t = np.radians(d)
-                    q0, q1 = (int(round(mx)), int(round(my))), (int(round(mx + 12 * np.cos(t))), int(round(my + 12 * np.sin(t))))
+                    q0, q1 = (int(round(mx)), int(round(my))), (int(round(mx + RISTI_L * np.cos(t))), int(round(my + RISTI_L * np.sin(t))))
                     cv2.line(ov, q0, q1, (0, 153, 255), 3, cv2.LINE_AA)
                     cv2.line(lm, q0, q1, 255, 5)
                 n += 1
@@ -601,10 +614,15 @@ class DebugComposer:
         import time as _time
         self.boxes = []          # Testi_08_02 t10: laatikoiden paikat ja iat puhelinnakyman korostusta varten
         self.boxes_t = _time.time()
-        box_h = LINE_H * 7 + 2 * BOX_PAD
+        L = self.L
+        box_h = L["lh"] * 7 + 2 * L["bp"]
+        lfs, lft = (0.8, 2) if self.puhelin else (FONT_SCALE, FONT_THICK)
         for (x, y, txt, col) in labels:
             xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))
-            cv2.putText(vid, txt, (max(2, min(self.video_w - 120, xr)), max(14, min(self.video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
+            if self.puhelin:          # t16: (x, y) = kiven oikea reuna kaannetyssa kuvassa, teksti pystysuunnassa keskelle
+                (tw, th), _ = cv2.getTextSize(txt, FONT, lfs, lft)
+                xr, yr = xr + 4, yr + th // 2
+            cv2.putText(vid, txt, (max(2, min(self.video_w - 60, xr)), max(14, min(self.video_h - 4, yr))), FONT, lfs, col, lft)
         cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
         viive = getattr(self, "viive", None)             # t14: puhelin - keskikuva Alku s myohassa (None = ei viivetta, debug-video)
         try:
@@ -630,16 +648,16 @@ class DebugComposer:
         sides = []
         vali = getattr(self, "korostus", None)          # t13: puhelimen Alku..Loppu (s); None -> viivoja ei piirreta
         piirra = []
-        for side, x0 in (("L", 0), ("R", PANEL_W + self.video_w)):
+        for side, x0 in (("L", 0), ("R", self.pw + self.video_w)):
             ents = [r for r in results if throw_side(r, plus_right) == side][::-1]
             ages = [entry_age_s(r, now_video_s) for r in ents]
             sides.append((side, x0, ents, ages))
             for k_, (r_, a_) in enumerate(zip(ents, ages)):
-                yb = BOX_GAP + k_ * (box_h + BOX_GAP)
+                yb = L["bg"] + k_ * (box_h + L["bg"])
                 if yb + box_h > DEBUG_H:
                     break
                 if a_ is not None:
-                    self.boxes.append(dict(x=x0 + BOX_GAP, y=yb, w=PANEL_W - 2 * BOX_GAP, h=box_h, ika=float(a_),
+                    self.boxes.append(dict(x=x0 + L["bg"], y=yb, w=self.pw - 2 * L["bg"], h=box_h, ika=float(a_),
                                            wall=r_.get("t_far_wall")))
                     if vali is not None and vali[0] <= a_ <= vali[1]:
                         piirra.append(self._geom(r_, plus_right, W0))
@@ -647,12 +665,12 @@ class DebugComposer:
             if not vid.flags.writeable or viive is not None:
                 vid = vid.copy()
             self._piirra_viivat(vid, self._liike_maski(vid), piirra)
-        self.canvas[:, PANEL_W:PANEL_W + self.video_w] = vid
+        self.canvas[:, self.pw:self.pw + self.video_w] = vid
         for side, x0, ents, ages in sides:
             nayta = tuple(getattr(self, "nayta", (True, True)))     # t12: puhelimen vasen-/oikeakatinen-valinta
             key = (nayta,) + tuple((r["stone_id"], r["frame"], a) for r, a in zip(ents, ages))
             if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui (sekuntilaskuri: kerran sekunnissa)
-                self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents, ages, plus_right=plus_right, nayta=nayta)
+                self.canvas[:, x0:x0 + self.pw] = render_panel(ents, ages, plus_right=plus_right, nayta=nayta, L=L)
                 self._key[side] = key
         return self.canvas
 

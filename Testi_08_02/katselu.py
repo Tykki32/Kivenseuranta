@@ -21,7 +21,8 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import cv2
 
 KUVA_VALI_S = float(os.environ.get("KATSELU_VALI_S", "1.0"))        # kuinka usein nakyma piirretaan (s)
-KUVA_LEVEYS = int(os.environ.get("KATSELU_LEVEYS", "1100"))          # JPEG-kuvan leveys (px); debug-kuva on 1468 px
+KUVA_KORKEUS = int(os.environ.get("KATSELU_KORKEUS", "810"))        # t16: JPEG-kuvan korkeus (px); nakyma on 1080 px korkea
+TALLENNUS_FPS = float(os.environ.get("KATSELU_TALLENNUS_FPS", "1"))  # t16: tallennetun _katselu.avi:n ruutunopeus (1 = reaaliaika)
 KUVA_LAATU = int(os.environ.get("KATSELU_LAATU", "75"))              # JPEG-laatu
 
 _server = None
@@ -257,6 +258,10 @@ class KatseluServer:
         self.korostus = None       # t13: (alku, loppu) s puhelimesta; liukuviivat korostetuille laatikoille
         self._n = -1
         self._t = 0.0
+        self._tallennus = None        # t16: (polku, cv2.VideoWriter, koko) - lahetetty nakyma talteen
+        self._tallennus_polku = None
+        self._tlock = threading.Lock()
+        self.n_tallennettu = 0
         self.httpd = ThreadingHTTPServer(("0.0.0.0", self.port), _Handler)
         self.httpd.daemon_threads = True
         self.httpd.katselu = self
@@ -324,9 +329,10 @@ class KatseluServer:
                 img = fn(*args)
                 h, w = img.shape[:2]
                 sk = 1.0
-                if w > KUVA_LEVEYS:
-                    sk = KUVA_LEVEYS / float(w)
-                    img = cv2.resize(img, (KUVA_LEVEYS, int(round(h * KUVA_LEVEYS / w))), interpolation=cv2.INTER_AREA)
+                if h > KUVA_KORKEUS:
+                    sk = KUVA_KORKEUS / float(h)
+                    img = cv2.resize(img, (int(round(w * sk)), KUVA_KORKEUS), interpolation=cv2.INTER_AREA)
+                self._tallenna_kuva(img)
                 comp = next((a for a in args if hasattr(a, "boxes")), None)
                 def _sc(b):
                     d = dict(b, x=b["x"] * sk, y=b["y"] * sk, w=b["w"] * sk, h=b["h"] * sk)
@@ -351,12 +357,52 @@ class KatseluServer:
             finally:
                 self._busy = False
 
+    def tallenna(self, polku):
+        """t16: jokainen puhelimelle piirretty kuva tallennetaan yhdeksi ruuduksi videoon (MJPG/AVI: toistettavissa
+        vaikka ohjelma katkeaisi). Tiedosto avataan ensimmaisesta kuvasta."""
+        self._tallennus_polku = polku
+
+    def _tallenna_kuva(self, img):
+        with self._tlock:
+            self._tallenna_kuva_(img)
+
+    def _tallenna_kuva_(self, img):
+        if self._tallennus_polku is None:
+            return
+        try:
+            if self._tallennus is None:
+                h, w = img.shape[:2]
+                vw = cv2.VideoWriter(self._tallennus_polku, cv2.VideoWriter_fourcc(*"MJPG"), TALLENNUS_FPS, (w, h))
+                if not vw.isOpened():
+                    print(f"Katselu: tallennusta ei voitu avata ({self._tallennus_polku})")
+                    self._tallennus_polku = None
+                    return
+                self._tallennus = (vw, (w, h))
+                print(f"Katselu: lahetetty nakyma tallennetaan: {self._tallennus_polku} ({w}x{h}, {TALLENNUS_FPS:g} kuvaa/s)")
+            vw, (w, h) = self._tallennus
+            if img.shape[1] != w or img.shape[0] != h:
+                img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+            vw.write(img)
+            self.n_tallennettu += 1
+        except Exception as e:              # tallennus ei saa kaataa nakymaa
+            print(f"Katselu: tallennus epaonnistui ({e!r})")
+            self._tallennus_polku = None
+
     def stop(self):
         try:
             self.httpd.shutdown()
             self.httpd.server_close()
         except Exception:
             pass
+        with self._tlock:
+            if self._tallennus is not None:
+                try:
+                    self._tallennus[0].release()
+                except Exception:
+                    pass
+                print(f"Katselu: tallennettu {self.n_tallennettu} kuvaa -> {self._tallennus_polku}")
+                self._tallennus = None
+            self._tallennus_polku = None
         if self.n_rendered:
             print(f"Katselu: {self.n_rendered} kuvaa piirretty, {1000.0 * self.t_render / self.n_rendered:.1f} ms/kuva "
                   f"(kerran {KUVA_VALI_S:g} s:ssa)")
