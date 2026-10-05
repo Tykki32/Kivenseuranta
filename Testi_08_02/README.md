@@ -1,3 +1,12 @@
+# Testi_08_02 t6: täyden resoluution kierteet 23 m:stä
+
+Live 2026-10-05 15:34 (t5, 18 heittoa): sääntö "ei uusia ratoja liikkuvan heittokiven taakse" hylkäsi 86 ehdokasta;
+kiviä/SEURANTA-kutsu 2,28 → 1,52, SEURANTA 42,1 → 28,4 ms/kutsu; seurannan viive p90 4,9 → 0,0 s, max 10,1 → 2,8 s.
+Täyden resoluution kierteet: 0/18 arviota (720p: 14/18) – keruu 31 m:stä toi mukaan liian kaukaisia ruutuja (kahva ei vielä
+erotu; lähde 50i-tallenne, kamera lomittaa pois → todellinen tarkkuus liikkeessä pienempi). Testivideolla R² 0,052 (31 m) →
+0,063 (23 m), 720p 0,069. → `KIERRE_TAYSI_Y_MAX_CM` 3100 → 2300. Täyden resoluution hyöty kierteille odotetaan vasta aidolla
+50p-kuvauksella.
+
 # Testi_08_02 t5: kierteet myös täyden resoluution kuvasta (rinnakkain 720p:n kanssa)
 
 Kun paikallinen täysi resoluutio on käytössä, kahvan kierrepiirre (32×32 gradienttipala) lasketaan myös täysresoluutioisesta
