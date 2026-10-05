@@ -3641,8 +3641,35 @@ def _phase_correlate_full_frame(gray_a_full, gray_b_full):
 
 _phase_ref_cache = {}
 
+# ------------------------------------------------------------
+# Testi_08_02: TAYDEN RESOLUUTION KOKEILU. Kun kuva on leveampi kuin STAB_LEVEYS (oletus 1280), stabiloinnin siirto lasketaan
+# pienennetysta kuvasta (INTER_AREA, sama kuin 720p-putkessa) ja skaalataan takaisin taydelle resoluutiolle. Siirron
+# LOYTAMINEN (vaihekorrelaatio, DFT) on stabiloinnin raskas osa; sen KAYTTO (warpAffine/remap vaiheessa B) tehdaan
+# taydella resoluutiolla, kuten HAKU ja SEURANTA. STAB_LEVEYS=0 = vaihekorrelaatio taydella resoluutiolla (vanha tapa).
+# ------------------------------------------------------------
+STAB_LEVEYS = int(os.environ.get("STAB_LEVEYS", "1280"))
+_stab_small_ref = {}
+
 
 def _phase_correlate_cached(ref_gray, gray):
+    h0, w0 = ref_gray.shape[:2]
+    if STAB_LEVEYS > 0 and w0 > STAB_LEVEYS and gray.shape[:2] == (h0, w0):
+        sw = STAB_LEVEYS
+        sh = int(round(h0 * sw / w0 / 2.0)) * 2
+        sh = cv2.getOptimalDFTSize(sh) if cv2.getOptimalDFTSize(sh) % 2 == 0 else sh
+        key = (id(ref_gray), sw, sh)
+        ent = _stab_small_ref.get(key)
+        if ent is None:
+            _stab_small_ref.clear()
+            ent = (cv2.resize(ref_gray, (sw, sh), interpolation=cv2.INTER_AREA), ref_gray)
+            _stab_small_ref[key] = ent
+        g_small = cv2.resize(gray, (sw, sh), interpolation=cv2.INTER_AREA)
+        dx, dy = _phase_correlate_small(ent[0], g_small)
+        return dx * (w0 / sw), dy * (h0 / sh)
+    return _phase_correlate_small(ref_gray, gray)
+
+
+def _phase_correlate_small(ref_gray, gray):
     """Nopea vaihekorrelaatio moodikuvaa (ref_gray) vasten (Testi_03_01): sama tulos kuin
     _phase_correlate_full_frame (virhe < 1e-6 px), mutta referenssin ikkunoitu FFT
     valimuistitetaan ja elementtikohtaiset vaiheet ajetaan C++:ssa (stone_tracker.phase_*).
@@ -5215,7 +5242,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_08_01 v8.8 (live: harvennuksessa ohitettavat kameraruudut grab():lla; kierteet hog-hog-valilla kahvan gradienttipiirteesta, hidastuvuus 0,02 rad/s^2; kahvan vari ja nakyvyys: ympyra kuvassa akselin ylapaassa, sade 2x kahva, netto = pikselit - levyn ellipsi; katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-05)"
+SOFTWARE_VERSION = "Testi_08_02 v8.8-t1 (TAYDEN RESOLUUTION KOKEILU: stabiloinnin siirto STAB_LEVEYS-levyisesta kuvasta, HAKU ja SEURANTA taydella resoluutiolla; pohja Testi_08_01 v8.8: live: harvennuksessa ohitettavat kameraruudut grab():lla; kierteet hog-hog-valilla kahvan gradienttipiirteesta, hidastuvuus 0,02 rad/s^2; kahvan vari ja nakyvyys: ympyra kuvassa akselin ylapaassa, sade 2x kahva, netto = pikselit - levyn ellipsi; katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-05)"
 
 
 def _version_string():

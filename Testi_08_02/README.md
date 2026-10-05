@@ -1,3 +1,37 @@
+# Testi_08_02: haku ja seuranta täydellä resoluutiolla (kokeilu)
+
+Pohja: Testi_08_01 v8.8. Ainoa muutos: kun kuva on leveämpi kuin `STAB_LEVEYS` (oletus 1280), stabiloinnin siirto
+(vaihekorrelaatio) lasketaan 1280-levyiseksi pienennetystä kuvasta ja skaalataan täydelle resoluutiolle. Siirron
+**löytäminen** on stabiloinnin raskas osa; sen **käyttö** (warp vaiheessa B), HAKU ja SEURANTA tehdään täydellä
+resoluutiolla. Tiedostoajo käyttää videon omaa resoluutiota (1920×1080-video → kaikki täydellä resoluutiolla).
+`STAB_LEVEYS=0` = vaihekorrelaatio täydellä resoluutiolla.
+
+## Vertailu: `0001.mp4` (Testivideo-release), 1920×1080 vs 1280×720
+Video on lomitettu (1080i, kampa liikkuvissa kivissä) → lomitus poistettu (ffmpeg yadif, 25p). Sama video pienennettynä
+1280×720:ksi (INTER_AREA, kuten live) vs täysi 1920×1080, molemmat Testi_08_02:lla. Paneelit: ikkunaruudut kuvan oikeassa
+reunassa (kamera eri asennossa kuin MAH-videoissa). Sandbox, 4 ydintä, ajot peräkkäin.
+
+**Seurannan kohina** (paikan hajonta 1 s:n toisen asteen sovituksesta, mediaani; samat 3 heittoa):
+
+| kivi | Y-kohina > 20 m | X-kohina > 20 m | Y-kohina 10–20 m | X-kohina 10–20 m |
+|---|---|---|---|---|
+| 1 | 3,20 → **1,94** cm | 0,49 → **0,33** cm | 0,56 → **0,40** cm | 0,28 → **0,10** cm |
+| 2 | 3,91 → **3,19** cm | 0,64 → **0,40** cm | 0,61 → **0,43** cm | 0,19 → **0,10** cm |
+| 3 | 4,07 → **2,38** cm | 0,54 → **0,36** cm | 1,48 → **1,18** cm | 0,25 → **0,11** cm |
+
+Hog-analyysin sovitusvirheet: Y (kitkamalli) 1,67/1,93/3,17 → 1,08/1,46/2,59 cm, X (kurvimalli) 0,42/0,55/0,41 →
+0,31/0,39/0,25 cm. Seuranta alkaa samassa ruudussa (Y ≈ 33 m) molemmilla. rms_px ennallaan → pikselirajat toimivat sellaisinaan.
+
+**Kalibrointi** täydellä resoluutiolla parempi: pyöreys 0,938 → 0,976, kokovirhe 2,4 → 1,2 %, kaukohoglinen kulma 720p:ssä
+−87,8° (vino) vs 89,7°. Tästä johtuen tulokset siirtyvät systemaattisesti (kaukohogin ylitys +0,2 s, nopeus +0,03 m/s,
+X kaukohogilla +6 cm). Livessä kalibrointi tehdään jo täydellä resoluutiolla (v8.3), joten livessä hyöty on seurannan kohina.
+
+**Nopeus** (sandbox): kokonaisnopeus 46,0 → 27,3 r/s. Vaihe B (warp + varjosuodatus koko kuvalle) 17,1 → 31,3 ms on
+pullonkaula; HAKU 27 → 57 ms/kutsu; SEURANTA kiveä kohden noin +34 %; stabilointi (vaihe A) 4,8 → 6,0 ms (pienennetty).
+Livessä (kannettava: B 17,7 ms, C 32 ms 720p:ssä) koko kuvan täysi resoluutio ei pysyisi 25 fps:ssä, ja live-puskuri
+(≥ 66 s) veisi 1920×1080:lla ~10 GB muistia. → Seuraava askel: täysi resoluutio vain kivien ympäriltä (warp ja seuranta
+paikallisesti), muu putki 720p:nä.
+
 # Testi_08_01 (pohja Testi_07_01 v7.9, testattu toimivaksi)
 
 ## v8.8: kamera 50p + harvennuksen ohitus grab():lla
