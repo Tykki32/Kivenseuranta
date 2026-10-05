@@ -47,17 +47,18 @@ def _time_at(a, b, c, y, t_lo, t_hi):
 # ------------------------------------------------------------------
 # Testi_07_01 v7.3: HIDASTUVUUS KITKAMALLISTA. Kitkakerroin mu(v) = A + B ln(v) (v = hetkellinen nopeus m/s, havaittu muoto),
 # liikeyhtalo dv/dt = -g mu(v). Sovitetaan heiton Y(t)-dataan (samat pisteet kuin toisen asteen sovituksessa) parametrit
-# y0, v0, A, B (Levenberg-Marquardt, numeerinen integrointi RK4). Raportoitava hidastuvuus = g mu(DECEL_REF_V_MS).
+# y0, v0, A (v7.8: B kiintea MU_B) (Levenberg-Marquardt, numeerinen integrointi RK4). Raportoitava hidastuvuus = g mu(DECEL_REF_V_MS).
 # ------------------------------------------------------------------
 G_MS2 = 9.81
 DECEL_REF_V_MS = 1.5          # hidastuvuus ilmoitetaan talla nopeudella
 _FRIC_DT = 0.04               # integrointiaskel (s)
-# v7.7: jos heiton nopeus ei hog-hog-valilla laske lahelle DECEL_REF_V_MS:aa (nopeat heitot, esim. lyonnit 2,5-3,6 m/s), B ei ole
-# datasta maaritettavissa (ekstrapolointi antoi live-ajossa -0,41...+0,93 m/s^2) -> B kiinnitetaan tahan (hitaiden heittojen
-# mediaani: live 2026-10-04 -0,0022, MAH00014 -0,0030) ja sovitetaan vain A. Raja: mallin pienin nopeus valilla > ref + marginaali.
-import os as _os_k
-MU_B_KIINTEA = float(_os_k.environ.get("MU_B_KIINTEA", "-0.0025"))
-B_VAPAA_MARGINAALI_MS = 0.15
+# v7.8: B KIINTEA, KOVAKOODATTU VAKIO (kayttajan paatos: B on oletettavasti lahes vakio). Jokaiselle heitolle sovitetaan vain A
+# (+ alkupaikka ja -nopeus). HUOM mittaukset (yhteissovitus, B yhteinen, A heittokohtainen):
+#   live 2026-10-04 (66 heittoa, myos lyonnit): paras B = -0,0011; MAH00014 (19 painoheittoa): paras B = -0,0027.
+#   B = -0,001 -> hidastuvuus @1,5 m/s: hitaat heitot ero <= 0,4 % (live) / <= 3,9 % (MAH, sovitusvirhe 2,39 -> 2,51 cm);
+#   lyonnit (live) <= 1,2 %. Lyonneilla 1,5 m/s on ekstrapolointia: jos todellinen B olisi MAH:n -0,0027, 3,3 m/s lyonnin
+#   hidastuvuus olisi n. 0,013 m/s^2 (~18 %) liian pieni. Jos jaa/kalibrointi muuttaa B:ta selvasti, arvo paivitetaan tahan.
+MU_B = -0.001
 
 
 def _fric_y(params, tt):
@@ -183,15 +184,12 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=MIN_R, tee_cm=None, min_pro
     # Testi_07_01 v7.3: hidastuvuus kitkamallista mu(v) = A + B ln v nopeudella DECEL_REF_V_MS (vanha keskiarvo talteen vertailuun)
     decel_avg = decel / 100.0
     decel_out = decel_avg
-    # nopeusalue sovitusvalilla (toisen asteen yhtalosta): jos hitainkin nopeus on selvasti yli ref-nopeuden, B kiinnitetaan
-    v_min_ms = min(v(t_hi_y), v(t_lo_y)) / 100.0
-    b_fixed = MU_B_KIINTEA if v_min_ms > DECEL_REF_V_MS + B_VAPAA_MARGINAALI_MS else None
-    fr = fit_log_friction(tt, y, -b / 100.0, decel_avg, fixed_B=b_fixed)
+    fr = fit_log_friction(tt, y, -b / 100.0, decel_avg, fixed_B=MU_B)       # v7.8: B kiintea (MU_B), sovitetaan A
     if fr is not None and fr["rms_cm"] <= 1.5 * out["rms_cm"] + 0.5:
         decel_out = G_MS2 * (fr["A"] + fr["B"] * np.log(DECEL_REF_V_MS))
-        out.update(mu_a=fr["A"], mu_b=fr["B"], kitka_rms_cm=fr["rms_cm"], kitka_b_kiintea=int(b_fixed is not None))
+        out.update(mu_a=fr["A"], mu_b=fr["B"], kitka_rms_cm=fr["rms_cm"])
     else:
-        out.update(mu_a=float("nan"), mu_b=float("nan"), kitka_rms_cm=float("nan"), kitka_b_kiintea=-1)
+        out.update(mu_a=float("nan"), mu_b=float("nan"), kitka_rms_cm=float("nan"))
     out.update(ok_y=True, v_far_hog_ms=v_far / 100.0, decel_ms2=float(decel_out), decel_keskim_ms2=float(decel_avg),
                hog_hog_s=float(t_near - t_far), t_far_hog_s=float(t_far + t0), t_near_hog_s=float(t_near + t0),
                v_near_hog_ms=v(t_near) / 100.0)
