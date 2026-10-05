@@ -1105,6 +1105,89 @@ def refine_geometric_homography_k1(frame, camera_matrix, k1_init, H_init, near_i
 CALIB_TAYSI = os.environ.get("CALIB_TAYSI", "1") == "1"
 
 
+# ------------------------------------------------------------
+# Testi_08_02: SEURANTA PAIKALLISESTI TAYDELLA RESOLUUTIOLLA. Putki (stabilointi, warp, varjosuodatus, HAKU, katselu)
+# toimii 1280x720:ssa kuten ennen. SEURANTA saa kuvan, jossa jokaisen seurattavan kiven hakualue on kasitelty kameran
+# taydella resoluutiolla: alueen pikselit haetaan taysresoluutioisesta raakaruudusta samalla stabiloinnilla (siirto
+# skaalattuna) ja linssikorjauksella (taysresoluutioinen kalibrointi) ja taustasuodatetaan taysresoluutioista moodikuvaa
+# vasten; muu kuva on valkoista (= tausta). Kameramatriisi taydella resoluutiolla. Tulokset ovat senttimetreja kuten ennen.
+# Vaatii live-tilan (kamera tai --live-sim) ja seurantaa suuremman kameran/videon (esim. 1920x1080 -> 1280x720).
+# Jos ruudun taysresoluutioista kuvaa ei enaa ole puskurissa (viive > PAIK_RENGAS_S), ruutu seurataan 720p:na.
+# PAIKALLINEN_TAYSI=0 = pois.
+# ------------------------------------------------------------
+PAIKALLINEN_TAYSI = os.environ.get("PAIKALLINEN_TAYSI", "1") == "1"
+PAIK_RENGAS_S = float(os.environ.get("PAIK_RENGAS_S", "4"))       # taysresoluutioisten ruutujen rengas (s)
+PAIK_MARGINAALI_CM = float(os.environ.get("PAIK_MARGINAALI_CM", "8"))
+PAIK_RMS_SKAALAUS = os.environ.get("PAIK_RMS_SKAALAUS", "1") == "1"   # rms_px / 1,5 ennen Python-puolen tarkistuksia
+_PAIK_STAT = {"taysi": 0, "720p": 0, "alueita": 0, "pikseleita": 0}
+
+
+def _paik_alusta(calib_result, store, fps):
+    """Taysresoluutioisen seurannan tila (tai None)."""
+    c = calib_result["calib"]
+    pose = calib_result["pose"]
+    if "taysi_frame_undistorted" not in c or "K_taysi" not in pose:
+        return None
+    ref = np.ascontiguousarray(c["taysi_frame_undistorted"])
+    H, W = ref.shape[:2]
+    dist = np.array([c["best_k1"], 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    m1, m2 = k94._build_undistort_maps(c["taysi_camera_matrix"], dist, (W, H))
+    # rengas kattaa myos liukuhihnan jonot (vaihe A lukee jopa 2 x PIPE_DEPTH ruutua seurannan edella)
+    store.hires_done = -1
+    store.hires_seuranta = max(int(round(PAIK_RENGAS_S * fps)), 2 * PIPE_DEPTH + 25)
+    return dict(ref=ref, map1=m1, map2=m2, K=pose["K_taysi"], s=W / float(c["image_width"]), W=W, H=H,
+                canvas=np.full((H, W, 3), 255, np.uint8), prev=[])
+
+
+def _paik_kehys(paik, store, frame_index, stab_M, X0, Y0, hx, hy, R_max, H_total, pose, gain, bias):
+    """Seurannan taysresoluutioinen kuva (valkoinen pohja + kivien hakualueet) tai None (ruutua ei puskurissa)."""
+    cv_ = paik["canvas"]
+    for (a, b, c_, d) in paik["prev"]:
+        cv_[a:b, c_:d] = 255
+    paik["prev"] = []
+    paik["patches"] = []
+    M = np.asarray(stab_M, dtype=np.float64)[:2].copy()
+    M[:, 2] *= paik["s"]
+    Mi = cv2.invertAffineTransform(M)
+    W, H = paik["W"], paik["H"]
+    r = R_max + PAIK_MARGINAALI_CM
+    for x0c, y0c, hxc, hyc in zip(X0, Y0, hx, hy):
+        xs = [x0c - hxc - r, x0c + hxc + r]
+        ys = [y0c - hyc - r, y0c + hyc + r]
+        pts = np.array([[x, y, z] for x in xs for y in ys for z in (0.0, H_total + 3.0)], dtype=np.float64)
+        u, v = k9._project_3d(paik["K"], pose["R"], pose["t"], pts)
+        if not (np.all(np.isfinite(u)) and np.all(np.isfinite(v))):
+            continue
+        ax, bx = int(max(0, np.floor(u.min()) - 4)), int(min(W, np.ceil(u.max()) + 5))
+        ay, by = int(max(0, np.floor(v.min()) - 4)), int(min(H, np.ceil(v.max()) + 5))
+        if bx - ax < 4 or by - ay < 4:
+            continue
+        mx = paik["map1"][ay:by, ax:bx]
+        my = paik["map2"][ay:by, ax:bx]
+        sx = Mi[0, 0] * mx + Mi[0, 1] * my + Mi[0, 2]
+        sy = Mi[1, 0] * mx + Mi[1, 1] * my + Mi[1, 2]
+        rx0 = int(max(0, np.floor(sx.min()) - 2)); rx1 = int(min(W, np.ceil(sx.max()) + 3))
+        ry0 = int(max(0, np.floor(sy.min()) - 2)); ry1 = int(min(H, np.ceil(sy.max()) + 3))
+        if rx1 - rx0 < 2 or ry1 - ry0 < 2:
+            continue
+        roi, ox = store.get_hires_roi(frame_index, rx0, ry0, rx1, ry1)
+        if roi is None:
+            return None
+        patch = cv2.remap(roi, (sx - ox).astype(np.float32), (sy - ry0).astype(np.float32), cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_REPLICATE)
+        ref = np.ascontiguousarray(paik["ref"][ay:by, ax:bx])
+        trk = stone_tracker.suppress_shadow_background(
+            np.ascontiguousarray(patch), ref, np.asarray(gain, dtype=np.float64), np.asarray(bias, dtype=np.float64),
+            float(GRANITE_DIFF_THRESHOLD), float(SHADOW_V_DROP_MIN), float(SHADOW_V_DROP_MAX), int(ICE_S_MAX), int(ICE_V_MIN))
+        cv_[ay:by, ax:bx] = trk
+        paik["prev"].append((ay, by, ax, bx))
+        if os.environ.get("PAIK_DEBUG"):
+            paik.setdefault("patches", []).append(patch)
+        _PAIK_STAT["alueita"] += 1
+        _PAIK_STAT["pikseleita"] += (by - ay) * (bx - ax)
+    return cv_
+
+
 def _hires_median(samples, rows=60):
     """Mediaanikuva paloittain (muisti: 25 x 1920x1080 float64 kerralla olisi ~1,2 Gt)."""
     h = samples[0].shape[0]
@@ -1130,9 +1213,13 @@ def _scale_calibration(calib_hi, pose_hi, frame_lo):
         image_width=w_lo, image_height=h_lo,
         near_pts_frame=np.asarray(calib_hi["near_pts_frame"], dtype=np.float64) * s,
         taysi_resoluutio=(calib_hi["image_width"], calib_hi["image_height"]),
+        # Testi_08_02: seurannan paikallista taytta resoluutiota varten
+        taysi_frame_undistorted=calib_hi["frame_undistorted"],
+        taysi_camera_matrix=np.asarray(calib_hi["camera_matrix"], dtype=np.float64),
     )
     pose = dict(pose_hi)
     pose["K"] = np.diag([s, s, 1.0]) @ np.asarray(pose_hi["K"], dtype=np.float64)
+    pose["K_taysi"] = np.asarray(pose_hi["K"], dtype=np.float64)
     return calib, pose
 
 
@@ -5242,7 +5329,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_08_02 v8.8-t1 (TAYDEN RESOLUUTION KOKEILU: stabiloinnin siirto STAB_LEVEYS-levyisesta kuvasta, HAKU ja SEURANTA taydella resoluutiolla; pohja Testi_08_01 v8.8: live: harvennuksessa ohitettavat kameraruudut grab():lla; kierteet hog-hog-valilla kahvan gradienttipiirteesta, hidastuvuus 0,02 rad/s^2; kahvan vari ja nakyvyys: ympyra kuvassa akselin ylapaassa, sade 2x kahva, netto = pikselit - levyn ellipsi; katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-05)"
+SOFTWARE_VERSION = "Testi_08_02 v8.8-t2 (PAIKALLINEN TAYSI RESOLUUTIO: putki 720p, SEURANTA kivien hakualueilla kameran taydella resoluutiolla; t1: stabiloinnin siirto STAB_LEVEYS-levyisesta kuvasta; pohja Testi_08_01 v8.8: live: harvennuksessa ohitettavat kameraruudut grab():lla; kierteet hog-hog-valilla kahvan gradienttipiirteesta, hidastuvuus 0,02 rad/s^2; kahvan vari ja nakyvyys: ympyra kuvassa akselin ylapaassa, sade 2x kahva, netto = pikselit - levyn ellipsi; katselu: naytto pysyy paalla; X-suunta kurvimallista: vakio sivukiihtyvyys; kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-05)"
 
 
 def _version_string():
@@ -6766,15 +6853,46 @@ def run_pipeline(
                         f"{frame_index}, kulunut {time.time() - start_time:.1f} s) - CSV: {csv_output}"
                     )
                     _live = live_source.active()
+                    _paik_offset = 0
                     if _live is not None and LIVE_HYPPY:
                         # Testi_06_01: kalibroinnin aikana kertynyt viive pois - seuranta alkaa uusimmasta ruudusta.
                         # Hyppiville lukijoille ei enaa tarvita pitkaa historiaa -> puskuri pienenee LIVE_TAAKSE_SEURANTA_S:iin.
                         _lag0 = _live.store.lag_frames()
                         _to = _live.store.skip_to_latest(keep_frames=0, new_keep_back=int(LIVE_TAAKSE_SEURANTA_S * fps))
+                        _paik_offset = int(_to) - (frame_index + 1)      # paasilmukan ruutunumero -> puskurin indeksi hypyn jalkeen
                         print(f"Live: hypataan uusimpaan ruutuun (ohitettiin {_lag0} ruutua = {_lag0 / fps:.1f} s kalibroinnin aikana kertynytta viivetta; "
                               f"puskurin indeksi {_to})")
                     if CV_SINGLE_PERSIST and hasattr(stone_tracker, "set_cv_single_thread_persistent"):
                         stone_tracker.set_cv_single_thread_persistent(1)     # v5.12: ei saiepoolin uudelleenluontia joka kutsulla
+                    paik = None
+                    if PAIKALLINEN_TAYSI and _live is not None:
+                        try:
+                            paik = _paik_alusta(calib_result, _live.store, fps)
+                            if paik is not None:
+                                paik["offset"] = _paik_offset
+                                # SEURANNAN siluettitarkistus (C++, kivisaikeissa) projisoi kiven omalla kameramatriisillaan -> taydelle
+                                # resoluutiolle oma asetus (K taysi, pikselimitat x kerroin); vaihdetaan sen mukaan kumpi kuva seurannalle annetaan
+                                paik["sil_lo"] = _sil_cfg if (SEURANTA_SILHOUETTE and SIL_IN_BATCH) else None
+                                paik["sil_hi"] = None
+                                paik["sil_tila"] = "lo"
+                                if paik["sil_lo"] is not None:
+                                    _ps = paik["s"]
+                                    _ref_hi = haku_silhouette.SilhouetteRefiner(
+                                        k9, dict(calib_result["pose"], K=paik["K"]), R_max, H_total, shape_deltas, handle_r_frac,
+                                        max_shift_px=int(round(SEURANTA_SIL_SHIFT_PX * _ps)), k94=k94,
+                                        open_size=int(round(haku_silhouette.OPEN_SIZE * _ps)) | 1,
+                                        band_px=int(round(haku_silhouette.BAND_PX * _ps)))
+                                    paik["sil_hi"] = _ref_hi.batch_config(half=int(round(haku_silhouette.HALF * _ps)),
+                                                                          margin=int(round(haku_silhouette.MASK_MARGIN * _ps)))
+                                paik["alku"] = frame_index          # tama ruutu on luettu ennen hyppya (puskurin indeksi = frame_index)
+                        except Exception as _e_p:
+                            print(f"Paikallinen taysi resoluutio: alustus epaonnistui ({_e_p!r}) -> seuranta 720p:na")
+                            paik = None
+                        if paik is not None:
+                            print(f"SEURANTA paikallisesti taydella resoluutiolla ({paik['W']}x{paik['H']}, kerroin {paik['s']:.3f}; "
+                                  f"rengas {_live.store.hires_seuranta} ruutua)")
+                        else:
+                            print("Paikallinen taysi resoluutio: ei taysresoluutioista kalibrointia -> seuranta 720p:na")
 
                     live_state = {
                         "map1": map1, "map2": map2,
@@ -6853,6 +6971,18 @@ def run_pipeline(
                         print(f"Liukuhihna: stabilointi {STAB_WORKERS} ruudulle rinnan, jonojen syvyys {PIPE_DEPTH}")
 
                 timestamp = frame_index / fps
+                if paik is not None:
+                    live_source.active().store.mark_hires_done(frame_index + paik["offset"] - 1)     # Testi_08_02: vanhemmat pois
+                    if paik.get("tarkistus", 0) < 3 and frame is not None and frame_index > paik["alku"]:
+                        # indeksin tarkistus: puskurin ruutu samalla indeksilla = kasiteltava ruutu
+                        paik["tarkistus"] = paik.get("tarkistus", 0) + 1
+                        _fs = live_source.active().store.get(frame_index + paik["offset"], timeout=0)
+                        _ok_idx = _fs is not None and _fs.shape == frame.shape and np.array_equal(_fs, frame)
+                        print(f"Paikallinen taysi resoluutio: ruutu {frame_index} -> puskurin indeksi {frame_index + paik['offset']}: "
+                              f"{'OK' if _ok_idx else 'EI TASMAA -> pois kaytosta'}")
+                        if not _ok_idx:
+                            live_source.active().store.hires_seuranta = 0
+                            paik = None
                 pose = calib_result["pose"]
                 local_pts_body = live_state["local_pts_body"]
                 local_pts_search = live_state["local_pts_search"]
@@ -7020,14 +7150,46 @@ def run_pipeline(
                         ) if TRACKER_MODE == "ensemble" else None
                     )
                     t_seuranta0 = time.time()
+                    _trk_img, _trk_ref, _trk_K = frame_u_for_tracking, ref_undist_live, pose["K"]
+                    if paik is not None:
+                        _tp0 = time.perf_counter()
+                        try:
+                            _pk = None if frame_index <= paik["alku"] else _paik_kehys(paik, live_source.active().store, frame_index + paik["offset"], stabilization_matrix, X0_arr, Y0_arr,
+                                              half_range_x_arr, half_range_y_arr, live_state["R_max"], live_state["H_total"], pose,
+                                              live_prep.photo_gain, live_prep.photo_bias)
+                        except Exception as _e_p:
+                            print(f"Paikallinen taysi resoluutio: virhe ({_e_p!r}) -> pois kaytosta")
+                            paik, _pk = None, None
+                        _e = _PROF.setdefault("py: paikallinen taysi resoluutio (kivien alueet)", [0.0, 0]); _e[0] += time.perf_counter() - _tp0; _e[1] += 1
+                        _pdbg = os.environ.get("PAIK_DEBUG")
+                        _prng = [int(v) for v in os.environ.get("PAIK_DEBUG_RANGE", "0:99999999").split(":")]
+                        if _pdbg and _pk is not None and paik.get("ndbg", 0) < 60 and frame_index % 4 == 0 and _prng[0] <= frame_index <= _prng[1]:
+                            paik["ndbg"] = paik.get("ndbg", 0) + 1
+                            os.makedirs(_pdbg, exist_ok=True)
+                            for _j, (_a, _b, _c, _d) in enumerate(paik["prev"][:2]):
+                                _fl = cv2.resize(frame_u, (paik["W"], paik["H"]), interpolation=cv2.INTER_CUBIC)[_a:_b, _c:_d]
+                                np.savez(os.path.join(_pdbg, f"r{frame_index}_{_j}.npz"), hi=paik["patches"][_j], lo=_fl)
+                                _lo = cv2.resize(frame_u_for_tracking, (paik["W"], paik["H"]), interpolation=cv2.INTER_LINEAR)[_a:_b, _c:_d]
+                                _rf = paik["ref"][_a:_b, _c:_d]
+                                cv2.imwrite(os.path.join(_pdbg, f"p{frame_index}_{_j}.png"),
+                                            cv2.resize(np.hstack([_pk[_a:_b, _c:_d], _lo, _rf]), None, fx=3, fy=3, interpolation=cv2.INTER_NEAREST))
+                        _want_sil = "hi" if _pk is not None else "lo"
+                        if paik.get("sil_hi") is not None and paik["sil_tila"] != _want_sil:
+                            stone_tracker.set_seuranta_silhouette(*(paik["sil_hi"] if _want_sil == "hi" else paik["sil_lo"]))
+                            paik["sil_tila"] = _want_sil
+                        if _pk is not None:
+                            _trk_img, _trk_ref, _trk_K = _pk, paik["ref"], paik["K"]
+                            _PAIK_STAT["taysi"] += 1
+                        else:
+                            _PAIK_STAT["720p"] += 1
                     batch_results = _seuranta_dispatch(
                         frame_index, [s["stone_id"] for s in seuranta_stones],
                         (
-                            frame_u_for_tracking, ref_undist_live,
+                            _trk_img, _trk_ref,
                             X0_arr, Y0_arr,
                             half_range_x_arr, half_range_y_arr,
                             local_pts_body, local_pts_search,
-                            pose["K"], pose["R"], pose["t"],
+                            _trk_K, pose["R"], pose["t"],
                             k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM,
                             k92.TRACK_SCORE_THRESHOLD,
                             live_state["R_max"], live_state["H_total"],
@@ -7038,6 +7200,32 @@ def run_pipeline(
                         X0_arr, Y0_arr, half_range_x_arr, half_range_y_arr,
                         pred=_seuranta_pred
                     )
+                    _prng = [int(v) for v in os.environ.get("PAIK_DEBUG_RANGE", "0:99999999").split(":")]
+                    if (os.environ.get("PAIK_VERT") and paik is not None and _trk_img is not frame_u_for_tracking and paik.get("nvert", 0) < 200
+                            and _prng[0] <= frame_index <= _prng[1]):
+                        paik["nvert"] = paik.get("nvert", 0) + 1
+                        _lo_res = stone_tracker.track_stones_batch(
+                            frame_u_for_tracking, ref_undist_live, X0_arr, Y0_arr, half_range_x_arr, half_range_y_arr,
+                            local_pts_body, local_pts_search, pose["K"], pose["R"], pose["t"],
+                            k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM, k92.TRACK_SCORE_THRESHOLD,
+                            live_state["R_max"], live_state["H_total"], live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
+                            TRACK_MAX_BACKWARD_CM, haku_seuranta_diff_threshold, locate_mode=_TRACKER_MODE_ID[TRACKER_MODE])
+                        _hi_res = stone_tracker.track_stones_batch(
+                            _trk_img, _trk_ref, X0_arr, Y0_arr, half_range_x_arr, half_range_y_arr,
+                            local_pts_body, local_pts_search, _trk_K, pose["R"], pose["t"],
+                            k92.TRACK_COARSE_STEP_CM, k92.TRACK_FINE_STEP_CM, k92.TRACK_SCORE_THRESHOLD,
+                            live_state["R_max"], live_state["H_total"], live_state["ring_r_frac_guess"], live_state["handle_r_frac"],
+                            TRACK_MAX_BACKWARD_CM, haku_seuranta_diff_threshold, locate_mode=_TRACKER_MODE_ID[TRACKER_MODE])
+                        for _sid, _x0, _y0, _rl, _rh in zip([s_["stone_id"] for s_ in seuranta_stones], X0_arr, Y0_arr, _lo_res, _hi_res):
+                            print(f"VERT f{frame_index} kivi {_sid} ennuste ({_x0:.1f},{_y0:.1f}) | 720: {int(bool(_rl.get('found')))} "
+                                  f"({_rl.get('X_cm', float('nan')):.1f},{_rl.get('Y_cm', float('nan')):.1f}) rms {_rl.get('rms_px')} tarkka {_rl.get('tarkka')} "
+                                  f"| taysi: {int(bool(_rh.get('found')))} ({_rh.get('X_cm', float('nan')):.1f},{_rh.get('Y_cm', float('nan')):.1f}) "
+                                  f"rms {_rh.get('rms_px')} tarkka {_rh.get('tarkka')}")
+                    if paik is not None and _trk_img is not frame_u_for_tracking and PAIK_RMS_SKAALAUS:
+                        # pikseleina annetut rajat (portit, varakeinot) on viritetty 720p:lle -> rms 720p-mittakaavaan
+                        for _r in batch_results:
+                            if isinstance(_r, dict) and _r.get("rms_px") is not None:
+                                _r["rms_px"] = _r["rms_px"] / paik["s"]
                     total_seuranta_time += time.time() - t_seuranta0
                     _e = _PROF.setdefault("py: SEURANTA dispatch+C++ seinakello", [0.0, 0])
                     _e[0] += time.time() - t_seuranta0; _e[1] += 1
@@ -8467,6 +8655,10 @@ def _finish_live(src, cfg):
     print(f"Kasiteltyja ruutuja {len(st.log)}, puskurin ruutuja yhteensa {st._head}, ohitettu hypyissa {st.skipped} "
           f"({st.skipped / fps:.1f} s), pudotettu (puskuri taynna) {st.dropped}, suurin viive {st.max_lag_frames} ruutua "
           f"({st.max_lag_frames / fps:.1f} s). Lopetuksen syy: {st._stop_reason or '-'}")
+    if _PAIK_STAT["taysi"] or _PAIK_STAT["720p"]:
+        _n = max(1, _PAIK_STAT["alueita"])
+        print(f"Paikallinen taysi resoluutio: SEURANTA-ruutuja taydella resoluutiolla {_PAIK_STAT['taysi']}, 720p:na {_PAIK_STAT['720p']} "
+              f"(taysresoluutioinen ruutu ei enaa puskurissa); kiven alueita {_PAIK_STAT['alueita']}, keskimaarin {_PAIK_STAT['pikseleita'] / _n:.0f} px/alue")
     if getattr(src, "n_conv", 0):
         print(f"Kamerasaie (CPU/ruutu): luku {src.cpu_read / max(1, src.n_conv) * 1000:.1f} ms + muunnos/pienennys "
               f"{src.cpu_conv / src.n_conv * 1000:.1f} ms (muunnos: {src.conversion})"
