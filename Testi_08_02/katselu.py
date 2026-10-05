@@ -319,6 +319,7 @@ class KatseluServer:
                     if hasattr(a, "_geom"):
                         a.nayta = self.nayta
                         a.korostus = self.korostus
+                        a.viive = self.korostus[0] if self.korostus is not None else 0.0   # t14: keskikuva Alku s myohassa
                 img = fn(*args)
                 h, w = img.shape[:2]
                 sk = 1.0

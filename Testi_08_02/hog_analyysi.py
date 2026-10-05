@@ -484,7 +484,8 @@ import os as _os_env
 
 
 LIIKE_KYNNYS = int(_os_env.environ.get("KATSELU_LIIKE_KYNNYS", "40"))    # t13: ero taustaan (0-255, suurin kanava) = liikkuva kohde
-VIIVA_BGR = {"v": (32, 32, 255), "o": (32, 224, 32)}                       # t13: vasen hakki punainen, oikea vihrea
+VIIVA_BGR = {"v": (32, 32, 255), "o": (32, 224, 32)}
+VIIVE_MAX_S = float(_os_env.environ.get("KATSELU_VIIVE_MAX_S", "180"))     # t14: puhelimen viivastetyn keskikuvan puskuri (s)                       # t13: vasen hakki punainen, oikea vihrea
 
 
 class DebugComposer:
@@ -520,21 +521,48 @@ class DebugComposer:
             g["risti"] = cv_(res["x_straight_at_tee_cm"], tee)
         return g
 
-    def _liike_maski(self, small):
+    def _liike_maski(self, vid):
         """Testi_08_02 t13: liikkuvat kohteet (ihmiset, kivet, harjat) = ero tyhjan radan taustakuvaan (self.tausta, kalibroinnin
-        moodikuva korjatussa kuvassa) samassa pienessa koossa. 255 = liikkuva kohde (viivaa ei piirreta sen paalle)."""
+        moodikuva korjatussa kuvassa) samassa pienessa, kaannetyssa koossa. 255 = liikkuva kohde (viivaa ei piirreta sen paalle)."""
         t = getattr(self, "tausta", None)
         if t is None:
             return None
         if getattr(self, "_tausta_src", None) is not t:
             self._tausta_src = t
-            self._tausta_small = cv2.resize(t, (self._pre_w, self._pre_h), interpolation=cv2.INTER_AREA)
-        if self._tausta_small.shape != small.shape:
+            self._tausta_small = cv2.rotate(cv2.resize(t, (self._pre_w, self._pre_h), interpolation=cv2.INTER_AREA),
+                                            cv2.ROTATE_90_COUNTERCLOCKWISE)
+        if self._tausta_small.shape != vid.shape:
             return None
-        c0, c1, c2 = cv2.split(cv2.absdiff(small, self._tausta_small))
+        c0, c1, c2 = cv2.split(cv2.absdiff(vid, self._tausta_small))
         _, m = cv2.threshold(cv2.max(cv2.max(c0, c1), c2), LIIKE_KYNNYS, 255, cv2.THRESH_BINARY)
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))       # yksittaiset kohinapikselit pois
         return cv2.dilate(m, np.ones((5, 5), np.uint8))                          # pieni reunavara kohteen ymparille
+
+    def _viivastetty(self, vid, cap_wall, viive):
+        """Testi_08_02 t14: puhelinnakyman keskikuva viive s myohassa (Alku). Videokuvat (kaannetty pieni kuva aariviivoineen)
+        JPEG:na rengaspuskuriin kaappausajan (seinakello) mukaan; palautetaan uusin kuva jonka kaappausaika <= nyt - viive."""
+        import time as _t
+        if not hasattr(self, "_rengas"):
+            self._rengas = []
+        nyt = _t.time()
+        ok, buf = cv2.imencode(".jpg", vid, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if ok:
+            self._rengas.append((nyt if cap_wall is None else float(cap_wall), buf))
+        while self._rengas and self._rengas[0][0] < nyt - VIIVE_MAX_S:
+            self._rengas.pop(0)
+        if viive <= 0 or not self._rengas:
+            return vid, 0.0
+        tavoite = nyt - viive
+        valinta = self._rengas[0]
+        for e in self._rengas:
+            if e[0] <= tavoite:
+                valinta = e
+            else:
+                break
+        if valinta[1] is buf:
+            return vid, nyt - valinta[0]
+        img = cv2.imdecode(valinta[1], cv2.IMREAD_COLOR)
+        return (img if img is not None and img.shape == vid.shape else vid), nyt - valinta[0]
 
     def _piirra_viivat(self, vid, mask_r, gs):
         """t13: korostettujen laatikoiden liukusuorat ja irroitusristi videokuvaan liikkuvien kohteiden ALLE (vain mask_r == 0)."""
@@ -565,7 +593,7 @@ class DebugComposer:
             lm = cv2.bitwise_and(lm, cv2.bitwise_not(mask_r))
         cv2.copyTo(ov, lm, vid)
 
-    def compose(self, base_bgr, labels, header, results, plus_right, now_video_s=None):
+    def compose(self, base_bgr, labels, header, results, plus_right, now_video_s=None, cap_wall=None):
         H0, W0 = base_bgr.shape[:2]
         small = cv2.resize(base_bgr, (self._pre_w, self._pre_h), interpolation=cv2.INTER_LINEAR)     # 1080 x 608
         vid = cv2.rotate(small, cv2.ROTATE_90_COUNTERCLOCKWISE)                                   # 608 x 1080 (leveys x korkeus)
@@ -574,6 +602,31 @@ class DebugComposer:
         self.boxes = []          # Testi_08_02 t10: laatikoiden paikat ja iat puhelinnakyman korostusta varten
         self.boxes_t = _time.time()
         box_h = LINE_H * 7 + 2 * BOX_PAD
+        for (x, y, txt, col) in labels:
+            xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))
+            cv2.putText(vid, txt, (max(2, min(self.video_w - 120, xr)), max(14, min(self.video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
+        cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
+        viive = getattr(self, "viive", None)             # t14: puhelin - keskikuva Alku s myohassa (None = ei viivetta, debug-video)
+        try:
+            viive = None if viive is None else max(0.0, float(viive))
+        except (TypeError, ValueError):
+            viive = 0.0
+        if viive is not None:
+            # t14: uusin kuva jonka kaappausaika <= nyt - Alku. Jos kasittely on jaljessa enemman kuin Alku (tai mika tahansa
+            # virhe), naytetaan uusin kuva; todellinen viive naytetaan aina, punaisena jos se on yli Alku-arvon.
+            _cap = cap_wall
+            try:
+                vid, tod = self._viivastetty(vid, cap_wall, viive)
+            except Exception:
+                tod = None
+            if tod is None or _cap is not None:
+                import time as _tt
+                tod = max(tod or 0.0, _tt.time() - _cap) if _cap is not None else (tod or 0.0)
+            vid = vid.copy()
+            _txt = f"viive: {tod:.0f} s"
+            _col = (0, 0, 255) if tod > viive + 1.5 else (0, 255, 255)
+            (tw, _), _ = cv2.getTextSize(_txt, FONT, 0.8, 2)
+            cv2.putText(vid, _txt, (self.video_w - tw - 10, 30), FONT, 0.8, _col, 2)
         sides = []
         vali = getattr(self, "korostus", None)          # t13: puhelimen Alku..Loppu (s); None -> viivoja ei piirreta
         piirra = []
@@ -591,12 +644,9 @@ class DebugComposer:
                     if vali is not None and vali[0] <= a_ <= vali[1]:
                         piirra.append(self._geom(r_, plus_right, W0))
         if piirra:
-            m = self._liike_maski(small)
-            self._piirra_viivat(vid, None if m is None else cv2.rotate(m, cv2.ROTATE_90_COUNTERCLOCKWISE), piirra)
-        for (x, y, txt, col) in labels:
-            xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))
-            cv2.putText(vid, txt, (max(2, min(self.video_w - 120, xr)), max(14, min(self.video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
-        cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
+            if not vid.flags.writeable or viive is not None:
+                vid = vid.copy()
+            self._piirra_viivat(vid, self._liike_maski(vid), piirra)
         self.canvas[:, PANEL_W:PANEL_W + self.video_w] = vid
         for side, x0, ents, ages in sides:
             nayta = tuple(getattr(self, "nayta", (True, True)))     # t12: puhelimen vasen-/oikeakatinen-valinta
