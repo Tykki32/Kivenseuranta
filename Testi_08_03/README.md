@@ -139,9 +139,9 @@ Samat ajot Testi_08_02:lla ja Testi_08_03:lla, CSV:t verrattu riveittäin:
 | Ajo | Tulos |
 |---|---|
 | `MAH00014.mp4 --no-debug` (Python-jako, vanhat .so) | sijainti-, raaka-, hog- ja kahva-CSV identtiset |
-| `MAH00014.mp4 --no-debug` (uudet C++-moduulit) | VERTAILU_MAH |
-| live-simulaatio 1080p (`--live-sim`, täysi resoluutio) | VERTAILU_SIM1080 |
-| live-simulaatio + `--katselu` | VERTAILU_SIM |
+| `MAH00014.mp4 --no-debug` (uudet C++-moduulit) | sijainti-, raaka-, hog- ja kahva-CSV identtiset (76 rataa, 20 hog-analyysiä) |
+| live-simulaatio 1080p (`--live-sim`, täysi resoluutio) | samat heitot ja hog-analyysit; pienet erot kuten Testi_08_02:lla itsellään (täyden resoluution rengas riippuu ajoituksesta, kaksi 08_02-ajoa eroavat yhtä paljon) |
+| live-simulaatio + `--katselu` | sijainti-, raaka-, hog- ja kahva-CSV identtiset |
 
 GPU-vaihe B testattiin OpenCL-CPU-toteutuksella (pocl, `GPU_LAITE=cpu`): uusi ydin antaa bitilleen saman tuloksen kuin
 Testi_08_02:n ydin ja CPU-polku.
