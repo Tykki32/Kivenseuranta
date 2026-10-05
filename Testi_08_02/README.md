@@ -1,3 +1,13 @@
+# Testi_08_02 t9: liuku hakista
+
+Liu'un suoran sovitukseen (data heiton alusta kaukohog + 1 m asti) lisätään lähtöpisteeksi hakki: 1,83 m takarajan takana
+(takaraja 1,83 m kaukaisen T-viivan takana, T-viiva 6,40 m kaukohogin takana) ja 15 cm keskiviivasta. Lasketaan kahdesti:
+hakki X = +15 cm ja X = −15 cm. Paneelin rivi `liuku:` näyttää ensin **vasemman** hakin (käännetyssä videossa, kuten
+paneelien puolet) mukaan lasketun arvon **punaisella** ja sitten **oikean** hakin arvon **vihreällä**. CSV:hen
+`liuku_x_tee_cm_hakki_p/_m` (X = +15 / −15) ja `liuku_dir_deg_hakki_p/_m`; vanha `liuku_x_tee_cm` ennallaan.
+Huom: hakki on n. 6–7 m ensimmäisestä havainnosta, joten se ohjaa suoran suuntaa voimakkaasti: 30 cm ero hakkien välillä
+→ noin 100 cm ero lähemmällä T-viivalla (MAH00014 kivi 55: −116 / −18 cm, ilman hakkia −109 cm).
+
 # Testi_08_02 t7: paneelin kierteet värikoodattuina
 
 Paneelin rivi `kierteita:` näyttää täyden resoluution arvon **vihreällä**, jos se on saatu; muuten 720p-arvon **punaisella**;
