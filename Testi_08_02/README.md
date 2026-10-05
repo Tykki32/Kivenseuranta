@@ -963,3 +963,16 @@ lisäksi `nointra` (INTRA_PARALLEL=0). C++-moduuli pitää kääntää uudelleen
   tyhjennettiin eikä piirretty ennen kuvan latautumista (puhelimessa hitaampi purku → näkyvä välähdys).
 * Korjaus: kuvan koko otetaan talteen esiladatusta kuvasta ja muistetaan; korostus piirretään aina.
 * Testi (Playwright, jokainen näyttöruutu, CPU 6× hidastettuna): ennen 18 tyhjää ruutua / 15 s (joka kuvanvaihdossa), jälkeen 0.
+
+## t16: puhelinnäkymä - ID kiven vieressä, tuplafontti, iso risti, tallennus
+
+* Puhelinnäkymässä kiviä **ei ympyröidä**; kiven ID-numero kulkee kiven **oikealla puolella** (kääntyneessä kuvassa),
+  värinä seurannan tila (vihreä/oranssi/punainen/keltainen kuten ennen). Debug-video ennallaan.
+* Irroitusristin sakarat **2× pidemmät** (12 → 24 px), paksuus ennallaan.
+* Laatikoiden fontti **2×** (0,6 → 1,2) puhelinnäkymässä. Paneeli levenee 430 → 570 px; riviväli 44 px, jotta
+  **3 laatikkoa** mahtuu kummallekin puolelle (ennen 5). Näkymä 1468 → 1748 px leveä, joten se täyttää vaakasuuntaisen
+  puhelimen näytön paremmin; JPEG skaalataan nyt korkeuden mukaan (`KATSELU_KORKEUS` = 810 px).
+* **Tallennus:** jokainen puhelimelle piirretty kuva tallennetaan yhdeksi ruuduksi videoon `<nimi>_katselu.avi`
+  (CSV:n vieressä, MJPG — toistettavissa vaikka ohjelma katkeaisi). Oletuksena 1 kuva/s eli toistuu reaaliajassa
+  (`KATSELU_TALLENNUS_FPS`, esim. 25 → 25× nopeus). Ruudun yläreunassa `frame`/`t` ja kivien ID:t → heitot löytyvät CSV:stä.
+  Koko n. 0,3–0,6 Gt tunnissa.
