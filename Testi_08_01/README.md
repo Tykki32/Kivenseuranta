@@ -1,6 +1,23 @@
 # Testi_08_01 (pohja Testi_07_01 v7.9, testattu toimivaksi)
 
-## v8.1 (KESKEN): keskiviiva kalibrointiin koko radan matkalta
+## v8.2: k1 keskiviivan suoruudesta (kokeiltu, oletuksena pois) + täyden resoluution vertailu
+`CALIB_K1_JOINT=1`: linssin k1 sovitetaan yhdessä homografian kanssa (kaikki rajoitepisteet raakakuvan koordinaateissa).
+Tulos: k1 jäi ~0:aan (MAH00014 −0,003) ja heilui kierrosten välillä; keskiviivan ~0,5–1 cm taipuma kaukopäässä ei poistunut →
+ei säteittäistä vääristymää → oletus pois.
+
+Täysi resoluutio, video `00011 - Trim.mp4` (1920×1080, 40 s; moodikuva 25 ruudun mediaanista, ilman stabilointia), sama kuva
+kalibroituna 1280×720:ksi pienennettynä vs täytenä:
+
+| | 1280×720 | 1920×1080 |
+|---|---|---|
+| lähipesän RMS | 5,63 cm | 5,20 cm |
+| pyöreys / kokovirhe | 1,000 / 4,0 % | 0,994 / 3,5 % |
+| keskiviivan rms (kalibroinnin oma mittaus, k1 vapaa) | 0,41 cm | 0,37 cm |
+
+Taipuman muoto on sama molemmilla resoluutioilla. HUOM 00011:n moodikuva on heikko (vain 40 s, pesässä kiviä koko ajan →
+lähipesän RMS 5 cm, MAH00014:ssä 1,5 cm).
+
+## v8.1: keskiviiva kalibrointiin koko radan matkalta
 Kalibroinnin sivusuunnan nolla määräytyi kahden pesän keskipisteestä; MAH00014:n moodikuvassa keskiviiva oli kentän koordinaateissa
 −1,0…−2,8 cm (kaukohogilla taittuen). Nyt geometrisen tarkennuksen jokaisella kierroksella keskiviivan pisteet haetaan
 top-down-kuvasta 20 cm välein koko radalta (tumma laakso ±15 cm X = 0:sta, leveys ≤ 16 cm, keskikohta painotettuna; poikkeavat
