@@ -1,5 +1,13 @@
 # Testi_07_01 (pohja Testi_06_01 v6.20)
 
+## v7.7: kitkamalli nopeille heitoille (B kiinnitetty)
+Live-ajossa 2026-10-04 (66 hog-tulosta) nopeiden heittojen (2,5–3,6 m/s kaukohogilla, lyönnit) hidastuvuus kitkamallista oli
+järjetön (−0,41…+0,93 m/s²): kivi ei hog-hog-välillä hidastu lähellekään 1,5 m/s:a, joten B ja arvo 1,5 m/s:ssa ovat
+ekstrapolointia. Nyt jos hitainkin nopeus sovitusvälillä on > 1,65 m/s, B kiinnitetään arvoon `MU_B_KIINTEA` (−0,0025;
+hitaiden heittojen mediaani: live −0,0022, MAH00014 −0,0030) ja sovitetaan vain A. Hog-CSV:n `kitka_b_kiintea` = 1 näille.
+Synteettinen testi (tosi A=0,0085, B=−0,003): hidas heitto 0,0715 (tosi 0,0715), lyönti 3,5 m/s 0,0659 (tosi 0,0715; vanha
+keskiarvo 0,0464). MAH00014: ei muutoksia (kaikki heitot hitaita).
+
 ## v7.6: puhelinnäkymä koko näytölle napautuksella
 Napauta kuvaa → sivu menee koko näytön tilaan (selaimen osoitepalkki ja järjestelmäpalkit piiloon, myös Firefox Androidissa);
 uusi napautus palauttaa. Alareunan tilarivissä vihje "napauta = koko näyttö", kun ei olla koko näytössä. Sivu ei vierity.
