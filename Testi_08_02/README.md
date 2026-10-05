@@ -1,3 +1,10 @@
+# Testi_08_02 t10: puhelinnäkymän korostus iän mukaan
+
+Katselusivun alapalkissa kentät **Alku** ja **Loppu** (sekunteja). Paneelilaatikot, joiden ikä (sekunteja kaukohogin
+ylityksestä, sama luku kuin laatikon oikeassa yläkulmassa) on välillä Alku–Loppu, korostetaan violetilla reunalla ja
+taustalla. Korostus piirretään selaimessa kuvan päälle ja päivittyy kerran sekunnissa; arvot muistetaan puhelimessa.
+Tyhjä kenttä = ei korostusta. `tila.json` sisältää nyt laatikoiden paikat (`laatikot`).
+
 # Testi_08_02 t9: liuku hakista
 
 Liu'un suoran sovitukseen (data heiton alusta kaukohog + 1 m asti) lisätään lähtöpisteeksi hakki: 1,83 m takarajan takana

@@ -126,12 +126,30 @@ _PAGE = """<!doctype html>
  :fullscreen #k{height:calc(100vh - 30px)}
  #t{position:fixed;left:0;right:0;bottom:0;padding:6px 10px;background:rgba(0,0,0,.7)}
  #h{position:fixed;right:0;bottom:0;width:2px;height:2px;opacity:0.01;pointer-events:none}
+ #o{position:fixed;left:0;top:0;pointer-events:none}
+ #t input{width:3.2em;font:inherit;background:#222;color:#fff;border:1px solid #666;border-radius:3px;padding:1px 3px;margin:0 6px 0 2px}
 </style></head><body>
 <img id="k" alt="">
-<div id="t">Yhdistetaan...</div>
+<canvas id="o"></canvas>
+<div id="t">Alku:<input id="a" type="number" inputmode="numeric" min="0">Loppu:<input id="b" type="number" inputmode="numeric" min="0"><span id="s">Yhdistetaan...</span></div>
 <video id="h" muted loop playsinline preload="auto"><source src="hereilla.webm" type="video/webm"><source src="hereilla.mp4" type="video/mp4"></video>
 <script>
-const k=document.getElementById('k'),t=document.getElementById('t');
+const k=document.getElementById('k'),t=document.getElementById('s'),o=document.getElementById('o');
+const ia=document.getElementById('a'),ib=document.getElementById('b');
+// Testi_08_02 t10: korostus - paneelilaatikot joiden ika (s kaukohogin ylityksesta) on Alku..Loppu
+try{ia.value=localStorage.getItem('alku')||'';ib.value=localStorage.getItem('loppu')||''}catch(e){}
+for(const el of [ia,ib]){el.addEventListener('click',e=>e.stopPropagation());
+  el.addEventListener('input',()=>{try{localStorage.setItem('alku',ia.value);localStorage.setItem('loppu',ib.value)}catch(e){}piirra()})}
+let laatikot=[];
+function piirra(){
+  const W=window.innerWidth,H=window.innerHeight;o.width=W;o.height=H;const c=o.getContext('2d');c.clearRect(0,0,W,H);
+  const a=parseFloat(ia.value),b=parseFloat(ib.value);if(isNaN(a)||isNaN(b)||!k.naturalWidth)return;
+  const r=k.getBoundingClientRect(),s=Math.min(r.width/k.naturalWidth,r.height/k.naturalHeight);
+  const ox=r.left+(r.width-k.naturalWidth*s)/2,oy=r.top+(r.height-k.naturalHeight*s)/2;
+  c.lineWidth=5;c.strokeStyle='#ff30ff';c.fillStyle='rgba(255,48,255,0.18)';
+  for(const q of laatikot){if(q.ika>=Math.min(a,b)&&q.ika<=Math.max(a,b)){
+    const x=ox+q.x*s,y=oy+q.y*s,w=q.w*s,h=q.h*s;c.fillRect(x,y,w,h);c.strokeRect(x+2,y+2,w-4,h-4)}}}
+window.addEventListener('resize',piirra);
 let last=-1,busy=false;
 // v7.6: napautus = koko naytto (selaimen osoitepalkki piiloon), uusi napautus palauttaa
 function kokoNaytto(){const d=document,e=d.documentElement;
@@ -155,6 +173,7 @@ async function paivita(){
       await new Promise(res=>{const im=new Image();im.onload=()=>{k.src=im.src;res()};im.onerror=res;
         im.src='kuva.jpg?n='+j.kuva});
       last=j.kuva}
+    laatikot=j.laatikot||[];piirra();
     if(j.ika>3)txt+=' - kuva '+Math.round(j.ika)+' s vanha';
     if(!(document.fullscreenElement||document.webkitFullscreenElement))txt+=' \u00b7 napauta = koko n\u00e4ytt\u00f6';
     if(hereilla)txt+=' \u00b7 '+hereilla;
@@ -210,6 +229,8 @@ class KatseluServer:
         self._lock = threading.Lock()
         self._state = "Kaynnistyy"
         self._jpg = None
+        self._boxes = []          # Testi_08_02 t10: paneelilaatikot (x, y, w, h JPEG-pikseleina + ika) korostusta varten
+        self._boxes_t = 0.0
         self._n = -1
         self._t = 0.0
         self.httpd = ThreadingHTTPServer(("0.0.0.0", self.port), _Handler)
@@ -234,7 +255,11 @@ class KatseluServer:
 
     def status(self):
         with self._lock:
-            return {"tila": self._state, "kuva": self._n, "ika": (time.time() - self._t) if self._n >= 0 else None}
+            now = time.time()
+            lt = [dict(x=b["x"], y=b["y"], w=b["w"], h=b["h"],
+                       ika=int(now - b["wall"]) if b.get("wall") is not None else int(b["ika"] + (now - self._boxes_t)))
+                  for b in self._boxes]
+            return {"tila": self._state, "kuva": self._n, "ika": (now - self._t) if self._n >= 0 else None, "laatikot": lt}
 
     def latest(self):
         with self._lock:
@@ -269,12 +294,18 @@ class KatseluServer:
                 fn, args = job
                 img = fn(*args)
                 h, w = img.shape[:2]
+                sk = 1.0
                 if w > KUVA_LEVEYS:
+                    sk = KUVA_LEVEYS / float(w)
                     img = cv2.resize(img, (KUVA_LEVEYS, int(round(h * KUVA_LEVEYS / w))), interpolation=cv2.INTER_AREA)
+                comp = next((a for a in args if hasattr(a, "boxes")), None)
+                boxes = [dict(b, x=b["x"] * sk, y=b["y"] * sk, w=b["w"] * sk, h=b["h"] * sk) for b in getattr(comp, "boxes", [])]
+                boxes_t = getattr(comp, "boxes_t", time.time())
                 ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, KUVA_LAATU])
                 if ok:
                     with self._lock:
                         self._jpg = buf.tobytes()
+                        self._boxes, self._boxes_t = boxes, boxes_t
                         self._n += 1
                         self._t = time.time()
                     self.n_rendered += 1
