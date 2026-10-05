@@ -374,7 +374,16 @@ def entry_lines(res):
             f"hog-hog: {res['hog_hog_s']:.2f} s",
             f"liuku: {res['liuku_x_tee_cm']:+.1f} cm" if "liuku_x_tee_cm" in res else "liuku: -",
             f"merkki: {res.get('x_straight_at_tee_cm', float('nan')):+.1f} cm",
-            f"kierteita: {res['kierteet']:.1f}" if res.get("kierteet") is not None else "kierteita: -"]
+            kierre_text(res)[0]]
+
+
+def kierre_text(res):
+    """Testi_08_02 t7: (teksti, vari BGR). Taysi resoluutio -> vihrea; muuten 720p-arvo punaisella; ei arvoa -> valkoinen."""
+    if res.get("kierteet_taysi") is not None:
+        return f"kierteita: {res['kierteet_taysi']:.1f}", (0, 220, 0)
+    if res.get("kierteet") is not None:
+        return f"kierteita: {res['kierteet']:.1f}", (0, 0, 255)
+    return "kierteita: -", (255, 255, 255)
 
 
 def entry_age_s(res, now_video_s=None):
@@ -399,9 +408,10 @@ def render_panel(entries, ages=None):
             break
         cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (45, 45, 45), -1)
         cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (0, 200, 255), 2)
-        for i, s in enumerate(entry_lines(res)):
-            cv2.putText(img, s, (BOX_GAP + BOX_PAD + 4, y + BOX_PAD + 20 + i * LINE_H), FONT, FONT_SCALE,
-                        (0, 255, 255) if i == 0 else (255, 255, 255), FONT_THICK)
+        _lines = entry_lines(res)
+        for i, s in enumerate(_lines):
+            _col = (0, 255, 255) if i == 0 else (kierre_text(res)[1] if i == len(_lines) - 1 else (255, 255, 255))
+            cv2.putText(img, s, (BOX_GAP + BOX_PAD + 4, y + BOX_PAD + 20 + i * LINE_H), FONT, FONT_SCALE, _col, FONT_THICK)
         if ages is not None and k < len(ages) and ages[k] is not None:
             txt = f"{ages[k]} s"
             (tw, _), _ = cv2.getTextSize(txt, FONT, FONT_SCALE, FONT_THICK)
