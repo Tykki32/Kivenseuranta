@@ -52,6 +52,12 @@ def _time_at(a, b, c, y, t_lo, t_hi):
 G_MS2 = 9.81
 DECEL_REF_V_MS = 1.5          # hidastuvuus ilmoitetaan talla nopeudella
 _FRIC_DT = 0.04               # integrointiaskel (s)
+# v7.7: jos heiton nopeus ei hog-hog-valilla laske lahelle DECEL_REF_V_MS:aa (nopeat heitot, esim. lyonnit 2,5-3,6 m/s), B ei ole
+# datasta maaritettavissa (ekstrapolointi antoi live-ajossa -0,41...+0,93 m/s^2) -> B kiinnitetaan tahan (hitaiden heittojen
+# mediaani: live 2026-10-04 -0,0022, MAH00014 -0,0030) ja sovitetaan vain A. Raja: mallin pienin nopeus valilla > ref + marginaali.
+import os as _os_k
+MU_B_KIINTEA = float(_os_k.environ.get("MU_B_KIINTEA", "-0.0025"))
+B_VAPAA_MARGINAALI_MS = 0.15
 
 
 def _fric_y(params, tt):
@@ -81,10 +87,12 @@ def _fric_y(params, tt):
     return y0 - 100.0 * np.interp(tt, ts, pos)
 
 
-def fit_log_friction(tt, y, v0_ms, decel0_ms2, iters=40):
-    """Palauttaa dict(A, B, y0_cm, v0_ms, rms_cm) tai None. tt: s (alkaen 0), y: cm."""
-    p = np.array([float(y[0]), float(v0_ms), max(1e-4, float(decel0_ms2) / G_MS2), 0.0])
+def fit_log_friction(tt, y, v0_ms, decel0_ms2, iters=40, fixed_B=None):
+    """Palauttaa dict(A, B, y0_cm, v0_ms, rms_cm) tai None. tt: s (alkaen 0), y: cm. fixed_B: B kiinnitetty (sovitetaan y0, v0, A)."""
+    nb = 0.0 if fixed_B is None else float(fixed_B)
+    p = np.array([float(y[0]), float(v0_ms), max(1e-4, float(decel0_ms2) / G_MS2 - nb * np.log(max(v0_ms, 0.2))), nb])
     steps = np.array([0.5, 0.002, 1e-5, 1e-5])
+    npar = 4 if fixed_B is None else 3
 
     def resid(q):
         m = _fric_y(q, tt)
@@ -95,8 +103,8 @@ def fit_log_friction(tt, y, v0_ms, decel0_ms2, iters=40):
         return None
     cost = float(r @ r); lam = 1e-3
     for _ in range(iters):
-        J = np.empty((len(y), 4))
-        for j in range(4):
+        J = np.empty((len(y), npar))
+        for j in range(npar):
             q = p.copy(); q[j] += steps[j]
             rj = resid(q)
             if rj is None:
@@ -109,6 +117,8 @@ def fit_log_friction(tt, y, v0_ms, decel0_ms2, iters=40):
                 d = -np.linalg.solve(JtJ + lam * np.diag(np.diag(JtJ) + 1e-12), g)
             except np.linalg.LinAlgError:
                 lam *= 10; continue
+            if npar < 4:
+                d = np.concatenate([d, [0.0]])
             rn = resid(p + d)
             if rn is not None and float(rn @ rn) < cost:
                 p = p + d; r = rn; cost_new = float(rn @ rn)
@@ -173,12 +183,15 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=MIN_R, tee_cm=None, min_pro
     # Testi_07_01 v7.3: hidastuvuus kitkamallista mu(v) = A + B ln v nopeudella DECEL_REF_V_MS (vanha keskiarvo talteen vertailuun)
     decel_avg = decel / 100.0
     decel_out = decel_avg
-    fr = fit_log_friction(tt, y, -b / 100.0, decel_avg)
+    # nopeusalue sovitusvalilla (toisen asteen yhtalosta): jos hitainkin nopeus on selvasti yli ref-nopeuden, B kiinnitetaan
+    v_min_ms = min(v(t_hi_y), v(t_lo_y)) / 100.0
+    b_fixed = MU_B_KIINTEA if v_min_ms > DECEL_REF_V_MS + B_VAPAA_MARGINAALI_MS else None
+    fr = fit_log_friction(tt, y, -b / 100.0, decel_avg, fixed_B=b_fixed)
     if fr is not None and fr["rms_cm"] <= 1.5 * out["rms_cm"] + 0.5:
         decel_out = G_MS2 * (fr["A"] + fr["B"] * np.log(DECEL_REF_V_MS))
-        out.update(mu_a=fr["A"], mu_b=fr["B"], kitka_rms_cm=fr["rms_cm"])
+        out.update(mu_a=fr["A"], mu_b=fr["B"], kitka_rms_cm=fr["rms_cm"], kitka_b_kiintea=int(b_fixed is not None))
     else:
-        out.update(mu_a=float("nan"), mu_b=float("nan"), kitka_rms_cm=float("nan"))
+        out.update(mu_a=float("nan"), mu_b=float("nan"), kitka_rms_cm=float("nan"), kitka_b_kiintea=-1)
     out.update(ok_y=True, v_far_hog_ms=v_far / 100.0, decel_ms2=float(decel_out), decel_keskim_ms2=float(decel_avg),
                hog_hog_s=float(t_near - t_far), t_far_hog_s=float(t_far + t0), t_near_hog_s=float(t_near + t0),
                v_near_hog_ms=v(t_near) / 100.0)
