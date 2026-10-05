@@ -149,12 +149,13 @@ try{const v0=localStorage.getItem('vasen'),o0=localStorage.getItem('oikea');if(v
 for(const el of [cv,co]){el.parentNode.addEventListener('click',e=>e.stopPropagation());
   el.addEventListener('change',()=>{try{localStorage.setItem('vasen',cv.checked?'1':'0');localStorage.setItem('oikea',co.checked?'1':'0')}catch(e){}
     piirra();paivita()})}
-let laatikot=[];
+let laatikot=[],nw=0,nh=0;   // t15: kuvan koko muistiin - kuvan vaihdon aikana naturalWidth on hetken 0 (korostus vilkkui)
 function piirra(){
   const W=window.innerWidth,H=window.innerHeight;o.width=W;o.height=H;const c=o.getContext('2d');c.clearRect(0,0,W,H);
-  const a=parseFloat(ia.value),b=parseFloat(ib.value);if(isNaN(a)||isNaN(b)||!k.naturalWidth)return;
-  const r=k.getBoundingClientRect(),s=Math.min(r.width/k.naturalWidth,r.height/k.naturalHeight);
-  const ox=r.left+(r.width-k.naturalWidth*s)/2,oy=r.top+(r.height-k.naturalHeight*s)/2;
+  if(k.naturalWidth){nw=k.naturalWidth;nh=k.naturalHeight}
+  const a=parseFloat(ia.value),b=parseFloat(ib.value);if(isNaN(a)||isNaN(b)||!nw)return;
+  const r=k.getBoundingClientRect(),s=Math.min(r.width/nw,r.height/nh);
+  const ox=r.left+(r.width-nw*s)/2,oy=r.top+(r.height-nh*s)/2;
   c.lineWidth=5;c.strokeStyle='#ff30ff';c.fillStyle='rgba(255,48,255,0.18)';
   const P=q=>[ox+q[0]*s,oy+q[1]*s];
   for(const q of laatikot){if(q.ika>=Math.min(a,b)&&q.ika<=Math.max(a,b)){
@@ -182,7 +183,7 @@ async function paivita(){
     let txt=j.tila;
     if(j.kuva<0){txt+=' (kuva alkaa kun seuranta alkaa)'}
     else if(j.kuva!==last){
-      await new Promise(res=>{const im=new Image();im.onload=()=>{k.src=im.src;res()};im.onerror=res;
+      await new Promise(res=>{const im=new Image();im.onload=()=>{nw=im.naturalWidth;nh=im.naturalHeight;k.src=im.src;res()};im.onerror=res;
         im.src='kuva.jpg?n='+j.kuva});
       last=j.kuva}
     laatikot=j.laatikot||[];piirra();

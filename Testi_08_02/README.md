@@ -956,3 +956,10 @@ lisäksi `nointra` (INTRA_PARALLEL=0). C++-moduuli pitää kääntää uudelleen
   näytetään uusin saatavilla oleva kuva eikä mikään kaadu. Virheellinen Alku → viive 0.
 * Huom: laatikko syntyy vasta kun kivi ohittaa lähemmän hoglinen (≈ hog-hog-aika, 13–15 s), joten Alku-arvon kannattaa olla sitä suurempi.
 * Debug-videoon ei viivettä.
+
+## t15: korostuksen vilkkuminen korjattu
+
+* Puhelimen laatikkokorostus vilkkui kerran sekunnissa: kun keskikuva vaihtui, `naturalWidth` oli hetken 0, jolloin korostuskerros
+  tyhjennettiin eikä piirretty ennen kuvan latautumista (puhelimessa hitaampi purku → näkyvä välähdys).
+* Korjaus: kuvan koko otetaan talteen esiladatusta kuvasta ja muistetaan; korostus piirretään aina.
+* Testi (Playwright, jokainen näyttöruutu, CPU 6× hidastettuna): ennen 18 tyhjää ruutua / 15 s (joka kuvanvaihdossa), jälkeen 0.
