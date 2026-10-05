@@ -1990,19 +1990,23 @@ def _track_throw_class(rows):
     return 0
 
 
-def _select_throws(tracks):
+def _select_throws(tracks, hog_ok_ids=()):
     """tracks: [(stone_id, rows)] -> vain heittoportin lapaisseet, yksi rata / hogline-ylitys:
     kahden radan ylitysajat < GATE_CROSS_DEDUP_FRAMES toisistaan = sama heitto (kayttajan tieto: joka
-    kerta vain YKSI kivi ylittaa hoglinen) -> sailyy parempi (hyva sovitus ensin, sitten pienin rms)."""
+    kerta vain YKSI kivi ylittaa hoglinen) -> sailyy parempi (hyva sovitus ensin, sitten pienin rms).
+    Testi_07_01 v7.9: hog_ok_ids = radat joille hog-hog-analyysi onnistui (R_y, R_x, R_y*R_x > 0.99) -> AINA heitto
+    (luokka 3, etusijalla tuplien karsinnassa). Live 2026-10-04: portti hylkasi 41/66 hog-heittoa (painoheitot: ruutukohtainen
+    sovitusvirhe 17-33 px > 12 px; lyonnit: < 300 rivia ja nopeussuhde > 0,75), vaikka radat olivat ehjia."""
+    hog_ok_ids = set(hog_ok_ids)
     cands = []
     for sid, rows in tracks:
         rows = _trim_track_head(rows)
-        cls = _track_throw_class(rows)
+        cls = 3 if sid in hog_ok_ids else _track_throw_class(rows)
         if cls == 0:
             continue
         rms = [r["rms_px"] for _, _, r in rows if r.get("rms_px") is not None]
         cross = _estimate_crossing(rows)
-        cands.append((-cls, float(np.median(rms)), -len(rows), sid, rows, cross))
+        cands.append((-cls, float(np.median(rms)) if rms else 1e9, -len(rows), sid, rows, cross))
     cands.sort(key=lambda c: c[:3])
     kept = []
     for c in cands:
@@ -4747,7 +4751,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_07_01 v7.8 (kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
+SOFTWARE_VERSION = "Testi_07_01 v7.9 (heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
 
 
 def _version_string():
@@ -7424,8 +7428,9 @@ def run_pipeline(
                 (sid, st_["all_rows"]) for sid, st_ in stone_registry.items()
                 if st_.get("all_rows")
             ]
-            n_before = sum(1 for _, rw in all_tr if _track_throw_class(rw) > 0)
-            gated = _select_throws(all_tr)
+            _hog_ok = {r["stone_id"] for r in hog_results if r.get("ok")}
+            n_before = sum(1 for sid_, rw in all_tr if sid_ in _hog_ok or _track_throw_class(rw) > 0)
+            gated = _select_throws(all_tr, _hog_ok)
             with open(csv_output, "w", newline="") as gf:
                 gw = csv.writer(gf)
                 gw.writerow(CSV_HEADER)

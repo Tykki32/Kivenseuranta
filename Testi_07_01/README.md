@@ -1,5 +1,13 @@
 # Testi_07_01 (pohja Testi_06_01 v6.20)
 
+## v7.9: heittoportti hyväksyy aina radat, joille hog-analyysi onnistui
+Live 2026-10-04: portti hylkäsi 41/66 hog-heittoa, vaikka radat olivat ehjiä (alkavat Y ≈ 33 m): painoheitot (24) ruutukohtaisen
+sovitusvirheen takia (mediaani 17–33 px > 12 px, tarkkoja ruutuja 2–36 %), lyönnit (16) liian vähien rivien (< 300) ja
+nopeussuhteen (> 0,75) takia. Nyt rata, jolle hog-analyysi onnistui (R_y, R_x ja tulo > 0,99), on aina heitto (luokka 3,
+etusijalla saman hogline-ylityksen tuplien karsinnassa); muut radat arvioidaan kuten ennen. Portti ajetaan vain kerran ajon
+lopussa (sijainti-CSV) → ei vaikutusta käsittelyaikaan. Live-aineisto: 34 → 75 heittoa (kaikki 66 hog-heittoa + 9 muuta,
+vanhan portin heitoista ei pudonnut yhtään). MAH00014: 20 → 20 (ei muutosta).
+
 ## v7.8: kitkamallin B kiinteä vakio −0,001
 B on oletettavasti lähes vakio → kovakoodattu `MU_B = −0,001` (hog_analyysi.py) kaikille heitoille; heittokohtaisesti
 sovitetaan vain A. Mittaukset (yhteissovitus, B yhteinen): live 2026-10-04 (66 heittoa) paras B = −0,0011, MAH00014 (19)
