@@ -1093,6 +1093,49 @@ def refine_geometric_homography_k1(frame, camera_matrix, k1_init, H_init, near_i
     return best
 
 
+# ------------------------------------------------------------
+# Testi_08_01 v8.3: KALIBROINTI KAMERAN TAYDELLA RESOLUUTIOLLA. Kamera antaa 1920x1080, seuranta kayttaa 1280x720:aa. Moodikuvan
+# naytekohdissa (CALIB_MODE_SAMPLE_INTERVAL_SECONDS valein, ~25 kpl) kamerasaie muuntaa ruudun myos taydella resoluutiolla;
+# naytteet stabiloidaan samalla (skaalatulla) siirrolla ja niiden mediaanista tulee taysresoluutioinen moodikuva. Kalibrointi
+# (homografia, k1) ja kameran asento (K, R, t) ratkaistaan siita, ja tulos skaalataan seurannan resoluutiolle: kameramatriisi
+# kerrotaan s:lla (= 1280/1920), H_final = H_taysi * diag(1/s, 1/s, 1), R ja t pysyvat. Seurannan kuorma ei muutu.
+# Vain live-tilassa (kamera tai --live-sim isommalla videolla). CALIB_TAYSI=0 = vanha (1280x720-moodikuva). Epaonnistuessa
+# kaytetaan 1280x720-kalibrointia.
+# ------------------------------------------------------------
+CALIB_TAYSI = os.environ.get("CALIB_TAYSI", "1") == "1"
+
+
+def _hires_median(samples, rows=60):
+    """Mediaanikuva paloittain (muisti: 25 x 1920x1080 float64 kerralla olisi ~1,2 Gt)."""
+    h = samples[0].shape[0]
+    out = np.empty_like(samples[0])
+    for r0 in range(0, h, rows):
+        out[r0:r0 + rows] = np.median(np.stack([s_[r0:r0 + rows] for s_ in samples]), axis=0).astype(np.uint8)
+    return out
+
+
+def _scale_calibration(calib_hi, pose_hi, frame_lo):
+    """Taysresoluutioinen kalibrointi + asento -> seurannan resoluutio (frame_lo = 1280x720-moodikuva)."""
+    h_lo, w_lo = frame_lo.shape[:2]
+    s = w_lo / float(calib_hi["image_width"])
+    S_inv = np.diag([1.0 / s, 1.0 / s, 1.0])
+    K_lo = k8.build_camera_matrix(w_lo, h_lo)
+    k1 = calib_hi["best_k1"]
+    calib = dict(calib_hi)
+    calib.update(
+        frame=frame_lo,
+        frame_undistorted=cv2.undistort(frame_lo, K_lo, np.array([k1, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)),
+        camera_matrix=K_lo,
+        H_final=calib_hi["H_final"] @ S_inv,
+        image_width=w_lo, image_height=h_lo,
+        near_pts_frame=np.asarray(calib_hi["near_pts_frame"], dtype=np.float64) * s,
+        taysi_resoluutio=(calib_hi["image_width"], calib_hi["image_height"]),
+    )
+    pose = dict(pose_hi)
+    pose["K"] = np.diag([s, s, 1.0]) @ np.asarray(pose_hi["K"], dtype=np.float64)
+    return calib, pose
+
+
 def calibrate_camera_from_image_with_seed(filename):
     """Testi_01_02:n oma korvaava kalibrointi (katso taman tiedoston
     alkupaan kommentti periaatteesta) - lahemman pesan tunnistus on
@@ -4981,7 +5024,7 @@ def _print_prof_report(n_frames, n_seuranta_updates):
 # muutoksen yhteydessa; git-tiivisteen (jos kansio on git-repo) ja C++-moduulien kaannosajan avulla
 # nakee myos onko .so kaannetty uudelleen (vanha .so + uusi main.py on tyypillinen sekaannus).
 # ------------------------------------------------------------------
-SOFTWARE_VERSION = "Testi_08_01 v8.2 (kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
+SOFTWARE_VERSION = "Testi_08_01 v8.3 (kalibrointi kameran taydella resoluutiolla; kalibrointi: keskiviiva koko radalta X = 0 (k1+H yhteissovitus valinnainen, pois); pohja Testi_07_01 v7.9: heittoportti: hog-analyysin lapaisseet radat aina heittoja; kitkamalli: B kiintea -0,001 kaikille heitoille; puhelinnakyma koko naytolle napautuksella; katselu: nakyma kerran sekunnissa JPEG:na, ei debug-videota; live: paneelit klikataan kamerakuvasta ennen live-vaihetta; kadonnut kivi 1 s, paneelissa sekunnit kaukohogista, hidastuvuus kitkamallista mu=A+B ln v @1,5 m/s, PIPE_DEPTH=50; moodikuva 120 s ajalta; debug-video puhelimen selaimeen --katselu: HLS samasta QSV-koodauksesta + MJPEG-varakeino; pohja Testi_06_01 v6.20: seurannan tarkennettu paikka hakualueen rajoissa; radan suuntaan liikkuva rata suojattu duplikaattiyhdistamisessa ja paikanvarauksessa; tihea C++-profiiliskannaus pelialueelta + laiska kandidaatin seuranta; kalibrointi 3,5x nopeampi: pesatarkistuksen muisti + vektoroitu ellipsihaku; seuranta loppuu lahi-hoglinelle ja taaksepain liikkuvilta radoilta, SIMD-maskit; live-kamera + puskuri, live: PREP_PARALLEL=0, havaintoruutujen kiinnitys, tallenteeseen kaikki ruudut; ristikon hieno vaihe maennousulla, taustaprosessit alemmalla prioriteetilla, esitarkistus 12-16 cm; kalibrointi: hoglinet +-20 cm symmetrisesti T-viivoista, peili- ja k1-varmistus; pohja Testi_05_03 v5.13: oletukset: GPU_B=1, STAB_WORKERS=2, PIPE_DEPTH=6, INTRA_PARALLEL=1, DEBUG_YUV=1, GRID_THREADS=2, PREP_PARALLEL=1, HAKU_AHEAD=1, SIL_IN_BATCH=1, CV_SINGLE_PERSIST=1, SAT_PARALLEL=0; seuranta identtinen v5.6:n kanssa) (2026-10-03b)"
 
 
 def _version_string():
@@ -5492,6 +5535,7 @@ def run_pipeline(
 
     frame_index = 0
     next_calib_sample_frame = 0
+    hires_samples = []        # Testi_08_01 v8.3: kalibroinnin taysresoluutioiset naytteet (live)
 
     calib_result = precomputed_calib_result
 
@@ -6037,6 +6081,14 @@ def run_pipeline(
                     t6 = time.perf_counter()
 
                     engine.add_mode_frame()
+                    _lv_hi = live_source.active()
+                    if CALIB_TAYSI and _lv_hi is not None:
+                        _hi = _lv_hi.store.get_hires(frame_index)
+                        if _hi is not None:
+                            # v8.3: sama stabilointi taydella resoluutiolla (siirto skaalattuna)
+                            _M = np.asarray(stabilization_matrix, dtype=np.float64)[:2].copy()
+                            _M[:, 2] *= _hi.shape[1] / float(width)
+                            hires_samples.append(cv2.warpAffine(_hi, _M, (_hi.shape[1], _hi.shape[0])))
 
                     t7 = time.perf_counter()
 
@@ -6090,11 +6142,30 @@ def run_pipeline(
                         "build_pose_from_calibration)..."
                     )
 
-                    calib = calibrate_camera_from_image_with_seed(
-                        calib_mode_output
-                    )
+                    calib = None
+                    _lv_hi = live_source.active()
+                    if _lv_hi is not None:
+                        _lv_hi.store.hires_every = 0        # taysresoluutioisia naytteita ei enaa tarvita
+                    if CALIB_TAYSI and len(hires_samples) >= 3:
+                        try:
+                            _hi_path = os.path.splitext(calib_mode_output)[0] + "_taysi.png"
+                            cv2.imwrite(_hi_path, _hires_median(hires_samples))
+                            print(f"Kalibroidaan TAYDELLA resoluutiolla ({hires_samples[0].shape[1]}x{hires_samples[0].shape[0]}, "
+                                  f"{len(hires_samples)} naytetta): {_hi_path}")
+                            _calib_hi = calibrate_camera_from_image_with_seed(_hi_path)
+                            _pose_hi = k9.build_pose_from_calibration(_calib_hi)
+                            calib, pose = _scale_calibration(_calib_hi, _pose_hi, cv2.imread(calib_mode_output))
+                            print(f"  taysresoluutioinen kalibrointi skaalattu seurannan resoluutiolle ({width}x{height})")
+                        except Exception as _e_hi:
+                            print(f"  taysresoluutioinen kalibrointi epaonnistui ({_e_hi}) -> kalibroidaan {width}x{height}-moodikuvasta")
+                            calib = None
+                        hires_samples = []
+                    if calib is None:
+                        calib = calibrate_camera_from_image_with_seed(
+                            calib_mode_output
+                        )
 
-                    pose = k9.build_pose_from_calibration(calib)
+                        pose = k9.build_pose_from_calibration(calib)
 
                     print(
                         f"  fokaalivali f = {pose['K'][0, 0]:.1f} px, "
@@ -8130,6 +8201,9 @@ def _start_live(args):
     print(f"Live-puskuri: enintaan {buffer_s:.0f} s (~{buffer_s * src.store.fps * src.store.width * src.store.height * 3 / 1e9:.1f} GB), "
           f"historia kalibroinnissa {args.live_taakse_s:.0f} s, seurannassa {LIVE_TAAKSE_SEURANTA_S:.0f} s. Lopetus: Ctrl+C"
           + (f" tai {args.live_kesto:.0f} s" if args.live_kesto > 0 else ""))
+    if CALIB_TAYSI:
+        # v8.3: kalibroinnin naytekohdissa myos taysresoluutioinen ruutu (vain jos kamera/video on seurantaa isompi)
+        src.store.hires_every = max(1, int(round(src.store.fps * CALIB_MODE_SAMPLE_INTERVAL_SECONDS)))
     live_source.activate(src)
     src.start()          # v6.2: vasta tallentajan kytkemisen jalkeen
 

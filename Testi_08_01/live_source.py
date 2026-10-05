@@ -81,6 +81,8 @@ class FrameStore:
         self.blocking_producer = blocking_producer
         self._frames = {}                 # indeksi -> ruutu (uint8 HxWx3)
         self._wall = {}                   # indeksi -> seinakello (time.time()) kun ruutu saapui
+        self._hires = {}                  # Testi_08_01: indeksi -> taysresoluutioinen ruutu (kalibroinnin naytteet)
+        self.hires_every = 0              # > 0: joka hires_every:s ruutu myos taydella resoluutiolla (kalibroinnin aikana)
         self._cam_idx = {}                # indeksi -> kameran oma ruutunumero (ennen harvennusta)
         self._head = 0                    # seuraavan kirjoitettavan ruudun indeksi
         self._tail = 0                    # vanhin puskurissa oleva indeksi
@@ -98,7 +100,12 @@ class FrameStore:
         self._pinned = {}
 
     # ---------------- kirjoittaja ----------------
-    def put(self, frame, cam_index=None):
+    def get_hires(self, idx):
+        """Testi_08_01: kalibroinnin naytekohdan taysresoluutioinen ruutu (tai None)."""
+        with self._cond:
+            return self._hires.get(int(idx))
+
+    def put(self, frame, cam_index=None, hires=None):
         with self._cond:
             if self.blocking_producer:
                 while not self._stopped and (self._head - self._tail) >= self.capacity:
@@ -118,6 +125,10 @@ class FrameStore:
             if self._stopped:
                 return False
             i = self._head
+            if hires is not None:          # Testi_08_01: kalibroinnin taysresoluutioinen naytekuva (vain naytekohdissa)
+                self._hires[i] = hires
+                for k_old in [k for k in self._hires if k < i - 40 * max(1, self.hires_every)]:
+                    del self._hires[k_old]
             self._frames[i] = frame
             self._wall[i] = time.time()
             self._cam_idx[i] = i if cam_index is None else int(cam_index)
@@ -451,6 +462,17 @@ class CameraSource(_SourceBase):
             fr = cv2.resize(fr, (self.out_w, self.out_h), interpolation=cv2.INTER_AREA)
         return np.ascontiguousarray(fr)
 
+    def _convert_full(self, fr):
+        """Testi_08_01: sama muunnos kuin _convert, mutta kameran taydella resoluutiolla (vain kalibroinnin naytekohdissa)."""
+        try:
+            if self.conversion != "ajuri":
+                out = raw_yuy2_to_bgr(fr, self.cam_w, self.cam_h, self.cam_w, self.cam_h, gpu=(self.conversion == "gpu"),
+                                      order=self.raw_order)
+                return None if out is None else np.ascontiguousarray(out).copy()
+            return np.ascontiguousarray(fr).copy()
+        except Exception:
+            return None
+
     def _run(self):
         n = 0
         fails = 0
@@ -470,9 +492,13 @@ class CameraSource(_SourceBase):
                 fails = 0
                 if n % self.decim == 0:
                     out = self._convert(fr)
+                    hi = None
+                    he = self.store.hires_every
+                    if he > 0 and self.store._head % he == 0 and (self.cam_w > self.out_w or self.cam_h > self.out_h):
+                        hi = self._convert_full(fr)      # Testi_08_01: kalibroinnin naytekohta taydella resoluutiolla
                     self.cpu_conv += time.thread_time() - c1
                     self.n_conv += 1
-                    self.store.put(out, cam_index=n)
+                    self.store.put(out, cam_index=n, hires=hi)
                     # v6.13: tallenteeseen KAIKKI ruudut, myos ne jotka puskuri pudotti (taynna kalibroinnin aikana)
                     if self.recorder is not None and not self.store.stopped:
                         self.recorder.write(out)
@@ -528,13 +554,17 @@ class FileSimSource(_SourceBase):
                 ok, fr = self.cap.read()
                 if not ok:
                     break
+                hi = None
+                he = self.store.hires_every
+                if he > 0 and self.store._head % he == 0 and (fr.shape[1] > self.out_w or fr.shape[0] > self.out_h):
+                    hi = fr.copy()                       # Testi_08_01: kalibroinnin naytekohta taydella resoluutiolla
                 if fr.shape[1] != self.out_w or fr.shape[0] != self.out_h:
                     fr = cv2.resize(fr, (self.out_w, self.out_h), interpolation=cv2.INTER_AREA)
                 if self.realtime:
                     dt = t0 + n / self.fps - time.time()
                     if dt > 0:
                         time.sleep(dt)
-                self.store.put(np.ascontiguousarray(fr), cam_index=n)
+                self.store.put(np.ascontiguousarray(fr), cam_index=n, hires=hi)
                 if self.recorder is not None and not self.store.stopped:     # v6.13: myos pudotetut ruudut tallenteeseen
                     self.recorder.write(fr)
                 n += 1

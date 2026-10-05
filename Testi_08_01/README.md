@@ -1,5 +1,17 @@
 # Testi_08_01 (pohja Testi_07_01 v7.9, testattu toimivaksi)
 
+## v8.3: kalibrointi kameran täydellä resoluutiolla (live)
+Moodikuvan näytekohdissa (5 s välein, ~25 kpl) kamerasäie muuntaa ruudun myös täydellä resoluutiolla (1920×1080); pääsilmukka
+stabiloi sen samalla, skaalatulla siirrolla, ja niiden mediaanista tehdään `<nimi>_kalibrointi_moodikuva_taysi.png`. Kalibrointi
+(homografia, k1, keskiviiva) ja kameran asento (K, R, t) ratkaistaan siitä; tulos skaalataan seurannan resoluutiolle
+(K × 1280/1920, H_final × diag(1,5, 1,5, 1), R ja t ennallaan) → seurannan kuorma ei muutu. Epäonnistuessa käytetään
+1280×720-moodikuvaa kuten ennen. `CALIB_TAYSI=0` = vanha. Toimii myös `--live-sim`:llä, jos video on 1280×720:aa isompi.
+
+Testi: MAH00014:n 3 min ylöskaalattuna 1920×1080:ksi, live-sim: taysresoluutioinen kalibrointi onnistui (RMS 1,25 cm,
+pyöreys 1,000, kokovirhe 1,1 %), seuranta ja hog-analyysi toimivat skaalatulla kalibroinnilla, ei pudotettuja ruutuja.
+**Sama video 1280×720:ksi pienennettynä (= nykyinen live-tapa) EI kalibroitunut**: "Kaukaista pesää ei löytynyt" – sama virhe
+kuin kamera-ajossa 2026-10-03. Ylöskaalaus ei lisää todellista tarkkuutta, joten tarkkuusvertailu vaatii aidon 1920×1080-tallenteen.
+
 ## v8.2: k1 keskiviivan suoruudesta (kokeiltu, oletuksena pois) + täyden resoluution vertailu
 `CALIB_K1_JOINT=1`: linssin k1 sovitetaan yhdessä homografian kanssa (kaikki rajoitepisteet raakakuvan koordinaateissa).
 Tulos: k1 jäi ~0:aan (MAH00014 −0,003) ja heilui kierrosten välillä; keskiviivan ~0,5–1 cm taipuma kaukopäässä ei poistunut →
