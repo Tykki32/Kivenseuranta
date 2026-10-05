@@ -9,7 +9,10 @@ Seurannassa jokaisesta löydetystä ruudusta lasketaan kahvan värin pikselit:
   karsiutuu saturaatiorajalla (`KAHVA_MIN_S=80`, `KAHVA_MIN_V=60`).
 * Ympyrän sisältä tallennetaan sävyhistogrammi (OpenCV H 0–179). Radan lopussa valitaan hallitseva sävy
   (±`KAHVA_H_TOL`=10, punainen kiertää 179→0) ja jokaiselle ruudulle lasketaan sen sävyisten pikselien määrä.
-* Tulos: `<csv>_kahva.csv` (frame, stone_id, kahva_h, kahva_vari, kahva_px, ympyra_px) ja hog-CSV:hen sarakkeet
+* `levy_px` = kahvan alla olevan levyn (vaakasuora kahvan säteen ympyrä) projisoidun ellipsin pinta-ala; levy näkyy
+  aina, joten `kahva_netto_px = kahva_px - levy_px` jättää jäljelle kahvan kahvaosan, jonka näkyvyys vaihtelee pyörimisen
+  mukana (pyörimisnopeuden tunnistusta varten).
+* Tulos: `<csv>_kahva.csv` (frame, stone_id, kahva_h, kahva_vari, kahva_px, ympyra_px, levy_px, kahva_netto_px) ja hog-CSV:hen sarakkeet
   `kahva_h`, `kahva_vari`.
 * Korkeustesti MAH00014:llä: kahvan värin osuus alueesta H_total +0 cm 39 %, +4 cm 27 %, +8 cm 5 %, +12 cm 0,2 %,
   joten keskipiste on akselin yläpäässä (`KAHVA_Z_EXTRA_CM`=0, ympäristömuuttujalla säädettävä).
