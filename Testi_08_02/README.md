@@ -1,3 +1,37 @@
+# Testi_08_02 t2: SEURANTA paikallisesti täydellä resoluutiolla
+
+Putki (stabilointi, warp, varjosuodatus, HAKU, katselu, kahva) toimii 1280×720:ssa kuten Testi_08_01:ssä. SEURANTA saa
+kuvan, jossa **jokaisen seurattavan kiven hakualue on käsitelty kameran täydellä resoluutiolla**:
+
+* Kamerasäie (tai `--live-sim`) pitää seurannan aikana rengaspuskurissa myös täysresoluutioiset ruudut
+  (`PAIK_RENGAS_S` = 4 s, vähintään 2 × PIPE_DEPTH + 25 ruutua; kamerassa raaka YUY2, ~4 MB/ruutu → ~0,5 GB).
+  Muunnos BGR:ksi tehdään vain kiven alueelta. Pääsäie vapauttaa käsitellyt ruudut.
+* Kiven alue: hakualue ± (R_max + `PAIK_MARGINAALI_CM` = 8 cm) projisoituna täysresoluutioiseen kuvaan. Pikselit haetaan
+  raakaruudusta samalla stabiloinnilla (siirto × 1,5) ja linssikorjauksella (täysresoluutioinen kalibrointi, v8.3) ja
+  taustasuodatetaan täysresoluutioista moodikuvaa vasten. Muu kuva on valkoista (tausta). Kohdistus 720p-kuvaan < 0,6 px.
+* Seuranta käyttää täyden resoluution kameramatriisia, ja myös SEURANNAN siluettitarkistus (C++) saa täyden resoluution
+  matriisin ja 1,5× pikselimitat (ilman tätä harjaajan peittämät ruudut hylättiin ja kivi katosi). Python-puolen
+  pikselirajoille rms_px skaalataan 720p-mittakaavaan (`PAIK_RMS_SKAALAUS`).
+* Jos ruudun täysresoluutioista kuvaa ei ole enää puskurissa, ruutu seurataan 720p:na (loppuraportissa määrät).
+* Pois: `PAIKALLINEN_TAYSI=0`. Diagnostiikka: `PAIK_DEBUG=<kansio>` (palat kuvina), `PAIK_VERT=1` (720p vs täysi samalle
+  ruudulle), `PAIK_DEBUG_RANGE=alku:loppu`.
+
+## Vertailu: `0001.mp4` (lomitus poistettu), `--live-sim --live-sim-tahti 0`, sama täysresoluutioinen kalibrointi
+
+| | SEURANTA 720p | SEURANTA paikallisesti täysi |
+|---|---|---|
+| heittoja | 2 | 2 |
+| kaukohogin aika / nopeus | 205,76 s 1,916 m/s; 225,03 s 2,129 m/s | 205,75 s 1,913 m/s; 225,02 s 2,122 m/s |
+| Y-kohina > 20 m | 3,90 / 3,78 cm | **2,98 / 2,23 cm** |
+| X-kohina > 20 m | 0,60 / 0,58 cm | 0,59 / **0,38 cm** |
+| X-kohina 10–20 m | 0,18 / 0,20 cm | **0,10 / 0,11 cm** |
+| kurvimallin sovitusvirhe | 0,49 / 0,35 cm | 0,52 / 0,27 cm |
+| kokonaisnopeus (sandbox) | 43,1 r/s | 46,9 r/s (ero kohinaa) |
+| lisätyö pääsäikeessä | – | 0,58 ms/ruutu (n. 2200 px/kiven alue) |
+
+SEURANTA-kutsun aika ennallaan (21,1 ms/kutsu). Kokonaisen kuvan täysi resoluutio (t1, alla) maksoi 46 → 27 r/s.
+Vain 2 heittoa → tarvitaan aito 1080p50-tallenne useammalla heitolla.
+
 # Testi_08_02: haku ja seuranta täydellä resoluutiolla (kokeilu)
 
 Pohja: Testi_08_01 v8.8. Ainoa muutos: kun kuva on leveämpi kuin `STAB_LEVEYS` (oletus 1280), stabiloinnin siirto
