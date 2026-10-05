@@ -5,7 +5,7 @@
 Seurannassa jokaisesta löydetystä ruudusta lasketaan kahvan värin pikselit:
 
 * Ympyrä piirretään suoraan kuvaan (ei projisoitu ellipsi). Keskipiste on kiven pyörimisakselin yläpää (X, Y, H_total)
-  kuvaan projisoituna, säde kahvan säde sivusuunnassa pikseleinä. Mukaan tuleva jää/graniitti on harmaata ja
+  kuvaan projisoituna, säde 2 × kahvan säde sivusuunnassa pikseleinä (`KAHVA_SADE_KERROIN`=2, kahvan kärki mukaan). Mukaan tuleva jää/graniitti on harmaata ja
   karsiutuu saturaatiorajalla (`KAHVA_MIN_S=80`, `KAHVA_MIN_V=60`).
 * Ympyrän sisältä tallennetaan sävyhistogrammi (OpenCV H 0–179). Radan lopussa valitaan hallitseva sävy
   (±`KAHVA_H_TOL`=10, punainen kiertää 179→0) ja jokaiselle ruudulle lasketaan sen sävyisten pikselien määrä.
