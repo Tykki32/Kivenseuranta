@@ -933,3 +933,13 @@ lisäksi `nointra` (INTRA_PARALLEL=0). C++-moduuli pitää kääntää uudelleen
   vasenkätinen näyttää vasemman hakin punaisen liukuviivan ja paneelin punaisen liukuluvun, oikeakätinen oikean hakin vihreät.
   Kumpikin, jompikumpi tai ei kumpaakaan. Valinta lähtee koneelle `tila.json?v=&o=`-kyselyssä ja vaikuttaa seuraavaan
   piirrettävään kuvaan (≤ 1 s); jos useampi puhelin on auki, viimeisin valinta pätee paneelin lukuihin.
+
+## t13: liukuviivat liikkuvien kohteiden alle
+
+* Korostettujen laatikoiden liukuviivat ja oranssi irroitusristi piirretään nyt **koneella** puhelimen JPEG-kuvaan, ei puhelimessa.
+  Puhelin lähettää Alku/Loppu- ja vasen-/oikeakätinen-valinnat `tila.json`-kyselyssä; muutos näkyy seuraavassa kuvassa (≤ 1 s).
+* Liikkuvat kohteet = ero tyhjän radan taustakuvaan (kalibroinnin moodikuva, valokorjattu kuva vs tausta, suurin kanava > 40,
+  `KATSELU_LIIKE_KYNNYS`), kohina pois (avaus 3×3), reunavara (laajennus 5×5). Viivaa ei piirretä näiden pikselien päälle,
+  joten pelaajat, harjat ja kivet jäävät viivojen eteen.
+* Kustannus: puhelinkuvan piirto kerran sekunnissa omassa säikeessään, n. +3 ms/kuva (OpenCV-operaatiot). Seurantaan ei vaikutusta.
+* Debug-videoon viivoja ei piirretä (ei Alku/Loppu-valintaa).

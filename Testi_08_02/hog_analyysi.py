@@ -480,6 +480,11 @@ def compose_debug_frame(base_bgr, labels, header, results, plus_right):
 # ============================================================
 import threading
 import queue as _queue
+import os as _os_env
+
+
+LIIKE_KYNNYS = int(_os_env.environ.get("KATSELU_LIIKE_KYNNYS", "40"))    # t13: ero taustaan (0-255, suurin kanava) = liikkuva kohde
+VIIVA_BGR = {"v": (32, 32, 255), "o": (32, 224, 32)}                       # t13: vasen hakki punainen, oikea vihrea
 
 
 class DebugComposer:
@@ -515,30 +520,85 @@ class DebugComposer:
             g["risti"] = cv_(res["x_straight_at_tee_cm"], tee)
         return g
 
+    def _liike_maski(self, small):
+        """Testi_08_02 t13: liikkuvat kohteet (ihmiset, kivet, harjat) = ero tyhjan radan taustakuvaan (self.tausta, kalibroinnin
+        moodikuva korjatussa kuvassa) samassa pienessa koossa. 255 = liikkuva kohde (viivaa ei piirreta sen paalle)."""
+        t = getattr(self, "tausta", None)
+        if t is None:
+            return None
+        if getattr(self, "_tausta_src", None) is not t:
+            self._tausta_src = t
+            self._tausta_small = cv2.resize(t, (self._pre_w, self._pre_h), interpolation=cv2.INTER_AREA)
+        if self._tausta_small.shape != small.shape:
+            return None
+        c0, c1, c2 = cv2.split(cv2.absdiff(small, self._tausta_small))
+        _, m = cv2.threshold(cv2.max(cv2.max(c0, c1), c2), LIIKE_KYNNYS, 255, cv2.THRESH_BINARY)
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))       # yksittaiset kohinapikselit pois
+        return cv2.dilate(m, np.ones((5, 5), np.uint8))                          # pieni reunavara kohteen ymparille
+
+    def _piirra_viivat(self, vid, mask_r, gs):
+        """t13: korostettujen laatikoiden liukusuorat ja irroitusristi videokuvaan liikkuvien kohteiden ALLE (vain mask_r == 0)."""
+        nayta = tuple(getattr(self, "nayta", (True, True)))
+        ov = vid.copy()
+        lm = np.zeros(vid.shape[:2], np.uint8)          # viivojen pikselit
+        n = 0
+        for g in gs:
+            for v in g.get("viivat", []):
+                if (v["s"] == "v" and not nayta[0]) or (v["s"] == "o" and not nayta[1]):
+                    continue
+                p0 = (int(round(v["p"][0][0] - PANEL_W)), int(round(v["p"][0][1])))
+                p1 = (int(round(v["p"][1][0] - PANEL_W)), int(round(v["p"][1][1])))
+                cv2.line(ov, p0, p1, VIIVA_BGR[v["s"]], 2, cv2.LINE_AA)
+                cv2.line(lm, p0, p1, 255, 4)
+                n += 1
+            if g.get("risti") is not None:
+                mx, my = g["risti"][0] - PANEL_W, g["risti"][1]
+                for d in (-90, 30, 150):
+                    t = np.radians(d)
+                    q0, q1 = (int(round(mx)), int(round(my))), (int(round(mx + 12 * np.cos(t))), int(round(my + 12 * np.sin(t))))
+                    cv2.line(ov, q0, q1, (0, 153, 255), 3, cv2.LINE_AA)
+                    cv2.line(lm, q0, q1, 255, 5)
+                n += 1
+        if not n:
+            return
+        if mask_r is not None:
+            lm = cv2.bitwise_and(lm, cv2.bitwise_not(mask_r))
+        cv2.copyTo(ov, lm, vid)
+
     def compose(self, base_bgr, labels, header, results, plus_right, now_video_s=None):
         H0, W0 = base_bgr.shape[:2]
         small = cv2.resize(base_bgr, (self._pre_w, self._pre_h), interpolation=cv2.INTER_LINEAR)     # 1080 x 608
         vid = cv2.rotate(small, cv2.ROTATE_90_COUNTERCLOCKWISE)                                   # 608 x 1080 (leveys x korkeus)
         scale = self.scale
-        for (x, y, txt, col) in labels:
-            xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))
-            cv2.putText(vid, txt, (max(2, min(self.video_w - 120, xr)), max(14, min(self.video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
-        cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
-        self.canvas[:, PANEL_W:PANEL_W + self.video_w] = vid
         import time as _time
         self.boxes = []          # Testi_08_02 t10: laatikoiden paikat ja iat puhelinnakyman korostusta varten
         self.boxes_t = _time.time()
         box_h = LINE_H * 7 + 2 * BOX_PAD
+        sides = []
+        vali = getattr(self, "korostus", None)          # t13: puhelimen Alku..Loppu (s); None -> viivoja ei piirreta
+        piirra = []
         for side, x0 in (("L", 0), ("R", PANEL_W + self.video_w)):
             ents = [r for r in results if throw_side(r, plus_right) == side][::-1]
             ages = [entry_age_s(r, now_video_s) for r in ents]
+            sides.append((side, x0, ents, ages))
             for k_, (r_, a_) in enumerate(zip(ents, ages)):
                 yb = BOX_GAP + k_ * (box_h + BOX_GAP)
                 if yb + box_h > DEBUG_H:
                     break
                 if a_ is not None:
                     self.boxes.append(dict(x=x0 + BOX_GAP, y=yb, w=PANEL_W - 2 * BOX_GAP, h=box_h, ika=float(a_),
-                                           wall=r_.get("t_far_wall"), **self._geom(r_, plus_right, W0)))
+                                           wall=r_.get("t_far_wall")))
+                    if vali is not None and vali[0] <= a_ <= vali[1]:
+                        piirra.append(self._geom(r_, plus_right, W0))
+        if piirra:
+            m = self._liike_maski(small)
+            self._piirra_viivat(vid, None if m is None else cv2.rotate(m, cv2.ROTATE_90_COUNTERCLOCKWISE), piirra)
+        for (x, y, txt, col) in labels:
+            xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))
+            cv2.putText(vid, txt, (max(2, min(self.video_w - 120, xr)), max(14, min(self.video_h - 4, yr))), FONT, FONT_SCALE, col, FONT_THICK)
+        cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
+        self.canvas[:, PANEL_W:PANEL_W + self.video_w] = vid
+        for side, x0, ents, ages in sides:
             nayta = tuple(getattr(self, "nayta", (True, True)))     # t12: puhelimen vasen-/oikeakatinen-valinta
             key = (nayta,) + tuple((r["stone_id"], r["frame"], a) for r, a in zip(ents, ages))
             if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui (sekuntilaskuri: kerran sekunnissa)
