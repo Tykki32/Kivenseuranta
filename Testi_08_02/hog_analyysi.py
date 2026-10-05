@@ -19,6 +19,12 @@ MIN_PRODUCT = 0.99        # R_y * R_x -ehto tulostukselle
 NEAR_MARGIN_CM = 50.0     # lahihog + 50 cm
 FAR_MARGIN_CM = 100.0     # kaukohog - 100 cm
 MIN_POINTS = 40
+# Testi_08_02 t9: liu'un suoraan sovitukseen lisataan lahtopisteeksi hakki: 1,83 m takarajan takana (takaraja 1,83 m T-viivan
+# takana, T-viiva 6,40 m hogin takana), 15 cm keskiviivasta. Lasketaan erikseen kummallekin hakille (X = +15 ja X = -15 cm).
+HAKKI_TAKARAJASTA_CM = 183.0
+TAKARAJA_TEESTA_CM = 183.0
+HOG_TEESTA_CM = 640.0
+HAKKI_SIVU_CM = 15.0
 LIUKU_END_MARGIN_CM = 100.0  # liuku: suoran sovitus heiton alusta kaukohog + 100 cm asti
 LIUKU_MIN_POINTS = 8
 DROP_WORST = 10           # ensimmaisen sovituksen jalkeen pudotetaan 10 huonoiten sopivaa pistetta ja sovitetaan uudelleen
@@ -278,6 +284,11 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=MIN_R, tee_cm=None, min_pro
             sl, ic = np.polyfit(yl, xl, 1)
             out.update(liuku_x_tee_cm=float(sl * tee_cm + ic), liuku_dir_deg=float(np.degrees(np.arctan(-sl))), liuku_n=int(len(yl)),
                        liuku_rms_cm=float(np.std(xl - (sl * yl + ic))))
+            hakki_y = far_hog_cm + HOG_TEESTA_CM + TAKARAJA_TEESTA_CM + HAKKI_TAKARAJASTA_CM
+            for tag, hx in (("p", HAKKI_SIVU_CM), ("m", -HAKKI_SIVU_CM)):
+                sh, ih = np.polyfit(np.append(yl, hakki_y), np.append(xl, hx), 1)
+                out[f"liuku_x_tee_cm_hakki_{tag}"] = float(sh * tee_cm + ih)
+                out[f"liuku_dir_deg_hakki_{tag}"] = float(np.degrees(np.arctan(-sh)))
     out["ok"] = True
     return out
 
@@ -290,6 +301,9 @@ def format_lines(res, stone_id=None):
     d = res["dir_far_hog_deg"]
     side = "+X" if d > 0 else "-X"
     liuku = f"{res['liuku_x_tee_cm']:+.1f} cm (suunta {res['liuku_dir_deg']:+.2f} deg, n = {res['liuku_n']})" if "liuku_x_tee_cm" in res else "ei laskettu"
+    if "liuku_x_tee_cm_hakki_p" in res:
+        liuku += (f" | hakista X=+{HAKKI_SIVU_CM:.0f}: {res['liuku_x_tee_cm_hakki_p']:+.1f} cm, "
+                  f"X=-{HAKKI_SIVU_CM:.0f}: {res['liuku_x_tee_cm_hakki_m']:+.1f} cm")
     lines = [hdr,
              f"nopeus kaukohogilla: {res['v_far_hog_ms']:.2f} m/s",
              f"hidastuvuus ({DECEL_REF_V_MS:g} m/s): {res['decel_ms2']:.3f} m/s^2",
@@ -397,7 +411,16 @@ def entry_age_s(res, now_video_s=None):
     return None
 
 
-def render_panel(entries, ages=None):
+def liuku_segments(res, plus_right):
+    """Testi_08_02 t9: [(teksti, vari)] liuku-riville: vasemman hakin (kaannetyssa videossa) arvo punaisella, oikean vihrealla."""
+    if "liuku_x_tee_cm_hakki_p" not in res:
+        return [(entry_lines(res)[4], (255, 255, 255))]
+    vas, oik = ("m", "p") if plus_right is None or bool(plus_right) else ("p", "m")
+    return [("liuku: ", (255, 255, 255)), (f"{res['liuku_x_tee_cm_hakki_' + vas]:+.0f}", (0, 0, 255)), (" ", (255, 255, 255)),
+            (f"{res['liuku_x_tee_cm_hakki_' + oik]:+.0f}", (0, 220, 0)), (" cm", (255, 255, 255))]
+
+
+def render_panel(entries, ages=None, plus_right=None):
     """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x PANEL_W) kuvan; jokainen heitto omassa laatikossa.
     ages: sekunnit kaukohoglinen ylityksesta (sama jarjestys), naytetaan kiven ID:n vieressa."""
     img = np.zeros((DEBUG_H, PANEL_W, 3), np.uint8)
@@ -410,8 +433,15 @@ def render_panel(entries, ages=None):
         cv2.rectangle(img, (BOX_GAP, y), (PANEL_W - BOX_GAP, y + box_h), (0, 200, 255), 2)
         _lines = entry_lines(res)
         for i, s in enumerate(_lines):
+            _x = BOX_GAP + BOX_PAD + 4
+            _y = y + BOX_PAD + 20 + i * LINE_H
+            if i == 4:
+                for _t, _c in liuku_segments(res, plus_right):
+                    cv2.putText(img, _t, (_x, _y), FONT, FONT_SCALE, _c, FONT_THICK)
+                    _x += cv2.getTextSize(_t, FONT, FONT_SCALE, FONT_THICK)[0][0]
+                continue
             _col = (0, 255, 255) if i == 0 else (kierre_text(res)[1] if i == len(_lines) - 1 else (255, 255, 255))
-            cv2.putText(img, s, (BOX_GAP + BOX_PAD + 4, y + BOX_PAD + 20 + i * LINE_H), FONT, FONT_SCALE, _col, FONT_THICK)
+            cv2.putText(img, s, (_x, _y), FONT, FONT_SCALE, _col, FONT_THICK)
         if ages is not None and k < len(ages) and ages[k] is not None:
             txt = f"{ages[k]} s"
             (tw, _), _ = cv2.getTextSize(txt, FONT, FONT_SCALE, FONT_THICK)
@@ -434,7 +464,7 @@ def compose_debug_frame(base_bgr, labels, header, results, plus_right):
     cv2.putText(vid, header, (10, 28), FONT, 0.6, (255, 255, 255), 2)
     left = [r for r in results if throw_side(r, plus_right) == "L"][::-1]
     right = [r for r in results if throw_side(r, plus_right) == "R"][::-1]
-    return np.hstack([render_panel(left), vid, render_panel(right)])
+    return np.hstack([render_panel(left, plus_right=plus_right), vid, render_panel(right, plus_right=plus_right)])
 
 
 # ============================================================
@@ -469,7 +499,7 @@ class DebugComposer:
             ages = [entry_age_s(r, now_video_s) for r in ents]
             key = tuple((r["stone_id"], r["frame"], a) for r, a in zip(ents, ages))
             if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui (sekuntilaskuri: kerran sekunnissa)
-                self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents, ages)
+                self.canvas[:, x0:x0 + PANEL_W] = render_panel(ents, ages, plus_right=plus_right)
                 self._key[side] = key
         return self.canvas
 
