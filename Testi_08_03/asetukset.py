@@ -99,6 +99,18 @@ HAKU_TAKANA_SIVU_CM = 100.0
 SEURANTA_KARKEA_ASKEL_CM = 7.0
 SEURANTA_HIENO_ASKEL_CM = 1.5
 SEURANTA_PISTEKYNNYS = 0.35
+# yhdistelmahaku (C++ seuranta.hpp): ristikkohaku ennustetusta paikasta + mean-shift viimeisesta ja ennustetusta paikasta;
+# valitaan suurin pistemaara - rangaistukset (taaksepain, poikkeama ennusteesta)
+SEURANTA_MS_KERROIN = 0.8            # mean-shiftin askelkerroin (gain)
+SEURANTA_MS_MAX_ITER = 6
+SEURANTA_MS_TOL_PX = 0.30            # lopetus kun askel < tama
+SEURANTA_MS_SISAPAINO = 2.0          # hullin sisapikselien paino (1.1x-kehan paino 1)
+SEURANTA_MS_MARGINAALI = 1.10        # kehan koko hullin suhteen
+SEURANTA_MS_TAU = 0.5                # pehmean etumerkin leveys (0 = kova)
+SEURANTA_MS_VIIMEISTELY_CM = 4.0     # lopuksi maennousu peitto-osuudella, aloitusaskel (puolittuu kunnes < 0,75 cm)
+SEURANTA_VALINTA_TAAKSE_TOL_CM = 2.0  # taaksepain-siirtyma ilman rangaistusta
+SEURANTA_VALINTA_TAAKSE_SAKKO = 0.15  # rangaistus / 10 cm taaksepain
+SEURANTA_VALINTA_ENNUSTE_SAKKO = 0.02  # rangaistus / 10 cm poikkeamasta ennusteesta
 # hakualue joka ruudulla kiven omasta viimeisesta paikasta: fysikaalinen nopeusraja x kulunut aika
 SEURANTA_MAX_NOPEUS_Y_CM_S = 300.0
 SEURANTA_SIVUNOPEUS_OSUUS = 0.10     # sivunopeus enintaan 10 % pitkittaisesta
@@ -213,8 +225,8 @@ STAB_LEVEYS = 1280                   # leveampi kuva stabiloidaan pienennettyna 
 # =====================================================================================================================
 STAB_SAIKEET = 2                     # vaihekorrelaatiot rinnan (liukuhihnan vaihe A)
 JONON_SYVYYS = 50                    # liukuhihnan jonot (2 s puskuri vaiheiden valissa)
-RISTIKKO_SAIKEET = 2                 # SEURANNAN ristikkohaku kiven sisalla rinnan (C++)
 GPU_VAIHE_B = True                   # warp + varjosuodatus OpenCL:lla jos kaytettavissa (Intel UHD)
+VIDEO_LAITTEISTODEKOODAUS = False    # videotiedoston dekoodaus laitteistolla (Windows MSMF/D3D11); mittaa read(video) ms/ruutu
 RAPORTTI_VALI_RUUTUA = 1000          # edistymisraportti
 MAX_RUUTU = 0                        # > 0: pysayta tahan ruutuun (testi; --max-frame)
 

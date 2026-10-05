@@ -46,8 +46,6 @@ import siluetti
 import yleiset
 
 # SEURANNAN paikannus C++:ssa: "ensemble" = ristikkohaku + kaksi mean-shiftia + liike-ennuste (C++ locate_mode 5)
-LOCATE_ENSEMBLE = dict(locate_mode=5, ms_gain=0.8, ms_max_iter=6, ms_tol_px=0.30, ms_inner_weight=2.0, ms_margin_scale=1.10,
-                       ms_tau=0.5, ms_polish_step_cm=4.0, ens_back_tol_cm=2.0, ens_back_pen=0.15, ens_pred_pen=0.02)
 ENNUSTE_TAAKSE_RUUTUA = 12      # liike-ennuste viimeisista havainnoista (enintaan nain monta ruutua taaksepain)
 ENNUSTE_MIN_VALI_RUUTUA = 4
 
@@ -137,7 +135,7 @@ class Seuranta:
         if live.active() is not None:      # ruudut kameran puskurista (sama ModeEngine, ruudut annetaan Pythonista)
             self.engine = live.LiveEngine(mode_engine, live.active(), A.MOODI_TIILI)
         else:
-            self.engine = mode_engine.ModeEngine(video_file, A.MOODI_TIILI)
+            self.engine = mode_engine.ModeEngine(video_file, A.MOODI_TIILI, A.VIDEO_LAITTEISTODEKOODAUS)
         e = self.engine
         self.width, self.height, self.fps, self.total_frames = e.width(), e.height(), e.fps(), e.total_frames()
         fps = self.fps
@@ -533,11 +531,15 @@ class Seuranta:
             yleiset.prof_add("py: paikallinen taysi resoluutio (kivien alueet)", time.perf_counter() - t_p0)
             if hi is not None:
                 trk_img, trk_ref, trk_K = hi
-        kwargs = dict(LOCATE_ENSEMBLE, pred_dx=pred[0], pred_dy=pred[1])
         results = stone_tracker.track_stones_batch(
             trk_img, trk_ref, X0, Y0, hx, hy, ls["local_pts_body"], ls["local_pts_search"], trk_K, pose["R"], pose["t"],
             A.SEURANTA_KARKEA_ASKEL_CM, A.SEURANTA_HIENO_ASKEL_CM, A.SEURANTA_PISTEKYNNYS, ls["R_max"], ls["H_total"],
-            ls["handle_r_frac"], ls["handle_r_frac"], A.SEURANTA_MAX_TAAKSE_CM, thr, **kwargs,
+            ls["handle_r_frac"], ls["handle_r_frac"], A.SEURANTA_MAX_TAAKSE_CM, thr,
+            ms_gain=A.SEURANTA_MS_KERROIN, ms_max_iter=A.SEURANTA_MS_MAX_ITER, ms_tol_px=A.SEURANTA_MS_TOL_PX,
+            ms_inner_weight=A.SEURANTA_MS_SISAPAINO, ms_margin_scale=A.SEURANTA_MS_MARGINAALI, ms_tau=A.SEURANTA_MS_TAU,
+            ms_polish_step_cm=A.SEURANTA_MS_VIIMEISTELY_CM, pred_dx=pred[0], pred_dy=pred[1],
+            ens_back_tol_cm=A.SEURANTA_VALINTA_TAAKSE_TOL_CM, ens_back_pen=A.SEURANTA_VALINTA_TAAKSE_SAKKO,
+            ens_pred_pen=A.SEURANTA_VALINTA_ENNUSTE_SAKKO,
         )
         if self.paik is not None and trk_img is not frame_u_for_tracking:
             self.paik.skaalaa_rms(results)
@@ -547,14 +549,8 @@ class Seuranta:
         self.n_seuranta_calls += 1
         self.n_seuranta_updates += len(stones)
 
-        # siluettitarkennus on laskettu C++:ssa ("sil"); varapolku erillisena vaiheena
-        sil = {}
-        found_idx = [i for i, r in enumerate(results) if r["found"]]
-        if found_idx and all("sil" in results[i] for i in found_idx):
-            sil = {i: tuple(results[i]["sil"]) for i in found_idx}
-        elif found_idx:
-            out = self.track_refiner.refine_many(frame_u_for_tracking, [(results[i]["X_cm"], results[i]["Y_cm"]) for i in found_idx])
-            sil = dict(zip(found_idx, out))
+        # siluettitarkennus on laskettu C++:n kivisaikeissa ("sil", set_seuranta_silhouette)
+        sil = {i: tuple(r["sil"]) for i, r in enumerate(results) if r["found"]}
 
         still_active = []
         for si, (s, refined) in enumerate(zip(stones, results)):

@@ -45,20 +45,11 @@ def alusta_cpp():
         print("C++-moduulin OpenCV: " + " | ".join(lines[:14]))
     except Exception as e:
         print(f"C++-moduulin OpenCV: tietoja ei saatu ({e!r})")
-    stone_tracker.set_color_gate(A.VARIPORTTI_S_MAX, A.VARIPORTTI_H_TOL, 0, 1)
-    stone_tracker.set_grid_threads(A.RISTIKKO_SAIKEET)
+    stone_tracker.set_color_gate(A.VARIPORTTI_S_MAX, A.VARIPORTTI_H_TOL)
     stone_tracker.set_prep_parallel(1)
-    stone_tracker.set_sat_parallel(0)
-    stone_tracker.set_intra_parallel(1)
-    print("SEURANTA: kiven sisainen rinnakkaisuus paalla (ristikkohaku + 2 mean-shiftia rinnan)")
-    stone_tracker.set_overlap_fast(1)
-    stone_tracker.set_grid_skip(0, 0.90, 1.0)
-    simd, us_scalar, us_simd = stone_tracker.set_fast_masks(1)
-    print(f"SEURANTA: nopeat maskit; saturaatio {'cvtColor (SIMD)' if simd else 'oma silmukka'} "
+    simd, us_scalar, us_simd = stone_tracker.sat_simd_info()
+    print(f"SEURANTA: saturaatio {'cvtColor (SIMD)' if simd else 'oma silmukka'} "
           f"(300x300: oma {us_scalar:.0f} us, cvtColor {us_simd:.0f} us)")
-    stone_tracker.set_fine_climb(1)
-    print("SEURANTA: ristikkohaun hieno vaihe maennousulla (PAALLA)")
-    stone_tracker.set_gpu_grid(0, 0)
 
 
 def _time_str_to_seconds(time_str):

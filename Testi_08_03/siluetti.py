@@ -48,18 +48,6 @@ class SilhouetteRefiner:
             int(self.max_shift_px), int(HALF), int(MASK_MARGIN), int(self.open_size), int(self.band_px),
         )
 
-    def refine_many(self, frame_bgr, xys):
-        """refine() usealle (X0, Y0) -parille samasta ruudusta (C++, kivet rinnan). Lista (X, Y, info)."""
-        if not xys:
-            return []
-        xs = np.ascontiguousarray([float(x) for x, _ in xys], dtype=np.float64)
-        ys = np.ascontiguousarray([float(y) for _, y in xys], dtype=np.float64)
-        return list(stone_tracker.silhouette_refine_batch_cpp(
-            np.ascontiguousarray(frame_bgr), self.body_pts, self.K, self.R, self.t, float(self.R_max),
-            float(self.H_total), float(self.lovi), xs, ys, float(W_LEAK), float(LAM), float(SIGMA_FRAC),
-            int(self.max_shift_px), int(HALF), int(MASK_MARGIN), int(self.open_size), int(self.band_px),
-        ))
-
     def batch_config(self, half=HALF, margin=MASK_MARGIN):
         """Argumentit stone_tracker.set_seuranta_silhouette:lle (SEURANTA laskee saman kivisaikeissa)."""
         return (self.body_pts, np.ascontiguousarray(self.K, dtype=np.float64), np.ascontiguousarray(self.R, dtype=np.float64),

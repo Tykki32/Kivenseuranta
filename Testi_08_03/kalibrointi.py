@@ -58,16 +58,8 @@ def _to_output_px_extended(x_cm, y_cm, extended_y_max_cm):
 
 
 def _compute_crop_row_range_extended(full_height_px, center_y_cm, half_height_cm, extended_y_max_cm):
-    """KRIITTINEN BUGIKORJAUS (kayttajan pyynnosta - katso keskustelu-
-    historia): kp.compute_crop_row_range/crop_house_view/expected_house_
-    center_in_crop kayttavat SISAISESTI kalibrointi_perus.py:n omaa to_output_px:aa, joka
-    on kiinteasti sidottu STANDARDIIN rata.OUTPUT_Y_MAX_CM:aan (4000cm) -
-    EI kelpaa taman tiedoston LAAJENNETULLE (10m takarajan yli
-    ulottuvalle, eri korkuiselle) kanvaasille. Naiden suora kayttö
-    laajennetulla kuvalla antoi VAARAN rivialueen (havaittu: koko
-    kolmen ellipsin sovitus epaonnistui systemaattisesti koska crop
-    osui aivan vaarille riveille, nakyi mustana kuvana). Tama on sama
-    laskukaava mutta parametrisoituna oikealla Y-max:lla."""
+    """kp.compute_crop_row_range laajennetulle kanvaasille (Y-max = extended_y_max_cm): kalibrointi_perus kayttaa
+    kiinteaa rata.OUTPUT_Y_MAX_CM:aa, joka antaisi vaaran rivialueen."""
     _, row_a = _to_output_px_extended(0.0, center_y_cm + half_height_cm, extended_y_max_cm)
     _, row_b = _to_output_px_extended(0.0, center_y_cm - half_height_cm, extended_y_max_cm)
     row_top = int(max(0, math.floor(min(row_a, row_b))))
@@ -96,18 +88,9 @@ def _find_blue_red_blue_pattern(
     margin_px=FAR_HOUSE_ROW_SCAN_CENTER_MARGIN_PX,
     max_gap_px=FAR_HOUSE_ROW_SCAN_MAX_GAP_PX,
 ):
-    """YDINTARKISTUS koko taman tiedoston kaukaisen pesan loytamiselle
-    (kayttajan pyynnosta - katso keskusteluhistoria): etsii rivit joilla
-    on sinista maskia center_col:in MOLEMMIN puolin JA punaista niiden
-    VALISSA - tama kuvio on riittavan erikoislaatuinen etta se EI osu
-    esim. mainospaneeleihin tai muihin sinisiin/punaisiin kohteisiin
-    jotka eivat ole oikeasti rengasmaisia (todettu ja korjattu kehitys-
-    vaiheessa: pelkka "suurin sininen kontuuri" -haku tarttui toistuvasti
-    vaariin kohteisiin). Kaytetaan seka koko-kuvan karkeaan hakuun etta
-    paikalliseen tarkennukseen/vahvistukseen (samalla funktiolla - sama
-    tarkistus, vain eri hakualue). Palauttaa (found_row, found_col)
-    suurimman loydetyn rivi-klusterin keskikohtana, tai None jos mitaan
-    riittavan pitkaa yhtenaista kuviota ei loydy."""
+    """Kaukaisen pesan tunnistus: rivit, joilla on sinista center_col:in molemmin puolin ja punaista niiden valissa
+    (kuvio ei osu mainospaneeleihin, toisin kuin pelkka suurin sininen alue). Palauttaa (rivi, sarake) suurimman
+    rivijoukon keskelta tai None."""
 
     h = blue_mask.shape[0]
     y_lo, y_hi = (0, h) if row_range is None else row_range
@@ -184,19 +167,10 @@ def _fit_circle_algebraic(points):
 
 
 def _three_ellipse_fit_center_in_crop(crop, center_col_hint, search_radius_px=None):
-    """YDINSOVITUS (kayttajan pyynnosta - katso keskusteluhistoria):
-    vahvistaa etta cropista loytyy sininen-punainen-sininen -kuvio
-    (_find_blue_red_blue_pattern) annetun center_col_hint:in ymparilta,
-    rakentaa sen ymparille ROI:n (pienin ymparoiva ympyra), saataa
-    sinisen/punaisen HSV-kynnyksen pinta-alaosuuteen (FAR_HOUSE_ROI_
-    TARGET_*_FRACTION), ja sovittaa ympyran KOLMELLE renkaalle (sininen
-    ulko/sisa, punainen ulko) SATEITTAISELLA reunanhaulla (_radial_
-    ring_edges - kerää pisteita molemmista nakyvista kaarista
-    symmetrisesti, toisin kuin yksittainen suurin-kontuuri-haku joka
-    voi tarttua vain YHTEEN pirstoutuneeseen renkaan palaan ja antaa
-    vinon keskipisteen). Palauttaa kolmen sovituksen keskipisteiden
-    KESKIARVON crop-paikallisissa koordinaateissa, tai None jos kuviota
-    ei loydy tai yhtaan ympyraa ei saada sovitettua."""
+    """Kaukaisen pesan keskipiste cropissa: vahvistaa sininen-punainen-sininen -kuvion center_col_hint:in ymparilta,
+    saataa sinisen/punaisen HSV-kynnyksen pinta-alaosuuteen (FAR_HOUSE_ROI_TARGET_*_FRACTION) ja sovittaa ympyrat
+    kolmelle renkaalle sateittaisella reunanhaulla (molemmat kaaret symmetrisesti). Palauttaa keskipisteiden
+    keskiarvon crop-koordinaateissa tai None."""
 
     blue_raw = kp.create_blue_mask(crop)
     red_raw = kp.create_red_mask(crop)
@@ -275,18 +249,8 @@ def build_far_house_center_seed(frame_undistorted, near_pts_frame, near_phys_pts
         )
     found_row, found_col = estimate
 
-    # "Skaalataan" (pystysuora affiini venytys/puristus, ankkuroituna
-    # lahempaan pesaan Y=0:ssa/ext_h:ssa) KOKO laajennettu topdown-KUVA
-    # niin etta loydetty rivi osuu tarkalleen FAR_HOUSE_Y_CM:n kohdalle -
-    # TARKALLEEN sama jarjestys kuin kasin tehdyssa prosessissa (katso
-    # keskusteluhistoria): tama tehdaan KUVALLE, EI vain yhdelle
-    # pisteelle, koska kolmen ellipsin sovitus PITAA tehda jo suunnilleen
-    # oikein skaalatussa TOPDOWN-avaruudessa (missa rengas nayttaa jo
-    # suunnilleen ympyralta) - EI takaisinprojisoituna vaaristyneeseen
-    # KEHYSAVARUUTEEN (missa kaukainen pieni rengas nakyy hyvin ohuena/
-    # venyneena ellipsina ja sateittainen reunanhaku/pattern-tarkistus
-    # toimii epaluotettavammin, todettu kehitysvaiheessa: leikattu-kuvan
-    # tarkistus epaonnistui systemaattisesti kehysavaruudessa).
+    # Koko laajennettu topdown-kuva venytetaan pystysuunnassa (ankkuri lahempi pesa) niin, etta loydetty rivi osuu
+    # FAR_HOUSE_Y_CM:iin. Kolmen ellipsin sovitus tehdaan topdown-avaruudessa, jossa rengas on jo lahes ympyra.
     target_row = (extended_y_max_cm - rata.FAR_HOUSE_Y_CM) * rata.PIXELS_PER_CM
     anchor_row = float(ext_h)
     scale_factor = (anchor_row - target_row) / (anchor_row - found_row)
@@ -295,16 +259,7 @@ def build_far_house_center_seed(frame_undistorted, near_pts_frame, near_phys_pts
     rescale_M = np.array([[1.0, 0.0, 0.0], [0.0, a, b]], dtype=np.float64)
     topdown_rescaled_ext = cv2.warpAffine(topdown_extended, rescale_M, (ext_w, ext_h))
 
-    # Rivi<->Y-suhde on nyt (affiinin rakentamistavan ansiosta) sama
-    # VAKIOKAAVA koko kuvan matkalta kuin standardikanvaasilla - katso
-    # keskusteluhistorian perustelu. HUOM (loydetty ja korjattu kayttajan
-    # pyynnosta nayttaessa jokaisen vaiheen kuvat): kp.compute_crop_row_
-    # range/crop_house_view/expected_house_center_in_crop kayttavat
-    # SISAISESTI kalibrointi_perus.py:n OMAA to_output_px:aa, joka on kiinteasti sidottu
-    # STANDARDIIN rata.OUTPUT_Y_MAX_CM:aan (4000cm) - EIVAT kelpaa tälle
-    # LAAJENNETULLE (eri korkuiselle) kanvaasille sellaisenaan. Kaytetaan
-    # siis omia extended-versioita (_compute_crop_row_range_extended jne,
-    # parametrisoitu oikealla extended_y_max_cm:lla).
+    # Rivi <-> Y on nyt sama kaava kuin standardikanvaasilla; rajaukseen laajennetut versiot (oikea Y-max).
     far_row_top_ext, _ = _compute_crop_row_range_extended(
         ext_h, rata.FAR_HOUSE_Y_CM, kp.HOUSE_CROP_HALF_HEIGHT_CM, extended_y_max_cm
     )
@@ -420,15 +375,10 @@ def far_ring_points_color_based(topdown_raw, H_current, max_points_per_ring=30):
     far_row_top, _ = kp.compute_crop_row_range(topdown_raw.shape[0], rata.FAR_HOUSE_Y_CM, kp.HOUSE_CROP_HALF_HEIGHT_CM)
     view = kp.crop_house_view(topdown_raw, rata.FAR_HOUSE_Y_CM, kp.HOUSE_CROP_HALF_HEIGHT_CM)
 
-    # Sama vahvistus kuin _three_ellipse_fit_center_in_crop:issa
-    # (kayttajan pyynnosta): ei luoteta pelkkaan "suurin sininen alue"
-    # -oletukseen, koska nykyinen H_current voi silla hetkella olla
-    # viela riittavan vino etta crop osuu vaaraan kohteeseen (esim.
-    # mainospaneeliin) - vahvistetaan ETTA sininen-punainen-sininen
-    # -kuvio loytyy paikallisesti ENNEN kuin renkaan pisteita palautetaan
-    # geometriselle ratkaisijalle. Jos kuviota ei loydy, palautetaan
-    # TYHJA (turvallisempi kuin vaara rengas - silloin ratkaisija
-    # nojaa vain lahempaan pesaan + hoglineihin talla kierroksella).
+    # Sama vahvistus kuin _three_ellipse_fit_center_in_crop:issa: sininen-punainen-sininen -kuvion pitaa loytya
+    # paikallisesti ennen kuin renkaan pisteita palautetaan (H_current voi viela olla niin vino, etta crop osuu
+    # mainospaneeliin). Jos kuviota ei loydy, palautetaan tyhja: ratkaisija nojaa silloin lahempaan pesaan ja
+    # hoglineihin.
     blue_raw = kp.create_blue_mask(view)
     red_raw = kp.create_red_mask(view)
     center_col = int(round((0.0 - rata.OUTPUT_X_MIN_CM) * rata.PIXELS_PER_CM))
@@ -821,13 +771,9 @@ def scale_calibration(calib_hi, pose_hi, frame_lo):
 
 
 def calibrate_camera_from_image_with_seed(filename):
-    """N oma korvaava kalibrointi (katso taman tiedoston
-    alkupaan kommentti periaatteesta) - lahemman pesan tunnistus on
-    TASMALLEEN sama kuin Testi_01_01:ssa/kamera9_01.py:ssa (koskematon),
-    mutta kaukaisen pesan loytaminen ja koko homografian ratkaisu on
-    korvattu uudella, kayttajan kanssa askel askeleelta validoidulla
-    menetelmalla (rivi-skannaus + varipohjainen rengastunnistus +
-    harmaasavypohjainen hoglinetunnistus + geometrinen tarkennus)."""
+    """Kalibrointi moodikuvasta: lahemman pesan tunnistus (kalibrointi_perus), kaukaisen pesan loytaminen
+    rivi-skannauksella ja varipohjaisella rengastunnistuksella, hoglinet harmaasavysta ja geometrinen tarkennus
+    (homografia + objektiivin k1)."""
 
     frame = cv2.imread(filename)
 

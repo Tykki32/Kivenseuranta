@@ -12,128 +12,21 @@ import rata
 HOUSE_CROP_HALF_HEIGHT_CM = 300.0
 
 
-FAR_HUE_TOLERANCE = 30
-
-
 # ============================================================
 # LAHEMMAN PESAN ELLIPSIEN HAKUASETUKSET
 # ============================================================
 
 NEAR_BLUE_MIN_AREA = 1000
 
-
 NEAR_BLUE_MIN_RATIO = 0.20
-
 
 NEAR_BLUE_MIN_SIZE_RATIO = 0.30
 
-
 NEAR_RED_MIN_AREA = 50
-
 
 NEAR_RED_MIN_RATIO = 0.15
 
-
 NEAR_RED_MIN_SIZE_RATIO = 0.15
-
-
-# ============================================================
-# KAUKAISEN PESAN ELLIPSIEN HAKUASETUKSET (HUE-MASKEISTA)
-# ============================================================
-
-FAR_BLUE_MIN_AREA = 20
-
-
-FAR_BLUE_MIN_RATIO = 0.15
-
-
-FAR_BLUE_MIN_SIZE_RATIO = 0.15
-
-
-FAR_BLUE_MIN_CONTOUR_LEN = 6
-
-
-FAR_RED_MIN_AREA = 8
-
-
-FAR_RED_MIN_RATIO = 0.12
-
-
-FAR_RED_MIN_SIZE_RATIO = 0.12
-
-
-FAR_RED_MIN_CONTOUR_LEN = 6
-
-
-# ============================================================
-# HAKUASETUKSET - KAUKAISEN PESAN LOYTAMINEN
-# (coarse -> fine -> ultra fine, alkuperaisen menetelman mukaan)
-# ============================================================
-
-SEARCH_CENTER_RANGE_CM = 200.0
-
-
-SEARCH_CENTER_RANGE_DEG = 30
-
-
-SEARCH_CENTER_RANGE_SCALE = 0.5
-
-
-Muutos = 5.0
-
-
-COARSE_CENTER_STEP_CM = SEARCH_CENTER_RANGE_CM / Muutos
-
-
-COARSE_ANGLE_STEP_DEG = SEARCH_CENTER_RANGE_DEG / Muutos
-
-
-COARSE_SCALE_STEP = SEARCH_CENTER_RANGE_SCALE / Muutos
-
-
-FINE_CENTER_RANGE_CM = COARSE_CENTER_STEP_CM * 2
-
-
-FINE_CENTER_STEP_CM = FINE_CENTER_RANGE_CM / Muutos
-
-
-FINE_ANGLE_RANGE_DEG = COARSE_ANGLE_STEP_DEG * 2
-
-
-FINE_ANGLE_STEP_DEG = FINE_ANGLE_RANGE_DEG / Muutos
-
-
-FINE_SCALE_RANGE = COARSE_SCALE_STEP * 2
-
-
-FINE_SCALE_STEP = FINE_SCALE_RANGE / Muutos
-
-
-ULTRA_CENTER_RANGE_CM = FINE_CENTER_STEP_CM * 2
-
-
-ULTRA_CENTER_STEP_CM = ULTRA_CENTER_RANGE_CM / Muutos
-
-
-ULTRA_ANGLE_RANGE_DEG = FINE_ANGLE_STEP_DEG * 2
-
-
-ULTRA_ANGLE_STEP_DEG = ULTRA_ANGLE_RANGE_DEG / Muutos
-
-
-ULTRA_SCALE_RANGE = FINE_SCALE_STEP * 2
-
-
-ULTRA_SCALE_STEP = ULTRA_SCALE_RANGE / Muutos
-
-
-MAX_BLUE_TEMPLATE_POINTS = 1200
-
-
-MAX_RED_TEMPLATE_POINTS = 1000
-
-
-MAX_BACKGROUND_TEMPLATE_POINTS = 1000
 
 
 # ============================================================
@@ -170,12 +63,9 @@ MAX_BACKGROUND_TEMPLATE_POINTS = 1000
 
 K1_SEARCH_RANGE = 0.6
 
-
 K1_SEARCH_STEPS = 25
 
-
 K1_SEARCH_REFINE_ROUNDS = 3
-
 
 K1_SEARCH_REFINE_SHRINK = 6.0
 
@@ -185,12 +75,9 @@ K1_SEARCH_REFINE_SHRINK = 6.0
 # valtetaan sovittamasta "vaaristymaa" pelkkaan mittauskohinaan.
 K1_MIN_RELATIVE_IMPROVEMENT = 0.08
 
-
 K1_MIN_MAGNITUDE = 0.01
 
-
 HOMOGRAPHY_REFINE_MAX_ITERATIONS = 15
-
 
 HOMOGRAPHY_REFINE_MIN_RELATIVE_IMPROVEMENT = 0.03
 
@@ -988,25 +875,12 @@ def find_house_pair(mask, min_area, min_ratio, min_size_ratio, min_contour_len=2
 
 
 # ============================================================
-# JAA-SUODATUS-POHJAINEN LISAREUNALAHDE (Testi_02_02, kayttajan
-# pyynnosta - katso keskusteluhistoria): joissakin videoissa (esim.
-# MAH00014, jossa lahempi pesa on aivan kuvan reunassa) hogline/
-# keskiviiva on niin haalea (matala kontrasti jaata vasten) etta
-# tavallinen harmaasavy-Canny (alla) ei loyda sita luotettavasti -
-# se hukkuu kirkkaan jaan omaan kohinaan. Rata-alueen S/V-histogrammin
-# (Testi_02_01:ssa kehitetty jaa-suodatus, main.py:n ICE_S_MAX/ICE_
-# V_MIN) HAVAITTIIN paljastavan tallaisen haalean viivan selvasti
-# PAREMMIN kuin Canny: jaa on tasaisen kirkasta JA matalasaturoitunutta
-# (S<LINE_ICE_S_MAX, V>LINE_ICE_V_MIN), joten kaikki mika EI tayta tata
-# (mukaan lukien haalea harmaa viiva, JOKA ON hieman jaata tummempi)
-# erottuu binaarimaskina huomattavasti kontrastikkaammin kuin raa'an
-# harmaasavykuvan gradientti. Tama LISATAAN (ei korvata) alkuperaisen
-# Cannyn rinnalle - molempien lahteiden segmentit yhdistetaan, joten
-# jo ennestaan toimiva videon (0001) tulos ei voi huonontua (samat
-# vanhat segmentit ovat yha mukana, uudet vain lisaavat kandidaatteja).
+# JAA-SUODATUKSEEN PERUSTUVA LISAREUNALAHDE: haalea hogline / keskiviiva (matala kontrasti jaata vasten, esim.
+# MAH00014) hukkuu harmaasavy-Cannyssa jaan kohinaan. Jaa on kirkasta ja matalakylläista (S < LINE_ICE_S_MAX,
+# V > LINE_ICE_V_MIN), joten kaikki muu (myos jaata hieman tummempi viiva) erottuu binaarimaskina selvemmin.
+# Segmentit lisataan Cannyn segmenttien rinnalle (ei korvata).
 # ============================================================
 LINE_ICE_S_MAX = 22
-
 
 LINE_ICE_V_MIN = 165
 
@@ -1126,20 +1000,9 @@ def pair_line_segments(segments, ellipse, orientation, center):
 
 
 def _single_sided_line(segments, ellipse, orientation, center):
-    """VARAKEINO (Testi_02_02, kayttajan pyynnosta - katso keskustelu-
-    historia): pair_line_segments vaatii AINA kaksi segmenttia, yhden
-    keskipisteen KUMMALTAKIN puolelta - tama toimii vain jos lahempi
-    pesa on kuvassa niin etta rataa nakyy molemmin puolin sita. Jos
-    pesa on aivan kuvan reunassa (esim. MAH00014, kamera kuvaa rataa
-    sivulta), toinen puoli ei koskaan nay eika paria loydy vaikka
-    varsinainen viiva olisi selvasti nakyvissa toisella puolella.
-    Kaytetaan silloin PARASTA YKSITTAISTA riittavan pitkaa segmenttia
-    joka kulkee lahella keskipistetta - se maarittaa itsessaan koko
-    suoran (combined lasketaan AINA vain yhden segmentin p1/p2:sta,
-    katso pair_line_segments), joten toista puolta ei oikeasti
-    tarvita geometrista suoraa varten - VAIN build_image_directions:in
-    suuntavektorille (keskipisteen KAUTTA peilattu synteettinen
-    "toinen puoli", jotta sen "mid" antaa oikean suunnan)."""
+    """Varakeino, kun pair_line_segments ei loyda paria (pesa kuvan reunassa, rataa nakyy vain toisella puolella):
+    paras yksittainen riittavan pitka segmentti lahella keskipistetta. Toinen puoli peilataan keskipisteen kautta,
+    jotta build_image_directions saa oikean suunnan."""
 
     if orientation == "vertical":
         candidates = [s for s in segments if angle_distance_to_vertical(s["angle"]) <= 35.0]
