@@ -318,6 +318,11 @@ Kivi on siinä "ei-valkoista".
   - **Jo seurattu:** alle 20 cm vahvistetusta radasta.
   - **Sama haku:** alle 30 cm saman haun toisesta ehdokkaasta.
   - **Heittokiven takana:** 50–800 cm liikkuvan heittokiven takana ja alle 100 cm sivussa (heittäjä tai harjaaja).
+  - **Hahmo edessä:** ehdokkaan edessä (kameran puolella, 5–100 cm kiven reunasta, ±10 cm sivulle) yli 50 %
+    etualaa taustanvaimennetussa seurantakuvassa → hylätään (`EDESSA_*`). Pelaajan pää projisoituu jään tasoon
+    vartalonsa taakse, joten sen edessä on vartalo ja jalat; aidon kiven edessä on lähtöhetkellä tyhjää jäätä
+    (heittäjä on takana). MAH00014: aidot heitot 0–9 %, harjaajan pää 100 %. Ilman tätä harjaajan päästä tuli
+    vahvistettu "heittokivi", jonka takana oikea kivi hylättiin heittäjänä (heitto t ≈ 130,5 s).
 - **Paikkojen täyttyminen:** jos `A.MAX_KIVIA` (8) on täynnä, huonoin rata poistetaan. Ensin vahvistamaton, jolla on
   huonoin rms-mediaani; sitten vahvistettu, jos rms-mediaani ≥ 8 px. Radan suuntaan liikkuvat radat ovat suojattuja.
 

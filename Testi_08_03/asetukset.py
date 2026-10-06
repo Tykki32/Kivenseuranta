@@ -101,6 +101,12 @@ HAKU_SAMA_HAKU_CM = 30.0             # saman haun ehdokkaat lahekkain -> yksi
 HAKU_TAKANA_MIN_CM = 50.0
 HAKU_TAKANA_MAX_CM = 800.0
 HAKU_TAKANA_SIVU_CM = 100.0
+# uuden ehdokkaan edessa (kameran puolella) ei saa olla isoa hahmoa: pelaajan paa projisoituu jaan tasoon vartalonsa
+# taakse, joten sen edessa on vartalo ja jalat; aidon kiven edessa on lahtohetkella tyhjaa jaata (heittaja on takana)
+EDESSA_VALI_CM = 5.0                 # kaistan alku kiven reunasta (cm)
+EDESSA_PITUUS_CM = 100.0             # kaistan loppu kiven reunasta (cm)
+EDESSA_PUOLILEVEYS_CM = 10.0         # kaistan puolileveys sivusuunnassa (cm)
+EDESSA_MAX_OSUUS = 0.5               # hahmo-osuus suurempi -> ehdokas hylataan (aidot heitot MAH: 0-0.09; > 1 = pois)
 SEURANTA_KARKEA_ASKEL_CM = 7.0
 SEURANTA_HIENO_ASKEL_CM = 1.5
 SEURANTA_PISTEKYNNYS = 0.35

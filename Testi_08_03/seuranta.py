@@ -83,6 +83,26 @@ def _forward_motion_cm(st):
     return float(np.median([q[2] for q in h[:5]]) - np.median([q[2] for q in h[-5:]]))
 
 
+def edessa_hahmo_osuus(img, pose, bx, by, r_cm):
+    """Osuus kiven edessa (pienempi Y, kameran puolella) olevan jaakaistan pisteista, jotka ovat etualaa (img =
+    taustanvaimennettu seurantakuva: tausta, jaa ja varjot valkoisia) - pelaajan paan edessa on vartalo, aidon kiven
+    edessa tyhjaa jaata."""
+    xs = bx + np.arange(-A.EDESSA_PUOLILEVEYS_CM, A.EDESSA_PUOLILEVEYS_CM + 0.1, 4.0)
+    ys = by - r_cm - np.arange(A.EDESSA_VALI_CM, A.EDESSA_PITUUS_CM + 0.1, 4.0)
+    gx, gy = np.meshgrid(xs, ys)
+    pts = np.column_stack([gx.ravel(), gy.ravel(), np.zeros(gx.size)])
+    u, v = kivimalli.project_3d(pose["K"], pose["R"], pose["t"], pts)
+    h, w = img.shape[:2]
+    ok = np.isfinite(u) & np.isfinite(v)
+    u, v = np.round(u[ok]).astype(int), np.round(v[ok]).astype(int)
+    ok = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    if not np.any(ok):
+        return 0.0
+    p = img[v[ok], u[ok]]
+    etuala = (p < 255).any(axis=1) if p.ndim > 1 else p < 255
+    return float(np.mean(etuala))
+
+
 def is_protected_mover(st):
     """Rata liikkuu radan suuntaan (heitetty kivi): suojattu duplikaattiyhdistamisessa ja paikanvarauksessa."""
     return A.SUOJAA_ETEENPAIN_CM > 0 and _forward_motion_cm(st) >= A.SUOJAA_ETEENPAIN_CM
@@ -185,6 +205,7 @@ class Seuranta:
         self.paik = None
         self.n_window_rejects = 0
         self.n_haku_takana = 0
+        self.n_haku_edessa = 0
 
         # saikeet ja liukuhihna
         self.panel_executor = ThreadPoolExecutor(max_workers=A.PANEELI_SAIKEET)
@@ -888,6 +909,15 @@ class Seuranta:
             already = (any(math.hypot(bx - s["last_xy"][0], by - s["last_xy"][1]) < A.HAKU_JO_SEURATTU_CM
                            for s in stones if s["confirmed"])
                        or any(math.hypot(bx - nx, by - ny) < A.HAKU_SAMA_HAKU_CM for nx, ny in new_this_scan))
+            edessa = None
+            if not already:
+                edessa = edessa_hahmo_osuus(frame_u_for_tracking, self.calib_result["pose"], bx, by,
+                                            self.live_state["R_max"])
+                if edessa > A.EDESSA_MAX_OSUUS:
+                    already = True
+                    self.n_haku_edessa += 1
+                    print(f"[frame {frame_index}] HAKU-ehdokas ({bx:.1f}, {by:.1f}) hylatty: hahmo edessa "
+                          f"({100 * edessa:.0f} %) - todennakoisesti pelaajan paa")
             # ehdokas liikkuvan heittokiven takana (heittaja liukuu kiven perassa, harjaajat) -> ei uutta rataa
             if not already and A.HAKU_TAKANA_MAX_CM > 0:
                 for hs in stones:
@@ -898,7 +928,7 @@ class Seuranta:
                         already = True
                         self.n_haku_takana += 1
                         print(f"[frame {frame_index}] HAKU-ehdokas ({bx:.1f}, {by:.1f}) hylatty: {dy:.0f} cm liikkuvan "
-                              f"heittokiven {hs['stone_id']} takana")
+                              f"heittokiven {hs['stone_id']} takana (edessa hahmoa {100 * edessa:.0f} %)")
                         break
             # paikat taynna -> huonoin rata pois uuden ehdokkaan tielta
             if not already and len(stones) >= A.MAX_KIVIA:
@@ -922,7 +952,7 @@ class Seuranta:
             draw_items.append((bx, by, stone_id, (0, 255, 255), f"{stone_id} UUSI"))
             print(f"[frame {frame_index}] Uusi kivi-ehdokas {stone_id}: ({bx:.1f}, {by:.1f}) cm (odottaa liikevahvistusta "
                   f"ennen CSV-kirjausta) [ehdokasominaisuudet score={hr.get('score')} rms={hr.get('rms_px')} "
-                  f"n_body={hr.get('n_body')} n_ring={hr.get('n_ring')} tarkka={hr.get('tarkka')}]")
+                  f"n_body={hr.get('n_body')} n_ring={hr.get('n_ring')} tarkka={hr.get('tarkka')} edessa={edessa:.2f}]")
 
     # =================================================================================================================
     # RAPORTIT JA LOPETUS
@@ -999,6 +1029,8 @@ class Seuranta:
         print(f"SEURANTA: hakualueen ulkopuolelle tarkentuneita havaintoja hylatty {self.n_window_rejects}")
         print(f"HAKU: liikkuvan heittokiven takana hylattyja ehdokkaita {self.n_haku_takana} "
               f"({A.HAKU_TAKANA_MIN_CM:.0f}-{A.HAKU_TAKANA_MAX_CM:.0f} cm takana, sivussa < {A.HAKU_TAKANA_SIVU_CM:.0f} cm)")
+        print(f"HAKU: hahmo edessa (pelaajan paa) hylattyja ehdokkaita {self.n_haku_edessa} "
+              f"(osuus > {A.EDESSA_MAX_OSUUS:.2f})")
         if self.paik is not None:
             self.paik.raportti()
         yleiset.aikamittausraportti(n, self.n_seuranta_updates, esikasittely.PIPE_STATS)
