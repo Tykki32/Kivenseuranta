@@ -435,37 +435,56 @@ Tulokset:
 - Kirjoitetaan `<pohja>_kahva.csv`:hen ruuduittain.
 
 **Kierteet.**
-- **Piirre:** kun kivi on alle 23 m päässä, joka ruudusta otetaan 32×32-pala kiven akselin suuntaan: palan "ylös" on
-  kiven akseli kuvassa (maan keskipisteestä (X, Y, 0) yläpinnan keskipisteeseen (X, Y, H_total)). Näin kahvan profiili
-  on palassa aina samassa asennossa kameran kallistuksesta ja kuvan kierrosta riippumatta. Pala kattaa ±2 kahvan sädettä
-  yläpinnan keskipisteen ympäriltä, ja siitä käytetään vain ylimmät 62 % riveistä (`A.KIERRE_PALA_RIVIT`): kahvan
-  profiili graniitin yläpuolella, ei kiven reunaa eikä jäätä. Piirre on harmaasävyn gradientin suuruus (Sobel),
-  keskitettynä ja normalisoituna.
+- **Pala:** kun kivi on alle 23 m päässä, joka ruudusta otetaan 48×48-harmaasävypala kiven akselin suuntaan. Palan
+  "ylös" on kiven akseli kuvassa (maan keskipisteestä (X, Y, 0) yläpinnan keskipisteeseen (X, Y, H_total)). Näin kahvan
+  profiili on palassa aina samassa asennossa kameran kallistuksesta ja kuvan kierrosta riippumatta. Pala kattaa ±3 kahvan
+  sädettä yläpinnan keskipisteen ympäriltä.
+- **Kohdistus kiven runkoon:** sijainnin pienet virheet (esim. lakaisijan peittäessä kiveä) siirtäisivät kahvaa palassa.
+  Siksi kunkin ruudun pala kohdistetaan graniittirungon gradienttiin. Runko näyttää samalta pyörimisestä riippumatta ja
+  on harvoin peitossa. Mallina on rungon mediaani, ja siirto (±4 px) haetaan normalisoidulla korrelaatiolla (kaksi
+  kierrosta). Kohdistetusta palasta leikataan ±2 kahvan säteen pala.
+- **Piirre:** harmaasävyn gradientin suuruus (Sobel) kahvan ikkunasta (rivit 4–18 ja sarakkeet 7–24 32×32-palassa:
+  kahva graniitin yläpuolella, ei taustaa sivuilta), keskitettynä ja normalisoituna. Lisäksi sama piirre palan
+  peilikuvasta (peilaus kiven akselin suhteen).
 - **Peittyneet ruudut pois:** jokaiselle ruudulle lasketaan piirteen mediaanisamankaltaisuus naapuriruutuihin
-  (t ± 1, t ± 2). Ruutu hylätään, jos se on selvästi muita huonompi (< mediaani − 4 × 1,4826 × MAD): harja, kenkä tai
-  heittäjä kahvan edessä.
-- **Toisto:** kahvan muoto toistuu puolikierroksen välein (kahva kohti kameraa ja siitä poispäin näyttää lähes samalta).
-  Kaikkien ruutuparien samankaltaisuus (pistetulo, kaikki viiveet ≥ 0,08 s; enintään 12 000 satunnaista paria).
-- **Häiriöiden poisto:** ruudun oma taso (peitto, etäisyys, valaistus) ja hidas viiveriippuvuus (3. asteen polynomi)
-  poistetaan.
+  (t ± 1, t ± 2). Ruutu hylätään, jos se on selvästi muita huonompi (< mediaani − 4 × 1,4826 × MAD).
+- **Ruutuparit:** kaikkien ruutuparien samankaltaisuus (pistetulo, kaikki viiveet ≥ 0,08 s; enintään 12 000 satunnaista
+  paria) sekä peilisamankaltaisuus (ruudun i piirre · ruudun j peilikuvan piirre). Ruudun oma taso (peitto, etäisyys,
+  valaistus) ja hidas viiveriippuvuus (3. asteen polynomi) poistetaan; peilisamankaltaisuudesta myös hidas ajallinen
+  muutos (viiveen ja ajan polynomi).
 - **Pyörimisnopeus:** ω(t) = ω_loppu + `A.KIERRE_HIDASTUVUUS` (0,02 rad/s²) × (t_loppu − t). ω_loppu haetaan
   500 ehdokkaasta, loppukierrosaika 0,6–40 s (`A.KIERRE_P_MIN_S`, `A.KIERRE_P_MAX_S`). Hakuväli on tarkoituksella laaja,
   koska kierteitä voi olla hog-hog-välillä alle 1 tai yli 10.
-- **Malli:** samankaltaisuus = c1 cos(2Δφ) + c2 cos(4Δφ), missä Δφ on kiertokulma ruutujen välillä (puolikierroksen
-  toisto ja sen yliaalto). Ehdokas kelpaa vain, jos c1 > 0 ja c2 ≤ c1. Muuten kaksinkertainen kierrosaika sopisi
+- **Malli 1 (toisto):** samankaltaisuus = c1 cos(2Δφ) + c2 cos(4Δφ), Δφ = φ_i − φ_j (kahvan muoto toistuu
+  puolikierroksen välein). Ehdokas kelpaa vain, jos c1 > 0 ja c2 ≤ c1. Muuten kaksinkertainen kierrosaika sopisi
   yliaallon kautta (puolitetut kierteet).
-- **Hyväksyntä:** paras ehdokas, kun
-  - selitysaste R² ≥ `A.KIERRE_MIN_R2` (0,02; sekoitetuilla ruuduilla R² ≤ 0,002),
-  - erottuvuus ≥ `A.KIERRE_MIN_EROTTUVUUS` (2,5): paras R² / paras muu R², kun ±30 % ja kerrannaiset (×2, ×½) on
-    rajattu pois (estää harmonisen virheen ja monitulkintaisen huipun), ja
-  - suodatuksen jälkeen vähintään 60 ruutua.
+- **Malli 2 (peili):** kahva kulmassa φ näyttää kulman −φ peilikuvalta. Peilisamankaltaisuus = a cos(Σφ) + b sin(Σφ) +
+  a2 cos(2Σφ) + b2 sin(2Σφ), Σφ = φ_i + φ_j. Tämä on toinen, riippumaton mittaus samasta pyörimisestä. Lakaisun rytmi
+  (harjat kahvan takana) voi tuottaa toistoa, mutta ei tällaista kahvan absoluuttiseen kulmaan sidottua rakennetta.
+- **Hyväksyntä:**
+  - toiston selitysaste R² ≥ `A.KIERRE_MIN_R2` (0,02; sekoitetuilla ruuduilla ≤ 0,002) ja suodatuksen jälkeen
+    vähintään 60 ruutua;
+  - jos peilin selitysaste ≥ `A.KIERRE_PEILI_MIN_R2` (0,03), peilin kierrosajan on oltava ±15 %
+    (`A.KIERRE_PEILI_TOL`) toiston kierrosajasta. Muuten tulos hylätään ristiriitaisena. Lopullinen kierrosaika on
+    yhteisen spektrin (toisto + peili) huippu tällä välillä;
+  - jos peilisignaali on heikko, toiston erottuvuuden on oltava ≥ `A.KIERRE_MIN_EROTTUVUUS` (2,5): paras R² / paras muu
+    R², kun ±30 % ja kerrannaiset (×2, ×½) on rajattu pois.
+  - Sekoitetuilla ruuduilla (MAH00014 ja 0001, 3 sekoitusta / kivi, 69 ajoa) yhtään tulosta ei hyväksytty.
 - **Kierteet:** ∫ω dt / 2π kaukohogista lähihogiin. Kahva erottuu vasta n. 23 m:stä, joten alkuosa ekstrapoloidaan.
-- **Tulos MAH00014:ssa (20 hog-kiveä):** kierrearvio onnistuu 17 kivellä (aiemmin 13); seuranta-CSV:t identtiset
-  aiempaan, vain kierresarakkeet muuttuvat. Live-tallenteella 0001 onnistuu 3/3. Kivi 12 (0001) silmämääräisesti
-  tarkistettuna (kahvan "tynkä" kohti kameraa joka puolikierros): 2,45 kierrosta, uusi menetelmä 2,39 (vanha 2,30).
-- **Miksi harmaasävy eikä väri:** tallenteiden väri-informaatio on puolitetulla resoluutiolla (4:2:0) ja voimakkaasti
-  pakattu. Värikanavista lasketut piirteet olivat näissä tiedostoissa harmaasävyä heikompia. Kahvan profiili (muoto)
-  erottuu harmaasävyn gradientista luotettavimmin.
+- **Tulos (koko ohjelma):** MAH00014: 17/20 hog-kiveä, toiston R² 0,13–0,33 (paitsi kivi 6: 0,04); seuranta-CSV:t
+  identtiset aiempaan. 0001: 3/3; kivi 12 silmämääräisesti 2,45 kierrosta, menetelmä 2,43. Toisto ja peili täsmäävät
+  kaikissa kivissä, joissa peilisignaali on riittävä (ero ≤ 0,07 kierrosta).
+- **Hylätyt MAH00014:ssa (kivet 3, 71, 85) ja rajatapaus 6:** lakaisijoiden mustat jalat ja harjat ovat kahvan takana
+  tai päällä lähes koko seurannan ajan (peitto kahvan ikkunassa 30–40 %). Kivessä 3 toisto ja peili antavat eri
+  kierrosajan (11,7 s vs. 5,9 s), kivissä 71 ja 85 kumpikaan signaali ei ole riittävä. Kivessä 85 näkyy lakaisun
+  rytmi (≈ 0,7 s), joka olisi pelkällä toistolla voinut tulla tulkituksi pyörimiseksi (7,9 kierrosta). Kivessä 6 peili
+  on heikko, joten tulos (5,03) perustuu pelkkään toistoon ja on epävarma. 720p-kuvassa kahva on 3–8 px, joten
+  näissä kivissä luotettavaa arviota ei saada; ne jätetään tyhjiksi väärän luvun sijaan. Livenä täysresoluutioinen
+  arvio (osio 8) voi onnistua näissäkin.
+- **Miksi harmaasävy eikä väri:** tallenteiden väri-informaatio on puolitetulla resoluutiolla (4:2:0) ja pakattu.
+  Kahvan väri erottuu jäästä selvästi (Lab-väriero moodikuvaan 10–20, jään kohina ≈ 1), mutta värialue on pehmeä
+  läikkä, joka ei seuraa kahvan muotoa. Väripiirteet (väriero moodikuvaan, S-maski eri kynnyksillä, sävymaski) antoivat
+  kaikki selvästi heikomman tuloksen kuin harmaasävyn gradientti.
 - Live-tilassa sama lasketaan myös täyden resoluution kuvasta (osio 8).
 
 ---

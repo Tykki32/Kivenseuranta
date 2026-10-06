@@ -206,7 +206,8 @@ KIERRE_MIN_EROTTUVUUS = 2.5          # paras huippu / paras muu huippu (ei +-30 
 KIERRE_P_MIN_S = 0.6                 # loppukierrosajan hakuvali (s): laaja, ei oletusta kierrosmaarasta
 KIERRE_P_MAX_S = 40.0
 KIERRE_P_N = 500
-KIERRE_PALA_RIVIT = 0.62             # akselin suuntaisesta palasta kaytetaan ylimmat rivit (kahvan profiili)
+KIERRE_PEILI_MIN_R2 = 0.03           # peilisignaali riittava -> sen kierrosajan on osuttava samaan (muuten hylataan)
+KIERRE_PEILI_TOL = 0.15              # sallittu ero kierrosajoissa (suhteellinen)
 
 # =====================================================================================================================
 # 8. PAIKALLINEN TAYSI RESOLUUTIO (live; paikallinen.py)
