@@ -95,14 +95,18 @@ def version_string():
 # SEURANTA, CSV, debug) ajavat rinnan; nopeuden maaraa HITAIN vaihe (suurin palveluaika ms/ruutu).
 # ------------------------------------------------------------------
 
-def _stage_numbers():
+def _stage_numbers(pipe_stats=None):
     P = lambda k: PROF.get(k, [0.0, 0])
-    a_n = P("pipe A: stabilointi (vaihekorrelaatio)")[1]
+    a_n = P("pipe A: set_transform")[1]          # kerran joka ruudussa (stabilointi lasketaan livena vain osasta ruutuja)
+    live_ = bool((pipe_stats or {}).get("live"))
     b_n = P("pipe B: odottaa vaihetta A")[1]
     c_n = P("pipe C: paasaie odottaa hihnaa (sisaltyy py: read(video)-riviin)")[1]
     if a_n < 20 or b_n < 20 or c_n < 20:
         return None
-    a_busy = sum(v[0] for k, v in PROF.items() if k.startswith("pipe A:") and "odottaa" not in k) / a_n * 1000
+    # livena read(video) = kameran seuraavan ruudun odotus (syote), ei tyota
+    a_busy = sum(v[0] for k, v in PROF.items() if k.startswith("pipe A:") and "odottaa" not in k
+                 and not (live_ and k == "pipe A: read(video)")) / a_n * 1000
+    a_win = P("pipe A: read(video)")[0] / a_n * 1000 if live_ else 0.0
     a_wout = P("pipe A: odottaa vaihetta B (jono taynna)")[0] / a_n * 1000
     b_busy = sum(v[0] for k, v in PROF.items() if k.startswith("pipe B:") and "odottaa" not in k) / b_n * 1000
     b_win = P("pipe B: odottaa vaihetta A")[0] / b_n * 1000
@@ -110,7 +114,7 @@ def _stage_numbers():
     c_win = P("pipe C: paasaie odottaa hihnaa (sisaltyy py: read(video)-riviin)")[0] / c_n * 1000
     c_tot = P("FRAME_KOKO")[0] / max(P("FRAME_KOKO")[1], 1) * 1000
     c_busy = max(c_tot - c_win, 1e-6)
-    return dict(a=(a_busy, 0.0, a_wout), b=(b_busy, b_win, b_wout), c=(c_busy, c_win, 0.0), c_tot=c_tot)
+    return dict(a=(a_busy, a_win, a_wout), b=(b_busy, b_win, b_wout), c=(c_busy, c_win, 0.0), c_tot=c_tot)
 
 
 def _jonot(ps):
@@ -122,7 +126,7 @@ def _jonot(ps):
 
 def pullonkaula_tiivis(pipe_stats):
     """Yhden rivin pullonkaulatieto edistymisraporttiin (tai None)."""
-    s = _stage_numbers()
+    s = _stage_numbers(pipe_stats)
     if s is None:
         return None
     names = {"a": "A luku+stabilointi", "b": "B warp+varjosuodatus", "c": "C paasaie"}
@@ -134,7 +138,7 @@ def pullonkaula_tiivis(pipe_stats):
 
 def aikamittausraportti(n_frames, n_seuranta_updates, pipe_stats):
     """Ajon lopun raportti: pullonkaula + vaihekohtaiset ajat (Python ja C++)."""
-    s = _stage_numbers()
+    s = _stage_numbers(pipe_stats)
     print()
     if s is not None:
         print("=== PULLONKAULA-ANALYYSI ===")

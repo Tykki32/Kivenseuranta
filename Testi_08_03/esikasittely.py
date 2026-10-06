@@ -274,7 +274,7 @@ class LivePipeline:
     kiviprofiili ovat valmiit (seurantavaihe). haku_ahead(idx, frame_u_for_tracking, thr) -> HAKU-future tai None."""
 
     def __init__(self, source_read, engine, prep, ref_gray, live_state, calib_result, first_index, depth, haku_ahead=None,
-                 stab_harvennus=1):
+                 stab_harvennus=1, live=False):
         self._haku_ahead = haku_ahead
         self._stab_n = max(1, int(stab_harvennus))
         self._qa = queue.Queue(maxsize=depth)   # A -> B
@@ -288,7 +288,8 @@ class LivePipeline:
         self._calib_result = calib_result
         self._index = first_index
         PIPE_STATS.update(wall0=time.perf_counter(), cpu0=time.process_time(), qC_sum=0, qC_n=0, qA_sum=0, qA_n=0,
-                          cpu_a=None, cpu_b=None, depth=depth, stab_laskettu=0, stab_interp=0)
+                          cpu_a=None, cpu_b=None, depth=depth, stab_laskettu=0, stab_interp=0,
+                          live=bool(live))
         self._ta = threading.Thread(target=self._run_a, daemon=True)
         self._tb = threading.Thread(target=self._run_b, daemon=True)
         self._ta.start()

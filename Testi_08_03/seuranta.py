@@ -475,7 +475,7 @@ class Seuranta:
         self.frame_pipeline = esikasittely.LivePipeline(
             self.frame_prefetcher.read, self.engine, self.live_prep, self.ref_gray, self.live_state, self.calib_result,
             frame_index + 1, depth=A.JONON_SYVYYS, haku_ahead=haku_ahead,
-            stab_harvennus=A.STAB_HARVENNUS_LIVE if live.active() is not None else 1,
+            stab_harvennus=A.STAB_HARVENNUS_LIVE if live.active() is not None else 1, live=live.active() is not None,
         )
         print(f"Liukuhihna: stabilointi {A.STAB_SAIKEET} ruudulle rinnan, jonojen syvyys {A.JONON_SYVYYS}")
 
