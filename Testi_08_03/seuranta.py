@@ -916,6 +916,7 @@ class Seuranta:
             self.frame_prefetcher.close()
         if self.csv_file is not None:
             self.csv_file.close()
+        heitot.odota_kierteet()
         if self.stone_registry:
             heitot.kirjoita_heitot(self.stone_registry, self.hog_results, self.csv_output)
             try:

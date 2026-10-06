@@ -14,6 +14,7 @@ sama heitto (vain yksi kivi ylittaa hoglinjan kerrallaan) -> parempi sailyy.
 """
 import csv
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
@@ -67,6 +68,38 @@ def _kierre_tulos(res, obs, fps, suffix, label):
         res["kierre_r2" + suffix] = kr["r2"]
 
 
+_KIERRE_POOL = None          # live: kierrearvio taustasaikeessa (ei pysayta seurantaa lahihogilla)
+_KIERRE_KESKEN = []
+
+
+def _kierteet(res, obs, obs_taysi, fps):
+    """Kierrearvio 720p- ja taysresoluutioisesta piirteesta -> res."""
+    _kierre_tulos(res, obs, fps, "", "")
+    if obs_taysi:
+        _kierre_tulos(res, obs_taysi, fps, "_taysi", "taysi resoluutio: ")
+        res["kierre_ruutuja_taysi"] = len(obs_taysi)
+
+
+def _kierteet_tausta(res, obs, obs_taysi, fps):
+    _kierteet(res, obs, obs_taysi, fps)
+    k = res.get("kierteet_taysi", res.get("kierteet"))
+    print(f"[kierre] kivi {res['stone_id']}: " + (f"kierteita hog-hog {k:.1f}" if k is not None else "kierteita ei saatu"))
+
+
+def odota_kierteet():
+    """Odottaa taustasaikeen kierrearviot (ennen tulostiedostojen kirjoitusta)."""
+    global _KIERRE_POOL
+    for f in _KIERRE_KESKEN:
+        try:
+            f.result()
+        except Exception as e_:
+            print(f"[kierre] taustalaskenta epaonnistui: {e_!r}")
+    _KIERRE_KESKEN.clear()
+    if _KIERRE_POOL is not None:
+        _KIERRE_POOL.shutdown(wait=True)
+        _KIERRE_POOL = None
+
+
 def hog_check(s, frame_index, fps, results, frame_img, csv_output, pose):
     """Kun vahvistettu kivi on lahihogin + marginaalin kohdalla, radalle tehdaan hog-hog-analyysi (kerran) ja
     kierrearvio. Onnistunut tulos lisataan results-listaan ja tulostetaan; still-kuva tallennetaan lahihogilla."""
@@ -88,12 +121,15 @@ def hog_check(s, frame_index, fps, results, frame_img, csv_output, pose):
             if cap is not None:
                 res["t_far_wall"] = cap - (float(rows[-1][1]) - float(res["t_far_hog_s"]))
         if res.get("ok"):
-            _kierre_tulos(res, s.get("kierre") or [], fps, "", "")
-            s.pop("kierre", None)
-            if s.get("kierre_taysi"):
-                _kierre_tulos(res, s["kierre_taysi"], fps, "_taysi", "taysi resoluutio: ")
-                res["kierre_ruutuja_taysi"] = len(s["kierre_taysi"])
-            s.pop("kierre_taysi", None)
+            obs, obs_taysi = s.pop("kierre", None) or [], s.pop("kierre_taysi", None) or []
+            if live.active() is not None:
+                # live: kierrearvio (~1 s / piirre) taustasaikeeseen; tulos paneeliin kun valmis
+                global _KIERRE_POOL
+                if _KIERRE_POOL is None:
+                    _KIERRE_POOL = ThreadPoolExecutor(max_workers=1)
+                _KIERRE_KESKEN.append(_KIERRE_POOL.submit(_kierteet_tausta, res, obs, obs_taysi, fps))
+            else:
+                _kierteet(res, obs, obs_taysi, fps)
         s["hog_result"] = res
         if res.get("ok"):          # vain onnistunut (R_y, R_x, R_y*R_x > 0.99) tulostetaan
             results.append(res)

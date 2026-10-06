@@ -505,6 +505,11 @@ Tulokset:
   läikkä, joka ei seuraa kahvan muotoa. Väripiirteet (väriero moodikuvaan, S-maski eri kynnyksillä, sävymaski) antoivat
   kaikki selvästi heikomman tuloksen kuin harmaasävyn gradientti.
 - Live-tilassa sama lasketaan myös täyden resoluution kuvasta (osio 8).
+- Live-tilassa kierrearvio lasketaan taustasäikeessä (noin 1 s / piirre), jotta seuranta ei pysähdy lähihogilla.
+  Tulos ilmestyy paneeliin ja lokiin (`[kierre] kivi N: kierteita hog-hog …`), kun laskenta on valmis. Tulostiedostot
+  kirjoitetaan vasta, kun kaikki arviot ovat valmiita. Tiedostoajossa arvio lasketaan heti, joten tulokset eivät
+  muutu ajosta toiseen. (Live 06.10.2026: ennen tätä jokainen heitto pysäytti käsittelyn noin 2,2 s:ksi, ja viive
+  kasvoi heittosarjan aikana 6–10 s:iin.)
 
 ---
 
