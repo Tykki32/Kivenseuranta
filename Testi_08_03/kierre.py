@@ -5,12 +5,13 @@ ympyra, sateena A.KAHVA_SADE_KERROIN x kahvan sade (profiilista) kuvaan projisoi
 varikkaiden pikseleiden savyt (S >= A.KAHVA_MIN_S, V >= A.KAHVA_MIN_V; jaa ja graniitti ovat harmaita). Radan
 paattyessa kahvan savy = savy, jonka +-A.KAHVA_SAVY_TOL valilla on eniten pikseleita -> <csv>_kahva.csv.
 
-KIERTEET: joka ruudusta kiven akselin suuntainen 32x32-pala kahvasta (ylimmat rivit = kahvan profiili), harmaasavyn
-gradientti (Sobel). Peittyneet ruudut (harja, kenka) hylataan ajallisen jatkuvuuden perusteella. Kahvan muoto toistuu
-PUOLIKIERROKSEN valein. Pyoriminen hidastuu: omega(t) = omega_loppu + A.KIERRE_HIDASTUVUUS (t_loppu - t). Loppukierrosaika
-haetaan laajalta valilta (0,6-40 s) mallilla c1 cos(2 dphi) + c2 cos(4 dphi) kaikkien ruutuparien samankaltaisuuteen;
-hyvaksynta R^2:n ja erottuvuuden (huippu vs. muut kuin kerrannaiset) mukaan. Kierteet = integraali omega dt / 2 pi
-kaukohogista lahihogiin. Kahva erottuu vasta n. 23 m:sta -> alkuosa ekstrapoloidaan.
+KIERTEET: joka ruudusta kiven akselin suuntainen harmaasavypala kahvasta. Palat kohdistetaan kiven runkoon
+(graniitti), piirteena kahvan ikkunan gradientti (Sobel) seka sen peilikuva. Peittyneet ruudut hylataan ajallisen
+jatkuvuuden perusteella. Kahvan muoto toistuu PUOLIKIERROKSEN valein ja kahva kulmassa phi nayttaa kulman -phi
+peilikuvalta: kaksi riippumatonta mittausta. Pyoriminen hidastuu: omega(t) = omega_loppu + A.KIERRE_HIDASTUVUUS
+(t_loppu - t). Loppukierrosaika haetaan laajalta valilta (0,6-40 s); hyvaksynta R^2:n, erottuvuuden ja toiston ja peilin
+yhtapitavyyden mukaan. Kierteet = integraali omega dt / 2 pi kaukohogista lahihogiin. Kahva erottuu vasta n. 23 m:sta
+-> alkuosa ekstrapoloidaan.
 """
 import csv
 import os
@@ -25,35 +26,69 @@ _KAHVA_ANG = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False)
 # kierrosajan (loppu) hakuvali: laaja, ettei hakuvali rajaa tulosta (MAH00014: 1-10 kierrosta hog-hog)
 _KIERRE_P = np.exp(np.linspace(np.log(A.KIERRE_P_MAX_S), np.log(A.KIERRE_P_MIN_S), A.KIERRE_P_N))
 _KIERRE_W = 2.0 * np.pi / _KIERRE_P
+# kierrepala: ISO pala 48x48 (+-1,5 rp), josta kohdistuksen jalkeen leikataan 32x32 (+-rp) siirrolla (dy, dx)
+_ISO = 48
+_REUNA = 8                                  # 32x32-palan vasen ylakulma isossa palassa ilman siirtoa
+_HAKU = 4                                   # kohdistuksen siirto +-4 px (isossa palassa)
+_RUNKO_R = (16, 30)                         # rungon rivit 32x32-palassa (kiven ylapinnasta alaspain)
+_RUNKO_C = (-4, 36)                         # rungon sarakkeet 32x32-palassa
+_IKKUNA = (4, 19, 7, 25)                    # kahvan ikkuna 32x32-palassa (rivit, sarakkeet; symmetrinen akselin suhteen)
 
 
-def kierre_piirre(img, cx, cy, gx, gy, rp, size=32):
-    """Kiven akselin suuntainen gradienttipala kahvasta (normalisoitu, float16) tai None.
+def kierre_piirre(img, cx, cy, gx, gy, rp):
+    """Kiven akselin suuntainen harmaasavypala kahvasta (48x48 uint8) tai None.
     Palan "ylos" = kiven akseli kuvassa (maan keskipisteesta (gx, gy) ylapinnan keskipisteeseen (cx, cy)), joten kahvan
     profiili on palassa aina samassa asennossa kameran kallistuksesta ja kuvan kierrosta riippumatta. Pala kattaa
-    +-rp (kahvan ympyran sade) ylapinnan keskipisteen ympari; mukaan otetaan vain ylimmat A.KIERRE_PALA_RIVIT
-    (kahvan profiili graniitin ylapuolella, ei kiven reunaa ja jaata)."""
+    +-1,5 rp (rp = kahvan ympyran sade) ylapinnan keskipisteen ympari; kierre_arvio kohdistaa palat kiven runkoon ja
+    leikkaa niista +-rp-palat."""
     a = np.array([cx - gx, cy - gy], np.float64)
     na = float(np.hypot(a[0], a[1]))
     if na < 1e-6:
         return None
     a /= na
     l = np.array([-a[1], a[0]])
-    k = rp / (size / 2.0)                          # px kuvassa / px palassa
-    h = size / 2.0 - 0.5
+    k = 1.5 * rp / (_ISO / 2.0)                    # px kuvassa / px palassa
+    h = _ISO / 2.0 - 0.5
     M = np.zeros((2, 3), np.float64)
     M[:, 0] = k * l
     M[:, 1] = -k * a
     M[:, 2] = np.array([cx, cy]) - h * k * l + h * k * a
     g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
-    p = cv2.warpAffine(g.astype(np.float32), cv2.invertAffineTransform(M), (size, size), flags=cv2.INTER_LINEAR,
-                       borderMode=cv2.BORDER_REPLICATE)
-    p = cv2.GaussianBlur(p, (0, 0), 0.7)
-    v = cv2.magnitude(cv2.Sobel(p, cv2.CV_32F, 1, 0), cv2.Sobel(p, cv2.CV_32F, 0, 1))
-    v = v[:int(size * A.KIERRE_PALA_RIVIT), :].ravel()
-    v -= v.mean()
+    return cv2.warpAffine(g, cv2.invertAffineTransform(M), (_ISO, _ISO), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_REPLICATE)
+
+
+def _grad(p):
+    g = cv2.GaussianBlur(p.astype(np.float32), (0, 0), 0.7)
+    return cv2.magnitude(cv2.Sobel(g, cv2.CV_32F, 1, 0), cv2.Sobel(g, cv2.CV_32F, 0, 1))
+
+
+def _norm(v):
+    v = v.astype(np.float32).ravel()
+    v = v - v.mean()
     n = float(np.linalg.norm(v))
-    return (v / n).astype(np.float16) if n > 1e-6 else None
+    return v / n if n > 1e-6 else None
+
+
+def _kohdista(G):
+    """Palat kohdistetaan kiven runkoon (graniitti; pyorimisesta riippumaton ja harvoin peitossa): rungon
+    gradienttimalli = mediaani, siirto = paras normalisoitu korrelaatio +-_HAKU px. Kaksi kierrosta."""
+    n = len(G)
+    sh = np.zeros((n, 2), int)
+    r0, r1 = _REUNA + _RUNKO_R[0], _REUNA + _RUNKO_R[1]
+    c0, c1 = _REUNA + _RUNKO_C[0], _REUNA + _RUNKO_C[1]
+    gr = np.array([_grad(g) for g in G], np.float32)
+    alue = gr[:, r0 - _HAKU:r1 + _HAKU, c0 - _HAKU:c1 + _HAKU]
+    ik = np.lib.stride_tricks.sliding_window_view(alue, (r1 - r0, c1 - c0), axis=(1, 2))   # n x 9 x 9 x h x w
+    ik = ik - ik.mean(axis=(3, 4), keepdims=True)
+    ik_n = np.sqrt(np.einsum("nabhw,nabhw->nab", ik, ik)) + 1e-6
+    for _ in range(2):
+        tm = np.median(ik[np.arange(n), sh[:, 0] + _HAKU, sh[:, 1] + _HAKU], 0)
+        tm = tm - tm.mean()
+        res = np.einsum("nabhw,hw->nab", ik, tm) / ik_n
+        best = res.reshape(n, -1).argmax(1)
+        sh = np.column_stack(np.unravel_index(best, res.shape[1:])) - _HAKU
+    return sh
 
 
 def _jatkuvat(F):
@@ -70,71 +105,124 @@ def _jatkuvat(F):
     return q > med - 4.0 * 1.4826 * mad
 
 
-def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=100):
-    """obs: [(ruutu, piirre)]. Palauttaa dict(kierrokset, kierrosaika_far_s, kierrosaika_near_s, r2, erottuvuus, n)
-    tai None."""
-    if alpha is None:
-        alpha = A.KIERRE_HIDASTUVUUS
-    if not obs:
-        return None
-    T = np.array([o[0] for o in obs], np.float64) / fps
-    F = np.array([o[1] for o in obs], np.float32)
-    m = _jatkuvat(F)
-    T, F = T[m], F[m]
-    n = len(T)
-    if n < A.KIERRE_MIN_RUUDUT:
-        return None
-    S = F @ F.T
-    i, k = np.triu_indices(n, 1)
-    L = T[k] - T[i]
-    m = L > 0.08                                   # kaikki viiveet (pitkat viiveet erottavat lahekkaiset kierrosajat)
-    i, k, L = i[m], k[m], L[m]
+def _parit(S, i, k, n):
+    """Ruutuparien samankaltaisuus, ruudun oma taso (peitto, etaisyys, valaistus) pois."""
     s = S[i, k].astype(np.float64)
-    for _ in range(3):      # ruudun oma taso (peitto, etaisyys, valaistus) pois
+    for _ in range(3):
         cnt = np.maximum(np.bincount(i, None, n) + np.bincount(k, None, n), 1)
         rd = (np.bincount(i, s, n) + np.bincount(k, s, n)) / cnt
         rd -= rd.mean()
         s = s - rd[i] - rd[k]
+    return s
+
+
+def _erottuvuus(sc, j):
+    """Paras huippu / paras huippu, kun +-30 % ja kerrannaiset (x2, /2) ovat pois."""
+    P = _KIERRE_P
+    muu = np.ones(len(P), bool)
+    for f_ in (1.0, 2.0, 0.5):
+        muu &= ~((P > P[j] * f_ / 1.3) & (P < P[j] * f_ * 1.3))
+    return float(sc[j] / max(sc[muu].max() if muu.any() else 0.0, 1e-5))
+
+
+def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=50):
+    """obs: [(ruutu, kierre_piirre-pala)]. Palauttaa dict(kierrokset, kierrosaika_far_s, kierrosaika_near_s, r2,
+    erottuvuus, peili_r2, peili_kierrosaika_s, n) tai None."""
+    if alpha is None:
+        alpha = A.KIERRE_HIDASTUVUUS
+    if len(obs) < A.KIERRE_MIN_RUUDUT:
+        return None
+    T = np.array([o[0] for o in obs], np.float64) / fps
+    G = [o[1] for o in obs]
+    sh = _kohdista(G)
+    r0, r1, c0, c1 = _IKKUNA
+    F, Fm = [], []
+    for g, (dy, dx) in zip(G, sh):
+        p = g[_REUNA + dy:_REUNA + dy + 32, _REUNA + dx:_REUNA + dx + 32]
+        F.append(_norm(_grad(p)[r0:r1, c0:c1]))
+        Fm.append(_norm(_grad(p[:, ::-1])[r0:r1, 32 - c1:32 - c0]))     # peilikuva kiven akselin suhteen
+    ok = np.array([f is not None and m is not None for f, m in zip(F, Fm)])
+    T = T[ok]
+    F = np.array([f for f, k_ in zip(F, ok) if k_], np.float32)
+    Fm = np.array([f for f, k_ in zip(Fm, ok) if k_], np.float32)
+    if len(F) < A.KIERRE_MIN_RUUDUT:
+        return None
+    m = _jatkuvat(F)
+    T, F, Fm = T[m], F[m], Fm[m]
+    n = len(T)
+    if n < A.KIERRE_MIN_RUUDUT:
+        return None
+    i, k = np.triu_indices(n, 1)
+    L = T[k] - T[i]
+    m = L > 0.08                                   # kaikki viiveet (pitkat viiveet erottavat lahekkaiset kierrosajat)
+    i, k, L = i[m], k[m], L[m]
+    s = _parit(F @ F.T, i, k, n)
+    Sm = F @ Fm.T
+    sp = _parit((Sm + Sm.T) / 2.0, i, k, n)
     if len(s) > n_pairs:
         q = np.random.default_rng(0).choice(len(s), n_pairs, replace=False)
-        i, k, L, s = i[q], k[q], L[q], s[q]
+        i, k, L, s, sp = i[q], k[q], L[q], s[q], sp[q]
     if len(s) < 500:
         return None
     Ln = L / L.max()
-    Q, _ = np.linalg.qr(np.column_stack([np.ones_like(Ln), Ln, Ln ** 2, Ln ** 3]))   # hidas viiveriippuvuus pois
+    Q, _ = np.linalg.qr(np.column_stack([Ln ** p for p in range(4)]))     # hidas viiveriippuvuus pois
+    Q = Q.astype(np.float32)
     s = s - Q @ (Q.T @ s)
-    ss = float(s @ s)
-    if ss <= 0:
+    Tc = (T[i] + T[k]) / 2.0
+    Tc = (Tc - Tc.min()) / (np.ptp(Tc) + 1e-9)
+    Qm, _ = np.linalg.qr(np.column_stack([Ln ** p * Tc ** q_ for p in range(4) for q_ in range(4) if p + q_ <= 4]))
+    sp = sp - Qm @ (Qm.T @ sp)                     # peilille myos hidas ajallinen muutos pois
+    Qm = Qm.astype(np.float32)
+    ss, ssp = float(s @ s), float(sp @ sp)
+    s32, sp32 = s.astype(np.float32), sp.astype(np.float32)
+    if ss <= 0 or ssp <= 0:
         return None
     t_end = T[-1]
     u = t_end - T
-    base = alpha * (u[i] ** 2 - u[k] ** 2) / 2.0
-    # malli: s = c1 cos(2 dphi) + c2 cos(4 dphi) (puolikierroksen toisto + sen yliaalto), dphi = kiertokulma ruutujen
-    # valilla. c1 > 0 ja c2 <= c1 vaaditaan: muuten kaksinkertainen kierrosaika sopisi yliaallon kautta.
+    # kiertokulma phi(t) = -w u - alpha u^2 / 2 (omega(t) = w + alpha u, u = t_end - t)
+    # identtinen: s = c1 cos(2 dphi) + c2 cos(4 dphi), dphi = phi_i - phi_j (puolikierroksen toisto + yliaalto).
+    #   c1 > 0 ja c2 <= c1 vaaditaan: muuten kaksinkertainen kierrosaika sopisi yliaallon kautta.
+    # peili: kahva kulmassa phi nayttaa kulman -phi peilikuvalta -> peilisamankaltaisuus = a cos(Sphi) + b sin(Sphi)
+    #   + a2 cos(2 Sphi) + b2 sin(2 Sphi), Sphi = phi_i + phi_j. Riippumaton toinen mittaus (lakaisun rytmi ei tuota tata).
     nw = len(_KIERRE_W)
     r2 = np.zeros(nw)
+    r2p = np.zeros(nw)
     for a in range(0, nw, chunk):
-        ph = np.outer(_KIERRE_W[a:a + chunk], L) + base[None, :]
-        X1 = np.cos(2.0 * ph)
+        w = _KIERRE_W[a:a + chunk]
+        ph = (-np.outer(w, u) - alpha * u ** 2 / 2.0).astype(np.float32)          # w x ruudut
+        d = ph[:, i] - ph[:, k]
+        X1 = np.cos(2.0 * d)
+        X2 = 2.0 * X1 * X1 - 1.0                   # cos(4 dphi)
         X1 -= (X1 @ Q) @ Q.T
-        X2 = np.cos(4.0 * ph)
         X2 -= (X2 @ Q) @ Q.T
-        a11 = np.einsum("ij,ij->i", X1, X1)
-        a22 = np.einsum("ij,ij->i", X2, X2)
-        a12 = np.einsum("ij,ij->i", X1, X2)
-        b1, b2 = X1 @ s, X2 @ s
+        a11 = np.einsum("ij,ij->i", X1, X1).astype(np.float64)
+        a22 = np.einsum("ij,ij->i", X2, X2).astype(np.float64)
+        a12 = np.einsum("ij,ij->i", X1, X2).astype(np.float64)
+        b1, b2 = (X1 @ s32).astype(np.float64), (X2 @ s32).astype(np.float64)
         det = a11 * a22 - a12 ** 2 + 1e-12
         c1 = (a22 * b1 - a12 * b2) / det
         c2 = (a11 * b2 - a12 * b1) / det
         r2[a:a + chunk] = np.where((c1 > 0) & (c2 <= c1), (c1 * b1 + c2 * b2) / ss, 0.0)
+        Sg = ph[:, i] + ph[:, k]
+        cs, sn = np.cos(Sg), np.sin(Sg)
+        Y = np.stack([cs, sn, 2.0 * cs * cs - 1.0, 2.0 * sn * cs], axis=1)          # w x 4 x parit
+        Y -= (Y @ Qm) @ Qm.T
+        YtY = Y @ Y.transpose(0, 2, 1) + 1e-6 * np.eye(4, dtype=np.float32)[None]
+        Ytm = Y @ sp32
+        e = np.linalg.solve(YtY.astype(np.float64), Ytm[:, :, None].astype(np.float64))[:, :, 0]
+        r2p[a:a + chunk] = np.einsum("wc,wc->w", e, Ytm) / ssp
     j = int(np.argmax(r2))
-    # erottuvuus: paras huippu / paras huippu kun +-30 % ja kerrannaiset (x2, /2) ovat pois
-    P = _KIERRE_P
-    muu = np.ones(nw, bool)
-    for f_ in (1.0, 2.0, 0.5):
-        muu &= ~((P > P[j] * f_ / 1.3) & (P < P[j] * f_ * 1.3))
-    erott = float(r2[j] / max(r2[muu].max() if muu.any() else 0.0, 1e-5))
-    if r2[j] < A.KIERRE_MIN_R2 or erott < A.KIERRE_MIN_EROTTUVUUS:
+    erott = _erottuvuus(r2, j)
+    jp = int(np.argmax(r2p))
+    peili_ok = r2p[jp] >= A.KIERRE_PEILI_MIN_R2
+    if peili_ok:
+        # peilisignaali on riittava -> sen on osoitettava samaan kierrosaikaan; lopullinen huippu yhteisesta spektrista
+        if abs(np.log(_KIERRE_P[jp] / _KIERRE_P[j])) > np.log(1.0 + A.KIERRE_PEILI_TOL):
+            return None
+        yht = r2 + r2p
+        lahella = np.abs(np.log(_KIERRE_P / _KIERRE_P[j])) <= np.log(1.0 + A.KIERRE_PEILI_TOL)
+        j = int(np.argmax(np.where(lahella, yht, -1.0)))
+    if r2[j] < A.KIERRE_MIN_R2 or (not peili_ok and erott < A.KIERRE_MIN_EROTTUVUUS):
         return None
     w_end = float(_KIERRE_W[j])
     om = lambda t: w_end + alpha * (t_end - t)
@@ -142,7 +230,8 @@ def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=100):
         return None
     rad = w_end * (t_near - t_far) + alpha * ((t_end - t_far) ** 2 - (t_end - t_near) ** 2) / 2.0
     return dict(kierrokset=rad / (2 * np.pi), kierrosaika_far_s=2 * np.pi / om(t_far),
-                kierrosaika_near_s=2 * np.pi / om(t_near), r2=float(r2[j]), erottuvuus=erott, n=n)
+                kierrosaika_near_s=2 * np.pi / om(t_near), r2=float(r2[j]), erottuvuus=erott,
+                peili_r2=float(r2p[jp]), peili_kierrosaika_s=float(_KIERRE_P[jp]), n=n)
 
 
 def kahva_hist(frame_u, pose, X, Y, Z, r_cm, piirre=False):

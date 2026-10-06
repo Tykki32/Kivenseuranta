@@ -184,7 +184,7 @@ class PaikallinenTaysi:
         Mi = self._inv_stab(stab_M)
         s_ = self.s
         X, Y, R = cx * s_, cy * s_, rp * s_
-        Rk = 1.42 * R                  # akselin suuntainen pala voi olla vino: puolilavistaja
+        Rk = 1.5 * 1.42 * R            # akselin suuntainen pala (+-1,5 R) voi olla vino: puolilavistaja
         ax, ay = int(np.floor(X - Rk)) - 3, int(np.floor(Y - Rk)) - 3
         bx, by = int(np.ceil(X + Rk)) + 4, int(np.ceil(Y + Rk)) + 4
         a0, b0 = max(0, ax), max(0, ay)
