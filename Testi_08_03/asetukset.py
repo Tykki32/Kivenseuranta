@@ -106,7 +106,6 @@ HAKU_TAKANA_SIVU_CM = 100.0
 EDESSA_VALI_CM = 5.0                 # kaistan alku kiven reunasta (cm)
 EDESSA_PITUUS_CM = 100.0             # kaistan loppu kiven reunasta (cm)
 EDESSA_PUOLILEVEYS_CM = 10.0         # kaistan puolileveys sivusuunnassa (cm)
-EDESSA_EROKYNNYS = 40                # pikselin ero moodikuvaan (max kanavista), jota suurempi = hahmoa
 EDESSA_MAX_OSUUS = 1.01              # hahmo-osuus suurempi -> ehdokas hylataan (> 1 = vain kirjaus)
 SEURANTA_KARKEA_ASKEL_CM = 7.0
 SEURANTA_HIENO_ASKEL_CM = 1.5

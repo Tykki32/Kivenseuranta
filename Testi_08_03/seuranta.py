@@ -83,26 +83,24 @@ def _forward_motion_cm(st):
     return float(np.median([q[2] for q in h[:5]]) - np.median([q[2] for q in h[-5:]]))
 
 
-def edessa_hahmo_osuus(img, ref, pose, bx, by, r_cm):
-    """Osuus kiven edessa (pienempi Y, kameran puolella) olevan jaakaistan pisteista, jotka poikkeavat moodikuvasta
-    (tyhjasta jaasta) - pelaajan paan edessa on vartalo, aidon kiven edessa tyhjaa jaata."""
+def edessa_hahmo_osuus(img, pose, bx, by, r_cm):
+    """Osuus kiven edessa (pienempi Y, kameran puolella) olevan jaakaistan pisteista, jotka ovat etualaa (img =
+    taustanvaimennettu seurantakuva: tausta, jaa ja varjot valkoisia) - pelaajan paan edessa on vartalo, aidon kiven
+    edessa tyhjaa jaata."""
     xs = bx + np.arange(-A.EDESSA_PUOLILEVEYS_CM, A.EDESSA_PUOLILEVEYS_CM + 0.1, 4.0)
     ys = by - r_cm - np.arange(A.EDESSA_VALI_CM, A.EDESSA_PITUUS_CM + 0.1, 4.0)
     gx, gy = np.meshgrid(xs, ys)
     pts = np.column_stack([gx.ravel(), gy.ravel(), np.zeros(gx.size)])
     u, v = kivimalli.project_3d(pose["K"], pose["R"], pose["t"], pts)
-    h, w = ref.shape[:2]
+    h, w = img.shape[:2]
     ok = np.isfinite(u) & np.isfinite(v)
     u, v = np.round(u[ok]).astype(int), np.round(v[ok]).astype(int)
     ok = (u >= 0) & (u < w) & (v >= 0) & (v < h)
     if not np.any(ok):
         return 0.0
-    a_ = img[v[ok], u[ok]].astype(np.int16)
-    b_ = ref[v[ok], u[ok]].astype(np.int16)
-    d = np.abs(a_ - b_)
-    if d.ndim > 1:
-        d = d.max(axis=1)
-    return float(np.mean(d > A.EDESSA_EROKYNNYS))
+    p = img[v[ok], u[ok]]
+    etuala = (p < 255).any(axis=1) if p.ndim > 1 else p < 255
+    return float(np.mean(etuala))
 
 
 def is_protected_mover(st):
@@ -913,8 +911,8 @@ class Seuranta:
                        or any(math.hypot(bx - nx, by - ny) < A.HAKU_SAMA_HAKU_CM for nx, ny in new_this_scan))
             edessa = None
             if not already:
-                edessa = edessa_hahmo_osuus(frame_u_for_tracking, self.calib_result["calib"]["frame_undistorted"],
-                                            self.calib_result["pose"], bx, by, self.live_state["R_max"])
+                edessa = edessa_hahmo_osuus(frame_u_for_tracking, self.calib_result["pose"], bx, by,
+                                            self.live_state["R_max"])
                 if edessa > A.EDESSA_MAX_OSUUS:
                     already = True
                     self.n_haku_edessa += 1
