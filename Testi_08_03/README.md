@@ -429,7 +429,7 @@ Tulokset:
 - **Hidastuvuus kitkamallista:**
   - Malli: kitkakerroin μ(v) = A + B ln v, liikeyhtälö dv/dt = −g μ(v).
   - Sovitus: y0, v0 ja A sovitetaan LM:llä; Y(t) integroidaan numeerisesti (RK4, 0,04 s). B on kiinteä
-    `A.HOG_MU_B` (−0,001).
+    `A.HOG_MU_B` (−0,003).
   - Raportoitava hidastuvuus on g μ(1,5 m/s). Jos kitkasovitus on selvästi huonompi kuin toisen asteen sovitus,
     käytetään keskimääräistä hidastuvuutta.
 

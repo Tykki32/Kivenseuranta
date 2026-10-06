@@ -193,7 +193,8 @@ HOG_HIDASTUVUUS_NOPEUDELLA_MS = 1.5  # hidastuvuus ilmoitetaan kitkamallista tal
 # Kitkamallin mu(v) = A + B ln v kiintea B (heittokohtaisesti sovitetaan vain A). Mitattu yhteissovituksella: live
 # 2026-10-04 (66 heittoa) paras B = -0,0011, MAH00014 (19 heittoa) -0,0027. B = -0,001 -> hidastuvuus @1,5 m/s
 # muuttuu hitailla heitoilla <= 0,4 % (live) / <= 3,9 % (MAH). Paivita jos jaa/kalibrointi muuttaa B:ta selvasti.
-HOG_MU_B = -0.001
+# 2026-10-06: MAH00014 (20 heittoa, yhteinen B, hog-hog Y(t)) paras B = -0,0030 (+-0,0005) -> otettu kayttoon.
+HOG_MU_B = -0.003
 HOG_TALLENNA_KUVA = True             # still-kuva <csv>_hog_kivi<N>.png jokaisesta onnistuneesta analyysista
 
 # Liuku: suora X(Y) heiton alusta kaukohog + LIUKU_LOPPU_MARGINAALI_CM asti; lahtopisteeksi lisataan hakki.
