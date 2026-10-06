@@ -324,7 +324,7 @@ class LivePipeline:
             t0 = time.perf_counter()
             self._engine.set_transform(stab)
             yleiset.prof_add("pipe A: set_transform", time.perf_counter() - t0)
-            self._put(self._qa, (idx, frame, stab), put_key)
+            self._put(self._qa, (idx, frame, stab, dt_work), put_key)
 
         try:
             first = True
@@ -372,11 +372,11 @@ class LivePipeline:
                 if item is None or isinstance(item, BaseException):
                     self._put(self._q, item, put_key)
                     return
-                idx, frame, stab = item
+                idx, frame, stab, stab_s = item
                 frame_u, frame_u_for_tracking, thr = self._prep.process(frame, stab, idx, self._live_state,
                                                                         self._calib_result)
                 haku_fut = self._haku_ahead(idx, frame_u_for_tracking, thr) if self._haku_ahead is not None else None
-                self._put(self._q, {"frame": frame, "stab": stab, "frame_u": frame_u,
+                self._put(self._q, {"frame": frame, "stab": stab, "stab_s": stab_s, "frame_u": frame_u,
                                     "frame_u_for_tracking": frame_u_for_tracking, "thr": thr, "haku_future": haku_fut},
                           put_key)
         except BaseException as e:

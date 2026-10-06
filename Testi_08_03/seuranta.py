@@ -173,6 +173,8 @@ class Seuranta:
         self.next_stone_id = 0
         self.n_confirmed_stones = 0
         self.hog_results = []
+        self._stab_csv = None
+        self._stab_writer = None
         self.csv_file = None
         self.csv_writer = None
         self.debug_video_writer = None
@@ -233,11 +235,15 @@ class Seuranta:
                 t_stab0 = time.perf_counter()
                 if self.calib_result is None:
                     stab = self._paneelistabilointi(gray)
+                    stab_lahde, stab_s = "paneelit", time.perf_counter() - t_stab0
                 elif pipe_item is None:
                     stab = esikasittely.stabilization_matrix(*esikasittely.phase_correlate(self.ref_gray, gray))
+                    stab_lahde, stab_s = "vaihekorrelaatio", time.perf_counter() - t_stab0
                 else:
                     stab = pipe_item["stab"]
+                    stab_lahde, stab_s = "vaihekorrelaatio (hihna)", pipe_item.get("stab_s")
                 yleiset.prof_add("py: stabilointi (vaihekorrelaatio+paneelit)", time.perf_counter() - t_stab0)
+                self._kirjaa_stabilointi(frame_index, stab, stab_lahde, stab_s)
                 t0 = time.perf_counter()
                 if pipe_item is None:
                     self.engine.set_transform(stab)
@@ -266,6 +272,21 @@ class Seuranta:
     # =================================================================================================================
     # 1) KALIBROINTI
     # =================================================================================================================
+    def _kirjaa_stabilointi(self, frame_index, stab, lahde, laskenta_s):
+        """Joka ruudun stabilointi -> <pohja>_stabilointi.csv: siirto (px, 720p-kuvassa; ruutua siirretaan taman verran),
+        kierto, skaala ja laskenta-aika (vaihekorrelaation tyoaika tai paneelien seuranta)."""
+        if not A.STAB_TALLENNA or not self.csv_output:
+            return
+        if self._stab_csv is None:
+            path = os.path.splitext(self.csv_output)[0] + "_stabilointi.csv"
+            self._stab_csv = open(path, "w", newline="")
+            self._stab_writer = csv.writer(self._stab_csv)
+            self._stab_writer.writerow(["frame", "lahde", "dx_px", "dy_px", "kierto_deg", "skaala", "laskenta_ms"])
+        M = np.asarray(stab, dtype=np.float64)
+        self._stab_writer.writerow([frame_index, lahde, f"{M[0, 2]:.3f}", f"{M[1, 2]:.3f}",
+                                    f"{math.degrees(math.atan2(M[1, 0], M[0, 0])):.4f}", f"{math.hypot(M[0, 0], M[1, 0]):.5f}",
+                                    "" if laskenta_s is None else f"{laskenta_s * 1000:.2f}"])
+
     def _paneelistabilointi(self, gray):
         """Paneelien seuranta ja niista stabilointimatriisi (RANSAC, mediaanisuodatus) kalibroinnin naytteenoton ajan."""
         futures = []
@@ -916,6 +937,9 @@ class Seuranta:
             self.frame_prefetcher.close()
         if self.csv_file is not None:
             self.csv_file.close()
+        if self._stab_csv is not None:
+            self._stab_csv.close()
+            print(f"Stabilointi ruuduittain: {os.path.splitext(self.csv_output)[0]}_stabilointi.csv")
         heitot.odota_kierteet()
         if self.stone_registry:
             heitot.kirjoita_heitot(self.stone_registry, self.hog_results, self.csv_output)
