@@ -534,6 +534,19 @@ seurataan 720p:na.
 - Kuva pienennetään tarvittaessa `A.STAB_LEVEYS` (1280) leveyteen. Hanning-ikkuna, moodikuvan FFT välimuistissa,
   huippu 5×5-painopisteellä.
 - Siirto rajataan ±`A.STAB_MAX_SIIRTO_PX` (10 px).
+- Laskenta-aika on noin 20–27 ms CPU-aikaa ruutua kohden. Se lasketaan liukuhihnan vaiheessa A kahdessa
+  työsäikeessä (`A.STAB_SAIKEET`), rinnan pääsäikeen kanssa.
+- **Tallennus** (`A.STAB_TALLENNA`): joka ruudun stabilointi kirjoitetaan tiedostoon `<pohja>_stabilointi.csv`.
+  Sarakkeet: `frame`, `lahde` (`paneelit` kalibroinnin aikana, `vaihekorrelaatio` tai `vaihekorrelaatio (hihna)`),
+  `dx_px`, `dy_px` (ruudun siirto 720p-kuvassa), `kierto_deg`, `skaala` ja `laskenta_ms`.
+- **Mittaus (harvennuksen arvio).** Simuloitu: siirto lasketaan vain joka N. ruudusta, ja välissä käytetään
+  lineaarista interpolointia.
+  - 0001-kamera (live-simulaatio): siirto vaihteli koko ajon aikana vain 0,5 px (x) ja 0,2 px (y). Ruudusta ruutuun
+    muutos oli rms 0,01 px. Kun siirto laskettiin vain kerran sekunnissa (N = 25), virhe oli rms 0,02 px ja suurin
+    0,15 px.
+  - MAH00014: kameraan osui noin 4,3 min kohdalla isku (siirto 6 px yhdessä ruudussa). Lisäksi heittojen aikana
+    näkyy 0,5–4 px:n heilahteluryöppyjä. Interpoloinnin virhe on rms 0,13–0,16 px kaikilla N:n arvoilla 2–25, mutta
+    suurin virhe on iskun kohdalla 4–8 px.
 
 **Linssikorjaus:** `warpAffine` (stabilointi) ja sen jälkeen `remap` (k1-oikaisu).
 
