@@ -117,7 +117,7 @@ SEURANTA_VALINTA_TAAKSE_TOL_CM = 2.0  # taaksepain-siirtyma ilman rangaistusta
 SEURANTA_VALINTA_TAAKSE_SAKKO = 0.15  # rangaistus / 10 cm taaksepain
 SEURANTA_VALINTA_ENNUSTE_SAKKO = 0.02  # rangaistus / 10 cm poikkeamasta ennusteesta
 # hakualue joka ruudulla kiven omasta viimeisesta paikasta: fysikaalinen nopeusraja x kulunut aika
-SEURANTA_MAX_NOPEUS_Y_CM_S = 300.0
+SEURANTA_MAX_NOPEUS_Y_CM_S = 400.0
 SEURANTA_SIVUNOPEUS_OSUUS = 0.10     # sivunopeus enintaan 10 % pitkittaisesta
 SEURANTA_MAX_HAKUALUE_CM = 100.0
 SEURANTA_HAKUALUE_VARA_CM = 5.0      # tarkennettu paikka saa olla enintaan nain paljon hakualueen ulkopuolella

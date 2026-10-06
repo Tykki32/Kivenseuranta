@@ -333,7 +333,7 @@ Kivi on siinä "ei-valkoista".
 
 **SEURANTA (liikkuvat kivet, C++ `track_stones_batch`, kivet rinnan omissa säikeissään):**
 - **Hakualue** kasvaa fysikaalisen nopeusrajan mukaan, kun kivi on ollut kadoksissa:
-  - Y: ±min(300 cm/s × aika, 100 cm), X: ±10 % siitä.
+  - Y: ±min(400 cm/s × aika, 100 cm), X: ±10 % siitä.
   - Aika on (hutien määrä + 1) / fps.
 - **Liike-ennuste:** vakionopeus viimeisistä havainnoista (enintään 12 ruutua taaksepäin, vähintään 4 ruudun väli),
   rajattuna hakualueeseen.
