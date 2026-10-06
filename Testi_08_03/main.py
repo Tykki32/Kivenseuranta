@@ -307,6 +307,8 @@ def _argumentit():
     p.add_argument("--end", default=None, help="Videon loppuaika (alkuperaisen videon aikaa), esim. 00:21:00")
     p.add_argument("--debug", "-d", action="store_true", help="Tallenna debug-seurantavideo (<video>_debug_seuranta.mp4).")
     p.add_argument("--no-debug", action="store_true", help="Ei debug-videota (ohittaa --debug).")
+    p.add_argument("--full", action="store_true",
+                   help="Seuraa kivea lahihogin jalkeenkin pysahtymiseen asti (pysahtymispaikka debug-ikkunaan ja hog-CSV:hen).")
     p.add_argument("--max-frame", type=int, default=0, help="Pysayta ajo kun tama ruutu on kasitelty (nopea testi).")
     p.add_argument("--paneelit", default=None,
                    help="Referenssi-paneelitiedosto (*_panel_corners.txt). Live-tilassa ilman tata paneelit klikataan kamerakuvasta.")
@@ -340,6 +342,9 @@ if __name__ == "__main__":
     args = _argumentit()
     if args.max_frame:
         A.MAX_RUUTU = args.max_frame
+    if args.full:
+        A.SEURAA_PYSAHTYMISEEN = True
+        print("--full: kivia seurataan pysahtymiseen asti (kierrearvio edelleen vain lahihogiin)")
     alusta_cpp()
     if args.katselu is not None and katselu.start(args.katselu) is not None:
         katselu.set_state("Kalibroidaan")

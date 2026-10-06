@@ -142,6 +142,15 @@ KADONNUT_S = 1.0                     # rata kadotettu kun ei havaintoa nain pitk
 PYSAHTYNYT_S = 1.0                   # kivi pysahtynyt: liikkunut < PYSAHTYNYT_CM viimeisen PYSAHTYNYT_S aikana
 PYSAHTYNYT_CM = 20.0
 LOPETA_LAHIHOGIN_JALKEEN_CM = 30.0   # seuranta lopetetaan kun kivi on nain paljon lahihogin ohi (0 = pesaan asti)
+SEURAA_PYSAHTYMISEEN = False         # --full: vahvistettua kivea seurataan lahihogin jalkeenkin pysahtymiseen asti
+PYSAHTYNYT_TARKKA_CM = 3.0           # --full: kivi pysahtynyt kun 5 ensimmaisen ja 5 viimeisen paikan mediaanit
+                                     #   PYSAHTYNYT_S-ikkunassa ovat nain lahella
+PYSAHDYS_VAHVISTUS_S = 2.0           # --full: pysahtyneen kiven on pysyttava nakyvissa ja paikallaan nain kauan ...
+PYSAHDYS_MAX_SIIRTO_CM = 10.0        # ... (alle tama pysahdyspaikasta); muuten (pelaaja pysaytti/vei) ei pysahtymispaikkaa
+# pysahtymispaikan nollakohta (debug-ikkunan rivi "pysahtyi: x; y", hog-CSV): X keskiviivasta, Y lahemman pesan
+# T-viivasta; siirto cm (X: + = kohti +X, Y: + = kohti kaukaista paata). Debug-ikkunassa vasen ja alas negatiivisia.
+PYSAHDYS_NOLLA_X_CM = 0.0
+PYSAHDYS_NOLLA_Y_CM = 0.0
 LOPETA_TAAKSEPAIN_CM = 30.0          # rata lopetetaan jos Y kasvaa yli taman sekunnissa (pelaaja, takaisin vietava kivi)
 DUPLIKAATTI_CM = 30.0                # kaksi rataa lahempana kuin tama ...
 DUPLIKAATTI_RUUDUT = 3               # ... nain monta ruutua perakkain -> yhdistetaan

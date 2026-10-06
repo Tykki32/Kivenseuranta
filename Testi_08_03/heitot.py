@@ -36,6 +36,9 @@ HOG_CSV_SARAKKEET = [
     "liuku_dir_deg_hakki_p", "liuku_dir_deg_hakki_m", "kierteet", "kierrosaika_far_s", "kierrosaika_near_s", "kierre_r2",
     "kierteet_taysi", "kierrosaika_far_s_taysi", "kierrosaika_near_s_taysi", "kierre_r2_taysi", "kierre_ruutuja_taysi",
 ]
+# --full: pysahtymispaikka. x/y nollakohdasta (A.PYSAHDYS_NOLLA_*; oletus keskiviiva ja lahemman pesan T-viiva),
+# X/Y fyysisessa koordinaatistossa (rata.py). x: + = kohti +X (fyysinen suunta, ei debug-ikkunan puoli).
+HOG_CSV_PYSAHDYS = ["pysahtyi_x_cm", "pysahtyi_y_cm", "pysahtyi_X_cm", "pysahtyi_Y_cm"]
 
 
 def write_stone_csv_row(writer, frame_index, timestamp, stone_id, refined):
@@ -111,11 +114,12 @@ def hog_kirjoita_csv(results, csv_output):
     if not results:
         return
     path = os.path.splitext(csv_output)[0] + "_hog.csv"
+    sarakkeet = HOG_CSV_SARAKKEET + (HOG_CSV_PYSAHDYS if A.SEURAA_PYSAHTYMISEEN else [])
     with open(path, "w", newline="") as hf:
         w = csv.writer(hf)
-        w.writerow(HOG_CSV_SARAKKEET)
+        w.writerow(sarakkeet)
         for r in results:
-            w.writerow([r.get(c_) for c_ in HOG_CSV_SARAKKEET])
+            w.writerow([r.get(c_) for c_ in sarakkeet])
     print(f"Hog-hog -analyysi: {len(results)} heittoa -> {path}")
 
 

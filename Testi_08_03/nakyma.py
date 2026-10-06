@@ -48,14 +48,29 @@ def throw_side(res, plus_right):
     return "R" if toward_plus == bool(plus_right) else "L"
 
 
-def entry_lines(res):
-    return [f"kiven ID: {res['stone_id']}",
-            f"nopeus: {res['v_far_hog_ms']:.2f} m/s",
-            f"hidastuvuus: {res['decel_ms2']:.3f} m/s^2",
-            f"hog-hog: {res['hog_hog_s']:.2f} s",
-            f"liuku: {res['liuku_x_tee_cm']:+.0f} cm" if "liuku_x_tee_cm" in res else "liuku: -",
-            f"irroitus: {res.get('x_straight_at_tee_cm', float('nan')):+.0f} cm",
-            kierre_text(res)[0]]
+RIVI_KIERRE = 6           # entry_lines: kierrerivin indeksi (oma vari)
+
+
+def entry_lines(res, plus_right=None):
+    lines = [f"kiven ID: {res['stone_id']}",
+             f"nopeus: {res['v_far_hog_ms']:.2f} m/s",
+             f"hidastuvuus: {res['decel_ms2']:.3f} m/s^2",
+             f"hog-hog: {res['hog_hog_s']:.2f} s",
+             f"liuku: {res['liuku_x_tee_cm']:+.0f} cm" if "liuku_x_tee_cm" in res else "liuku: -",
+             f"irroitus: {res.get('x_straight_at_tee_cm', float('nan')):+.0f} cm",
+             kierre_text(res)[0]]
+    if A.SEURAA_PYSAHTYMISEEN:
+        lines.append(pysahdys_text(res, plus_right))
+    return lines
+
+
+def pysahdys_text(res, plus_right=None):
+    """--full: "pysahtyi: x; y" (cm, nollakohdasta A.PYSAHDYS_NOLLA_*). Debug-ikkunan suunnat: oikea ja ylos (kohti
+    kaukaista paata) positiivisia, vasen ja alas negatiivisia."""
+    if res.get("pysahtyi_x_cm") is None:
+        return "pysahtyi: -"
+    x = res["pysahtyi_x_cm"] * (1.0 if plus_right is None or bool(plus_right) else -1.0)
+    return f"pysahtyi: {x:.0f}; {res['pysahtyi_y_cm']:.0f}"
 
 
 def kierre_text(res):
@@ -97,20 +112,27 @@ PANEELI_NORMAALI = dict(pw=PANEL_W, lh=LINE_H, bp=BOX_PAD, bg=BOX_GAP, fs=FONT_S
 PANEELI_PUHELIN = dict(pw=570, lh=44, bp=12, bg=10, fs=2 * FONT_SCALE, ft=3, ty=30, rt=3)
 
 
+def laatikon_mitat(L):
+    """(rivivali, laatikon korkeus). --full lisaa rivin; rivivalia tiivistetaan tarvittaessa, jotta 3 laatikkoa mahtuu."""
+    rivit = 8 if A.SEURAA_PYSAHTYMISEEN else 7
+    lh = min(L["lh"], int((DEBUG_H / 3 - L["bg"] - 2 * L["bp"]) // rivit))
+    return lh, lh * rivit + 2 * L["bp"]
+
+
 def render_panel(entries, ages=None, plus_right=None, nayta=(True, True), L=None):
     """entries: lista dict-tuloksia, UUSIN ENSIMMAISENA. Palauttaa (DEBUG_H x pw) kuvan; jokainen heitto omassa laatikossa.
     ages: sekunnit kaukohoglinen ylityksesta (sama jarjestys), naytetaan kiven ID:n vieressa. L: paneelin mitat (oletus normaali)."""
     L = L or PANEELI_NORMAALI
     pw, lh, bp, bg, fs, ft = L["pw"], L["lh"], L["bp"], L["bg"], L["fs"], L["ft"]
     img = np.zeros((DEBUG_H, pw, 3), np.uint8)
-    box_h = lh * 7 + 2 * bp
+    lh, box_h = laatikon_mitat(L)
     y = bg
     for k, res in enumerate(entries):
         if y + box_h > DEBUG_H:
             break
         cv2.rectangle(img, (bg, y), (pw - bg, y + box_h), (45, 45, 45), -1)
         cv2.rectangle(img, (bg, y), (pw - bg, y + box_h), (0, 200, 255), L["rt"])
-        _lines = entry_lines(res)
+        _lines = entry_lines(res, plus_right)
         for i, s in enumerate(_lines):
             _x = bg + bp + 4
             _y = y + bp + L["ty"] + i * lh
@@ -119,7 +141,7 @@ def render_panel(entries, ages=None, plus_right=None, nayta=(True, True), L=None
                     cv2.putText(img, _t, (_x, _y), FONT, fs, _c, ft)
                     _x += cv2.getTextSize(_t, FONT, fs, ft)[0][0]
                 continue
-            _col = (0, 255, 255) if i == 0 else (kierre_text(res)[1] if i == len(_lines) - 1 else (255, 255, 255))
+            _col = (0, 255, 255) if i == 0 else (kierre_text(res)[1] if i == RIVI_KIERRE else (255, 255, 255))
             cv2.putText(img, s, (_x, _y), FONT, fs, _col, ft)
         if ages is not None and k < len(ages) and ages[k] is not None:
             txt = f"{ages[k]} s"
@@ -253,7 +275,7 @@ class DebugComposer:
         self.boxes = []          # laatikoiden paikat ja iat puhelinnakyman korostusta varten
         self.boxes_t = time.time()
         L = self.L
-        box_h = L["lh"] * 7 + 2 * L["bp"]
+        box_h = laatikon_mitat(L)[1]
         lfs, lft = (0.8, 2) if self.puhelin else (FONT_SCALE, FONT_THICK)
         for (x, y, txt, col) in labels:
             xr, yr = int(round(y * scale)), int(round((W0 - 1 - x) * scale))

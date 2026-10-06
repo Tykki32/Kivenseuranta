@@ -17,12 +17,31 @@ Komentorivi on sama kuin ennen:
 
 ```
 python main.py --video MAH00014.mp4 --debug
+python main.py --video MAH00014.mp4 --debug --full                               # seuranta pysähtymiseen asti
 python main.py --live --paneelit D:\Tikku\Suorita\MAH00014_leikattu_panel_corners.txt --katselu --live-kansio D:\Tikku\Live
 python main.py --live-sim video.mp4 --live-sim-tahti 0 --paneelit paneelit.txt     # testaus ilman kameraa
 python tools/kamera_testi.py                                                       # kameran kartoitus
 ```
 
 `python main.py --help` listaa kaikki valitsimet (`--start/--end`, `--max-frame`, `--live-*`, `--katselu [portti]`).
+
+**`--full`:** vahvistettua kiveä seurataan lähihogin jälkeenkin, kunnes se pysähtyy (toimii myös live-tilassa).
+- Debug-ikkunan (debug-video ja puhelinnäkymä) tulospaneeliin tulee rivi `pysahtyi: x; y`: kiven keskikohdan
+  etäisyys keskiviivasta (x) ja lähemmän pesän T-viivasta (y), senttimetreinä. Debug-ikkunassa vasemmalla ja
+  alhaalla luvut ovat negatiivisia, oikealla ja ylhäällä (kohti kaukaista päätä) positiivisia. Ennen pysähtymistä
+  rivillä on `pysahtyi: -`.
+- Nollakohta on `asetukset.py`:ssä: `PYSAHDYS_NOLLA_X_CM` (siirto keskiviivasta, + = fyysinen +X) ja
+  `PYSAHDYS_NOLLA_Y_CM` (siirto T-viivasta, + = kohti kaukaista päätä). Oletus 0 / 0 = keskiviiva ja T-viiva.
+- Hog-CSV:hen tulee sarakkeet `pysahtyi_x_cm`, `pysahtyi_y_cm` (nollakohdasta; x fyysisessä +X-suunnassa, ei
+  debug-ikkunan puolen mukaan) ja `pysahtyi_X_cm`, `pysahtyi_Y_cm` (fyysinen koordinaatisto).
+- Hog-hog-analyysi ja kierrearvio tehdään kuten ennenkin lähihogilla; kierrepiirteitä ei kerätä lähihogin jälkeen.
+- Pysähtyminen: kun kivi on liikkunut alle 20 cm sekunnissa, sitä seurataan vielä, kunnes viimeisen sekunnin 5
+  ensimmäisen ja 5 viimeisen paikan mediaanit ovat alle `A.PYSAHTYNYT_TARKKA_CM` (3 cm) toisistaan (enintään 3 s).
+- Vahvistus: pysähtymispaikka annetaan vain kiville, jotka oikeasti pysähtyvät. Kiven on pysyttävä näkyvissä ja
+  paikallaan (5 viimeisen paikan mediaani alle `A.PYSAHDYS_MAX_SIIRTO_CM` = 10 cm pysähdyspaikasta; yksittäinen huono
+  sovitus ei hylkää) vielä `A.PYSAHDYS_VAHVISTUS_S` (2 s). Jos kivi liikkuu tai katoaa
+  sinä aikana (pelaaja pysäyttää kiven jalalla tai harjalla tai vie sen), pysähtymispaikkaa ei anneta
+  (`pysahtyi: -`). Paikka on vahvistusjakson paikkojen mediaani.
 
 ## Asetukset (`asetukset.py`)
 
@@ -360,9 +379,9 @@ Kivi on siinä "ei-valkoista".
 - **Liukuva tarkka-ikkuna:** vahvistettu rata lopetetaan, jos tarkka-osuus viimeisten 650 havainnon ikkunassa putoaa
   alle 0,5 (seuranta ajautunut pelaajaan).
 - **Lopetussäännöt:**
-  - lähihogin ohitus yli 30 cm (hog-analyysi ei tarvitse enempää);
+  - lähihogin ohitus yli 30 cm (hog-analyysi ei tarvitse enempää), paitsi `--full`-tilassa;
   - taaksepäin liikkuminen: Y kasvaa yli 30 cm sekunnissa (5 ensimmäisen ja 5 viimeisen mediaanit);
-  - pysähtyminen: liikkunut alle 20 cm viimeisen sekunnin aikana;
+  - pysähtyminen: liikkunut alle 20 cm viimeisen sekunnin aikana (`--full`: lisäksi tarkka pysähtyminen, ks. yllä);
   - kadotus: ei havaintoa 1 s:iin (vähintään 5 ruutua).
 - **Duplikaatit:** kaksi rataa alle 30 cm toisistaan 3 ruutua peräkkäin yhdistetään. Huonompi poistetaan tässä
   järjestyksessä:
