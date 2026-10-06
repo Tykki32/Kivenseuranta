@@ -188,6 +188,8 @@ class Seuranta:
 
         # saikeet ja liukuhihna
         self.panel_executor = ThreadPoolExecutor(max_workers=A.PANEELI_SAIKEET)
+        self.kahva_executor = ThreadPoolExecutor(max_workers=1)      # kahvan vari + kierrepiirteet (jarjestyksessa)
+        self._kahva_taysi_kesken = deque()     # (ruutu, future): taysresoluutioinen ruutu pidetaan renkaassa kunnes valmis
         self.haku_executor = ThreadPoolExecutor(max_workers=1)
         self.photo_executor = ThreadPoolExecutor(max_workers=1)
         self.live_prep = esikasittely.LivePrep(self.photo_executor, fps, self.width, self.height)
@@ -491,8 +493,13 @@ class Seuranta:
             frame_u, frame_u_for_tracking, thr = pipe_item["frame_u"], pipe_item["frame_u_for_tracking"], pipe_item["thr"]
 
         timestamp = frame_index / self.fps
-        if self.paik is not None and not self.paik.ruutu_alussa(frame_index, frame):
-            self.paik = None
+        if self.paik is not None:
+            kq = self._kahva_taysi_kesken
+            while kq and kq[0][1].done():
+                kq.popleft()
+            vapauta = min(frame_index - 1, kq[0][0] - 1) if kq else frame_index - 1
+            if not self.paik.ruutu_alussa(frame_index, frame, vapauta):
+                self.paik = None
         pose = self.calib_result["pose"]
 
         haku_future = None
@@ -636,7 +643,19 @@ class Seuranta:
     def _kasittele_osuma(self, s, refined, frame_index, timestamp, frame_u, stab, pose, draw_items):
         """Loydetty kivi: kahva/kierre, paikka, vahvistus ja CSV, hog-analyysi, lopetussaannot. True = jatkaa."""
         if frame_u is not None:
-            self._kahva(s, refined, frame_index, frame_u, stab, pose)
+            # kahvan vari ja kierrepiirteet eivat vaikuta seurantaan -> taustasaikeessa (yksi saie, jarjestys sailyy).
+            # Keraataanko piirteet, paatetaan tassa (hog-tulos asetetaan paasaikeessa).
+            Y = refined["Y_cm"]
+            piirre = Y <= A.KIERRE_Y_MAX_CM and "hog_result" not in s
+            piirre_taysi = self.paik is not None and Y <= A.KIERRE_TAYSI_Y_MAX_CM and "hog_result" not in s
+            fut = self.kahva_executor.submit(self._kahva, s, refined["X_cm"], Y, frame_index, frame_u, stab, pose,
+                                             piirre, piirre_taysi)
+            q = s.setdefault("kahva_kesken", deque())
+            while q and q[0].done():
+                q.popleft().result()
+            q.append(fut)
+            if piirre_taysi:
+                self._kahva_taysi_kesken.append((frame_index, fut))
         s["last_xy"] = (refined["X_cm"], refined["Y_cm"])
         s.setdefault("rms_hist", deque(maxlen=10)).append(refined.get("rms_px") if refined.get("rms_px") is not None else 1e9)
         s["min_y_seen"] = min(s["min_y_seen"], refined["Y_cm"])
@@ -665,21 +684,26 @@ class Seuranta:
         while history[-1][0] - history[0][0] > self.stop_tracking_frames:
             history.pop(0)
         if s.get("confirmed"):
-            heitot.hog_check(s, frame_index, self.fps, self.hog_results, frame_u, self.csv_output, pose)
+            heitot.hog_check(s, frame_index, self.fps, self.hog_results, frame_u, self.csv_output, pose,
+                             odota=lambda: self._odota_kahva(s))
         stopped = self._lopetussaannot(s, history, refined, frame_index)
         return not stopped and not reject_low_tarkka
 
-    def _kahva(self, s, refined, frame_index, frame_u, stab, pose):
-        """Kahvan savyt ja kierrepiirre (720p ja paikallinen taysi resoluutio) radalle."""
+    def _odota_kahva(self, s):
+        """Odottaa radan taustalla lasketut kahva- ja kierrepiirteet (ennen kuin ne luetaan)."""
+        q = s.get("kahva_kesken")
+        while q:
+            q.popleft().result()
+
+    def _kahva(self, s, X, Y, frame_index, frame_u, stab, pose, piirre, piirre_taysi):
+        """Kahvan savyt ja kierrepiirre (720p ja paikallinen taysi resoluutio) radalle (taustasaikeessa)."""
         ls = self.live_state
+        paik = self.paik
         try:
-            Y = refined["Y_cm"]
-            piirre = Y <= A.KIERRE_Y_MAX_CM and "hog_result" not in s
-            piirre_taysi = self.paik is not None and Y <= A.KIERRE_TAYSI_Y_MAX_CM and "hog_result" not in s
-            kh = kierre.kahva_hist(frame_u, pose, refined["X_cm"], Y, ls["H_total"] + A.KAHVA_Z_LISA_CM,
+            kh = kierre.kahva_hist(frame_u, pose, X, Y, ls["H_total"] + A.KAHVA_Z_LISA_CM,
                                    ls["handle_r_frac"] * ls["R_max"], piirre=piirre)
-            if kh is not None and piirre_taysi:
-                pvt = self.paik.kierre_piirre(frame_index, stab, *kh[5])
+            if kh is not None and piirre_taysi and paik is not None:
+                pvt = paik.kierre_piirre(frame_index, stab, *kh[5])
                 if pvt is not None:
                     klt = s.setdefault("kierre_taysi", [])
                     klt.append((frame_index, pvt))
@@ -929,6 +953,7 @@ class Seuranta:
             print(bn)
 
     def _lopeta(self):
+        self.kahva_executor.shutdown(wait=True)
         self.panel_executor.shutdown(wait=True)
         self.haku_executor.shutdown(wait=True)
         if self.frame_pipeline is not None:
