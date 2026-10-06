@@ -8,8 +8,6 @@ on valkoista (= tausta). Kameramatriisi taydella resoluutiolla; tulokset senttim
 taysresoluutioista kuvaa ei enaa ole puskurissa (viive > A.PAIK_RENGAS_S), ruutu seurataan 720p:na.
 Myos kierrepiirre lasketaan taysresoluutioisesta kuvasta (rinnakkain 720p:n kanssa).
 """
-from concurrent.futures import ThreadPoolExecutor
-
 import cv2
 import numpy as np
 
@@ -57,7 +55,6 @@ class PaikallinenTaysi:
             )
             self.sil_hi = ref_hi.batch_config(half=int(round(siluetti.HALF * s_)), margin=int(round(siluetti.MASK_MARGIN * s_)))
         self.stat = {"taysi": 0, "720p": 0, "alueita": 0, "pikseleita": 0, "puute_ika": []}
-        self._pool = ThreadPoolExecutor(max_workers=4)        # kivien alueet rinnakkain
 
     @staticmethod
     def alusta(calib_result, store, fps, offset, alku, profile, sil_lo):
@@ -117,60 +114,43 @@ class PaikallinenTaysi:
         M[:, 2] *= self.s
         return cv2.invertAffineTransform(M)
 
-    def _kiven_alue(self, frame_index, Mi, x0c, y0c, hxc, hyc, r, H_total, pose, gain, bias):
-        """Yhden kiven hakualue: (ay, by, ax, bx, taustasuodatettu pala), "ohita" (ei aluetta) tai None (ruutu ei
-        puskurissa)."""
-        W, H = self.W, self.H
-        xs = [x0c - hxc - r, x0c + hxc + r]
-        ys = [y0c - hyc - r, y0c + hyc + r]
-        pts = np.array([[x, y, z] for x in xs for y in ys for z in (0.0, H_total + 3.0)], dtype=np.float64)
-        u, v = kivimalli.project_3d(self.K, pose["R"], pose["t"], pts)
-        if not (np.all(np.isfinite(u)) and np.all(np.isfinite(v))):
-            return "ohita"
-        ax, bx = int(max(0, np.floor(u.min()) - 4)), int(min(W, np.ceil(u.max()) + 5))
-        ay, by = int(max(0, np.floor(v.min()) - 4)), int(min(H, np.ceil(v.max()) + 5))
-        if bx - ax < 4 or by - ay < 4:
-            return "ohita"
-        mx = self.map1[ay:by, ax:bx]
-        my = self.map2[ay:by, ax:bx]
-        sx = Mi[0, 0] * mx + Mi[0, 1] * my + Mi[0, 2]
-        sy = Mi[1, 0] * mx + Mi[1, 1] * my + Mi[1, 2]
-        rx0 = int(max(0, np.floor(sx.min()) - 2))
-        rx1 = int(min(W, np.ceil(sx.max()) + 3))
-        ry0 = int(max(0, np.floor(sy.min()) - 2))
-        ry1 = int(min(H, np.ceil(sy.max()) + 3))
-        if rx1 - rx0 < 2 or ry1 - ry0 < 2:
-            return "ohita"
-        roi, ox = self.store.get_hires_roi(frame_index, rx0, ry0, rx1, ry1)
-        if roi is None:
-            return None
-        patch = cv2.remap(roi, (sx - ox).astype(np.float32), (sy - ry0).astype(np.float32), cv2.INTER_LINEAR,
-                          borderMode=cv2.BORDER_REPLICATE)
-        ref = np.ascontiguousarray(self.ref[ay:by, ax:bx])
-        return ay, by, ax, bx, esikasittely.suppress_shadow_background(np.ascontiguousarray(patch), ref, gain, bias)
-
     def _kehys(self, frame_index, stab_M, X0, Y0, hx, hy, R_max, H_total, pose, gain, bias):
-        """Seurannan taysresoluutioinen kuva (valkoinen pohja + kivien hakualueet) tai None (ruutua ei puskurissa).
-        Usean kiven alueet lasketaan rinnakkain (OpenCV ja numpy vapauttavat GIL:n) ja kirjoitetaan kuvaan
-        alkuperaisessa jarjestyksessa (tulos sama kuin perakkain)."""
+        """Seurannan taysresoluutioinen kuva (valkoinen pohja + kivien hakualueet) tai None (ruutua ei puskurissa)."""
         cv_ = self.canvas
         for (a, b, c_, d) in self.prev:
             cv_[a:b, c_:d] = 255
         self.prev = []
         Mi = self._inv_stab(stab_M)
+        W, H = self.W, self.H
         r = R_max + A.PAIK_MARGINAALI_CM
-        args = [(frame_index, Mi, x0c, y0c, hxc, hyc, r, H_total, pose, gain, bias) for x0c, y0c, hxc, hyc in zip(X0, Y0, hx, hy)]
-        if len(args) > 1 and A.PAIK_RINNAKKAIN:
-            alueet = list(self._pool.map(lambda a_: self._kiven_alue(*a_), args))
-        else:
-            alueet = [self._kiven_alue(*a_) for a_ in args]
-        for alue in alueet:
-            if alue is None:
-                return None
-            if isinstance(alue, str):
+        for x0c, y0c, hxc, hyc in zip(X0, Y0, hx, hy):
+            xs = [x0c - hxc - r, x0c + hxc + r]
+            ys = [y0c - hyc - r, y0c + hyc + r]
+            pts = np.array([[x, y, z] for x in xs for y in ys for z in (0.0, H_total + 3.0)], dtype=np.float64)
+            u, v = kivimalli.project_3d(self.K, pose["R"], pose["t"], pts)
+            if not (np.all(np.isfinite(u)) and np.all(np.isfinite(v))):
                 continue
-            ay, by, ax, bx, pala = alue
-            cv_[ay:by, ax:bx] = pala
+            ax, bx = int(max(0, np.floor(u.min()) - 4)), int(min(W, np.ceil(u.max()) + 5))
+            ay, by = int(max(0, np.floor(v.min()) - 4)), int(min(H, np.ceil(v.max()) + 5))
+            if bx - ax < 4 or by - ay < 4:
+                continue
+            mx = self.map1[ay:by, ax:bx]
+            my = self.map2[ay:by, ax:bx]
+            sx = Mi[0, 0] * mx + Mi[0, 1] * my + Mi[0, 2]
+            sy = Mi[1, 0] * mx + Mi[1, 1] * my + Mi[1, 2]
+            rx0 = int(max(0, np.floor(sx.min()) - 2))
+            rx1 = int(min(W, np.ceil(sx.max()) + 3))
+            ry0 = int(max(0, np.floor(sy.min()) - 2))
+            ry1 = int(min(H, np.ceil(sy.max()) + 3))
+            if rx1 - rx0 < 2 or ry1 - ry0 < 2:
+                continue
+            roi, ox = self.store.get_hires_roi(frame_index, rx0, ry0, rx1, ry1)
+            if roi is None:
+                return None
+            patch = cv2.remap(roi, (sx - ox).astype(np.float32), (sy - ry0).astype(np.float32), cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_REPLICATE)
+            ref = np.ascontiguousarray(self.ref[ay:by, ax:bx])
+            cv_[ay:by, ax:bx] = esikasittely.suppress_shadow_background(np.ascontiguousarray(patch), ref, gain, bias)
             self.prev.append((ay, by, ax, bx))
             self.stat["alueita"] += 1
             self.stat["pikseleita"] += (by - ay) * (bx - ax)
