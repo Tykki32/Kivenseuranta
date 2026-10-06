@@ -564,7 +564,8 @@ class Seuranta:
                 if s["misses"] < self.track_lost_max_misses:
                     still_active.append(s)
                 elif s["confirmed"]:
-                    print(f"[frame {frame_index}] Kivi {s['stone_id']} kadotettu.")
+                    print(f"[frame {frame_index}] Kivi {s['stone_id']} kadotettu."
+                          + (" Pysahtymista ei vahvistettu (ei pysahtymispaikkaa)." if s.get("pysahdys_ehdokas") is not None else ""))
                 else:
                     s["pending_rows"] = []
                     print(f"[frame {frame_index}] Ehdokas {s['stone_id']} hylatty (kadotettu ennen kuin liikkui riittavasti - "
@@ -703,10 +704,13 @@ class Seuranta:
     def _lopetussaannot(self, s, history, refined, frame_index):
         """Radan lopetus: lahihogin ohitus, taaksepain liikkuminen, pysahtyminen. True = lopetetaan."""
         # lahihogin jalkeen ei enaa seurata (hog-analyysi kayttaa vain pisteita lahihog + 50 cm ... kaukohog - 100 cm)
-        if (A.LOPETA_LAHIHOGIN_JALKEEN_CM > 0 and s.get("confirmed")
+        if (A.LOPETA_LAHIHOGIN_JALKEEN_CM > 0 and not A.SEURAA_PYSAHTYMISEEN and s.get("confirmed")
                 and refined["Y_cm"] < rata.NEAR_HOGLINE_Y_CM - A.LOPETA_LAHIHOGIN_JALKEEN_CM):
             print(f"[frame {frame_index}] Kivi {s['stone_id']} ohitti lahi-hoglinen - lopetetaan seuranta.")
             return True
+        # --full: pysahtynyt kivi vahvistetaan vasta kun se on pysynyt paikallaan A.PYSAHDYS_VAHVISTUS_S
+        if s.get("pysahdys_ehdokas") is not None:
+            return self._vahvista_pysahdys(s, refined, frame_index)
         # taaksepain liikkuva rata ei ole heitetty kivi (pelaaja / takaisin vietava kivi)
         if (A.LOPETA_TAAKSEPAIN_CM > 0 and len(history) >= 10
                 and history[-1][0] - history[0][0] >= self.stop_tracking_frames - 1):
@@ -723,6 +727,8 @@ class Seuranta:
             _, old_x, old_y = history[0]
             displacement = math.hypot(s["last_xy"][0] - old_x, s["last_xy"][1] - old_y)
             if displacement < A.PYSAHTYNYT_CM:
+                if s["confirmed"] and A.SEURAA_PYSAHTYMISEEN:
+                    return self._pysahtyi(s, history, frame_index)
                 if s["confirmed"]:
                     print(f"[frame {frame_index}] Kivi {s['stone_id']} pysahtynyt (liikkunut {displacement:.1f}cm viimeisen "
                           f"{A.PYSAHTYNYT_S:.0f}s aikana) - lopetetaan seuranta.")
@@ -732,6 +738,47 @@ class Seuranta:
                           "jo paikallaan ollut kohde, ei aito heitto).")
                 return True
         return False
+
+    def _pysahtyi(self, s, history, frame_index):
+        """--full: vahvistettu kivi on hidastunut (< A.PYSAHTYNYT_CM / A.PYSAHTYNYT_S). Kun se on todella pysahtynyt (5
+        ensimmaisen ja 5 viimeisen paikan mediaanit < A.PYSAHTYNYT_TARKKA_CM toisistaan, tai hidas 3 x A.PYSAHTYNYT_S),
+        siita tulee pysahdysehdokas (10 viimeisen paikan mediaani). Rataa seurataan edelleen (_vahvista_pysahdys).
+        Palauttaa aina False (rata jatkuu)."""
+        alku = s.setdefault("hidas_alku", frame_index)
+        xy = np.array([(h[1], h[2]) for h in history], dtype=np.float64)
+        siirto = float(np.hypot(*(np.median(xy[-5:], 0) - np.median(xy[:5], 0))))
+        if siirto >= A.PYSAHTYNYT_TARKKA_CM and frame_index - alku < 3 * self.stop_tracking_frames:
+            return False
+        s["pysahdys_ehdokas"] = (frame_index, tuple(float(v) for v in np.median(xy[-10:], 0)))
+        s["pysahdys_paikat"] = [tuple(p) for p in xy[-10:]]
+        return False
+
+    def _vahvista_pysahdys(self, s, refined, frame_index):
+        """Pysahdysehdokas hyvaksytaan vain, jos kivi pysyy nakyvissa ja paikallaan (< A.PYSAHDYS_MAX_SIIRTO_CM
+        ehdokaspaikasta) A.PYSAHDYS_VAHVISTUS_S. Jos kivi liikkuu (pelaaja pysaytti / vei kiven, toinen kivi osui),
+        ehdokas hylataan (uusi ehdokas voi syntya, jos kivi pysahtyy uudelleen); jos rata katoaa, pysahtymispaikkaa ei
+        anneta. True = rata lopetetaan (pysahtyminen vahvistettu)."""
+        f0, (X0, Y0) = s["pysahdys_ehdokas"]
+        s["pysahdys_paikat"].append((refined["X_cm"], refined["Y_cm"]))
+        # yksittainen huono sovitus ei ole liiketta: verrataan 5 viimeisen paikan mediaania
+        Xm, Ym = np.median(np.array(s["pysahdys_paikat"][-5:]), 0)
+        if math.hypot(Xm - X0, Ym - Y0) > A.PYSAHDYS_MAX_SIIRTO_CM:
+            print(f"[frame {frame_index}] Kivi {s['stone_id']} liikkui pysahtymisen jalkeen - ehdokas hylataan.")
+            s["pysahdys_ehdokas"] = None
+            s.pop("hidas_alku", None)
+            return False
+        if frame_index - f0 < A.PYSAHDYS_VAHVISTUS_S * self.fps:
+            return False
+        X, Y = (float(v) for v in np.median(np.array(s["pysahdys_paikat"][10:]), 0))   # vahvistusjakson paikat
+        s["pysahtyi_xy"] = (X, Y)
+        res = s.get("hog_result")
+        if res is not None:
+            res["pysahtyi_X_cm"], res["pysahtyi_Y_cm"] = X, Y
+            res["pysahtyi_x_cm"] = X - A.PYSAHDYS_NOLLA_X_CM
+            res["pysahtyi_y_cm"] = Y - (rata.NEAR_HOUSE_Y_CM + A.PYSAHDYS_NOLLA_Y_CM)
+        print(f"[frame {frame_index}] Kivi {s['stone_id']} pysahtyi: X {X:+.1f} cm, Y {Y:.1f} cm "
+              f"(T-viivasta {Y - rata.NEAR_HOUSE_Y_CM:+.1f} cm)")
+        return True
 
     def _yhdista_duplikaatit(self, frame_index):
         """Kaksi rataa saman kiven paalla (< A.DUPLIKAATTI_CM, A.DUPLIKAATTI_RUUDUT perakkaista ruutua) -> huonompi pois:
