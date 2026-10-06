@@ -122,7 +122,7 @@ SEURANTA_SIVUNOPEUS_OSUUS = 0.10     # sivunopeus enintaan 10 % pitkittaisesta
 SEURANTA_MAX_HAKUALUE_CM = 100.0
 SEURANTA_HAKUALUE_VARA_CM = 5.0      # tarkennettu paikka saa olla enintaan nain paljon hakualueen ulkopuolella
 SEURANTA_MAX_TAAKSE_CM = 100.0       # kivi ei liiku taaksepain (kumulatiivisesti) yli taman
-SEURANTA_MAX_ABS_X_CM = 120.0        # paikka enintaan nain kaukana keskiviivasta
+SEURANTA_MAX_ABS_X_CM = 220.0        # paikka enintaan nain kaukana keskiviivasta (koko radan leveys)
 # siluettituki graniittimaskista (siluetti.py): sisalla vahintaan tama osuus maskia, muuten havainto hylataan
 SEURANTA_MIN_SISALLA = 0.4
 SEURANTA_MIN_SISALLA_LAHELLA = 0.0   # lahella (Y <= SEURANTA_SIL_KAIKKI_Y_CM) myos tarkoille ruuduille (0 = ei porttia)

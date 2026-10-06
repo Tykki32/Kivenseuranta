@@ -365,7 +365,7 @@ Kivi on siinä "ei-valkoista".
   - **Hakualue:** lopullinen paikka saa olla enintään 5 cm hakualueen (viimeisestä paikasta tai ennusteesta)
     ulkopuolella.
   - **Ei taaksepäin:** Y ei saa kasvaa yli 100 cm radan pienimmästä Y:stä.
-  - **Keskiviiva:** |X| ≤ 120 cm.
+  - **Keskiviiva:** |X| ≤ 220 cm (koko radan leveys).
 
 ---
 
