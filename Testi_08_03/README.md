@@ -525,6 +525,15 @@ seurattavan kiven hakualue (+ 8 cm reunus) on käsitelty kameran täydellä reso
 Raakaruutuja pidetään `A.PAIK_RENGAS_S` (10 s) rengaspuskurissa (~1 Gt). Jos käsittely on tätä enemmän jäljessä, ruutu
 seurataan 720p:na.
 
+- Usean kiven alueet lasketaan rinnakkain (`A.PAIK_RINNAKKAIN`), ja ne kirjoitetaan kuvaan alkuperäisessä järjestyksessä,
+  joten tulos on sama kuin peräkkäin laskettuna. Live-simulaatiossa (BGR-ruudut, ei YUY2-muunnosta) alueet ovat niin
+  kevyitä, että rinnakkaistus ei nopeuta; oikeassa livessä YUY2-muunnos tekee alueista raskaampia. Jos profiilin
+  `py: paikallinen taysi resoluutio` kasvaa, asetuksen voi kytkeä pois.
+- Kahvan väri ja kierrepiirteet (720p ja täysi resoluutio) lasketaan taustasäikeessä (yksi säie, järjestys säilyy).
+  Se, kerätäänkö piirteet, päätetään pääsäikeessä. Hog-analyysi odottaa kiven piirteet valmiiksi ennen kierrearviota,
+  ja täyden resoluution ruutu pidetään renkaassa, kunnes taustasäie on käsitellyt sen. Tulokset ovat samat kuin
+  ennen (MAH00014-tiedostoajo identtinen).
+
 ---
 
 ### 9. Kuvan esikäsittely (`esikasittely.py`, `cpp/esikasittely.hpp`, `cpp/gpu.hpp`)

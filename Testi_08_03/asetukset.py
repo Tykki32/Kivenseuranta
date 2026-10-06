@@ -223,6 +223,7 @@ KIERRE_PEILI_TOL = 0.15              # sallittu ero kierrosajoissa (suhteellinen
 # =====================================================================================================================
 PAIKALLINEN_TAYSI = True             # SEURANTA kivien hakualueilla kameran taydella resoluutiolla
 PAIK_RENGAS_S = 10.0                 # taysresoluutioisten ruutujen rengas (s); kamerassa raaka YUY2 ~1 GB / 10 s
+PAIK_RINNAKKAIN = True               # usean kiven taysresoluutioiset alueet rinnakkain (YUY2-muunnos + korjaus + vaimennus)
 PAIK_MARGINAALI_CM = 8.0             # kiven alueen reunus hakualueen ympari
 
 # =====================================================================================================================

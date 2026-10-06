@@ -100,7 +100,7 @@ def odota_kierteet():
         _KIERRE_POOL = None
 
 
-def hog_check(s, frame_index, fps, results, frame_img, csv_output, pose):
+def hog_check(s, frame_index, fps, results, frame_img, csv_output, pose, odota=None):
     """Kun vahvistettu kivi on lahihogin + marginaalin kohdalla, radalle tehdaan hog-hog-analyysi (kerran) ja
     kierrearvio. Onnistunut tulos lisataan results-listaan ja tulostetaan; still-kuva tallennetaan lahihogilla."""
     rows = s.get("all_rows")
@@ -121,6 +121,8 @@ def hog_check(s, frame_index, fps, results, frame_img, csv_output, pose):
             if cap is not None:
                 res["t_far_wall"] = cap - (float(rows[-1][1]) - float(res["t_far_hog_s"]))
         if res.get("ok"):
+            if odota is not None:
+                odota()            # taustalla lasketut kierrepiirteet valmiiksi
             obs, obs_taysi = s.pop("kierre", None) or [], s.pop("kierre_taysi", None) or []
             if live.active() is not None:
                 # live: kierrearvio (~1 s / piirre) taustasaikeeseen; tulos paneeliin kun valmis
