@@ -539,14 +539,24 @@ seurataan 720p:na.
 - **Tallennus** (`A.STAB_TALLENNA`): joka ruudun stabilointi kirjoitetaan tiedostoon `<pohja>_stabilointi.csv`.
   Sarakkeet: `frame`, `lahde` (`paneelit` kalibroinnin aikana, `vaihekorrelaatio` tai `vaihekorrelaatio (hihna)`),
   `dx_px`, `dy_px` (ruudun siirto 720p-kuvassa), `kierto_deg`, `skaala` ja `laskenta_ms`.
-- **Mittaus (harvennuksen arvio).** Simuloitu: siirto lasketaan vain joka N. ruudusta, ja välissä käytetään
-  lineaarista interpolointia.
-  - 0001-kamera (live-simulaatio): siirto vaihteli koko ajon aikana vain 0,5 px (x) ja 0,2 px (y). Ruudusta ruutuun
-    muutos oli rms 0,01 px. Kun siirto laskettiin vain kerran sekunnissa (N = 25), virhe oli rms 0,02 px ja suurin
-    0,15 px.
-  - MAH00014: kameraan osui noin 4,3 min kohdalla isku (siirto 6 px yhdessä ruudussa). Lisäksi heittojen aikana
-    näkyy 0,5–4 px:n heilahteluryöppyjä. Interpoloinnin virhe on rms 0,13–0,16 px kaikilla N:n arvoilla 2–25, mutta
-    suurin virhe on iskun kohdalla 4–8 px.
+- **Mukautuva harvennus (vain live):** vaihekorrelaatio lasketaan vain joka `A.STAB_HARVENNUS_LIVE`. (10.)
+  ruudusta (avainruutu).
+  - Rauhallisena aikana: jos kahden peräkkäisen avainruudun siirrot eroavat alle `A.STAB_HARVENNUS_KYNNYS_PX`
+    (0,15 px), väliruutujen siirto interpoloidaan lineaarisesti.
+  - Tärinän aikana: jos ero on suurempi, kaikki väliruudut lasketaan rinnakkain. Tämän jälkeen lasketaan joka ruutu,
+    kunnes kokonainen 10 ruudun jakso on rauhallinen (ruudusta ruutuun alle kynnyksen). Hystereesi estää
+    värähtelyä jäämästä huomaamatta, vaikka kaksi avainruutua sattuisi samaan vaiheeseen.
+  - Viive vaiheessa A on enintään 10 ruutua (0,4 s).
+  - `_stabilointi.csv`:ssä lähde on `interpoloitu (hihna)` tai `vaihekorrelaatio (hihna)`. Lopuksi tulostetaan
+    laskettujen ruutujen osuus.
+  - Tiedostoajossa lasketaan aina joka ruutu, joten tulokset ovat toistettavat.
+  - Simuloitu, kun live 06.10.2026 14:27 -ajosta ja MAH00014:stä laskettiin 27–29 % ruuduista: virhe rms
+    0,04–0,05 px, p99 0,15–0,16 px, suurin 0,7 px. 0001-live-simulaatiossa laskettiin 10 % ruuduista: ero joka
+    ruudun laskentaan rms 0,014 px, suurin 0,14 px, ja stabiloinnin CPU-aika putosi 9,4 → 1,0 ms/ruutu.
+    MAH00014 live-simulaationa: laskettiin 29 % ruuduista; interpoloitujen ero joka ruudun laskentaan rms 0,05 px,
+    p99 0,20 px, suurin 0,84 px.
+  - Tärinä on todellista kameran liikettä: MAH00014:ssä seinän ja katon staattiset laikut värisevät samalla tavalla
+    kuin koko kuvan mittaus (dy ruudusta ruutuun rms 0,50 vs. 0,52 px).
 
 **Linssikorjaus:** `warpAffine` (stabilointi) ja sen jälkeen `remap` (k1-oikaisu).
 

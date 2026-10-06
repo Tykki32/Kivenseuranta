@@ -273,8 +273,10 @@ class LivePipeline:
     """Vaiheet A ja B taustasaikeissa, paasaie ottaa valmiit ruudut get():lla. Kaytetaan kun kalibrointi ja
     kiviprofiili ovat valmiit (seurantavaihe). haku_ahead(idx, frame_u_for_tracking, thr) -> HAKU-future tai None."""
 
-    def __init__(self, source_read, engine, prep, ref_gray, live_state, calib_result, first_index, depth, haku_ahead=None):
+    def __init__(self, source_read, engine, prep, ref_gray, live_state, calib_result, first_index, depth, haku_ahead=None,
+                 stab_harvennus=1):
         self._haku_ahead = haku_ahead
+        self._stab_n = max(1, int(stab_harvennus))
         self._qa = queue.Queue(maxsize=depth)   # A -> B
         self._q = queue.Queue(maxsize=depth)    # B -> paasaie
         self._stop = threading.Event()
@@ -286,7 +288,7 @@ class LivePipeline:
         self._calib_result = calib_result
         self._index = first_index
         PIPE_STATS.update(wall0=time.perf_counter(), cpu0=time.process_time(), qC_sum=0, qC_n=0, qA_sum=0, qA_n=0,
-                          cpu_a=None, cpu_b=None, depth=depth)
+                          cpu_a=None, cpu_b=None, depth=depth, stab_laskettu=0, stab_interp=0)
         self._ta = threading.Thread(target=self._run_a, daemon=True)
         self._tb = threading.Thread(target=self._run_b, daemon=True)
         self._ta.start()
@@ -303,6 +305,90 @@ class LivePipeline:
         yleiset.prof_add(key, time.perf_counter() - t0)
 
     def _run_a(self):
+        if self._stab_n > 1:
+            return self._run_a_harvennettu()
+        return self._run_a_joka_ruutu()
+
+    def _run_a_harvennettu(self):
+        """Vaihe A, mukautuva stabilointi (live): vaihekorrelaatio vain joka N. ruudusta (avainruutu). Jos kahden
+        avainruudun siirrot eroavat alle A.STAB_HARVENNUS_KYNNYS_PX, valiruutujen siirto interpoloidaan lineaarisesti;
+        muuten (tarina) valiruudut lasketaan kaikki rinnakkain. Tarinan jalkeen lasketaan joka ruutu, kunnes kokonainen
+        jakso on rauhallinen (ruudusta ruutuun < kynnys). Viive enintaan N ruutua."""
+        N, thr = self._stab_n, float(A.STAB_HARVENNUS_KYNNYS_PX)
+        ex = ThreadPoolExecutor(max_workers=A.STAB_SAIKEET)
+        put_key = "pipe A: odottaa vaihetta B (jono taynna)"
+
+        def _job(gray):
+            t = time.perf_counter()
+            dxy = phase_correlate(self._ref_gray, gray)
+            return np.asarray(dxy, dtype=np.float64), time.perf_counter() - t
+
+        def _emit(idx, frame, dxy, dt_work, lahde):
+            if dt_work > 0:
+                yleiset.prof_add("bg: stabilointi tyoaika (rinnakkaiset tyontekijat, ei lisaa)", dt_work)
+                PIPE_STATS["stab_laskettu"] += 1
+            else:
+                PIPE_STATS["stab_interp"] += 1
+            stab = stabilization_matrix(float(dxy[0]), float(dxy[1]))
+            t0 = time.perf_counter()
+            self._engine.set_transform(stab)
+            yleiset.prof_add("pipe A: set_transform", time.perf_counter() - t0)
+            self._put(self._qa, (idx, frame, stab, dt_work, lahde), put_key)
+
+        def _laske_kaikki(buf):
+            t0 = time.perf_counter()
+            futs = [ex.submit(_job, g) for _, _, g in buf]
+            res = [f.result() for f in futs]
+            yleiset.prof_add("pipe A: stabilointi (vaihekorrelaatio)", time.perf_counter() - t0)
+            return res
+
+        try:
+            key = None             # viimeisimman avainruudun siirto
+            buf = []               # (idx, frame, gray) avainruudun jalkeen
+            tarina = False
+            while not self._stop.is_set():
+                t0 = time.perf_counter()
+                frame = self._source_read()
+                yleiset.prof_add("pipe A: read(video)", time.perf_counter() - t0)
+                if frame is None or frame.size == 0:
+                    for (i, f, _), (d, dt) in zip(buf, _laske_kaikki(buf)):
+                        _emit(i, f, d, dt, "vaihekorrelaatio (hihna)")
+                    self._put(self._qa, None, put_key)
+                    return
+                t0 = time.perf_counter()
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                yleiset.prof_add("pipe A: gray cvtColor", time.perf_counter() - t0)
+                idx = self._index
+                self._index += 1
+                if key is None:      # ensimmainen ruutu: avainruutu (alustaa myos referenssi-FFT:n)
+                    d, dt = _job(gray)
+                    _emit(idx, frame, d, dt, "vaihekorrelaatio (hihna)")
+                    key = d
+                    continue
+                buf.append((idx, frame, gray))
+                if len(buf) < N:
+                    continue
+                t0 = time.perf_counter()
+                d_j, dt_j = _job(buf[-1][2])                     # uusi avainruutu
+                yleiset.prof_add("pipe A: stabilointi (vaihekorrelaatio)", time.perf_counter() - t0)
+                if tarina or float(np.hypot(*(d_j - key))) > thr:
+                    res = _laske_kaikki(buf[:-1])
+                    sarja = np.array([key] + [r[0] for r in res] + [d_j])
+                    tarina = bool(np.hypot(*np.diff(sarja, axis=0).T).max() > thr)
+                    for (i, f, _), (d, dt) in zip(buf[:-1], res):
+                        _emit(i, f, d, dt, "vaihekorrelaatio (hihna)")
+                else:
+                    for m, (i, f, _) in enumerate(buf[:-1], 1):
+                        _emit(i, f, key + (m / N) * (d_j - key), 0.0, "interpoloitu (hihna)")
+                _emit(buf[-1][0], buf[-1][1], d_j, dt_j, "vaihekorrelaatio (hihna)")
+                key, buf = d_j, []
+        except BaseException as e:      # valitetaan eteenpain
+            self._put(self._qa, e, put_key)
+        finally:
+            ex.shutdown(wait=False)
+            PIPE_STATS["cpu_a"] = time.thread_time()
+
+    def _run_a_joka_ruutu(self):
         """Vaihe A: luku + gray jarjestyksessa tassa saikeessa, vaihekorrelaatiot (ruudut toisistaan riippumattomia)
         A.STAB_SAIKEET-tyontekijassa; tulokset jonoon alkuperaisessa jarjestyksessa -> tulos identtinen."""
         ex = ThreadPoolExecutor(max_workers=A.STAB_SAIKEET)
@@ -324,7 +410,8 @@ class LivePipeline:
             t0 = time.perf_counter()
             self._engine.set_transform(stab)
             yleiset.prof_add("pipe A: set_transform", time.perf_counter() - t0)
-            self._put(self._qa, (idx, frame, stab, dt_work), put_key)
+            PIPE_STATS["stab_laskettu"] += 1
+            self._put(self._qa, (idx, frame, stab, dt_work, "vaihekorrelaatio (hihna)"), put_key)
 
         try:
             first = True
@@ -372,11 +459,11 @@ class LivePipeline:
                 if item is None or isinstance(item, BaseException):
                     self._put(self._q, item, put_key)
                     return
-                idx, frame, stab, stab_s = item
+                idx, frame, stab, stab_s, stab_lahde = item
                 frame_u, frame_u_for_tracking, thr = self._prep.process(frame, stab, idx, self._live_state,
                                                                         self._calib_result)
                 haku_fut = self._haku_ahead(idx, frame_u_for_tracking, thr) if self._haku_ahead is not None else None
-                self._put(self._q, {"frame": frame, "stab": stab, "stab_s": stab_s, "frame_u": frame_u,
+                self._put(self._q, {"frame": frame, "stab": stab, "stab_s": stab_s, "stab_lahde": stab_lahde, "frame_u": frame_u,
                                     "frame_u_for_tracking": frame_u_for_tracking, "thr": thr, "haku_future": haku_fut},
                           put_key)
         except BaseException as e:

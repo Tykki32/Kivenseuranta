@@ -241,7 +241,7 @@ class Seuranta:
                     stab_lahde, stab_s = "vaihekorrelaatio", time.perf_counter() - t_stab0
                 else:
                     stab = pipe_item["stab"]
-                    stab_lahde, stab_s = "vaihekorrelaatio (hihna)", pipe_item.get("stab_s")
+                    stab_lahde, stab_s = pipe_item.get("stab_lahde", "vaihekorrelaatio (hihna)"), pipe_item.get("stab_s")
                 yleiset.prof_add("py: stabilointi (vaihekorrelaatio+paneelit)", time.perf_counter() - t_stab0)
                 self._kirjaa_stabilointi(frame_index, stab, stab_lahde, stab_s)
                 t0 = time.perf_counter()
@@ -475,6 +475,7 @@ class Seuranta:
         self.frame_pipeline = esikasittely.LivePipeline(
             self.frame_prefetcher.read, self.engine, self.live_prep, self.ref_gray, self.live_state, self.calib_result,
             frame_index + 1, depth=A.JONON_SYVYYS, haku_ahead=haku_ahead,
+            stab_harvennus=A.STAB_HARVENNUS_LIVE if live.active() is not None else 1,
         )
         print(f"Liukuhihna: stabilointi {A.STAB_SAIKEET} ruudulle rinnan, jonojen syvyys {A.JONON_SYVYYS}")
 
@@ -940,6 +941,12 @@ class Seuranta:
         if self._stab_csv is not None:
             self._stab_csv.close()
             print(f"Stabilointi ruuduittain: {os.path.splitext(self.csv_output)[0]}_stabilointi.csv")
+        ps = esikasittely.PIPE_STATS
+        if ps.get("stab_interp"):
+            n_ = ps["stab_laskettu"] + ps["stab_interp"]
+            print(f"Stabilointi (mukautuva, joka {A.STAB_HARVENNUS_LIVE}. ruutu, kynnys {A.STAB_HARVENNUS_KYNNYS_PX} px): "
+                  f"laskettu {ps['stab_laskettu']} / {n_} ruutua ({100.0 * ps['stab_laskettu'] / max(1, n_):.0f} %), "
+                  f"interpoloitu {ps['stab_interp']}")
         heitot.odota_kierteet()
         if self.stone_registry:
             heitot.kirjoita_heitot(self.stone_registry, self.hog_results, self.csv_output)

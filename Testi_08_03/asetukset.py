@@ -244,6 +244,8 @@ STAB_LEVEYS = 1280                   # leveampi kuva stabiloidaan pienennettyna 
 # 10. SUORITUSKYKY (saikeet, liukuhihna)
 # =====================================================================================================================
 STAB_TALLENNA = True                 # joka ruudun stabilointi (siirto, kierto, skaala, laskenta-aika) -> <pohja>_stabilointi.csv
+STAB_HARVENNUS_LIVE = 10            # live: vaihekorrelaatio vain joka N. ruudusta, valit interpoloidaan (1 = joka ruutu)
+STAB_HARVENNUS_KYNNYS_PX = 0.15      # ... jos avainruutujen siirrot eroavat yli taman (tai tarina jatkuu), lasketaan kaikki
 STAB_SAIKEET = 2                     # vaihekorrelaatiot rinnan (liukuhihnan vaihe A)
 JONON_SYVYYS = 50                    # liukuhihnan jonot (2 s puskuri vaiheiden valissa)
 GPU_VAIHE_B = True                   # warp + varjosuodatus OpenCL:lla jos kaytettavissa (Intel UHD)
