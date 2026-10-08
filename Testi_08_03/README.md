@@ -402,9 +402,11 @@ Ajon lopussa vahvistetuista radoista valitaan heitot lopulliseen CSV:hen:
 - **Radan alun karsinta:** jos alun jälkeen on yli 30 ruudun aukko ja alku on alle 40 riviä, alku pudotetaan (rata
   lukittui ensin väärään kohteeseen).
 - **Heitto** on rata, jolle hog-hog-analyysi onnistui (aina), tai jolla on:
-  - vähintään 300 riviä;
-  - matka eteenpäin ≥ 1500 cm ja loppu-Y ≤ 1100 cm;
-  - hidastuva liike: viimeisen 20 %:n nopeus / ensimmäisen 20 %:n nopeus ≤ 0,75 (aito kivi 0,2–0,6, pelaajan pää ~1);
+  - vähintään 50 riviä ja matka eteenpäin ≥ 1500 cm;
+  - kitkan kaltainen hidastuvuus: Y(t)-paraabelin (10 % huonoiten sopivaa pois) hidastuvuus 0,03–0,20 m/s²
+    (`PORTTI_HIDASTUVUUS_MIN/MAX_MS2`). Aidot heitot 0,035–0,17 m/s² nopeudesta riippumatta; tasaisesti liikkuva
+    pelaaja ~0 tai negatiivinen. Aiemmat ehdot (≥ 300 riviä, loppu-Y ≤ 1100 cm, loppu-/alkunopeus ≤ 0,75) hylkäsivät
+    nopeita lyöntiheittoja ja ennen lähihogia päättyneitä ratoja (live 2026-10-07: 5 kiveä);
   - sovitus: rms-mediaani ≤ 3 px ja tarkka-osuus ≥ 0,3, tai heikompana luokkana ≤ 12 px ja ≥ 0,1 (lakaisija peittää).
 - **Yksi rata per hog-ylitys:**
   - Kaukohogin ylitysruutu interpoloidaan. Jos rata alkaa vasta hogin jälkeen, ylitys ekstrapoloidaan radan alun
@@ -429,7 +431,7 @@ Tulokset:
 - **Hidastuvuus kitkamallista:**
   - Malli: kitkakerroin μ(v) = A + B ln v, liikeyhtälö dv/dt = −g μ(v).
   - Sovitus: y0, v0 ja A sovitetaan LM:llä; Y(t) integroidaan numeerisesti (RK4, 0,04 s). B on kiinteä
-    `A.HOG_MU_B` (−0,001).
+    `A.HOG_MU_B` (−0,003).
   - Raportoitava hidastuvuus on g μ(1,5 m/s). Jos kitkasovitus on selvästi huonompi kuin toisen asteen sovitus,
     käytetään keskimääräistä hidastuvuutta.
 
@@ -438,7 +440,10 @@ Tulokset:
 - X(t) = x0 + θ0 S(t) + k H(t), missä S = kuljettu matka, G = ∫dt / v ja H = ∫v G dt. Nopeus v(t) saadaan Y-sovituksesta.
 - Lineaarinen pienimmän neliösumman sovitus; 10 huonointa pistettä pois.
 - Tulos: X ja kulkusuunta kaukohogilla.
-- Hyväksyntä: X-sovituksen R_x (toisen asteen X(Y)-sovituksesta) > 0,99 ja R_y·R_x > 0,99. Muuten mitään ei raportoida.
+- Hyväksyntä: kurvimallin jäännöksen rms (10 huonointa pois) < 2 cm (`HOG_X_MAX_RMS_CM`). Muuten mitään ei
+  raportoida. Toisen asteen X(Y)-sovitus (`R_x`, `*_2aste`) lasketaan edelleen vertailuksi, mutta ei hyväksy:
+  R_x hylkäsi vähän taipuvat heitot ja voimakkaasti taipuvat, joihin paraabeli ei sovi (live 2026-10-07:
+  46/70 → 64/70 hyväksyttyä; MAH00014 20/20, kurvimallin rms 0,4–1,0 cm).
 
 **Irroitus:** X, jonka kaukohogin suunta jatkettuna suorana saisi lähemmällä T-viivalla.
 

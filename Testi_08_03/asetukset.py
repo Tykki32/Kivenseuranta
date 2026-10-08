@@ -167,9 +167,9 @@ POISTA_MIN_RMS = 8.0                 # paikanvaraus: vahvistettu rata voidaan po
 # 5. HEITTOPORTTI (heitot.py)
 # =====================================================================================================================
 PORTTI_MATKA_CM = 1500.0             # heittomainen liike: matka eteenpain vahintaan
-PORTTI_MIN_RIVIT = 300               # ... vahintaan nain monta riviä
-PORTTI_LOPPU_Y_MAX_CM = 1100.0       # ... loppuu lahihogin (823 cm) tuntumaan
-PORTTI_MAX_NOPEUSSUHDE = 0.75        # ... hidastuu (loppunopeus / alkunopeus; pelaaja ~1)
+PORTTI_MIN_RIVIT = 50                # ... vahintaan nain monta rivia (Y(t)-sovitusta varten)
+PORTTI_HIDASTUVUUS_MIN_MS2 = 0.03    # ... hidastuu kuin kitka: Y(t)-sovituksen hidastuvuus talla valilla (m/s^2);
+PORTTI_HIDASTUVUUS_MAX_MS2 = 0.20    #     aidot heitot 0,035-0,17 (live 2026-10-07, MAH00014), pelaaja ~0 tai < 0
 PORTTI_MAX_RMS = 3.0                 # hyva sovitus: rms-mediaani ja tarkka-osuus
 PORTTI_MIN_TARKKA = 0.3
 PORTTI_PELASTUS_MAX_RMS = 12.0       # heikko sovitus (lakaisija peittaa) kelpaa viela
@@ -182,8 +182,8 @@ PORTTI_YLITYS_EKSTRAPOLOINTI_MAX = 60.0
 # =====================================================================================================================
 # 6. HOG-HOG -ANALYYSI, LIUKU JA IRROITUS (hog_analyysi.py)
 # =====================================================================================================================
-HOG_MIN_R = 0.99                     # Y(t)-sovituksen R (ja X-sovituksen R_x) oltava yli taman
-HOG_MIN_TULO = 0.99                  # R_y * R_x oltava yli taman
+HOG_MIN_R = 0.99                     # Y(t)-sovituksen R oltava yli taman
+HOG_X_MAX_RMS_CM = 2.0               # X-kurvimallin jaannosvirhe (rms, huonoimmat pois) oltava alle taman
 HOG_LAHI_MARGINAALI_CM = 50.0        # sovitusalue: lahihog + 50 cm ...
 HOG_KAUKO_MARGINAALI_CM = 100.0      # ... kaukohog - 100 cm
 HOG_MIN_PISTEET = 40                 # vahintaan nain monta pistetta sovitusalueella
@@ -193,7 +193,8 @@ HOG_HIDASTUVUUS_NOPEUDELLA_MS = 1.5  # hidastuvuus ilmoitetaan kitkamallista tal
 # Kitkamallin mu(v) = A + B ln v kiintea B (heittokohtaisesti sovitetaan vain A). Mitattu yhteissovituksella: live
 # 2026-10-04 (66 heittoa) paras B = -0,0011, MAH00014 (19 heittoa) -0,0027. B = -0,001 -> hidastuvuus @1,5 m/s
 # muuttuu hitailla heitoilla <= 0,4 % (live) / <= 3,9 % (MAH). Paivita jos jaa/kalibrointi muuttaa B:ta selvasti.
-HOG_MU_B = -0.001
+# 2026-10-06: MAH00014 (20 heittoa, yhteinen B, hog-hog Y(t)) paras B = -0,0030 (+-0,0005) -> otettu kayttoon.
+HOG_MU_B = -0.003
 HOG_TALLENNA_KUVA = True             # still-kuva <csv>_hog_kivi<N>.png jokaisesta onnistuneesta analyysista
 
 # Liuku: suora X(Y) heiton alusta kaukohog + LIUKU_LOPPU_MARGINAALI_CM asti; lahtopisteeksi lisataan hakki.

@@ -8,8 +8,8 @@ Tulostiedostot (<pohja> = videon nimi ilman paatetta, tai live-nimi):
   <pohja>_kivien_sijainnit_hog_kivi<N>.png  still-kuva hog-tekstilla
 
 HEITTOPORTTI: rata on heitto jos hog-hog-analyysi onnistui sille (aina), tai jos sen liike on heittomainen (matka
-eteenpain >= A.PORTTI_MATKA_CM, loppu-Y <= A.PORTTI_LOPPU_Y_MAX_CM, hidastuu, >= A.PORTTI_MIN_RIVIT rivia) ja
-sovitus riittava (rms-mediaani, tarkka-osuus). Kahden radan kaukohogin ylitys < A.PORTTI_TUPLA_RUUDUT toisistaan =
+eteenpain >= A.PORTTI_MATKA_CM ja hidastuvuus kitkan luokkaa, A.PORTTI_HIDASTUVUUS_MIN/MAX_MS2) ja sovitus riittava
+(rms-mediaani, tarkka-osuus). Kahden radan kaukohogin ylitys < A.PORTTI_TUPLA_RUUDUT toisistaan =
 sama heitto (vain yksi kivi ylittaa hoglinjan kerrallaan) -> parempi sailyy.
 """
 import csv
@@ -133,7 +133,7 @@ def hog_check(s, frame_index, fps, results, frame_img, csv_output, pose, odota=N
             else:
                 _kierteet(res, obs, obs_taysi, fps)
         s["hog_result"] = res
-        if res.get("ok"):          # vain onnistunut (R_y, R_x, R_y*R_x > 0.99) tulostetaan
+        if res.get("ok"):          # vain onnistunut (R_y > 0.99, X-kurvimallin rms < 2 cm) tulostetaan
             results.append(res)
             print(f"[frame {frame_index}] " + " | ".join(hog_analyysi.format_lines(res, s["stone_id"])))
     r = s.get("hog_result")
@@ -166,15 +166,17 @@ def hog_kirjoita_csv(results, csv_output):
 # =====================================================================================================================
 
 def _track_kinematics(rows):
-    """(matka, loppu-Y, hidastuvuussuhde, kaukohogin ylitysruutu). Hidastuvuussuhde = loppuvaiheen (viimeiset 20 %)
-    nopeus / alkuvaiheen nopeus: aito kivi hidastuu (0,2-0,6), pelaajan paa liikkuu tasaisesti (~1)."""
+    """(matka, hidastuvuus m/s^2, kaukohogin ylitysruutu). Hidastuvuus Y(t)-paraabelista (10 % huonoiten sopivaa pois):
+    aito kivi hidastuu kitkan verran (~0,04-0,17 m/s^2) nopeudesta riippumatta, pelaaja liikkuu tasaisesti (~0)."""
     ys = np.array([r["Y_cm"] for _, _, r in rows])
     fr = np.array([f for f, _, _ in rows])
     n = len(rows)
-    a = max(2, n // 5)
-    va = (ys[0] - ys[a]) / max(1, fr[a] - fr[0])
-    vb = (ys[-a - 1] - ys[-1]) / max(1, fr[-1] - fr[-a - 1])
-    ratio = vb / va if va > 0.5 else 9.9
+    tt = np.array([float(t) for _, t, _ in rows]); tt -= tt[0]
+    decel = 0.0
+    if n >= 5 and tt[-1] > 0:
+        c = np.polyfit(tt, ys, 2)
+        keep = np.argsort(np.abs(ys - np.polyval(c, tt)))[: max(5, int(0.9 * n))]
+        decel = 2.0 * float(np.polyfit(tt[keep], ys[keep], 2)[0]) / 100.0    # Y pienenee: > 0 = hidastuu
     cross = None
     hog = rata.FAR_HOGLINE_Y_CM
     for i in range(n - 1):
@@ -183,7 +185,7 @@ def _track_kinematics(rows):
             break
     if cross is None and ys[0] <= hog:
         cross = float(fr[0])
-    return float(ys[0] - ys.min()), float(ys[-1]), float(ratio), cross
+    return float(ys[0] - ys.min()), decel, cross
 
 
 def _trim_track_head(rows):
@@ -198,7 +200,7 @@ def _trim_track_head(rows):
 def _estimate_crossing(rows):
     """Kaukohogin ylitysruutu. Jos rata alkaa jo hogin lahipuolelta (rekisteroity myohassa), ylitys ekstrapoloidaan
     radan alun nopeudesta (enintaan A.PORTTI_YLITYS_EKSTRAPOLOINTI_MAX ruutua)."""
-    cross = _track_kinematics(rows)[3]
+    cross = _track_kinematics(rows)[2]
     ys = np.array([r["Y_cm"] for _, _, r in rows])
     fr = np.array([f for f, _, _ in rows], dtype=float)
     hog = rata.FAR_HOGLINE_Y_CM
@@ -215,8 +217,8 @@ def track_throw_class(rows):
     """0 = ei heitto, 2 = heitto hyvalla sovituksella, 1 = heitto heikolla sovituksella (esim. lakaisija peittaa)."""
     if len(rows) < A.PORTTI_MIN_RIVIT:
         return 0
-    travel, yend, ratio, _ = _track_kinematics(rows)
-    if travel < A.PORTTI_MATKA_CM or yend > A.PORTTI_LOPPU_Y_MAX_CM or ratio > A.PORTTI_MAX_NOPEUSSUHDE:
+    travel, decel, _ = _track_kinematics(rows)
+    if travel < A.PORTTI_MATKA_CM or not A.PORTTI_HIDASTUVUUS_MIN_MS2 <= decel <= A.PORTTI_HIDASTUVUUS_MAX_MS2:
         return 0
     rms = [r["rms_px"] for _, _, r in rows if r.get("rms_px") is not None]
     if not rms:

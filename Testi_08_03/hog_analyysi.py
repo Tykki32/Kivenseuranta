@@ -7,8 +7,8 @@ huonoimmin sopivat pisteet pudotetaan ja sovitetaan uudelleen. Jos R = sqrt(R^2)
   * hog-hog-aika = t(Y = lahihog) - t(Y = kaukohog).
 X-SUUNTA: kurvimalli (vakio sivukiihtyvyys) samoille pisteille -> suunta kaukohogilla ja IRROITUS = X, jonka kaukohogin
 suunta jatkettuna saisi lahemmalla T-viivalla. LIUKU: suora X(Y) heiton alusta kaukohog + 1 m asti (+ hakki lahtopisteena,
-erikseen X = +-15 cm) -> X lahemmalla T-viivalla. Tulos hyvaksytaan vain jos R_y > HOG_MIN_R, R_x > HOG_MIN_R ja
-R_y * R_x > HOG_MIN_TULO. Y pienenee kun kivi etenee kohti lahempaa pesaa.
+erikseen X = +-15 cm) -> X lahemmalla T-viivalla. Tulos hyvaksytaan vain jos R_y > HOG_MIN_R ja kurvimallin
+jaannoksen rms < HOG_X_MAX_RMS_CM. Y pienenee kun kivi etenee kohti lahempaa pesaa.
 """
 import numpy as np
 import cv2
@@ -145,7 +145,7 @@ def _r_of(tt, y, a, b, c):
     return float(np.sqrt(max(1.0 - ss_res / ss_tot, 0.0))) if ss_tot > 0 else 0.0
 
 
-def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, min_product=A.HOG_MIN_TULO):
+def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, max_x_rms=A.HOG_X_MAX_RMS_CM):
     """rows: [(frame, timestamp_s, {"Y_cm": ...}), ...]. Palauttaa dict: ok (bool), reason, n, R, ..."""
     ylo, yhi = near_hog_cm + A.HOG_LAHI_MARGINAALI_CM, far_hog_cm - A.HOG_KAUKO_MARGINAALI_CM
     pts = [(float(t), float(r["Y_cm"])) for _, t, r in rows if r.get("Y_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi]
@@ -219,10 +219,6 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
         px, qx, rx = np.polyfit(u, xx, 2)
     Rx = _r_of(u, xx, px, qx, rx)
     out.update(R_x=Rx, R_x_ennen_suodatusta=Rx1, nx_kaytetty=int(len(xx)), nx_pudotettu=nd, px=float(px), qx=float(qx), rx=float(rx), R_tulo=R * Rx)
-    if Rx <= min_r or R * Rx <= min_product:
-        out["ok"] = False
-        out["reason"] = f"X-sovitus tai R_y*R_x ei riittava (R_x = {Rx:.4f}, R_y*R_x = {R * Rx:.4f})"
-        return out
     slope = qx / 100.0                                      # dX/dY kaukohoglinella (u = 0), cm / cm
     x_far = float(rx)
     dir_deg = float(np.degrees(np.arctan(-slope)))          # kulkusuunta (Y pienenee): + = kohti +X
@@ -240,8 +236,13 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
     theta_far = float(co[1] + co[2] * np.interp(t_far, g, G))
     slope = -theta_far                                  # dX/dY = X'/Y' = v theta / (-v)
     dir_deg = float(np.degrees(np.arctan(theta_far)))
-    out.update(kurvi_k_ms2=float(co[2]), kurvi_rms_cm=float(np.sqrt(np.mean((xxa[kk] - Mx[kk] @ co) ** 2))) if nd > 0
-               else float(np.sqrt(np.mean((xxa - Mx @ co) ** 2))))
+    kurvi_rms = float(np.sqrt(np.mean((xxa[kk] - Mx[kk] @ co) ** 2))) if nd > 0 else float(np.sqrt(np.mean((xxa - Mx @ co) ** 2)))
+    out.update(kurvi_k_ms2=float(co[2]), kurvi_rms_cm=kurvi_rms)
+    # hyvaksynta kurvimallin jaannoksesta (cm): R_x (paraabeli) hylkasi vahan taipuvat ja paraabeliin sopimattomat heitot
+    if not kurvi_rms < max_x_rms:
+        out["ok"] = False
+        out["reason"] = f"X-kurvimallin jaannos liian suuri (rms = {kurvi_rms:.2f} cm >= {max_x_rms:.1f} cm)"
+        return out
     out.update(x_far_hog_cm=x_far, slope_dxdy=float(slope), dir_far_hog_deg=dir_deg)
     if tee_cm is not None:
         out["tee_y_cm"] = float(tee_cm)
@@ -266,7 +267,7 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
 
 
 def format_lines(res, stone_id=None):
-    """Tekstirivit (terminaali + kuva). Vain onnistuneelle (R_y, R_x, R_y*R_x) analyysille; muuten None."""
+    """Tekstirivit (terminaali + kuva). Vain onnistuneelle (R_y, X-kurvimallin rms) analyysille; muuten None."""
     if not res.get("ok"):
         return None
     hdr = "Hog-hog + X-suunta" + (f" (kivi {stone_id})" if stone_id is not None else "")
@@ -289,7 +290,7 @@ def format_lines(res, stone_id=None):
     if res.get("kierteet_taysi") is not None:
         lines.append(f"kierteita hog-hog (taysi resoluutio): {res['kierteet_taysi']:.1f} (kierrosaika {res['kierrosaika_far_s_taysi']:.1f} s -> "
                      f"{res['kierrosaika_near_s_taysi']:.1f} s)")
-    lines.append(f"R_y = {res['R']:.5f}  R_x = {res['R_x']:.5f}  tulo = {res['R_tulo']:.5f}")
+    lines.append(f"R_y = {res['R']:.5f}  X-kurvimallin rms = {res['kurvi_rms_cm']:.2f} cm  (R_x = {res['R_x']:.5f})")
     return lines
 
 
