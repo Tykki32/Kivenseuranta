@@ -656,7 +656,8 @@ pikseli on kylläinen. Näin värikäs mutta eri sävyinen kohde (keltainen kahv
 - **Viive:** keskikuva näytetään Alku s myöhässä (JPEG-rengaspuskuri kaappausajan mukaan, enintään 180 s). Kun heitto
   ylittää kaukohogin videolla, laatikko samalla korostuu. Jos käsittely on Alkua enemmän jäljessä, näytetään uusin kuva
   ja viive punaisella.
-- **Tallennus:** jokainen lähetetty kuva tallennetaan `<nimi>_katselu.avi`:hin.
+- **Tallennus:** jokainen lähetetty kuva tallennetaan `<nimi>_katselu.avi`:hin yhtenä ruutuna. Video on 30 fps
+  (`A.KATSELU_TALLENNUS_FPS`), joten kun kuva lähetetään kerran sekunnissa, tallenne kulkee 30-kertaisella nopeudella.
 
 **Debug-video (`--debug`):** sama asettelu jokaisesta ruudusta. Kivien ääriviivat ovat vihreitä (tarkka) tai oransseja.
 Koodaus on `A.DEBUG_KOODAUS`; Intel QSV, jos saatavilla.

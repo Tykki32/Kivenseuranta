@@ -276,7 +276,8 @@ LIVE_KAMERA_UUDELLEEN_MAX_S = 600.0  # ... enintaan nain kauan, sitten syote paa
 KATSELU_VALI_S = 1.0                 # puhelinnakyma piirretaan kerran nain monessa sekunnissa
 KATSELU_KORKEUS = 810                # JPEG-kuvan korkeus (px); nakyma on 1080 px korkea
 KATSELU_LAATU = 75                   # JPEG-laatu
-KATSELU_TALLENNUS_FPS = 1.0          # tallennetun <nimi>_katselu.avi:n ruutunopeus (1 = reaaliaika)
+KATSELU_TALLENNUS_FPS = 30.0         # tallennetun <nimi>_katselu.avi:n ruutunopeus; yksi lahetetty kuva = yksi ruutu,
+                                     #   joten 30 = 30-kertainen nopeus (kuva lahetetaan kerran KATSELU_VALI_S:ssa)
 KATSELU_LIIKE_KYNNYS = 40            # liikkuva kohde = ero taustakuvaan > tama (0-255, suurin kanava); viiva piirretaan alle
 KATSELU_VIIVE_MAX_S = 180.0          # keskikuvan viivepuskuri (s): Alku voi olla enintaan tama (n. 15 Mt)
 KATSELU_RISTI_SAKARA_PX = 24         # irroitusristin sakaran pituus (px)
