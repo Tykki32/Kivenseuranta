@@ -162,6 +162,7 @@ class DebugComposer:
         self.total_w = self.video_w + 2 * self.pw
         self.canvas = np.zeros((self.video_h, self.total_w, 3), np.uint8)
         self._key = {"L": None, "R": None}
+        self._paneeli = {"L": None, "R": None}   # valmiit paneelikuvat (kopioidaan kankaalle joka kerta)
         # skaalaus ennen kaantoa: (src_w x src_h) -> (video_h x video_w) = (DEBUG_H x video_w) kaantamattomana: leveys DEBUG_H, korkeus video_w
         self._pre_w, self._pre_h = DEBUG_H, self.video_w
         self.boxes = []           # laatikoiden paikat ja iat (puhelimen korostus)
@@ -194,6 +195,7 @@ class DebugComposer:
         g = dict(viivat=viivat)
         if res.get("x_straight_at_tee_cm") is not None:
             g["risti"] = cv_(res["x_straight_at_tee_cm"], tee)
+            g["risti_x_cm"] = float(res["x_straight_at_tee_cm"])
         return g
 
     def _liike_maski(self, vid):
@@ -238,6 +240,59 @@ class DebugComposer:
         img = cv2.imdecode(valinta[1], cv2.IMREAD_COLOR)
         return (img if img is not None and img.shape == vid.shape else vid), nyt - valinta[0]
 
+    @staticmethod
+    def _reunanuoli(ov, lm, mx, my, x_cm):
+        """Irroitus kuvan ulkopuolella (esim. > 2 m keskiviivasta): oranssi nuoli kuvan reunaan kohti irroituskohtaa ja
+        lukema (X lahemmalla T-viivalla, cm)."""
+        hh, ww = ov.shape[:2]
+        reuna = 4
+        tx, ty = float(np.clip(mx, reuna, ww - 1 - reuna)), float(np.clip(my, reuna, hh - 1 - reuna))
+        dx, dy = mx - tx, my - ty
+        nrm = float(np.hypot(dx, dy)) or 1.0
+        dx, dy = dx / nrm, dy / nrm
+        pituus = 2 * A.KATSELU_RISTI_SAKARA_PX
+        tip = (int(round(tx)), int(round(ty)))
+        tail = (int(round(tx - dx * pituus)), int(round(ty - dy * pituus)))
+        cv2.arrowedLine(ov, tail, tip, (0, 153, 255), 4, cv2.LINE_AA, tipLength=0.45)
+        cv2.line(lm, tail, tip, 255, 9)
+        if x_cm is not None:
+            txt = f"{x_cm:+.0f} cm"
+            (tw, th), _ = cv2.getTextSize(txt, FONT, 0.7, 2)
+            px = int(np.clip(tail[0] - dx * 6 - (tw if dx > 0 else 0) - (tw // 2 if dx == 0 else 0), 2, ww - tw - 2))
+            py = int(np.clip(tail[1] + th // 2 - dy * (th + 6), th + 2, hh - 4))
+            cv2.putText(ov, txt, (px, py), FONT, 0.7, (0, 0, 0), 5, cv2.LINE_AA)
+            cv2.putText(ov, txt, (px, py), FONT, 0.7, (0, 153, 255), 2, cv2.LINE_AA)
+            cv2.rectangle(lm, (px - 2, py - th - 4), (px + tw + 2, py + 6), 255, -1)
+
+    def _piirra_ulkopuolelle(self, gs):
+        """Liukusuorien ja irroitusristin kuvan ulkopuolelle jaava osa paneelien paalle samassa mittakaavassa (jatke
+        videokuvalle, esim. irroitus > 2 m keskiviivasta). Kankaan ulkopuolella oleva risti -> nuoli kankaan reunaan."""
+        nayta = tuple(self.nayta)
+        ov = self.canvas.copy()
+        lm = np.zeros(ov.shape[:2], np.uint8)
+        hh, ww = ov.shape[:2]
+        for g in gs:
+            for v in g.get("viivat", []):
+                if (v["s"] == "v" and not nayta[0]) or (v["s"] == "o" and not nayta[1]):
+                    continue
+                p0 = (int(round(v["p"][0][0])), int(round(v["p"][0][1])))
+                p1 = (int(round(v["p"][1][0])), int(round(v["p"][1][1])))
+                cv2.line(ov, p0, p1, VIIVA_BGR[v["s"]], 2, cv2.LINE_AA)
+                cv2.line(lm, p0, p1, 255, 4)
+            if g.get("risti") is not None:
+                mx, my = g["risti"]
+                if 0 <= mx < ww and 0 <= my < hh:
+                    for d in (-90, 30, 150):
+                        t = np.radians(d)
+                        q0 = (int(round(mx)), int(round(my)))
+                        q1 = (int(round(mx + A.KATSELU_RISTI_SAKARA_PX * np.cos(t))), int(round(my + A.KATSELU_RISTI_SAKARA_PX * np.sin(t))))
+                        cv2.line(ov, q0, q1, (0, 153, 255), 3, cv2.LINE_AA)
+                        cv2.line(lm, q0, q1, 255, 5)
+                else:
+                    self._reunanuoli(ov, lm, mx, my, g.get("risti_x_cm"))
+        lm[:, self.pw:self.pw + self.video_w] = 0            # videokuvan alue piirretty jo (_piirra_viivat)
+        cv2.copyTo(ov, lm, self.canvas)
+
     def _piirra_viivat(self, vid, mask_r, gs):
         """Korostettujen laatikoiden liukusuorat ja irroitusristi videokuvaan liikkuvien kohteiden ALLE (vain mask_r == 0)."""
         nayta = tuple(self.nayta)
@@ -255,11 +310,13 @@ class DebugComposer:
                 n += 1
             if g.get("risti") is not None:
                 mx, my = g["risti"][0] - self.pw, g["risti"][1]
-                for d in (-90, 30, 150):
-                    t = np.radians(d)
-                    q0, q1 = (int(round(mx)), int(round(my))), (int(round(mx + A.KATSELU_RISTI_SAKARA_PX * np.cos(t))), int(round(my + A.KATSELU_RISTI_SAKARA_PX * np.sin(t))))
-                    cv2.line(ov, q0, q1, (0, 153, 255), 3, cv2.LINE_AA)
-                    cv2.line(lm, q0, q1, 255, 5)
+                hh, ww = vid.shape[:2]
+                if 0 <= mx < ww and 0 <= my < hh:
+                    for d in (-90, 30, 150):
+                        t = np.radians(d)
+                        q0, q1 = (int(round(mx)), int(round(my))), (int(round(mx + A.KATSELU_RISTI_SAKARA_PX * np.cos(t))), int(round(my + A.KATSELU_RISTI_SAKARA_PX * np.sin(t))))
+                        cv2.line(ov, q0, q1, (0, 153, 255), 3, cv2.LINE_AA)
+                        cv2.line(lm, q0, q1, 255, 5)
                 n += 1
         if not n:
             return
@@ -329,8 +386,11 @@ class DebugComposer:
             nayta = tuple(self.nayta)     # puhelimen vasen-/oikeakatinen-valinta
             key = (nayta,) + tuple((r["stone_id"], r["frame"], a) for r, a in zip(ents, ages))
             if key != self._key[side]:                         # paneeli piirretaan uudelleen vain kun sisalto muuttui (sekuntilaskuri: kerran sekunnissa)
-                self.canvas[:, x0:x0 + self.pw] = render_panel(ents, ages, plus_right=plus_right, nayta=nayta, L=L)
+                self._paneeli[side] = render_panel(ents, ages, plus_right=plus_right, nayta=nayta, L=L)
                 self._key[side] = key
+            self.canvas[:, x0:x0 + self.pw] = self._paneeli[side]   # pohjaksi joka kerta (edellisen kuvan viivat pois)
+        if piirra:
+            self._piirra_ulkopuolelle(piirra)
         return self.canvas
 
 
