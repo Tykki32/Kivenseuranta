@@ -41,7 +41,9 @@ python tools/kamera_testi.py                                                    
   paikallaan (5 viimeisen paikan mediaani alle `A.PYSAHDYS_MAX_SIIRTO_CM` = 10 cm pysähdyspaikasta; yksittäinen huono
   sovitus ei hylkää) vielä `A.PYSAHDYS_VAHVISTUS_S` (2 s). Jos kivi liikkuu tai katoaa
   sinä aikana (pelaaja pysäyttää kiven jalalla tai harjalla tai vie sen), pysähtymispaikkaa ei anneta
-  (`pysahtyi: -`). Paikka on vahvistusjakson paikkojen mediaani.
+  (`pysahtyi: -`). Paikka on vahvistusjakson paikkojen mediaani. Vahvistusjaksolla on oltava vähintään
+  `A.PYSAHDYS_MIN_PAIKAT` (10) havaittua paikkaa; jos kivi on välillä peitossa, vahvistus odottaa lisää paikkoja
+  (aiemmin peitossa ollut kivi kaatoi ajon tyhjään mediaaniin).
 
 ## Asetukset (`asetukset.py`)
 
