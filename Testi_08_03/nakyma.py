@@ -174,24 +174,23 @@ class DebugComposer:
         self.viive = None
 
     def _geom(self, res, plus_right, W0):
-        """Liukusuorat (vasen hakki punainen, oikea vihrea) ja irroitus (oranssi) kuvapisteina kankaalla.
+        """Liukusuorat (vasen hakki punainen, oikea vihrea; jos liuku saatiin) ja irroitus (oranssi) kuvapisteina kankaalla.
         self.project(X, Y) -> (u, v) lahdekuvassa (asetetaan render_frame:ssa); ilman sita tyhja."""
         pr = self.project
-        if pr is None or "liuku_x_tee_cm_hakki_p" not in res or "tee_y_cm" not in res:
+        if pr is None or "tee_y_cm" not in res:
             return {}
 
         def cv_(X, Y):
             u, v = pr(X, Y)
             return [self.pw + v * self.scale, (W0 - 1 - u) * self.scale]
         tee, hy = res["tee_y_cm"], res.get("hakki_y_cm")
-        if hy is None:
-            return {}
-        vas, oik = ("m", "p") if plus_right is None or bool(plus_right) else ("p", "m")
         viivat = []
-        for tag, col, puoli in ((vas, "#ff2020", "v"), (oik, "#20e020", "o")):
-            xt = res["liuku_x_tee_cm_hakki_" + tag]
-            sl = -np.tan(np.radians(res["liuku_dir_deg_hakki_" + tag]))
-            viivat.append(dict(p=[cv_(xt + sl * (hy - tee), hy), cv_(xt, tee)], c=col, s=puoli))
+        if hy is not None and "liuku_x_tee_cm_hakki_p" in res:      # liukusuorat vain jos liuku saatiin (>= 8 pistetta)
+            vas, oik = ("m", "p") if plus_right is None or bool(plus_right) else ("p", "m")
+            for tag, col, puoli in ((vas, "#ff2020", "v"), (oik, "#20e020", "o")):
+                xt = res["liuku_x_tee_cm_hakki_" + tag]
+                sl = -np.tan(np.radians(res["liuku_dir_deg_hakki_" + tag]))
+                viivat.append(dict(p=[cv_(xt + sl * (hy - tee), hy), cv_(xt, tee)], c=col, s=puoli))
         g = dict(viivat=viivat)
         if res.get("x_straight_at_tee_cm") is not None:
             g["risti"] = cv_(res["x_straight_at_tee_cm"], tee)
