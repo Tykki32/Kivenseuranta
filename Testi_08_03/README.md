@@ -429,24 +429,27 @@ kuten ennen; muuten hog-hog-aika, lähihogin nopeus ja kierteet jäävät tyhjik
 kaukohogilla, hidastuvuus, suunta, irroitus ja liuku raportoidaan. Hog-CSV:n sarake `osittainen` = True. Live
 2026-10-08 17:58: 66 → 74 / 74 heittoa (8 osittaista, joista 3:lla hog-hog-aika).
 
-**Y(t)-sovitus.** Pisteet väliltä [lähihog + 50 cm, kaukohog − 100 cm]:
+**Y(t)-sovitus kitkamallilla.** Pisteet väliltä [lähihog + 50 cm, kaukohog − 100 cm]:
 - Vaatimukset: vähintään 40 pistettä, ja datan on katettava välin päät ±150 cm.
-- Sovitus Y(t) = a t² + b t + c. Sen jälkeen 10 huonoiten sopivaa pistettä pois ja uusi sovitus.
-- Vaaditaan R = √R² > 0,99.
+- Malli: kitkakerroin μ(v) = A + B ln v, liikeyhtälö dv/dt = −g μ(v). B on kiinteä `A.HOG_MU_B` (−0,003);
+  y0, v0 ja A sovitetaan LM:llä (Y(t) integroidaan RK4:llä, 0,04 s). Alkuarvaus datan ensimmäisen sekunnin nopeudesta
+  ja tasaisesta hidastuvuudesta; jos mallin kivi pysähtyisi ennen datan loppua, A:ta pienennetään.
+- Sen jälkeen 10 huonoiten sopivaa pistettä pois ja uusi sovitus. Vaaditaan R = √R² > 0,99.
+- Sovitettu malli integroidaan tiheäksi radaksi (`KitkaRata`, 0,01 s) 8 s taaksepäin ja eteenpäin, kunnes kivi
+  pysähtyy; hoglinejen hetket ja nopeudet luetaan siitä (myös datan ulkopuolelta, esim. kaukohog).
+- Aiempi toisen asteen Y(t) (vakiohidastuvuus) poistettiin: kitka kasvaa nopeuden laskiessa, joten paraabeli antoi
+  nopeuden kaukohogilla liian suurena ja hog-hog-ajan liian lyhyenä. MAH00014: nopeus kaukohogilla −0,03 m/s,
+  hog-hog +0,09 s keskimäärin (enintään +0,28 s), Y-sovituksen rms 2,5 → 2,2 cm; live-ajoissa rms ennallaan.
 
 Tulokset:
-- **Nopeus kaukohogilla:** v = −dY/dt hetkellä, jolloin Y(t) = kaukohog (juuri, jossa Y pienenee).
+- **Nopeus kaukohogilla:** mallin v hetkellä, jolloin Y(t) = kaukohog.
 - **Hog-hog-aika:** t(lähihog) − t(kaukohog).
-- **Hidastuvuus kitkamallista:**
-  - Malli: kitkakerroin μ(v) = A + B ln v, liikeyhtälö dv/dt = −g μ(v).
-  - Sovitus: y0, v0 ja A sovitetaan LM:llä; Y(t) integroidaan numeerisesti (RK4, 0,04 s). B on kiinteä
-    `A.HOG_MU_B` (−0,003).
-  - Raportoitava hidastuvuus on g μ(1,5 m/s). Jos kitkasovitus on selvästi huonompi kuin toisen asteen sovitus,
-    käytetään keskimääräistä hidastuvuutta.
+- **Hidastuvuus:** g μ(1,5 m/s) samasta mallista; keskimääräinen hidastuvuus sovitusvälillä talteen
+  (`decel_keskim_ms2`). Hog-CSV:n sarakkeet `a`, `b`, `c` (paraabeli) jäävät tyhjiksi.
 
 **X-suunta, kurvimalli.**
 - Sivukiihtyvyys on vakio k kohtisuoraan kulkusuuntaa vastaan, joten kulkusuunnan kulman muutos θ' = k / |v|.
-- X(t) = x0 + θ0 S(t) + k H(t), missä S = kuljettu matka, G = ∫dt / v ja H = ∫v G dt. Nopeus v(t) saadaan Y-sovituksesta.
+- X(t) = x0 + θ0 S(t) + k H(t), missä S = kuljettu matka, G = ∫dt / v ja H = ∫v G dt. Nopeus v(t) saadaan kitkamallista.
 - Robusti painotettu pienimmän neliösumman sovitus: pisteen paino 1 / (1 + (rms_px / 2)²) siluettisovituksen
   laadusta (harjaajan tai harjan kanssa sulautunut havainto saa pienen painon) kertaa Huber-paino jäännöksestä
   (yli 1,5 × robusti hajonta → pienempi paino), 10 kierrosta. Jäännöksen rms lasketaan pisteistä, joiden paino on
