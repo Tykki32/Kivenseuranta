@@ -289,6 +289,9 @@ def _finish_live(src, cfg):
               f"{src.cpu_conv / src.n_conv * 1000:.1f} ms (muunnos: {src.conversion})"
               + (f"; harvennuksessa ohitetut {src.n_grab} ruutua grab():lla {src.cpu_grab / src.n_grab * 1000:.1f} ms/ruutu"
                  if getattr(src, "n_grab", 0) else ""))
+    if getattr(src, "uudelleenavaukset", None):
+        print(f"Kameran katkot (avattu uudelleen): {len(src.uudelleenavaukset)} kpl - "
+              + ", ".join(f"{t} ({s:.1f} s)" for t, s in src.uudelleenavaukset))
     rec = cfg.get("recorder")
     if rec is not None and getattr(rec, "n", 0):
         print(f"Tallennussaie (CPU/ruutu): {rec.cpu / rec.n * 1000:.1f} ms")

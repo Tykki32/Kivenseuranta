@@ -625,6 +625,10 @@ pikseli on kylläinen. Näin värikäs mutta eri sävyinen kohde (keltainen kahv
 - **Seurannan alku:** seurannan alussa hypätään uusimpaan ruutuun (kalibroinnin aikana kertynyt viive pois). Historia
   pienenee arvoon `A.LIVE_TAAKSE_SEURANNASSA_S` (2 s).
 - **Aikaleimat:** `<pohja>_live_aikaleimat.csv` kertoo käsitellyn ruudun, kameran ruudun ja seinäkelloajan.
+- **Kameran katko:** jos kamera lakkaa antamasta kuvaa (noin 1 s epäonnistuneita lukuja, esim. USB-katko tai
+  Windowsin MSMF-virhe 0xC00D3EA2 = laite katosi), sama laite avataan uudelleen samoilla asetuksilla
+  `A.LIVE_KAMERA_UUDELLEEN_VALI_S` (1 s) välein enintään `A.LIVE_KAMERA_UUDELLEEN_MAX_S` (600 s). Ajo odottaa sillä
+  aikaa ja jatkuu, kun kamera palaa; katkon ajalta ei ole ruutuja. Katkot listataan LIVE-SYÖTE-yhteenvetoon.
 
 ---
 
