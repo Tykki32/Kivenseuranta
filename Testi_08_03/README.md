@@ -424,10 +424,15 @@ Analyysi tehdään kerran, kun vahvistettu kivi on lähihog + 50 cm kohdalla.
 
 **Rata katkesi ennen lähihogia** (kadotettu, ajautui lakaisijaan tai lopetettiin): radan lopusta pudotetaan
 sulautuneet rivit (`rms_px` > `A.HOG_LOPPU_MAX_RMS_PX` = 6) ja tehdään osittainen analyysi, jos data kattaa kaukopään ja
-vähintään `A.HOG_OSITTAIN_MIN_MATKA_CM` (10 m). Jos data ulottuu lähihogin tuntumaan (± 150 cm), hog-hog-aika lasketaan
-kuten ennen; muuten hog-hog-aika, lähihogin nopeus ja kierteet jäävät tyhjiksi (`hog-hog: -`), mutta nopeus
-kaukohogilla, hidastuvuus, suunta, irroitus ja liuku raportoidaan. Hog-CSV:n sarake `osittainen` = True. Live
-2026-10-08 17:58: 66 → 74 / 74 heittoa (8 osittaista, joista 3:lla hog-hog-aika).
+vähintään `A.HOG_OSITTAIN_MIN_MATKA_CM` (10 m). Jos data ulottuu vähintään `A.HOG_OSITTAIN_LAHI_MAX_Y_CM` (12 m)
+asti, hog-hog-aika arvioidaan kitkamallilla lähihogille ekstrapoloiden ja näytetään paneelissa **punaisella**
+(hog-CSV `hog_hog_arvio` = True). Muuten hog-hog-aika, lähihogin nopeus ja kierteet jäävät tyhjiksi (`hog-hog: -`),
+mutta nopeus kaukohogilla, hidastuvuus, suunta, irroitus ja liuku raportoidaan. Hog-CSV `osittainen` = True.
+- Arvion tarkkuus (154 koko matkan kiveä katkaistuna, live 7.10., live 8.10., MAH00014): data 10 m:iin → virhe
+  mediaani 0,02 s (90 % < 0,11 s); 12 m:iin → 0,05 s (90 % < 0,31 s, 5 % yli 0,5 s); 14 m:iin → 0,11 s (13 % yli 0,5 s).
+- X-kurvimalliin otetaan vain pisteet, joissa kitkamallin nopeus ≥ `A.HOG_X_MIN_NOPEUS_MS` (0,3 m/s): ennen
+  lähihogia pysähtyvän kiven lopussa kurvitermi ∫dt/v kasvaa rajatta.
+- Live 2026-10-08 17:58: 66 → 74 / 74 heittoa (8 osittaista, joista 6:lla arvioitu hog-hog-aika).
 
 **Y(t)-sovitus kitkamallilla.** Pisteet väliltä [lähihog + 50 cm, kaukohog − 100 cm]:
 - Vaatimukset: vähintään 40 pistettä, ja datan on katettava välin päät ±150 cm.

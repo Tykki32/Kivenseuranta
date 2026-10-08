@@ -184,6 +184,7 @@ PORTTI_YLITYS_EKSTRAPOLOINTI_MAX = 60.0
 # 6. HOG-HOG -ANALYYSI, LIUKU JA IRROITUS (hog_analyysi.py)
 # =====================================================================================================================
 HOG_MIN_R = 0.99                     # Y(t)-sovituksen R oltava yli taman
+HOG_X_MIN_NOPEUS_MS = 0.3            # X-kurvimalliin vain pisteet, joissa kitkamallin nopeus >= tama (pysahtyva kivi)
 HOG_X_MAX_RMS_CM = 2.0               # X-kurvimallin jaannosvirhe (rms, mukana olevat pisteet) oltava alle taman
 HOG_X_PAINO_RMS_PX = 2.0             # X-sovituksen pisteen paino 1 / (1 + (rms_px / tama)^2) (siluettisovituksen laatu)
 HOG_X_HUBER_K = 1.5                  # ... kertaa Huber-paino: jaannos > tama x robusti hajonta -> paino pienenee
@@ -197,6 +198,7 @@ HOG_PUDOTA_HUONOIMMAT = 10           # ensimmaisen sovituksen jalkeen huonoimmin
 HOG_KATTAVUUS_CM = 150.0             # radan pitaa kattaa sovitusalueen paat (+-)
 HOG_LOPPU_MAX_RMS_PX = 6.0           # rata katkesi ennen lahihogia: lopusta pois rivit, joiden rms_px > tama (sulautunut) ...
 HOG_OSITTAIN_MIN_MATKA_CM = 1000.0   # ... ja osittainen analyysi, jos jaljelle jaanyt data kattaa kaukopaasta vahintaan taman
+HOG_OSITTAIN_LAHI_MAX_Y_CM = 1200.0  # ... hog-hog-aika arvioidaan (punaisella), jos data ulottuu vahintaan tahan (Y)
 HOG_HIDASTUVUUS_NOPEUDELLA_MS = 1.5  # hidastuvuus ilmoitetaan kitkamallista talla nopeudella
 # Kitkamallin mu(v) = A + B ln v kiintea B (heittokohtaisesti sovitetaan vain A). Mitattu yhteissovituksella: live
 # 2026-10-04 (66 heittoa) paras B = -0,0011, MAH00014 (19 heittoa) -0,0027. B = -0,001 -> hidastuvuus @1,5 m/s

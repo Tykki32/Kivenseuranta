@@ -50,6 +50,7 @@ def throw_side(res, plus_right):
 
 
 RIVI_KIERRE = 6           # entry_lines: kierrerivin indeksi (oma vari)
+RIVI_HOGHOG = 3           # entry_lines: hog-hog-rivi (arvioitu luku punaisella)
 
 
 def entry_lines(res, plus_right=None):
@@ -137,6 +138,12 @@ def render_panel(entries, ages=None, plus_right=None, nayta=(True, True), L=None
         for i, s in enumerate(_lines):
             _x = bg + bp + 4
             _y = y + bp + L["ty"] + i * lh
+            if i == RIVI_HOGHOG and res.get("hog_hog_arvio"):
+                # rata katkesi ennen lahihogia: hog-hog-aika ekstrapoloitu kitkamallilla -> luku punaisella
+                for _t, _c in (("hog-hog: ", (255, 255, 255)), (f"{res['hog_hog_s']:.2f}", (0, 0, 255)), (" s", (255, 255, 255))):
+                    cv2.putText(img, _t, (_x, _y), FONT, fs, _c, ft)
+                    _x += cv2.getTextSize(_t, FONT, fs, ft)[0][0]
+                continue
             if i == 4:
                 for _t, _c in liuku_segments(res, plus_right, nayta):
                     cv2.putText(img, _t, (_x, _y), FONT, fs, _c, ft)

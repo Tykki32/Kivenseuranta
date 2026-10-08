@@ -36,7 +36,7 @@ HOG_CSV_SARAKKEET = [
     "dir_far_hog_deg_2aste", "kahva_h", "kahva_vari", "liuku_x_tee_cm_hakki_p", "liuku_x_tee_cm_hakki_m",
     "liuku_dir_deg_hakki_p", "liuku_dir_deg_hakki_m", "kierteet", "kierrosaika_far_s", "kierrosaika_near_s", "kierre_r2",
     "kierteet_taysi", "kierrosaika_far_s_taysi", "kierrosaika_near_s_taysi", "kierre_r2_taysi", "kierre_ruutuja_taysi",
-    "osittainen",
+    "osittainen", "hog_hog_arvio",
 ]
 # --full: pysahtymispaikka. x/y nollakohdasta (A.PYSAHDYS_NOLLA_*; oletus keskiviiva ja lahemman pesan T-viiva),
 # X/Y fyysisessa koordinaatistossa (rata.py). x: + = kohti +X (fyysinen suunta, ei debug-ikkunan puoli).

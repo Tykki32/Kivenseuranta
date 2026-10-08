@@ -194,7 +194,9 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
         out["reason"] = f"liian vahan pisteita ({len(pts)} < {A.HOG_MIN_PISTEET})"
         return out
     t = np.array([p[0] for p in pts]); y = np.array([p[1] for p in pts])
-    lahi_ok = y.min() <= ylo + A.HOG_KATTAVUUS_CM
+    # lahihogin aika: taysi analyysi vaatii datan lahihogin tuntumaan; osittainen (rata katkesi) ekstrapoloi kitkamallilla
+    # kun data ulottuu A.HOG_OSITTAIN_LAHI_MAX_Y_CM:iin (katkaisutesti 154 kivella: 12 m -> virhe mediaani 0,05 s)
+    lahi_ok = y.min() <= (A.HOG_OSITTAIN_LAHI_MAX_Y_CM if osittainen else ylo + A.HOG_KATTAVUUS_CM)
     if osittainen:
         out["osittainen"] = True
         if y.max() < yhi - A.HOG_KATTAVUUS_CM or y.max() - y.min() < A.HOG_OSITTAIN_MIN_MATKA_CM:
@@ -245,11 +247,13 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
     out.update(ok_y=True, v_far_hog_ms=v(t_far) / 100.0, decel_ms2=float(decel_out), decel_keskim_ms2=float(decel_avg),
                hog_hog_s=None if t_near is None else float(t_near - t_far), t_far_hog_s=float(t_far + t0),
                t_near_hog_s=None if t_near is None else float(t_near + t0),
-               v_near_hog_ms=None if t_near is None else v(t_near) / 100.0)
+               v_near_hog_ms=None if t_near is None else v(t_near) / 100.0,
+               hog_hog_arvio=bool(osittainen and t_near is not None))      # lahihogin aika ekstrapoloitu (rata katkesi)
 
     # ---- X-suuntainen analyysi ----
     pts_x = [(float(t_), float(r["Y_cm"]), float(r["X_cm"]), r.get("rms_px")) for _, t_, r in rows
-             if r.get("Y_cm") is not None and r.get("X_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi]
+             if r.get("Y_cm") is not None and r.get("X_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi
+             and rata_.v(float(t_) - t0) >= A.HOG_X_MIN_NOPEUS_MS]          # pysahtyvan kiven loppu pois (kurvi G = int dt/v)
     if len(pts_x) < A.HOG_MIN_PISTEET:
         out["ok"] = False; out["reason"] = "X-pisteita liian vahan"
         return out
@@ -349,7 +353,8 @@ def format_lines(res, stone_id=None):
     lines = [hdr,
              f"nopeus kaukohogilla: {res['v_far_hog_ms']:.2f} m/s",
              f"hidastuvuus ({A.HOG_HIDASTUVUUS_NOPEUDELLA_MS:g} m/s): {res['decel_ms2']:.3f} m/s^2",
-             f"hog-hog aika: {res['hog_hog_s']:.2f} s" if res.get("hog_hog_s") is not None else "hog-hog aika: - (rata katkesi ennen lahihogia)",
+             (f"hog-hog aika: {res['hog_hog_s']:.2f} s" + (" (arvio: rata katkesi ennen lahihogia)" if res.get("hog_hog_arvio") else ""))
+             if res.get("hog_hog_s") is not None else "hog-hog aika: - (rata katkesi ennen lahihogia)",
              f"suunta kaukohogilla: {abs(d):.2f} deg kohti {side}",
              f"liuku (suoran X T-viivalla, alusta hog+1m): {liuku}"]
     if "x_straight_at_tee_cm" in res:
