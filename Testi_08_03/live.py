@@ -544,8 +544,13 @@ class CameraSource(_SourceBase):
         t0 = time.time()
         print(f"\nLive: kamera ei anna kuvaa (laite {self.device}) - yritetaan avata uudelleen "
               f"(enintaan {A.LIVE_KAMERA_UUDELLEEN_MAX_S:.0f} s; tarkista Cam Link / USB / HDMI).")
+        t_ilmoitus = t0
         while not self._stop_evt.is_set() and time.time() - t0 < A.LIVE_KAMERA_UUDELLEEN_MAX_S:
             self._stop_evt.wait(A.LIVE_KAMERA_UUDELLEEN_VALI_S)
+            if time.time() - t_ilmoitus >= 15.0:
+                t_ilmoitus = time.time()
+                print(f"Live: odotetaan kameraa {time.time() - t0:.0f} s (irrota ja kytke Cam Link; tarkista kameran HDMI-kuva "
+                      f"ja ettei kamera ole sammunut). Ctrl+C lopettaa.")
             try:
                 c = self._avaa_uudelleen()
             except Exception:
@@ -561,6 +566,7 @@ class CameraSource(_SourceBase):
     def _run(self):
         n = 0
         fails = 0
+        t_ok = time.time()                                # viimeisin onnistunut luku (katkon tunnistus ajasta)
         try:
             while not self._stop_evt.is_set():
                 c0 = time.thread_time()
@@ -571,6 +577,7 @@ class CameraSource(_SourceBase):
                     if ok:
                         self.n_grab += 1
                         fails = 0
+                        t_ok = time.time()
                         n += 1
                         continue
                     fr = None
@@ -580,9 +587,12 @@ class CameraSource(_SourceBase):
                 self.cpu_read += c1 - c0
                 if not ok or fr is None:
                     fails += 1
-                    if fails > 50:
+                    # katko: 50 perakkaista virhetta TAI ei onnistunutta lukua A.LIVE_KAMERA_KATKO_S:iin (MSMF:n lukukutsu voi
+                    # odottaa ~10 s ennen virhetta E_PENDING, jolloin 50 virhetta kestaisi ~8 min)
+                    if fails > 50 or time.time() - t_ok > A.LIVE_KAMERA_KATKO_S:
                         if self._odota_kameraa():
                             fails = 0
+                            t_ok = time.time()
                             continue
                         if not self._stop_evt.is_set():
                             print("\nLive: kameran luku epaonnistui toistuvasti - syote paattyy.")
@@ -590,6 +600,7 @@ class CameraSource(_SourceBase):
                     time.sleep(0.02)
                     continue
                 fails = 0
+                t_ok = time.time()
                 if n % self.decim == 0:
                     out = self._convert(fr)
                     hi = None
