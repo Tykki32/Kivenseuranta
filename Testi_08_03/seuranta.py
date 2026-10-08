@@ -834,9 +834,11 @@ class Seuranta:
             s["pysahdys_ehdokas"] = None
             s.pop("hidas_alku", None)
             return False
-        if frame_index - f0 < A.PYSAHDYS_VAHVISTUS_S * self.fps:
+        uudet = s["pysahdys_paikat"][10:]                  # vahvistusjakson paikat (10 ensimmaista = ehdokkaan paikat)
+        # aika ruutuina, mutta paikkoja kertyy vain ruuduista joissa kivi loytyi: peitossa ollut kivi odottaa lisaa paikkoja
+        if frame_index - f0 < A.PYSAHDYS_VAHVISTUS_S * self.fps or len(uudet) < A.PYSAHDYS_MIN_PAIKAT:
             return False
-        X, Y = (float(v) for v in np.median(np.array(s["pysahdys_paikat"][10:]), 0))   # vahvistusjakson paikat
+        X, Y = (float(v) for v in np.median(np.array(uudet), 0))
         s["pysahtyi_xy"] = (X, Y)
         res = s.get("hog_result")
         if res is not None:

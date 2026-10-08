@@ -153,6 +153,7 @@ PYSAHTYNYT_TARKKA_CM = 3.0           # --full: kivi pysahtynyt kun 5 ensimmaisen
                                      #   PYSAHTYNYT_S-ikkunassa ovat nain lahella
 PYSAHDYS_VAHVISTUS_S = 2.0           # --full: pysahtyneen kiven on pysyttava nakyvissa ja paikallaan nain kauan ...
 PYSAHDYS_MAX_SIIRTO_CM = 10.0        # ... (alle tama pysahdyspaikasta); muuten (pelaaja pysaytti/vei) ei pysahtymispaikkaa
+PYSAHDYS_MIN_PAIKAT = 10             # ... ja vahvistusjaksolla on havaittu vahintaan nain monta paikkaa (peitossa -> odotetaan)
 # pysahtymispaikan nollakohta (debug-ikkunan rivi "pysahtyi: x; y", hog-CSV): X keskiviivasta, Y lahemman pesan
 # T-viivasta; siirto cm (X: + = kohti +X, Y: + = kohti kaukaista paata). Debug-ikkunassa vasen ja alas negatiivisia.
 PYSAHDYS_NOLLA_X_CM = 0.0
