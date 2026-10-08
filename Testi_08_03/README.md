@@ -422,6 +422,13 @@ Ajon lopussa vahvistetuista radoista valitaan heitot lopulliseen CSV:hen:
 
 Analyysi tehdään kerran, kun vahvistettu kivi on lähihog + 50 cm kohdalla.
 
+**Rata katkesi ennen lähihogia** (kadotettu, ajautui lakaisijaan tai lopetettiin): radan lopusta pudotetaan
+sulautuneet rivit (`rms_px` > `A.HOG_LOPPU_MAX_RMS_PX` = 6) ja tehdään osittainen analyysi, jos data kattaa kaukopään ja
+vähintään `A.HOG_OSITTAIN_MIN_MATKA_CM` (10 m). Jos data ulottuu lähihogin tuntumaan (± 150 cm), hog-hog-aika lasketaan
+kuten ennen; muuten hog-hog-aika, lähihogin nopeus ja kierteet jäävät tyhjiksi (`hog-hog: -`), mutta nopeus
+kaukohogilla, hidastuvuus, suunta, irroitus ja liuku raportoidaan. Hog-CSV:n sarake `osittainen` = True. Live
+2026-10-08 17:58: 66 → 74 / 74 heittoa (8 osittaista, joista 3:lla hog-hog-aika).
+
 **Y(t)-sovitus.** Pisteet väliltä [lähihog + 50 cm, kaukohog − 100 cm]:
 - Vaatimukset: vähintään 40 pistettä, ja datan on katettava välin päät ±150 cm.
 - Sovitus Y(t) = a t² + b t + c. Sen jälkeen 10 huonoiten sopivaa pistettä pois ja uusi sovitus.

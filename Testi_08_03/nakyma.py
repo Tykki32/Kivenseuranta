@@ -56,7 +56,7 @@ def entry_lines(res, plus_right=None):
     lines = [f"kiven ID: {res['stone_id']}",
              f"nopeus: {res['v_far_hog_ms']:.2f} m/s",
              f"hidastuvuus: {res['decel_ms2']:.3f} m/s^2",
-             f"hog-hog: {res['hog_hog_s']:.2f} s",
+             f"hog-hog: {res['hog_hog_s']:.2f} s" if res.get("hog_hog_s") is not None else "hog-hog: -",
              f"liuku: {res['liuku_x_tee_cm']:+.0f} cm" if "liuku_x_tee_cm" in res else "liuku: -",
              f"irroitus: {res.get('x_straight_at_tee_cm', float('nan')):+.0f} cm",
              kierre_text(res)[0]]

@@ -195,6 +195,8 @@ HOG_KAUKO_MARGINAALI_CM = 100.0      # ... kaukohog - 100 cm
 HOG_MIN_PISTEET = 40                 # vahintaan nain monta pistetta sovitusalueella
 HOG_PUDOTA_HUONOIMMAT = 10           # ensimmaisen sovituksen jalkeen huonoimmin sopivat pisteet pois ja uusi sovitus
 HOG_KATTAVUUS_CM = 150.0             # radan pitaa kattaa sovitusalueen paat (+-)
+HOG_LOPPU_MAX_RMS_PX = 6.0           # rata katkesi ennen lahihogia: lopusta pois rivit, joiden rms_px > tama (sulautunut) ...
+HOG_OSITTAIN_MIN_MATKA_CM = 1000.0   # ... ja osittainen analyysi, jos jaljelle jaanyt data kattaa kaukopaasta vahintaan taman
 HOG_HIDASTUVUUS_NOPEUDELLA_MS = 1.5  # hidastuvuus ilmoitetaan kitkamallista talla nopeudella
 # Kitkamallin mu(v) = A + B ln v kiintea B (heittokohtaisesti sovitetaan vain A). Mitattu yhteissovituksella: live
 # 2026-10-04 (66 heittoa) paras B = -0,0011, MAH00014 (19 heittoa) -0,0027. B = -0,001 -> hidastuvuus @1,5 m/s

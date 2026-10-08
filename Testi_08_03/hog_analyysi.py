@@ -145,8 +145,11 @@ def _r_of(tt, y, a, b, c):
     return float(np.sqrt(max(1.0 - ss_res / ss_tot, 0.0))) if ss_tot > 0 else 0.0
 
 
-def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, max_x_rms=A.HOG_X_MAX_RMS_CM):
-    """rows: [(frame, timestamp_s, {"Y_cm": ...}), ...]. Palauttaa dict: ok (bool), reason, n, R, ..."""
+def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, max_x_rms=A.HOG_X_MAX_RMS_CM, osittainen=False):
+    """rows: [(frame, timestamp_s, {"Y_cm": ...}), ...]. Palauttaa dict: ok (bool), reason, n, R, ...
+    osittainen=True: rata katkesi ennen lahihogia. Data riittaa, kun se kattaa kaukopaan ja vahintaan
+    A.HOG_OSITTAIN_MIN_MATKA_CM; jos lahihogin paa puuttuu, hog-hog-aika, t_near ja v_near jaavat None:ksi
+    (nopeus kaukohogilla, hidastuvuus, suunta, irroitus ja liuku lasketaan). out["osittainen"] = True."""
     ylo, yhi = near_hog_cm + A.HOG_LAHI_MARGINAALI_CM, far_hog_cm - A.HOG_KAUKO_MARGINAALI_CM
     pts = [(float(t), float(r["Y_cm"])) for _, t, r in rows if r.get("Y_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi]
     out = dict(ok=False, reason="", n=len(pts), y_lo_cm=ylo, y_hi_cm=yhi, near_hog_cm=near_hog_cm, far_hog_cm=far_hog_cm)
@@ -154,7 +157,14 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
         out["reason"] = f"liian vahan pisteita ({len(pts)} < {A.HOG_MIN_PISTEET})"
         return out
     t = np.array([p[0] for p in pts]); y = np.array([p[1] for p in pts])
-    if y.max() < yhi - A.HOG_KATTAVUUS_CM or y.min() > ylo + A.HOG_KATTAVUUS_CM:
+    lahi_ok = y.min() <= ylo + A.HOG_KATTAVUUS_CM
+    if osittainen:
+        out["osittainen"] = True
+        if y.max() < yhi - A.HOG_KATTAVUUS_CM or y.max() - y.min() < A.HOG_OSITTAIN_MIN_MATKA_CM:
+            out["reason"] = (f"rata katkesi liian aikaisin (data {y.min() / 100:.1f}-{y.max() / 100:.1f} m, "
+                             f"vaaditaan {A.HOG_OSITTAIN_MIN_MATKA_CM / 100:.0f} m kaukopaasta)")
+            return out
+    elif y.max() < yhi - A.HOG_KATTAVUUS_CM or not lahi_ok:
         out["reason"] = "kivi ei ole kulkenut riittavasti (data ei kata sovitusvalia)"
         return out
     t0 = float(t.min()); tt = t - t0
@@ -177,10 +187,10 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
         out["reason"] = f"sovitus ei riittavan hyva (R = {R:.4f} <= {min_r})"
         return out
     t_hi_y = _time_at(a, b, c, yhi, tt.min(), tt.max())   # alueen alku (kaukopaa)
-    t_lo_y = _time_at(a, b, c, ylo, tt.min(), tt.max())   # alueen loppu (lahipaa)
+    t_lo_y = _time_at(a, b, c, max(ylo, float(y.min())) if osittainen else ylo, tt.min(), tt.max())   # alueen loppu (lahipaa / datan loppu)
     t_far = _time_at(a, b, c, far_hog_cm, tt.min(), tt.max())
-    t_near = _time_at(a, b, c, near_hog_cm, tt.min(), tt.max())
-    if None in (t_hi_y, t_lo_y, t_far, t_near):
+    t_near = _time_at(a, b, c, near_hog_cm, tt.min(), tt.max()) if lahi_ok else None
+    if None in (t_hi_y, t_lo_y, t_far) or (t_near is None and not osittainen):
         out["reason"] = "yhtalolla ei ratkaisua hoglinelle"
         return out
     v = lambda tx: -(2 * a * tx + b)                       # cm/s (positiivinen = kohti lahempaa pesaa)
@@ -196,8 +206,9 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
     else:
         out.update(mu_a=float("nan"), mu_b=float("nan"), kitka_rms_cm=float("nan"))
     out.update(ok_y=True, v_far_hog_ms=v_far / 100.0, decel_ms2=float(decel_out), decel_keskim_ms2=float(decel_avg),
-               hog_hog_s=float(t_near - t_far), t_far_hog_s=float(t_far + t0), t_near_hog_s=float(t_near + t0),
-               v_near_hog_ms=v(t_near) / 100.0)
+               hog_hog_s=None if t_near is None else float(t_near - t_far), t_far_hog_s=float(t_far + t0),
+               t_near_hog_s=None if t_near is None else float(t_near + t0),
+               v_near_hog_ms=None if t_near is None else v(t_near) / 100.0)
 
     # ---- X-suuntainen analyysi ----
     pts_x = [(float(t_), float(r["Y_cm"]), float(r["X_cm"]), r.get("rms_px")) for _, t_, r in rows
@@ -301,7 +312,7 @@ def format_lines(res, stone_id=None):
     lines = [hdr,
              f"nopeus kaukohogilla: {res['v_far_hog_ms']:.2f} m/s",
              f"hidastuvuus ({A.HOG_HIDASTUVUUS_NOPEUDELLA_MS:g} m/s): {res['decel_ms2']:.3f} m/s^2",
-             f"hog-hog aika: {res['hog_hog_s']:.2f} s",
+             f"hog-hog aika: {res['hog_hog_s']:.2f} s" if res.get("hog_hog_s") is not None else "hog-hog aika: - (rata katkesi ennen lahihogia)",
              f"suunta kaukohogilla: {abs(d):.2f} deg kohti {side}",
              f"liuku (suoran X T-viivalla, alusta hog+1m): {liuku}"]
     if "x_straight_at_tee_cm" in res:

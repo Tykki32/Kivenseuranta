@@ -608,6 +608,8 @@ class Seuranta:
             if refined["found"]:
                 if self._kasittele_osuma(s, refined, frame_index, timestamp, frame_u, stab, pose, draw_items):
                     still_active.append(s)
+                else:
+                    self._rata_loppui(s, frame_index)
             else:
                 s["misses"] += 1
                 draw_items.append((s["last_xy"][0], s["last_xy"][1], s["stone_id"], (0, 0, 255), f"{s['stone_id']} MISS"))
@@ -616,6 +618,7 @@ class Seuranta:
                 elif s["confirmed"]:
                     print(f"[frame {frame_index}] Kivi {s['stone_id']} kadotettu."
                           + (" Pysahtymista ei vahvistettu (ei pysahtymispaikkaa)." if s.get("pysahdys_ehdokas") is not None else ""))
+                    self._rata_loppui(s, frame_index)
                 else:
                     s["pending_rows"] = []
                     print(f"[frame {frame_index}] Ehdokas {s['stone_id']} hylatty (kadotettu ennen kuin liikkui riittavasti - "
@@ -623,6 +626,11 @@ class Seuranta:
         self.active_stones = still_active
         self._yhdista_duplikaatit(frame_index)
         yleiset.prof_add("py: SEURANTA jalkeen: tulossilmukka yht. (sis. varidiagn., CSV, portti)", time.perf_counter() - t_post0)
+
+    def _rata_loppui(self, s, frame_index):
+        """Vahvistettu rata loppui: jos hog-analyysia ei viela tehty (rata katkesi ennen lahihogia), osittainen analyysi."""
+        if s.get("confirmed") and "hog_result" not in s:
+            heitot.hog_check_lopussa(s, frame_index, self.fps, self.hog_results, odota=lambda: self._odota_kahva(s))
 
     def _tarkista_havainto(self, s, refined, sil, x0, y0, pdx, pdy, hx, hy):
         """SEURANNAN tuloksen tarkistukset: siluettituki graniittimaskista, hakualueen rajat, ei taaksepain, keskiviiva."""
