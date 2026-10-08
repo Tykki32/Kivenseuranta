@@ -20,6 +20,7 @@ import time
 import cv2
 import numpy as np
 
+import asetukset as A
 import yleiset
 
 
@@ -437,6 +438,8 @@ class CameraSource(_SourceBase):
                 why = ("ei YUY2-kokoinen (muoto " + str(None if raw is None else np.asarray(raw).shape) + ")") if best is None else \
                     "varit eroavat ajurin kuvasta (" + ", ".join(f"{o} {d:.1f}" for d, o in ds) + ")"
                 print(f"Live: raakakuva {why} -> muunnos ajurilla")
+        self._avaus = (backend, fourcc, cap_w, cap_h)     # uudelleenavaukseen (_avaa_uudelleen)
+        self.uudelleenavaukset = []                       # [(katkon alku, kesto s)]
         self.cpu_read = 0.0
         self.cpu_conv = 0.0
         self.n_conv = 0
@@ -505,6 +508,56 @@ class CameraSource(_SourceBase):
         except Exception:
             return None
 
+    def _avaa_uudelleen(self):
+        """Avaa saman laitteen uudelleen samoilla asetuksilla (raakatila jos muunnos ei ole ajurin). None jos laite ei
+        viela anna oikean kokoista kuvaa."""
+        backend, fourcc, cap_w, cap_h = self._avaus
+        c = cv2.VideoCapture(self.device, backend)
+        if not c.isOpened():
+            c.release()
+            return None
+        if fourcc:
+            c.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+        c.set(cv2.CAP_PROP_FRAME_WIDTH, cap_w)
+        c.set(cv2.CAP_PROP_FRAME_HEIGHT, cap_h)
+        raaka = self.conversion != "ajuri"
+        if raaka:
+            c.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+        for _ in range(5):
+            ok, fr = c.read()
+            if ok and fr is not None:
+                if (np.asarray(fr).size == self.cam_w * self.cam_h * 2) if raaka else fr.shape[:2] == (self.cam_h, self.cam_w):
+                    return c
+                break
+        c.release()
+        return None
+
+    def _odota_kameraa(self):
+        """Kamera lakkasi antamasta kuvaa (laite katosi): yritetaan avata uudelleen A.LIVE_KAMERA_UUDELLEEN_VALI_S valein
+        enintaan A.LIVE_KAMERA_UUDELLEEN_MAX_S. Puskurin lukijat odottavat sillä aikaa. True = kamera palasi."""
+        if A.LIVE_KAMERA_UUDELLEEN_MAX_S <= 0:
+            return False
+        try:
+            self.cap.release()
+        except Exception:
+            pass
+        t0 = time.time()
+        print(f"\nLive: kamera ei anna kuvaa (laite {self.device}) - yritetaan avata uudelleen "
+              f"(enintaan {A.LIVE_KAMERA_UUDELLEEN_MAX_S:.0f} s; tarkista Cam Link / USB / HDMI).")
+        while not self._stop_evt.is_set() and time.time() - t0 < A.LIVE_KAMERA_UUDELLEEN_MAX_S:
+            self._stop_evt.wait(A.LIVE_KAMERA_UUDELLEEN_VALI_S)
+            try:
+                c = self._avaa_uudelleen()
+            except Exception:
+                c = None
+            if c is not None:
+                self.cap = c
+                kesto = time.time() - t0
+                self.uudelleenavaukset.append((time.strftime("%H:%M:%S", time.localtime(t0)), round(kesto, 1)))
+                print(f"Live: kamera palasi {kesto:.1f} s katkon jalkeen - seuranta jatkuu (katkon ajalta ei ole ruutuja).")
+                return True
+        return False
+
     def _run(self):
         n = 0
         fails = 0
@@ -528,7 +581,11 @@ class CameraSource(_SourceBase):
                 if not ok or fr is None:
                     fails += 1
                     if fails > 50:
-                        print("\nLive: kameran luku epaonnistui toistuvasti - syote paattyy.")
+                        if self._odota_kameraa():
+                            fails = 0
+                            continue
+                        if not self._stop_evt.is_set():
+                            print("\nLive: kameran luku epaonnistui toistuvasti - syote paattyy.")
                         break
                     time.sleep(0.02)
                     continue

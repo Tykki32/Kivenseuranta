@@ -265,6 +265,8 @@ MAX_RUUTU = 0                        # > 0: pysayta tahan ruutuun (testi; --max-
 # 11. LIVE-SYOTE (live.py, main.py; muut asetukset komentorivilta --live-*)
 # =====================================================================================================================
 LIVE_TAAKSE_SEURANNASSA_S = 2.0      # puskurin historia seurantavaiheessa (kalibroinnissa --live-taakse-s)
+LIVE_KAMERA_UUDELLEEN_VALI_S = 1.0   # kamera katosi (esim. USB-katko, MSMF 0xC00D3EA2): avausyritys nain usein ...
+LIVE_KAMERA_UUDELLEEN_MAX_S = 600.0  # ... enintaan nain kauan, sitten syote paattyy (0 = ei uudelleenavausta)
 
 # =====================================================================================================================
 # 12. PUHELINNAKYMA (--katselu) JA DEBUG-VIDEO (katselu.py, nakyma.py)
