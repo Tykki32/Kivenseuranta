@@ -184,7 +184,12 @@ PORTTI_YLITYS_EKSTRAPOLOINTI_MAX = 60.0
 # 6. HOG-HOG -ANALYYSI, LIUKU JA IRROITUS (hog_analyysi.py)
 # =====================================================================================================================
 HOG_MIN_R = 0.99                     # Y(t)-sovituksen R oltava yli taman
-HOG_X_MAX_RMS_CM = 2.0               # X-kurvimallin jaannosvirhe (rms, huonoimmat pois) oltava alle taman
+HOG_X_MAX_RMS_CM = 2.0               # X-kurvimallin jaannosvirhe (rms, mukana olevat pisteet) oltava alle taman
+HOG_X_PAINO_RMS_PX = 2.0             # X-sovituksen pisteen paino 1 / (1 + (rms_px / tama)^2) (siluettisovituksen laatu)
+HOG_X_HUBER_K = 1.5                  # ... kertaa Huber-paino: jaannos > tama x robusti hajonta -> paino pienenee
+HOG_X_MIN_KATTAVUUS_CM = 800.0       # ... mukana olevien pisteiden Y-valin oltava vahintaan tama ...
+HOG_X_KAUKOPAA_MAX_PUUTE_CM = 400.0  # ... ja ylimman pisteen enintaan tama sovitusalueen kaukopaasta
+HOG_X_MUKANA_PAINO = 0.2             # ... pisteet, joiden paino > tama x suurin peruspaino, lasketaan jaannokseen
 HOG_LAHI_MARGINAALI_CM = 50.0        # sovitusalue: lahihog + 50 cm ...
 HOG_KAUKO_MARGINAALI_CM = 100.0      # ... kaukohog - 100 cm
 HOG_MIN_PISTEET = 40                 # vahintaan nain monta pistetta sovitusalueella
