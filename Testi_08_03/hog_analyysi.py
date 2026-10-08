@@ -200,7 +200,7 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
                v_near_hog_ms=v(t_near) / 100.0)
 
     # ---- X-suuntainen analyysi ----
-    pts_x = [(float(t_), float(r["Y_cm"]), float(r["X_cm"])) for _, t_, r in rows
+    pts_x = [(float(t_), float(r["Y_cm"]), float(r["X_cm"]), r.get("rms_px")) for _, t_, r in rows
              if r.get("Y_cm") is not None and r.get("X_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi]
     if len(pts_x) < A.HOG_MIN_PISTEET:
         out["ok"] = False; out["reason"] = "X-pisteita liian vahan"
@@ -223,21 +223,42 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
     x_far = float(rx)
     dir_deg = float(np.degrees(np.arctan(-slope)))          # kulkusuunta (Y pienenee): + = kohti +X
     out.update(x_far_hog_cm_2aste=x_far, dir_far_hog_deg_2aste=dir_deg)
-    # kurvimalli: X(t) = x0 + theta0 S(t) + k H(t); sama pistejoukko ja huonoimmat pois
+    # kurvimalli: X(t) = x0 + theta0 S(t) + k H(t); sama pistejoukko. Robusti painotettu sovitus: pisteen paino
+    # siluettisovituksen laadusta w0 = 1 / (1 + (rms_px / HOG_X_PAINO_RMS_PX)^2) (lakaisijan/harjan kanssa sulautunut
+    # havainto -> suuri rms_px) kertaa Huber-paino jaannoksesta (> HOG_X_HUBER_K robustia hajontaa -> pienempi paino).
+    # Jaannoksen rms ja hyvaksynta vain pisteista, joiden paino > HOG_X_MUKANA_PAINO (kiintea "10 huonointa pois" ei
+    # riittanyt, kun lahihogin puolella kymmenet havainnot ovat sulautuneet: live 2026-10-07, kivet 2315, 2347, 2348).
     txa = np.array([p_[0] for p_ in pts_x]) - t0
     xxa = np.array([p_[2] for p_ in pts_x])
+    rpx = np.array([np.nan if p_[3] is None else float(p_[3]) for p_ in pts_x])
     g, S, G, Hh = curl_basis(a, b, min(txa.min(), t_far) - 0.05, txa.max() + 0.05)
     Mx = np.column_stack([np.ones_like(txa), np.interp(txa, g, S), np.interp(txa, g, Hh)])
-    co, *_ = np.linalg.lstsq(Mx, xxa, rcond=None)
-    if nd > 0:
-        kk = np.sort(np.argsort(np.abs(xxa - Mx @ co))[: len(xxa) - nd])
-        co, *_ = np.linalg.lstsq(Mx[kk], xxa[kk], rcond=None)
+    w0 = 1.0 / (1.0 + (np.nan_to_num(rpx, nan=A.HOG_X_PAINO_RMS_PX) / A.HOG_X_PAINO_RMS_PX) ** 2)
+    w = w0.copy()
+    for _ in range(10):
+        sw = np.sqrt(w)
+        co, *_ = np.linalg.lstsq(Mx * sw[:, None], xxa * sw, rcond=None)
+        res_x = xxa - Mx @ co
+        sig = max(1.4826 * float(np.median(np.abs(res_x))), 0.3)
+        w = w0 * np.minimum(1.0, A.HOG_X_HUBER_K * sig / np.maximum(np.abs(res_x), 1e-9))
+    kk = np.where(w > A.HOG_X_MUKANA_PAINO * w0.max())[0]
+    if len(kk) < A.HOG_MIN_PISTEET:
+        out["ok"] = False
+        out["reason"] = f"X-pisteita liian vahan robustin painotuksen jalkeen ({len(kk)} < {A.HOG_MIN_PISTEET})"
+        return out
     x_far = float(co[0] + co[1] * np.interp(t_far, g, S) + co[2] * np.interp(t_far, g, Hh))
     theta_far = float(co[1] + co[2] * np.interp(t_far, g, G))
     slope = -theta_far                                  # dX/dY = X'/Y' = v theta / (-v)
     dir_deg = float(np.degrees(np.arctan(theta_far)))
-    kurvi_rms = float(np.sqrt(np.mean((xxa[kk] - Mx[kk] @ co) ** 2))) if nd > 0 else float(np.sqrt(np.mean((xxa - Mx @ co) ** 2)))
-    out.update(kurvi_k_ms2=float(co[2]), kurvi_rms_cm=kurvi_rms)
+    kurvi_rms = float(np.sqrt(np.mean((xxa[kk] - Mx[kk] @ co) ** 2)))
+    yk = np.array([pts_x[i][1] for i in kk])
+    out.update(kurvi_k_ms2=float(co[2]), kurvi_rms_cm=kurvi_rms, kurvi_n_mukana=int(len(kk)),
+               kurvi_y_mukana_cm=(float(yk.min()), float(yk.max())))
+    # mukana olevien pisteiden on katettava riittavasti rataa ja kaukopaa (irroitus ja suunta lasketaan kaukohogilla)
+    if yk.max() - yk.min() < A.HOG_X_MIN_KATTAVUUS_CM or yk.max() < yhi - A.HOG_X_KAUKOPAA_MAX_PUUTE_CM:
+        out["ok"] = False
+        out["reason"] = (f"X-pisteet eivat kata rataa robustin painotuksen jalkeen (Y {yk.min() / 100:.1f}-{yk.max() / 100:.1f} m)")
+        return out
     # hyvaksynta kurvimallin jaannoksesta (cm): R_x (paraabeli) hylkasi vahan taipuvat ja paraabeliin sopimattomat heitot
     if not kurvi_rms < max_x_rms:
         out["ok"] = False

@@ -440,9 +440,15 @@ Tulokset:
 **X-suunta, kurvimalli.**
 - Sivukiihtyvyys on vakio k kohtisuoraan kulkusuuntaa vastaan, joten kulkusuunnan kulman muutos θ' = k / |v|.
 - X(t) = x0 + θ0 S(t) + k H(t), missä S = kuljettu matka, G = ∫dt / v ja H = ∫v G dt. Nopeus v(t) saadaan Y-sovituksesta.
-- Lineaarinen pienimmän neliösumman sovitus; 10 huonointa pistettä pois.
+- Robusti painotettu pienimmän neliösumman sovitus: pisteen paino 1 / (1 + (rms_px / 2)²) siluettisovituksen
+  laadusta (harjaajan tai harjan kanssa sulautunut havainto saa pienen painon) kertaa Huber-paino jäännöksestä
+  (yli 1,5 × robusti hajonta → pienempi paino), 10 kierrosta. Jäännöksen rms lasketaan pisteistä, joiden paino on
+  yli 0,2 × suurin peruspaino; niitä on oltava ≥ 40, niiden on katettava ≥ 8 m ja ylimmän on oltava enintään 4 m
+  sovitusalueen kaukopäästä (`HOG_X_*`). Kiinteä "10 huonointa pois" ei riittänyt, kun lähihogin puolella kymmenet
+  havainnot ovat sulautuneet (live 2026-10-07: 66 → 72 hog-tulosta; MAH00014 20/20, irroitus muuttui mediaani
+  0,2 cm, enintään 2,7 cm).
 - Tulos: X ja kulkusuunta kaukohogilla.
-- Hyväksyntä: kurvimallin jäännöksen rms (10 huonointa pois) < 2 cm (`HOG_X_MAX_RMS_CM`). Muuten mitään ei
+- Hyväksyntä: kurvimallin jäännöksen rms (mukana olevat pisteet) < 2 cm (`HOG_X_MAX_RMS_CM`). Muuten mitään ei
   raportoida. Toisen asteen X(Y)-sovitus (`R_x`, `*_2aste`) lasketaan edelleen vertailuksi, mutta ei hyväksy:
   R_x hylkäsi vähän taipuvat heitot ja voimakkaasti taipuvat, joihin paraabeli ei sovi (live 2026-10-07:
   46/70 → 64/70 hyväksyttyä; MAH00014 20/20, kurvimallin rms 0,4–1,0 cm).
