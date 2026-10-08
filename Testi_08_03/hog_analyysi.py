@@ -1,9 +1,10 @@
 """Hog-hog -analyysi: heiton nopeus kaukaisella hoglinella, hidastuvuus, hog-hog-aika, suunta, liuku ja irroitus.
 
-Datapisteet: radan rivit joiden Y on valilla [lahihog + marginaali, kaukohog - marginaali]. Sovitus Y(t) = a t^2 + b t + c;
-huonoimmin sopivat pisteet pudotetaan ja sovitetaan uudelleen. Jos R = sqrt(R^2) > HOG_MIN_R:
-  * nopeus kaukaisella hoglinella v = -dY/dt hetkella jolloin Y(t) = kaukohog,
-  * hidastuvuus kitkamallista (mu = A + B ln v) nopeudella HOG_HIDASTUVUUS_NOPEUDELLA_MS,
+Datapisteet: radan rivit joiden Y on valilla [lahihog + marginaali, kaukohog - marginaali]. Y(t) kitkamallista
+dv/dt = -g (A + B ln v) (B = HOG_MU_B kiintea; sovitetaan y0, v0, A); huonoimmin sopivat pisteet pudotetaan ja sovitetaan
+uudelleen. Malli integroidaan (KitkaRata) myos datan ulkopuolelle hoglineille. Jos R = sqrt(R^2) > HOG_MIN_R:
+  * nopeus kaukaisella hoglinella v hetkella jolloin Y(t) = kaukohog,
+  * hidastuvuus g (A + B ln v) nopeudella HOG_HIDASTUVUUS_NOPEUDELLA_MS,
   * hog-hog-aika = t(Y = lahihog) - t(Y = kaukohog).
 X-SUUNTA: kurvimalli (vakio sivukiihtyvyys) samoille pisteille -> suunta kaukohogilla ja IRROITUS = X, jonka kaukohogin
 suunta jatkettuna saisi lahemmalla T-viivalla. LIUKU: suora X(Y) heiton alusta kaukohog + 1 m asti (+ hakki lahtopisteena,
@@ -14,25 +15,6 @@ import numpy as np
 import cv2
 
 import asetukset as A
-
-
-def _roots(a, b, c_minus_y):
-    if abs(a) < 1e-9:
-        return [-c_minus_y / b] if abs(b) > 1e-12 else []
-    d = b * b - 4 * a * c_minus_y
-    if d < 0:
-        return []
-    s = np.sqrt(d)
-    return [(-b - s) / (2 * a), (-b + s) / (2 * a)]
-
-
-def _time_at(a, b, c, y, t_lo, t_hi):
-    """Hetki jolloin Y(t) = y: juuri jossa Y pienenee (dY/dt < 0) ja joka on lahinna havaintovalia [t_lo, t_hi]."""
-    cands = [t for t in _roots(a, b, c - y) if 2 * a * t + b < 0]
-    if not cands:
-        return None
-    mid = 0.5 * (t_lo + t_hi)
-    return float(min(cands, key=lambda t: abs(t - mid)))
 
 
 # ------------------------------------------------------------------
@@ -83,6 +65,11 @@ def fit_log_friction(tt, y, v0_ms, decel0_ms2, iters=40, fixed_B=None):
         return None if m is None else m - y
 
     r = resid(p)
+    for _ in range(12):                       # liian suuri kitka: mallin kivi pysahtyy ennen datan loppua -> pienempi A
+        if r is not None:
+            break
+        p[2] *= 0.7
+        r = resid(p)
     if r is None:
         return None
     cost = float(r @ r); lam = 1e-3
@@ -91,9 +78,14 @@ def fit_log_friction(tt, y, v0_ms, decel0_ms2, iters=40, fixed_B=None):
         for j in range(npar):
             q = p.copy(); q[j] += steps[j]
             rj = resid(q)
-            if rj is None:
-                return None
-            J[:, j] = (rj - r) / steps[j]
+            if rj is None:                    # eteenpain-askel pysayttaa kiven -> taaksepain-erotus
+                q = p.copy(); q[j] -= steps[j]
+                rj = resid(q)
+                if rj is None:
+                    return None
+                J[:, j] = (r - rj) / steps[j]
+            else:
+                J[:, j] = (rj - r) / steps[j]
         JtJ = J.T @ J; g = J.T @ r
         improved = False
         for _try in range(8):
@@ -130,14 +122,59 @@ def _ctz(g, f):
     return np.concatenate([[0.0], np.cumsum((f[1:] + f[:-1]) / 2.0 * np.diff(g))])
 
 
-def curl_basis(a, b, t_lo, t_hi, n=3000):
-    """Palauttaa (g, S, G, H): S = kuljettu matka (cm), G = int dt / v (s / (m/s)), H = int v G dt; v = -(2 a t + b) cm/s."""
+def curl_basis(rata_, t_lo, t_hi, n=3000):
+    """Palauttaa (g, S, G, H): S = kuljettu matka (cm), G = int dt / v (s / (m/s)), H = int v G dt; v kitkamallista (cm/s)."""
     g = np.linspace(t_lo, t_hi, n)
-    v = np.maximum(-(2.0 * a * g + b), 2.0)            # cm/s
+    v = np.maximum(100.0 * rata_.v(g), 2.0)            # cm/s
     S = _ctz(g, v)
     G = _ctz(g, 1.0 / (v / 100.0))
     H = _ctz(g, v * G)
     return g, S, G, H
+
+
+def _fr_param(fr):
+    return np.array([fr["y0_cm"], fr["v0_ms"], fr["A"], fr["B"]])
+
+
+def _r_model(y, pred):
+    if pred is None:
+        return 0.0
+    ss_res = float(np.sum((y - pred) ** 2)); ss_tot = float(np.sum((y - y.mean()) ** 2))
+    return float(np.sqrt(max(1.0 - ss_res / ss_tot, 0.0))) if ss_tot > 0 else 0.0
+
+
+class KitkaRata:
+    """Kitkamallin rata tiheana taulukkona: t = 0 sovituksen alussa (Y = y0, v = v0), integroitu taaksepain t_taakse s
+    ja eteenpain kunnes kivi pysahtyy (v < 0,02 m/s) tai t_max. dv/dt = -g (A + B ln v), Y pienenee nopeudella v."""
+
+    def __init__(self, y0_cm, v0_ms, A_, B_, t_taakse=8.0, t_max=60.0, dt=0.01):
+        f = lambda v: -G_MS2 * (A_ + B_ * np.log(max(v, 1e-3)))
+        osat = []
+        for h, n in ((-dt, int(t_taakse / dt)), (dt, int(t_max / dt))):
+            ts, ys, vs = [0.0], [y0_cm], [v0_ms]
+            tc, yc, vc = 0.0, float(y0_cm), float(v0_ms)
+            for _ in range(n):
+                k1 = f(vc); k2 = f(vc + h / 2 * k1); k3 = f(vc + h / 2 * k2); k4 = f(vc + h * k3)
+                vn = vc + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+                if h > 0 and vn <= 0.02:
+                    break
+                yc -= h * 100.0 * (vc + vn) / 2; vc = vn; tc += h
+                ts.append(tc); ys.append(yc); vs.append(vc)
+            osat.append((ts, ys, vs))
+        (tb, yb, vb), (tf_, yf, vf) = osat
+        self.t = np.array(tb[::-1] + tf_[1:]); self.y_cm = np.array(yb[::-1] + yf[1:]); self.v_ms = np.array(vb[::-1] + vf[1:])
+
+    def y(self, t):
+        return np.interp(t, self.t, self.y_cm)
+
+    def v(self, t):
+        return np.interp(t, self.t, self.v_ms)
+
+    def t_at(self, Y):
+        """Hetki jolloin Y(t) = Y (None jos mallin rata ei kata sita: kivi pysahtyy ennen tai Y on alun takana)."""
+        if Y > self.y_cm[0] or Y < self.y_cm[-1]:
+            return None
+        return float(np.interp(Y, self.y_cm[::-1], self.t[::-1]))
 
 
 def _r_of(tt, y, a, b, c):
@@ -145,8 +182,11 @@ def _r_of(tt, y, a, b, c):
     return float(np.sqrt(max(1.0 - ss_res / ss_tot, 0.0))) if ss_tot > 0 else 0.0
 
 
-def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, max_x_rms=A.HOG_X_MAX_RMS_CM):
-    """rows: [(frame, timestamp_s, {"Y_cm": ...}), ...]. Palauttaa dict: ok (bool), reason, n, R, ..."""
+def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, max_x_rms=A.HOG_X_MAX_RMS_CM, osittainen=False):
+    """rows: [(frame, timestamp_s, {"Y_cm": ...}), ...]. Palauttaa dict: ok (bool), reason, n, R, ...
+    osittainen=True: rata katkesi ennen lahihogia. Data riittaa, kun se kattaa kaukopaan ja vahintaan
+    A.HOG_OSITTAIN_MIN_MATKA_CM; jos lahihogin paa puuttuu, hog-hog-aika, t_near ja v_near jaavat None:ksi
+    (nopeus kaukohogilla, hidastuvuus, suunta, irroitus ja liuku lasketaan). out["osittainen"] = True."""
     ylo, yhi = near_hog_cm + A.HOG_LAHI_MARGINAALI_CM, far_hog_cm - A.HOG_KAUKO_MARGINAALI_CM
     pts = [(float(t), float(r["Y_cm"])) for _, t, r in rows if r.get("Y_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi]
     out = dict(ok=False, reason="", n=len(pts), y_lo_cm=ylo, y_hi_cm=yhi, near_hog_cm=near_hog_cm, far_hog_cm=far_hog_cm)
@@ -154,60 +194,72 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
         out["reason"] = f"liian vahan pisteita ({len(pts)} < {A.HOG_MIN_PISTEET})"
         return out
     t = np.array([p[0] for p in pts]); y = np.array([p[1] for p in pts])
-    if y.max() < yhi - A.HOG_KATTAVUUS_CM or y.min() > ylo + A.HOG_KATTAVUUS_CM:
+    # lahihogin aika: taysi analyysi vaatii datan lahihogin tuntumaan; osittainen (rata katkesi) ekstrapoloi kitkamallilla
+    # kun data ulottuu A.HOG_OSITTAIN_LAHI_MAX_Y_CM:iin (katkaisutesti 154 kivella: 12 m -> virhe mediaani 0,05 s)
+    lahi_ok = y.min() <= (A.HOG_OSITTAIN_LAHI_MAX_Y_CM if osittainen else ylo + A.HOG_KATTAVUUS_CM)
+    if osittainen:
+        out["osittainen"] = True
+        if y.max() < yhi - A.HOG_KATTAVUUS_CM or y.max() - y.min() < A.HOG_OSITTAIN_MIN_MATKA_CM:
+            out["reason"] = (f"rata katkesi liian aikaisin (data {y.min() / 100:.1f}-{y.max() / 100:.1f} m, "
+                             f"vaaditaan {A.HOG_OSITTAIN_MIN_MATKA_CM / 100:.0f} m kaukopaasta)")
+            return out
+    elif y.max() < yhi - A.HOG_KATTAVUUS_CM or not lahi_ok:
         out["reason"] = "kivi ei ole kulkenut riittavasti (data ei kata sovitusvalia)"
         return out
     t0 = float(t.min()); tt = t - t0
-    a, b, c = np.polyfit(tt, y, 2)
-    R1 = _r_of(tt, y, a, b, c)
+    # KITKAMALLI: dv/dt = -g (A + B ln v), B = A.HOG_MU_B kiintea; sovitetaan y0, v0 ja A. Huonoimmin sopivat pisteet pois.
+    m1 = tt <= tt.min() + 1.0
+    v0_g = -np.polyfit(tt[m1], y[m1], 1)[0] / 100.0 if m1.sum() >= 5 else (y[0] - y[-1]) / max(tt[-1], 1e-3) / 100.0
+    v0_g = max(v0_g, 0.3)
+    T_ = max(float(tt[-1]), 1e-3); D_ = float(y[0] - y[-1]) / 100.0     # alkuarvaus: tasainen hidastuvuus koko datalle
+    dec_g = float(np.clip(2.0 * (v0_g * T_ - D_) / T_ ** 2, 0.02, min(0.2, 0.9 * v0_g ** 2 / (2.0 * max(D_, 0.1)))))
+    fr = fit_log_friction(tt, y, v0_g, dec_g, fixed_B=A.HOG_MU_B)
+    if fr is None:
+        out["reason"] = "kitkamallin sovitus ei onnistunut"
+        return out
+    R1 = _r_model(y, _fric_y(_fr_param(fr), tt))
     n_drop = min(A.HOG_PUDOTA_HUONOIMMAT, max(0, len(y) - A.HOG_MIN_PISTEET))
     if n_drop > 0:                                   # pudota n_drop huonoiten sopivaa pistetta ja sovita uudelleen
-        res = np.abs(y - (a * tt * tt + b * tt + c))
-        keep = np.argsort(res)[: len(y) - n_drop]
-        keep.sort()
+        keep = np.sort(np.argsort(np.abs(y - _fric_y(_fr_param(fr), tt)))[: len(y) - n_drop])
         tt, y = tt[keep], y[keep]
-        a, b, c = np.polyfit(tt, y, 2)
-    pred = a * tt * tt + b * tt + c
+        fr2 = fit_log_friction(tt, y, fr["v0_ms"], G_MS2 * (fr["A"] + fr["B"] * np.log(max(fr["v0_ms"], 0.2))), fixed_B=A.HOG_MU_B)
+        fr = fr2 if fr2 is not None else fr
+    pred = _fric_y(_fr_param(fr), tt)
     ss_res = float(np.sum((y - pred) ** 2)); ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
     R = float(np.sqrt(max(r2, 0.0)))
-    out.update(R=R, R_ennen_suodatusta=R1, n_pudotettu=n_drop, n_kaytetty=int(len(y)), r2=r2, a=float(a), b=float(b), c=float(c), t0=t0,
-               rms_cm=float(np.sqrt(ss_res / len(y))))
+    out.update(R=R, R_ennen_suodatusta=R1, n_pudotettu=n_drop, n_kaytetty=int(len(y)), r2=r2, a=None, b=None, c=None, t0=t0,
+               rms_cm=float(np.sqrt(ss_res / len(y))), mu_a=fr["A"], mu_b=fr["B"], kitka_rms_cm=float(np.sqrt(ss_res / len(y))))
     if R <= min_r:
         out["reason"] = f"sovitus ei riittavan hyva (R = {R:.4f} <= {min_r})"
         return out
-    t_hi_y = _time_at(a, b, c, yhi, tt.min(), tt.max())   # alueen alku (kaukopaa)
-    t_lo_y = _time_at(a, b, c, ylo, tt.min(), tt.max())   # alueen loppu (lahipaa)
-    t_far = _time_at(a, b, c, far_hog_cm, tt.min(), tt.max())
-    t_near = _time_at(a, b, c, near_hog_cm, tt.min(), tt.max())
-    if None in (t_hi_y, t_lo_y, t_far, t_near):
-        out["reason"] = "yhtalolla ei ratkaisua hoglinelle"
+    rata_ = KitkaRata(fr["y0_cm"], fr["v0_ms"], fr["A"], fr["B"])
+    t_hi_y = rata_.t_at(yhi)                                              # alueen alku (kaukopaa)
+    t_lo_y = rata_.t_at(max(ylo, float(y.min())) if osittainen else ylo)  # alueen loppu (lahipaa / datan loppu)
+    t_far = rata_.t_at(far_hog_cm)
+    t_near = rata_.t_at(near_hog_cm) if lahi_ok else None
+    if None in (t_hi_y, t_lo_y, t_far) or (t_near is None and not osittainen):
+        out["reason"] = "kitkamallin rata ei ylita hoglinea (kivi pysahtyy mallissa ennen sita)"
         return out
-    v = lambda tx: -(2 * a * tx + b)                       # cm/s (positiivinen = kohti lahempaa pesaa)
-    v_far = v(t_far)
-    decel = (v(t_hi_y) - v(t_lo_y)) / (t_lo_y - t_hi_y) if t_lo_y != t_hi_y else 0.0
-    # hidastuvuus kitkamallista (keskimaarainen 2a talteen vertailuun)
-    decel_avg = decel / 100.0
-    decel_out = decel_avg
-    fr = fit_log_friction(tt, y, -b / 100.0, decel_avg, fixed_B=A.HOG_MU_B)
-    if fr is not None and fr["rms_cm"] <= 1.5 * out["rms_cm"] + 0.5:
-        decel_out = G_MS2 * (fr["A"] + fr["B"] * np.log(A.HOG_HIDASTUVUUS_NOPEUDELLA_MS))
-        out.update(mu_a=fr["A"], mu_b=fr["B"], kitka_rms_cm=fr["rms_cm"])
-    else:
-        out.update(mu_a=float("nan"), mu_b=float("nan"), kitka_rms_cm=float("nan"))
-    out.update(ok_y=True, v_far_hog_ms=v_far / 100.0, decel_ms2=float(decel_out), decel_keskim_ms2=float(decel_avg),
-               hog_hog_s=float(t_near - t_far), t_far_hog_s=float(t_far + t0), t_near_hog_s=float(t_near + t0),
-               v_near_hog_ms=v(t_near) / 100.0)
+    v = lambda tx: 100.0 * rata_.v(tx)                     # cm/s (positiivinen = kohti lahempaa pesaa)
+    decel_avg = (v(t_hi_y) - v(t_lo_y)) / (t_lo_y - t_hi_y) / 100.0 if t_lo_y != t_hi_y else 0.0
+    decel_out = G_MS2 * (fr["A"] + fr["B"] * np.log(A.HOG_HIDASTUVUUS_NOPEUDELLA_MS))
+    out.update(ok_y=True, v_far_hog_ms=v(t_far) / 100.0, decel_ms2=float(decel_out), decel_keskim_ms2=float(decel_avg),
+               hog_hog_s=None if t_near is None else float(t_near - t_far), t_far_hog_s=float(t_far + t0),
+               t_near_hog_s=None if t_near is None else float(t_near + t0),
+               v_near_hog_ms=None if t_near is None else v(t_near) / 100.0,
+               hog_hog_arvio=bool(osittainen and t_near is not None))      # lahihogin aika ekstrapoloitu (rata katkesi)
 
     # ---- X-suuntainen analyysi ----
     pts_x = [(float(t_), float(r["Y_cm"]), float(r["X_cm"]), r.get("rms_px")) for _, t_, r in rows
-             if r.get("Y_cm") is not None and r.get("X_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi]
+             if r.get("Y_cm") is not None and r.get("X_cm") is not None and ylo <= float(r["Y_cm"]) <= yhi
+             and rata_.v(float(t_) - t0) >= A.HOG_X_MIN_NOPEUS_MS]          # pysahtyvan kiven loppu pois (kurvi G = int dt/v)
     if len(pts_x) < A.HOG_MIN_PISTEET:
         out["ok"] = False; out["reason"] = "X-pisteita liian vahan"
         return out
     tx = np.array([p[0] for p in pts_x]) - t0
     xx = np.array([p[2] for p in pts_x])
-    y_eq = a * tx * tx + b * tx + c                         # Y yhtalosta ajan funktiona
+    y_eq = rata_.y(tx)                                     # Y kitkamallista ajan funktiona
     u = (y_eq - far_hog_cm) / 100.0
     px, qx, rx = np.polyfit(u, xx, 2)
     Rx1 = _r_of(u, xx, px, qx, rx)
@@ -231,7 +283,7 @@ def analyze_hog(rows, near_hog_cm, far_hog_cm, min_r=A.HOG_MIN_R, tee_cm=None, m
     txa = np.array([p_[0] for p_ in pts_x]) - t0
     xxa = np.array([p_[2] for p_ in pts_x])
     rpx = np.array([np.nan if p_[3] is None else float(p_[3]) for p_ in pts_x])
-    g, S, G, Hh = curl_basis(a, b, min(txa.min(), t_far) - 0.05, txa.max() + 0.05)
+    g, S, G, Hh = curl_basis(rata_, min(txa.min(), t_far) - 0.05, txa.max() + 0.05)
     Mx = np.column_stack([np.ones_like(txa), np.interp(txa, g, S), np.interp(txa, g, Hh)])
     w0 = 1.0 / (1.0 + (np.nan_to_num(rpx, nan=A.HOG_X_PAINO_RMS_PX) / A.HOG_X_PAINO_RMS_PX) ** 2)
     w = w0.copy()
@@ -301,7 +353,8 @@ def format_lines(res, stone_id=None):
     lines = [hdr,
              f"nopeus kaukohogilla: {res['v_far_hog_ms']:.2f} m/s",
              f"hidastuvuus ({A.HOG_HIDASTUVUUS_NOPEUDELLA_MS:g} m/s): {res['decel_ms2']:.3f} m/s^2",
-             f"hog-hog aika: {res['hog_hog_s']:.2f} s",
+             (f"hog-hog aika: {res['hog_hog_s']:.2f} s" + (" (arvio: rata katkesi ennen lahihogia)" if res.get("hog_hog_arvio") else ""))
+             if res.get("hog_hog_s") is not None else "hog-hog aika: - (rata katkesi ennen lahihogia)",
              f"suunta kaukohogilla: {abs(d):.2f} deg kohti {side}",
              f"liuku (suoran X T-viivalla, alusta hog+1m): {liuku}"]
     if "x_straight_at_tee_cm" in res:

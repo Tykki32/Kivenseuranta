@@ -36,6 +36,7 @@ HOG_CSV_SARAKKEET = [
     "dir_far_hog_deg_2aste", "kahva_h", "kahva_vari", "liuku_x_tee_cm_hakki_p", "liuku_x_tee_cm_hakki_m",
     "liuku_dir_deg_hakki_p", "liuku_dir_deg_hakki_m", "kierteet", "kierrosaika_far_s", "kierrosaika_near_s", "kierre_r2",
     "kierteet_taysi", "kierrosaika_far_s_taysi", "kierrosaika_near_s_taysi", "kierre_r2_taysi", "kierre_ruutuja_taysi",
+    "osittainen", "hog_hog_arvio",
 ]
 # --full: pysahtymispaikka. x/y nollakohdasta (A.PYSAHDYS_NOLLA_*; oletus keskiviiva ja lahemman pesan T-viiva),
 # X/Y fyysisessa koordinaatistossa (rata.py). x: + = kohti +X (fyysinen suunta, ei debug-ikkunan puoli).
@@ -73,7 +74,9 @@ _KIERRE_KESKEN = []
 
 
 def _kierteet(res, obs, obs_taysi, fps):
-    """Kierrearvio 720p- ja taysresoluutioisesta piirteesta -> res."""
+    """Kierrearvio 720p- ja taysresoluutioisesta piirteesta -> res. Ei lahihogin aikaa (osittainen) -> ei kierteita."""
+    if res.get("t_near_hog_s") is None:
+        return
     _kierre_tulos(res, obs, fps, "", "")
     if obs_taysi:
         _kierre_tulos(res, obs_taysi, fps, "_taysi", "taysi resoluutio: ")
@@ -112,30 +115,7 @@ def hog_check(s, frame_index, fps, results, frame_img, csv_output, pose, odota=N
     near_hog = rata.NEAR_HOGLINE_Y_CM
     if "hog_result" not in s and y <= near_hog + A.HOG_LAHI_MARGINAALI_CM:
         res = hog_analyysi.analyze_hog(rows, near_hog, rata.FAR_HOGLINE_Y_CM, tee_cm=rata.NEAR_HOUSE_Y_CM)
-        res["stone_id"] = s["stone_id"]
-        res["frame"] = frame_index
-        if res.get("ok") and live.active() is not None:
-            # kaukohogin ylityksen seinakelloaika (paneelin "sekuntia sitten"): nykyisen ruudun kaappausaika -
-            # (nykyisen ruudun aika - ylityksen aika) videoajassa
-            cap = live.active().store.capture_time(rows[-1][0])
-            if cap is not None:
-                res["t_far_wall"] = cap - (float(rows[-1][1]) - float(res["t_far_hog_s"]))
-        if res.get("ok"):
-            if odota is not None:
-                odota()            # taustalla lasketut kierrepiirteet valmiiksi
-            obs, obs_taysi = s.pop("kierre", None) or [], s.pop("kierre_taysi", None) or []
-            if live.active() is not None:
-                # live: kierrearvio (~1 s / piirre) taustasaikeeseen; tulos paneeliin kun valmis
-                global _KIERRE_POOL
-                if _KIERRE_POOL is None:
-                    _KIERRE_POOL = ThreadPoolExecutor(max_workers=1)
-                _KIERRE_KESKEN.append(_KIERRE_POOL.submit(_kierteet_tausta, res, obs, obs_taysi, fps))
-            else:
-                _kierteet(res, obs, obs_taysi, fps)
-        s["hog_result"] = res
-        if res.get("ok"):          # vain onnistunut (R_y > 0.99, X-kurvimallin rms < 2 cm) tulostetaan
-            results.append(res)
-            print(f"[frame {frame_index}] " + " | ".join(hog_analyysi.format_lines(res, s["stone_id"])))
+        _hog_tulos(s, res, rows, frame_index, fps, results, odota)
     r = s.get("hog_result")
     if r and r.get("ok") and not s.get("hog_overlay_started") and y <= near_hog:
         s["hog_overlay_started"] = True
@@ -146,6 +126,55 @@ def hog_check(s, frame_index, fps, results, frame_img, csv_output, pose, odota=N
                 cv2.imwrite(os.path.splitext(csv_output)[0] + f"_hog_kivi{s['stone_id']}.png", snap)
             except Exception as e_:       # still-kuva ei saa kaataa seurantaa
                 print(f"[hog] still-kuvan tallennus epaonnistui: {e_}")
+
+
+def hog_check_lopussa(s, frame_index, fps, results, odota=None):
+    """Vahvistettu rata loppui ennen lahihogia (kadotettu, ajautui lakaisijaan, lopetettiin): lopusta pois sulautuneet
+    rivit (rms_px > A.HOG_LOPPU_MAX_RMS_PX) ja osittainen hog-analyysi (hog-hog-aika vain jos data ulottuu lahihogille)."""
+    if "hog_result" in s or not s.get("confirmed"):
+        return
+    rows = s.get("all_rows") or []
+    k = len(rows)
+    while k > 0 and (rows[k - 1][2].get("rms_px") is None or rows[k - 1][2]["rms_px"] > A.HOG_LOPPU_MAX_RMS_PX):
+        k -= 1
+    rows = rows[:k]
+    if len(rows) < A.HOG_MIN_PISTEET:
+        return
+    res = hog_analyysi.analyze_hog(rows, rata.NEAR_HOGLINE_Y_CM, rata.FAR_HOGLINE_Y_CM, tee_cm=rata.NEAR_HOUSE_Y_CM,
+                                   osittainen=True)
+    if not res.get("ok"):
+        print(f"[frame {frame_index}] Kivi {s['stone_id']}: rata katkesi ennen lahihogia, osittainen hog-analyysi ei onnistunut "
+              f"({res.get('reason', '')}).")
+    _hog_tulos(s, res, rows, frame_index, fps, results, odota)
+
+
+def _hog_tulos(s, res, rows, frame_index, fps, results, odota):
+    """Hog-analyysin tulos radalle: kaukohogin seinakelloaika (live), kierrearvio, results-lista ja tulostus."""
+    res["stone_id"] = s["stone_id"]
+    res["frame"] = frame_index
+    if res.get("ok") and live.active() is not None:
+        # kaukohogin ylityksen seinakelloaika (paneelin "sekuntia sitten"): nykyisen ruudun kaappausaika -
+        # (nykyisen ruudun aika - ylityksen aika) videoajassa
+        cap = live.active().store.capture_time(rows[-1][0])
+        if cap is not None:
+            res["t_far_wall"] = cap - (float(rows[-1][1]) - float(res["t_far_hog_s"]))
+    if res.get("ok"):
+        if odota is not None:
+            odota()            # taustalla lasketut kierrepiirteet valmiiksi
+        obs, obs_taysi = s.pop("kierre", None) or [], s.pop("kierre_taysi", None) or []
+        if live.active() is not None:
+            # live: kierrearvio (~1 s / piirre) taustasaikeeseen; tulos paneeliin kun valmis
+            global _KIERRE_POOL
+            if _KIERRE_POOL is None:
+                _KIERRE_POOL = ThreadPoolExecutor(max_workers=1)
+            _KIERRE_KESKEN.append(_KIERRE_POOL.submit(_kierteet_tausta, res, obs, obs_taysi, fps))
+        else:
+            _kierteet(res, obs, obs_taysi, fps)
+    s["hog_result"] = res
+    if res.get("ok"):          # vain onnistunut (R_y > 0.99, X-kurvimallin rms < 2 cm) tulostetaan
+        results.append(res)
+        print(f"[frame {frame_index}] " + ("(osittainen, rata katkesi ennen lahihogia) " if res.get("osittainen") else "")
+              + " | ".join(hog_analyysi.format_lines(res, s["stone_id"])))
 
 
 def hog_kirjoita_csv(results, csv_output):
