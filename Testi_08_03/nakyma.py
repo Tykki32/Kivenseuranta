@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 import asetukset as A
+import rata
 import yleiset
 
 DEBUG_H = 1080
@@ -190,7 +191,10 @@ class DebugComposer:
             for tag, col, puoli in ((vas, "#ff2020", "v"), (oik, "#20e020", "o")):
                 xt = res["liuku_x_tee_cm_hakki_" + tag]
                 sl = -np.tan(np.radians(res["liuku_dir_deg_hakki_" + tag]))
-                viivat.append(dict(p=[cv_(xt + sl * (hy - tee), hy), cv_(xt, tee)], c=col, s=puoli))
+                # lahihogin talla puolen (kohti lahempaa pesaa) viiva on paallimmaisena: nakyy merkinnayttajan lapi
+                nh = min(max(rata.NEAR_HOGLINE_Y_CM, tee), hy)
+                viivat.append(dict(p=[cv_(xt + sl * (hy - tee), hy), cv_(xt + sl * (nh - tee), nh)], c=col, s=puoli, paalla=False))
+                viivat.append(dict(p=[cv_(xt + sl * (nh - tee), nh), cv_(xt, tee)], c=col, s=puoli, paalla=True))
         g = dict(viivat=viivat)
         if res.get("x_straight_at_tee_cm") is not None:
             g["risti"] = cv_(res["x_straight_at_tee_cm"], tee)
@@ -293,10 +297,12 @@ class DebugComposer:
         cv2.copyTo(ov, lm, self.canvas)
 
     def _piirra_viivat(self, vid, mask_r, gs):
-        """Korostettujen laatikoiden liukusuorat ja irroitusristi videokuvaan liikkuvien kohteiden ALLE (vain mask_r == 0)."""
+        """Korostettujen laatikoiden liukusuorat ja irroitusristi videokuvaan. Lahihogin takana liikkuvien kohteiden ALLE
+        (vain mask_r == 0); lahihogin talla puolen (merkinnayttaja pesassa) ja irroitusristi paallimmaisina."""
         nayta = tuple(self.nayta)
         ov = vid.copy()
-        lm = np.zeros(vid.shape[:2], np.uint8)          # viivojen pikselit
+        lm = np.zeros(vid.shape[:2], np.uint8)          # viivojen pikselit, liikkuvien kohteiden alle
+        lt = np.zeros(vid.shape[:2], np.uint8)          # paallimmaiset pikselit
         n = 0
         for g in gs:
             for v in g.get("viivat", []):
@@ -305,7 +311,7 @@ class DebugComposer:
                 p0 = (int(round(v["p"][0][0] - self.pw)), int(round(v["p"][0][1])))
                 p1 = (int(round(v["p"][1][0] - self.pw)), int(round(v["p"][1][1])))
                 cv2.line(ov, p0, p1, VIIVA_BGR[v["s"]], 2, cv2.LINE_AA)
-                cv2.line(lm, p0, p1, 255, 4)
+                cv2.line(lt if v.get("paalla") else lm, p0, p1, 255, 4)
                 n += 1
             if g.get("risti") is not None:
                 mx, my = g["risti"][0] - self.pw, g["risti"][1]
@@ -315,13 +321,13 @@ class DebugComposer:
                         t = np.radians(d)
                         q0, q1 = (int(round(mx)), int(round(my))), (int(round(mx + A.KATSELU_RISTI_SAKARA_PX * np.cos(t))), int(round(my + A.KATSELU_RISTI_SAKARA_PX * np.sin(t))))
                         cv2.line(ov, q0, q1, (0, 153, 255), 3, cv2.LINE_AA)
-                        cv2.line(lm, q0, q1, 255, 5)
+                        cv2.line(lt, q0, q1, 255, 5)
                 n += 1
         if not n:
             return
         if mask_r is not None:
             lm = cv2.bitwise_and(lm, cv2.bitwise_not(mask_r))
-        cv2.copyTo(ov, lm, vid)
+        cv2.copyTo(ov, cv2.bitwise_or(lm, lt), vid)
 
     def compose(self, base_bgr, labels, header, results, plus_right, now_video_s=None, cap_wall=None):
         H0, W0 = base_bgr.shape[:2]

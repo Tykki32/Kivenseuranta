@@ -649,7 +649,9 @@ pikseli on kylläinen. Näin värikäs mutta eri sävyinen kohde (keltainen kahv
   Kuvan ulkopuolelle jäävä osa (esim. irroitus yli 2 m keskiviivasta) piirretään samassa mittakaavassa paneelien
   päälle kuvan jatkeeksi. Jos risti on koko näkymän ulkopuolella, sen tilalla on oranssi nuoli näkymän reunassa ja
   lukema (X lähemmällä T-viivalla, cm).
-- **Liikemaski:** viivat ja risti piirretään liikkuvien kohteiden alle. Liikkuva kohde = ero tyhjän radan
+- **Liikemaski:** lähihogin takana viivat piirretään liikkuvien kohteiden alle. Lähihogin tällä puolen (kohti lähempää
+  pesää) liukusuorat ja irroitusristi ovat päällimmäisinä, jotta ne näkyvät pesässä olevan merkinnäyttäjän läpi.
+  Liikkuva kohde = ero tyhjän radan
   taustakuvaan > `A.KATSELU_LIIKE_KYNNYS` (40) suurimmassa kanavassa; 3×3-avaus ja 5×5-laajennus.
 - **Viive:** keskikuva näytetään Alku s myöhässä (JPEG-rengaspuskuri kaappausajan mukaan, enintään 180 s). Kun heitto
   ylittää kaukohogin videolla, laatikko samalla korostuu. Jos käsittely on Alkua enemmän jäljessä, näytetään uusin kuva
