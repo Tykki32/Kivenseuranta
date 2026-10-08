@@ -645,6 +645,8 @@ pikseli on kylläinen. Näin värikäs mutta eri sävyinen kohde (keltainen kahv
   laatu 75). Pieni HTTP-palvelin jakaa sivun.
 - **Korostus:** puhelin lähettää Alku- ja Loppu-arvot. Laatikot, joiden ikä on Alku…Loppu s, korostetaan, ja niiden
   liukusuorat (vasen- ja oikeakätinen valinnan mukaan) sekä irroitusristi piirretään kuvaan.
+  Jos irroituskohta on kuvan ulkopuolella (esim. yli 2 m keskiviivasta), risti korvataan oranssilla nuolella kuvan
+  reunassa kohti irroituskohtaa ja lukemalla (X lähemmällä T-viivalla, cm).
 - **Liikemaski:** viivat ja risti piirretään liikkuvien kohteiden alle. Liikkuva kohde = ero tyhjän radan
   taustakuvaan > `A.KATSELU_LIIKE_KYNNYS` (40) suurimmassa kanavassa; 3×3-avaus ja 5×5-laajennus.
 - **Viive:** keskikuva näytetään Alku s myöhässä (JPEG-rengaspuskuri kaappausajan mukaan, enintään 180 s). Kun heitto

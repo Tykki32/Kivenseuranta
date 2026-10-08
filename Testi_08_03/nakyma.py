@@ -194,6 +194,7 @@ class DebugComposer:
         g = dict(viivat=viivat)
         if res.get("x_straight_at_tee_cm") is not None:
             g["risti"] = cv_(res["x_straight_at_tee_cm"], tee)
+            g["risti_x_cm"] = float(res["x_straight_at_tee_cm"])
         return g
 
     def _liike_maski(self, vid):
@@ -238,6 +239,30 @@ class DebugComposer:
         img = cv2.imdecode(valinta[1], cv2.IMREAD_COLOR)
         return (img if img is not None and img.shape == vid.shape else vid), nyt - valinta[0]
 
+    @staticmethod
+    def _reunanuoli(ov, lm, mx, my, x_cm):
+        """Irroitus kuvan ulkopuolella (esim. > 2 m keskiviivasta): oranssi nuoli kuvan reunaan kohti irroituskohtaa ja
+        lukema (X lahemmalla T-viivalla, cm)."""
+        hh, ww = ov.shape[:2]
+        reuna = 4
+        tx, ty = float(np.clip(mx, reuna, ww - 1 - reuna)), float(np.clip(my, reuna, hh - 1 - reuna))
+        dx, dy = mx - tx, my - ty
+        nrm = float(np.hypot(dx, dy)) or 1.0
+        dx, dy = dx / nrm, dy / nrm
+        pituus = 2 * A.KATSELU_RISTI_SAKARA_PX
+        tip = (int(round(tx)), int(round(ty)))
+        tail = (int(round(tx - dx * pituus)), int(round(ty - dy * pituus)))
+        cv2.arrowedLine(ov, tail, tip, (0, 153, 255), 4, cv2.LINE_AA, tipLength=0.45)
+        cv2.line(lm, tail, tip, 255, 9)
+        if x_cm is not None:
+            txt = f"{x_cm:+.0f} cm"
+            (tw, th), _ = cv2.getTextSize(txt, FONT, 0.7, 2)
+            px = int(np.clip(tail[0] - dx * 6 - (tw if dx > 0 else 0) - (tw // 2 if dx == 0 else 0), 2, ww - tw - 2))
+            py = int(np.clip(tail[1] + th // 2 - dy * (th + 6), th + 2, hh - 4))
+            cv2.putText(ov, txt, (px, py), FONT, 0.7, (0, 0, 0), 5, cv2.LINE_AA)
+            cv2.putText(ov, txt, (px, py), FONT, 0.7, (0, 153, 255), 2, cv2.LINE_AA)
+            cv2.rectangle(lm, (px - 2, py - th - 4), (px + tw + 2, py + 6), 255, -1)
+
     def _piirra_viivat(self, vid, mask_r, gs):
         """Korostettujen laatikoiden liukusuorat ja irroitusristi videokuvaan liikkuvien kohteiden ALLE (vain mask_r == 0)."""
         nayta = tuple(self.nayta)
@@ -255,11 +280,15 @@ class DebugComposer:
                 n += 1
             if g.get("risti") is not None:
                 mx, my = g["risti"][0] - self.pw, g["risti"][1]
-                for d in (-90, 30, 150):
-                    t = np.radians(d)
-                    q0, q1 = (int(round(mx)), int(round(my))), (int(round(mx + A.KATSELU_RISTI_SAKARA_PX * np.cos(t))), int(round(my + A.KATSELU_RISTI_SAKARA_PX * np.sin(t))))
-                    cv2.line(ov, q0, q1, (0, 153, 255), 3, cv2.LINE_AA)
-                    cv2.line(lm, q0, q1, 255, 5)
+                hh, ww = vid.shape[:2]
+                if 0 <= mx < ww and 0 <= my < hh:
+                    for d in (-90, 30, 150):
+                        t = np.radians(d)
+                        q0, q1 = (int(round(mx)), int(round(my))), (int(round(mx + A.KATSELU_RISTI_SAKARA_PX * np.cos(t))), int(round(my + A.KATSELU_RISTI_SAKARA_PX * np.sin(t))))
+                        cv2.line(ov, q0, q1, (0, 153, 255), 3, cv2.LINE_AA)
+                        cv2.line(lm, q0, q1, 255, 5)
+                else:
+                    self._reunanuoli(ov, lm, mx, my, g.get("risti_x_cm"))
                 n += 1
         if not n:
             return
