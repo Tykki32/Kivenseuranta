@@ -368,14 +368,18 @@ def format_lines(res, stone_id=None):
     return lines
 
 
-def draw_overlay(img, lines, K, R, t, near_hog_cm, x_side_cm=300.0, lane_half_cm=237.0, color=(255, 255, 255)):
-    """Piirtaa tekstirivit radan SIVUUN lahemman hoglinen kohdalle (ja hoglinen ohuena viivana). Palauttaa img."""
+def draw_overlay(img, lines, K, R, t, near_hog_cm, x_side_cm=300.0, lane_half_cm=237.0, color=(255, 255, 255), polku=None):
+    """Piirtaa tekstirivit radan SIVUUN lahemman hoglinen kohdalle (ja hoglinen ohuena viivana). polku: laskettu
+    kulkulinja [(X, Y) cm] (rata_malli.py) oranssina. Palauttaa img."""
     K = np.asarray(K, float); R = np.asarray(R, float).reshape(3, 3); t = np.asarray(t, float).reshape(3)
     def proj(x, y):
         p = K @ (R @ np.array([x, y, 0.0]) + t); return float(p[0] / p[2]), float(p[1] / p[2])
     H, W = img.shape[:2]
     pa, pb = proj(-lane_half_cm, near_hog_cm), proj(lane_half_cm, near_hog_cm)
     cv2.line(img, (int(pa[0]), int(pa[1])), (int(pb[0]), int(pb[1])), (0, 200, 255), 2)
+    if polku:
+        pts = np.array([proj(X, Y) for X, Y in polku])
+        cv2.polylines(img, [np.round(pts).astype(np.int32)], False, (0, 153, 255), 2, cv2.LINE_AA)
     sides = [proj(x_side_cm, near_hog_cm), proj(-x_side_cm, near_hog_cm)]
     lh = 26; box_h = lh * len(lines) + 10
     # valitse sivu jolla teksti mahtuu kuvaan (ylempi ensin; teksti piirretaan ankkurista ylos/alas poispain radasta)

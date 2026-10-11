@@ -161,7 +161,8 @@ def hog_check(s, frame_index, fps, results, frame_img, csv_output, pose, odota=N
         if A.HOG_TALLENNA_KUVA and frame_img is not None and csv_output:
             try:
                 lines = hog_analyysi.format_lines(r, s["stone_id"])
-                snap = hog_analyysi.draw_overlay(frame_img.copy(), lines, pose["K"], pose["R"], pose["t"], near_hog)
+                snap = hog_analyysi.draw_overlay(frame_img.copy(), lines, pose["K"], pose["R"], pose["t"], near_hog,
+                                                 polku=r.get("ennuste_polku"))
                 cv2.imwrite(os.path.splitext(csv_output)[0] + f"_hog_kivi{s['stone_id']}.png", snap)
             except Exception as e_:       # still-kuva ei saa kaataa seurantaa
                 print(f"[hog] still-kuvan tallennus epaonnistui: {e_}")
