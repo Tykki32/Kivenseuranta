@@ -22,7 +22,8 @@ Tila: Y, nopeus v, kierre ω, kulkusuunnan kääntymä φ ja sivusiirtymä H.
 
 Heittokohtaisesti sovitetaan hog-välin Y(t)- ja X(t)-datasta y₀, v₀, ω₀, A (jään nopeus) ja κ (naarmun voimakkuus);
 mitattu kierrosmäärä hog-hog on pakote. Sovitus: oma Levenberg–Marquardt, jossa Jacobiaani ja vaimennuskokeilut
-lasketaan numpy-erinä (ei scipy-riippuvuutta). Naarmuvoimien keskiarvot lasketaan kerran taulukoksi
+lasketaan numpy-erinä (ei scipy-riippuvuutta). Simulointi on numba-käännetty, jos numba on asennettu
+(`ENNUSTE_NUMBA`); muuten käytetään numpy-versiota (sama tulos, ~140× hitaampi). Naarmuvoimien keskiarvot lasketaan kerran taulukoksi
 (`naarmu_taulukko.npz`, ~1 s ensimmäisellä kerralla).
 
 **Yhteiset vakiot (`asetukset.py` osio 13):** B = −0,002, μ_w = 1,5, v_c = 0,1 m/s. Ne ovat 26 heiton
@@ -34,13 +35,13 @@ Kulkulinjaa ei lasketa, jos kierteitä ei saatu tai hog-analyysi epäonnistui, e
 hog-välillä on suuri (Y rms > `ENNUSTE_MAX_Y_RMS_CM` 5 cm tai X rms > `ENNUSTE_MAX_X_RMS_CM` 1,5 cm; esim. lakaisu tai
 pelaaja seurannassa).
 
-**Laskenta-aika:** noin 4–5 s kiveä kohden (testikone, yksi ydin). Live-tilassa se tehdään taustasäikeessä
-kierrearvion perässä, joten viiva ilmestyy noin 5–6 s lähihogin jälkeen (kivi liukuu yleensä vielä 5–10 s).
-Video-ajossa laskenta tehdään heti hog-analyysin jälkeen (hidastaa ajoa saman verran per heitto).
+**Laskenta-aika:** numballa 0,06–0,13 s kiveä kohden (testikone, yksi ydin); ensimmäisellä kerralla numba kääntää
+koodin (~3 s, tallentuu `__pycache__`-välimuistiin, seuraavissa ajoissa ei toistu). Ilman numbaa 4–5 s kiveä kohden.
+Live-tilassa ennuste lasketaan taustasäikeessä kierrearvion perässä, joten viiva ilmestyy heti kierrearvion jälkeen.
 
-**Testi (live 2026-10-07, 11 kiveä joiden pysähtymispaikka mitattiin):** pysähtymispaikan virhe mediaani
-Y 41 cm, X 3,2 cm (Testi_08_03:n suora irroitus ei ennusta pysähtymistä lainkaan). Suurimmat Y-virheet ovat
-lakaistuja kiviä.
+**Testi (live 2026-10-07, kivet joiden pysähtymispaikka mitattiin):** 10 kivelle 11:stä piirrettiin kulkulinja
+(yksi hylättiin huonon hog-välin sovituksen takia). Pysähtymispaikan virhe mediaani Y 37 cm, X 3,0 cm.
+Suurimmat Y-virheet ovat todennäköisesti lakaistuja kiviä.
 
 Hog-CSV:n uudet sarakkeet: `ennuste_X_cm`, `ennuste_Y_cm` (fyysinen koordinaatisto), `ennuste_liukuaika_s`
 (kaukohogista), `ennuste_A`, `ennuste_kappa`, `ennuste_w_far_rads`, `ennuste_y_rms_cm`, `ennuste_x_rms_cm`,

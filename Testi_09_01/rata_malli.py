@@ -117,18 +117,96 @@ def _derivaatat(v, w, Aa, kap, T, rengas):
     return ay, aw, a_sivu
 
 
+# ------------------------------------------------------------------
+# NUMBA (jos asennettu, A.ENNUSTE_NUMBA): sama simulointi kaannettyna, ~50x nopeampi. Muuten numpy-era alla.
+# ------------------------------------------------------------------
+_nb_sim = None
+if A.ENNUSTE_NUMBA:
+    try:
+        import numba as _nb
+
+        @_nb.njit(cache=True, nogil=True)
+        def _nb_derivaatat(v, w, a_, kap, T, Z, LU, sn, cs, B, R, K2, vc, mw):
+            ay = 0.0; aw = 0.0; nr = len(sn)
+            for k in range(nr):
+                ux = -w * R * cs[k]; uy = v + w * R * sn[k]
+                U = max(np.sqrt(ux * ux + uy * uy), 1e-4)
+                mu = max(a_ + B * np.log(U), 0.0)
+                ay -= mu * uy / U; aw -= mu * (v * sn[k] + w * R) / U
+            ay *= G / nr; aw *= G * R / K2 / nr
+            asv = 0.0
+            if w > 0:
+                vv = max(v, 1e-3); be = w * R / vv
+                fz = be / (1 + be) / (Z[1] - Z[0]); i = min(max(int(fz), 0), len(Z) - 2); fz = min(max(fz - i, 0.0), 1.0)
+                fu = (np.log(vv / vc) - LU[0]) / (LU[1] - LU[0]); j = min(max(int(np.floor(fu)), 0), len(LU) - 2)
+                fu = min(max(fu - j, 0.0), 1.0)
+                t = np.empty(6)
+                for q in range(6):
+                    t[q] = (T[q, i, j] * (1 - fz) * (1 - fu) + T[q, i + 1, j] * fz * (1 - fu)
+                            + T[q, i, j + 1] * (1 - fz) * fu + T[q, i + 1, j + 1] * fz * fu)
+                s = kap * G * 0.01
+                asv = -s * (t[0] + mw * t[3]); ay += s * (t[1] + mw * t[4]); aw += s * R / K2 * (t[2] + mw * t[5])
+            return ay, aw, asv
+
+        @_nb.njit(cache=True, nogil=True)
+        def _nb_sim(P, kmax, pysahdykseen, dt, T, Z, LU, sn, cs, B, R, K2, vc, mw):
+            n = P.shape[0]
+            out = np.empty((kmax + 1, 5, n)); kmax_k = 0
+            for m in range(n):
+                y = P[m, 0]; v = max(P[m, 1], 1e-3); w = max(P[m, 2], 0.0); a_ = P[m, 3]; kap = P[m, 4]
+                ph = 0.0; S = 0.0; H = 0.0; seis = False
+                out[0, 0, m] = y; out[0, 1, m] = v; out[0, 2, m] = w; out[0, 3, m] = 0.0; out[0, 4, m] = 0.0
+                k = 0
+                while k < kmax:
+                    if seis:
+                        if pysahdykseen:
+                            break
+                        k += 1
+                        out[k, 0, m] = y; out[k, 1, m] = 0.0; out[k, 2, m] = 0.0; out[k, 3, m] = S; out[k, 4, m] = H
+                        continue
+                    a1, b1, c1 = _nb_derivaatat(v, w, a_, kap, T, Z, LU, sn, cs, B, R, K2, vc, mw)
+                    v2 = max(v + dt * a1, 1e-3); w2 = max(w + dt * b1, 0.0)
+                    a2, b2, c2 = _nb_derivaatat(v2, w2, a_, kap, T, Z, LU, sn, cs, B, R, K2, vc, mw)
+                    vn = v + dt * (a1 + a2) / 2; wn = max(w + dt * (b1 + b2) / 2, 0.0)
+                    if vn <= 1e-3:
+                        seis = True; vn = 0.0; wn = 0.0
+                    phn = ph + dt * (c1 / max(v, 1e-3) + c2 / max(v2, 1e-3)) / 2
+                    ds = 100 * dt * (v + vn) / 2
+                    y -= ds; S += ds; H += 100 * dt * (v * ph + vn * phn) / 2
+                    v = vn; w = wn; ph = phn; k += 1
+                    out[k, 0, m] = y; out[k, 1, m] = v; out[k, 2, m] = w; out[k, 3, m] = S; out[k, 4, m] = H
+                kmax_k = max(kmax_k, k)
+                for kk in range(k + 1, kmax + 1):          # pysahtynyt aiemmin kuin muut: paikallaan loppuun
+                    for c in range(5):
+                        out[kk, c, m] = out[k, c, m]
+            return out[:kmax_k + 1]
+    except Exception as _e:                                # numba puuttuu tai kaannos epaonnistui -> numpy
+        print(f"[ennuste] numba ei kaytossa ({_e!r}), kaytetaan numpya")
+        _nb_sim = None
+
+
 def simuloi(P, t_alku, t_loppu, pysahdykseen=False):
     """P: (n, 5) [y0_cm, v0_ms, w0_rads, A, kappa] hetkella t_alku. Palauttaa (t, Y) jossa Y (k, 5, n):
     [Y_cm, v_ms, w_rads, S_cm (kuljettu matka), H_cm (sivusiirtyma kaartosuuntaan)]. pysahdykseen: kunnes kaikki v = 0."""
+    global _nb_sim
     T = taulukko()
     P = np.atleast_2d(np.asarray(P, float))
     n = len(P); dt = A.ENNUSTE_DT_S
     th = (np.arange(A.ENNUSTE_RENGAS_PISTEET) + 0.5) * 2 * np.pi / A.ENNUSTE_RENGAS_PISTEET
     rengas = (np.sin(th), np.cos(th))
+    kmax = int(np.ceil(((120.0 if pysahdykseen else t_loppu) - t_alku) / dt)) + 1
+    if _nb_sim is not None:
+        try:
+            Y = _nb_sim(np.ascontiguousarray(P), kmax, bool(pysahdykseen), float(dt), np.ascontiguousarray(T), _Z, _LU,
+                        rengas[0], rengas[1], float(A.ENNUSTE_MU_B), float(A.ENNUSTE_R_M), float(A.ENNUSTE_K2_M2),
+                        float(A.ENNUSTE_VC_MS), float(A.ENNUSTE_MU_W))
+            return t_alku + dt * np.arange(len(Y)), Y
+        except Exception as e_:
+            print(f"[ennuste] numba-simulointi epaonnistui ({e_!r}), kaytetaan numpya")
+            _nb_sim = None
     y, v, w = P[:, 0].copy(), np.maximum(P[:, 1], 1e-3), np.maximum(P[:, 2], 0.0)
     Aa, kap = P[:, 3], P[:, 4]
     ph = np.zeros(n); S = np.zeros(n); H = np.zeros(n); seis = np.zeros(n, bool)
-    kmax = int(np.ceil(((120.0 if pysahdykseen else t_loppu) - t_alku) / dt)) + 1
     out = [np.stack([y, v, w, S, H])]
     for _ in range(kmax):
         a1, b1, c1 = _derivaatat(v, w, Aa, kap, T, rengas)

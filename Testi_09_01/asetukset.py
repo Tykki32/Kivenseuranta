@@ -310,6 +310,7 @@ TAUSTA_ALEMPI_PRIORITEETTI = True
 # valittu piste ennusti pysahtymispaikat parhaiten (11 kivea: Y-virhe mediaani 32 cm, X 3,5 cm). vc (~0,1 m/s) oli
 # selvasti maaritelty. Eri jaalla / kivilla arvot voivat olla toiset.
 ENNUSTE_KAYTOSSA = True              # laske kulkulinja (oranssi viiva puhelinnakymaan, ennuste hog-CSV:hen)
+ENNUSTE_NUMBA = True                 # numba-kaannetty simulointi (~50x nopeampi), jos numba on asennettu; muuten numpy
 ENNUSTE_MU_B = -0.002                # kitkan nopeusriippuvuus B (mu = A + B ln U); HUOM. eri kuin HOG_MU_B (hog-analyysi)
 ENNUSTE_MU_W = 1.5                   # naarmun seinan kitkakerroin (seinaan painuvan nyppylan kitka liikesuuntaa vastaan)
 ENNUSTE_VC_MS = 0.1                  # sitkean virumisen ja hauraan murtuman raja (painumanopeus, m/s)
