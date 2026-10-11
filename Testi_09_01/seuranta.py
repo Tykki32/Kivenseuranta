@@ -436,11 +436,16 @@ class Seuranta:
         self.csv_writer.writerow(heitot.CSV_HEADER)
 
         if self.debug_video_output is not None:
-            vw, vh, _sc, tw = nakyma.debug_layout(self.width, self.height)
+            # A.DEBUG_KUTEN_PUHELIN: sama nakyma kuin puhelimessa (paneelit, liukusuorat, irroitus, kulkulinja) joka ruutuun,
+            # ilman viivetta; viivat heitoille joiden kaukohogin ylityksesta on A.DEBUG_KOROSTUS_S sekuntia
+            self.debug_composer = nakyma.DebugComposer(self.width, self.height, puhelin=A.DEBUG_KUTEN_PUHELIN)
+            if A.DEBUG_KUTEN_PUHELIN:
+                self.debug_composer.tausta = calib.get("frame_undistorted")
+                self.debug_composer.korostus = tuple(A.DEBUG_KOROSTUS_S)
+            tw, vh, vw = self.debug_composer.total_w, self.debug_composer.video_h, self.debug_composer.video_w
             self.debug_video_writer = nakyma.AsyncVideoWriter(nakyma.open_debug_writer(self.debug_video_output, self.fps, (tw, vh)))
-            self.debug_composer = nakyma.DebugComposer(self.width, self.height)
             print(f"Debug-video: stabiloitu+korjattu, kaannetty 90 astetta vastapaivaan, {tw}x{vh} (video {vw}x{vh} + "
-                  f"paneelit {nakyma.PANEL_W} px/puoli)")
+                  f"paneelit {self.debug_composer.pw} px/puoli)" + (", puhelinnakyma" if A.DEBUG_KUTEN_PUHELIN else ""))
         if katselu.active() is not None:
             self.katselu_composer = nakyma.DebugComposer(self.width, self.height, puhelin=True)
             self.katselu_composer.tausta = calib.get("frame_undistorted")
