@@ -43,6 +43,12 @@ Live-tilassa ennuste lasketaan taustasäikeessä kierrearvion perässä, joten v
 (yksi hylättiin huonon hog-välin sovituksen takia). Pysähtymispaikan virhe mediaani Y 37 cm, X 3,0 cm.
 Suurimmat Y-virheet ovat todennäköisesti lakaistuja kiviä.
 
+**Debug-video puhelinnäkymänä** (`--debug`, `DEBUG_KUTEN_PUHELIN = True`): debug-videossa on sama näkymä kuin
+puhelimessa (paneelit, liukusuorat, irroitusristi, laskettu kulkulinja), mutta jokaisesta ruudusta (täysi ruutunopeus)
+ja ilman viivettä. Viivat piirretään heitoille, joiden kaukohogin ylityksestä on `DEBUG_KOROSTUS_S` = 0…40 s
+(puhelimessa käyttäjän Alku/Loppu); hog-analyysi valmistuu lähihogilla, joten viivat ilmestyvät silloin.
+`False` = vanha debug-video (kivien ääriviivat, kapeammat paneelit).
+
 Hog-CSV:n uudet sarakkeet: `ennuste_X_cm`, `ennuste_Y_cm` (fyysinen koordinaatisto), `ennuste_liukuaika_s`
 (kaukohogista), `ennuste_A`, `ennuste_kappa`, `ennuste_w_far_rads`, `ennuste_y_rms_cm`, `ennuste_x_rms_cm`,
 `ennuste_laskenta_s`.
