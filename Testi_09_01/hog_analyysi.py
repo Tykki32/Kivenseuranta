@@ -380,7 +380,8 @@ def draw_overlay(img, lines, K, R, t, near_hog_cm, x_side_cm=300.0, lane_half_cm
     if polku:
         pts = np.array([proj(X, Y) for X, Y in polku])
         cv2.polylines(img, [np.round(pts).astype(np.int32)], False, (0, 153, 255), 2, cv2.LINE_AA)
-    lh = 26; box_h = lh * len(lines) + 10; box_w = 566
+    lh = 26; box_h = lh * len(lines) + 10
+    box_w = max([cv2.getTextSize(s_, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0][0] for s_ in lines] + [400]) + 12
     # tekstilaatikko kuvan reunaan (vasen tai oikea; ylhaalla, keskella tai alhaalla) kohtaan jossa se peittaa
     # vahiten rataa ja laskettua kulkulinjaa (naytteet keskiviivalta ja kulkulinjalta)
     nayte = [proj(0.0, yy) for yy in np.linspace(0.0, 4000.0, 81)] + [proj(xx, near_hog_cm) for xx in np.linspace(-lane_half_cm, lane_half_cm, 21)]
@@ -388,13 +389,13 @@ def draw_overlay(img, lines, K, R, t, near_hog_cm, x_side_cm=300.0, lane_half_cm
         nayte += [proj(X, Y) for X, Y in polku]
     nayte = np.array(nayte)
     paras = None
-    for x0_ in (6, W - box_w):
+    for x0_ in (6, max(6, W - box_w)):
         for y0_ in (5, (H - box_h) // 2, H - box_h - 5):
             osuu = int(np.sum((nayte[:, 0] >= x0_ - 6) & (nayte[:, 0] <= x0_ + box_w) & (nayte[:, 1] >= y0_) & (nayte[:, 1] <= y0_ + box_h)))
             if paras is None or osuu < paras[0]:
                 paras = (osuu, x0_, y0_)
     x0, y0 = int(paras[1]), int(max(0, paras[2]))
-    cv2.rectangle(img, (x0 - 6, y0), (x0 + 560, y0 + box_h), (0, 0, 0), -1)
+    cv2.rectangle(img, (x0 - 6, y0), (x0 + box_w - 6, y0 + box_h), (0, 0, 0), -1)
     for i, s in enumerate(lines):
         cv2.putText(img, s, (x0, y0 + 22 + i * lh), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color if i else (0, 255, 255), 2)
     return img
