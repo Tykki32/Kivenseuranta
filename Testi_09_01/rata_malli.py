@@ -7,8 +7,9 @@ Tila: Y, nopeus v, kierre w (rad/s), kulkusuunnan kaantyma phi ja sivusiirtyma H
   <.> = keskiarvo running bandin kehalla, U = pisteen nopeus jaan suhteen, mu(U) = A + B ln U (Coulombin kitka
   jokaisessa pisteessa omalla nopeudellaan).
 Naarmuseina: kiven etureuna tekee naarmuja, takareunan nyppylat ylittavat ne kulmassa alpha (sin alpha ~ 2 beta |cos th|,
-beta = w r / v) ja painuvat uran seinaan nopeudella v_n = v sin alpha. Voima f = (v_n/vc)^(1/3) exp(-(v_n/vc)^2):
-loivissa kulmissa jaa virii sitkeasti (Glen n = 3), jyrkissa se murtuu (voima haviaa). Ohjausvoima on kohtisuoraan
+beta = w r / v) ja painuvat uran seinaan nopeudella v_n = v sin alpha. Voima f = x^p exp(-x^(m p)), x = v_n/vc (p, m: asetukset.py
+osio 13): x^p = seinan vastus ennen murtumaa (p = 1: viskoosi kontakti), exp(-x^(m p)) = Weibullin todennakoisyys
+sille, etta seina ei murru (murtunut seina ei ohjaa, voima haviaa). Ohjausvoima on kohtisuoraan
 takapisteen nopeutta (ei tee tyota), seinakitka mu_w * f takapisteen liiketta vastaan. Naarmutiheys w(th) =
 min(1, c0 D(r sin th)), D = running bandin (leveys ENNUSTE_KAISTA_MM) naarmujen tiheys sivusuunnassa.
 Naarmuvoimien keskiarvot (Fx, Fy, momentti) lasketaan kerran taulukoksi (beta, v/vc) -> naarmu_taulukko.npz.
@@ -37,7 +38,7 @@ _T = None
 # NAARMUTAULUKKO
 # ------------------------------------------------------------------
 def _avain():
-    return np.array([A.ENNUSTE_C0, A.ENNUSTE_KAISTA_MM, A.ENNUSTE_R_M, len(_Z), len(_LU)], float)
+    return np.array([A.ENNUSTE_C0, A.ENNUSTE_KAISTA_MM, A.ENNUSTE_R_M, len(_Z), len(_LU), A.ENNUSTE_LAKI_P, A.ENNUSTE_LAKI_M], float)
 
 
 def _laske_taulukko():
@@ -64,7 +65,8 @@ def _laske_taulukko():
         d = efx * ebx + efy * eby; px, py = efx - d * ebx, efy - d * eby
         pn = np.maximum(np.hypot(px, py), 1e-15); px, py = px / pn, py / pn
         x = u * np.sin(al)[None, :]
-        F = x ** (1 / 3) * np.exp(-x ** 2) * w[None, :]                        # (u, th)
+        p = A.ENNUSTE_LAKI_P
+        F = x ** p * np.exp(-x ** (A.ENNUSTE_LAKI_M * p)) * w[None, :]       # (u, th)
         for k0, (fx, fy) in ((0, (px, py)), (3, (-ebx, -eby))):
             T[k0, i] = (F * fx).sum(1) / kn
             T[k0 + 1, i] = (F * fy).sum(1) / kn

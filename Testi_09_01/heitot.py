@@ -40,8 +40,8 @@ HOG_CSV_SARAKKEET = [
     "dir_far_hog_deg", "slope_dxdy", "x_straight_at_tee_cm", "px", "qx", "rx", "liuku_x_tee_cm", "liuku_dir_deg", "liuku_n",
     "liuku_rms_cm", "decel_keskim_ms2", "mu_a", "mu_b", "kitka_rms_cm", "kurvi_k_ms2", "kurvi_rms_cm", "x_far_hog_cm_2aste",
     "dir_far_hog_deg_2aste", "kahva_h", "kahva_vari", "liuku_x_tee_cm_hakki_p", "liuku_x_tee_cm_hakki_m",
-    "liuku_dir_deg_hakki_p", "liuku_dir_deg_hakki_m", "kierteet", "kierrosaika_far_s", "kierrosaika_near_s", "kierre_r2",
-    "kierteet_taysi", "kierrosaika_far_s_taysi", "kierrosaika_near_s_taysi", "kierre_r2_taysi", "kierre_ruutuja_taysi",
+    "liuku_dir_deg_hakki_p", "liuku_dir_deg_hakki_m", "kierteet", "kierrosaika_far_s", "kierrosaika_near_s", "kierre_r2", "kierre_alpha",
+    "kierteet_taysi", "kierrosaika_far_s_taysi", "kierrosaika_near_s_taysi", "kierre_r2_taysi", "kierre_alpha_taysi", "kierre_ruutuja_taysi",
     "osittainen", "hog_hog_arvio", "kierteet_leveys", "kierre_leveys_erott", "kierteet_yhd", "kierre_varmuus", "ennuste_X_cm", "ennuste_Y_cm", "ennuste_liukuaika_s", "ennuste_A", "ennuste_kappa",
     "ennuste_w_far_rads", "ennuste_y_rms_cm", "ennuste_x_rms_cm", "ennuste_laskenta_s",
 ]
@@ -74,6 +74,7 @@ def _kierre_tulos(res, obs, fps, suffix, label):
         res["kierrosaika_far_s" + suffix] = kr["kierrosaika_far_s"]
         res["kierrosaika_near_s" + suffix] = kr["kierrosaika_near_s"]
         res["kierre_r2" + suffix] = kr["r2"]
+        res["kierre_alpha" + suffix] = kr["alpha"]
 
 
 _KIERRE_POOL = None          # live: kierrearvio taustasaikeessa (ei pysayta seurantaa lahihogilla)

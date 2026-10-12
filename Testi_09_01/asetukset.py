@@ -224,7 +224,13 @@ KAHVA_MIN_V = 60                     # ... ja kirkkaus >= tama (jaa ja graniitti
 KAHVA_SAVY_TOL = 10                  # kahvan savy +- tama (OpenCV H 0-179)
 KAHVA_SADE_KERROIN = 2.0             # ympyran sade = kerroin x kahvan sade (kahvan karki mukaan)
 KAHVA_Z_LISA_CM = 0.0                # ympyran keskipisteen korkeus H_total:n ylapuolella
-KIERRE_HIDASTUVUUS = 0.02            # pyorimisen hidastuvuus rad/s^2 (MAH00014:n 12 selvan kiven yhteinen arvo)
+KIERRE_ALPHA_HAKU = True             # pyorimisen hidastuvuus alpha (rad/s^2) haetaan heittokohtaisesti kahvasignaalista
+KIERRE_ALPHA_MIN = 0.0               # hakuvali (MAH00014: parhaat 0,020-0,045, tarkkuus n. +-0,005-0,01)
+KIERRE_ALPHA_MAX = 0.07
+KIERRE_ALPHA_KARKEA = 0.01           # karkea haku ...
+KIERRE_ALPHA_ASKEL = 0.005           # ... ja tarkennus parhaan ymparilla
+KIERRE_NUMBA = True                  # hidastuvuuden haku numba-kaannettyna (rinnakkain; koko arvio ~4 s -> ~1,5 s), jos numba on
+KIERRE_HIDASTUVUUS = 0.02            # kiintea hidastuvuus, jos haku pois (MAH00014:n 12 selvan kiven yhteinen arvo)
 KIERRE_Y_MAX_CM = 2300.0             # kierrepiirre kerataan vasta kun kivi on lahempana (kahva erottuu ~23 m:sta)
 KIERRE_TAYSI_Y_MAX_CM = 2300.0       # sama taysresoluutioiselle piirteelle
 KIERRE_MIN_RUUDUT = 60               # vahintaan nain monta ruutua jatkuvuussuodatuksen jalkeen
@@ -315,15 +321,21 @@ TAUSTA_ALEMPI_PRIORITEETTI = True
 # Heittokohtaisesti sovitetaan hog-valin datasta y0, v0, kierre w0, A (jaan nopeus) ja kappa (naarmun voimakkuus);
 # kierteet (hog-hog, kahvasta) on pakote. Ilman kierteita kulkulinjaa ei lasketa.
 #
-# B, mu_w ja vc ovat 26 heiton (live 2026-10-07) yhteissovituksen tulos. Ne EIVAT valttamatta ole absoluuttisia
+# B ja mu_w ovat 26 heiton (live 2026-10-07) yhteissovituksen tulos. Ne EIVAT valttamatta ole absoluuttisia
 # vakioita: B ja mu_w vaihtavat keskenaan (harju B -0,0015..-0,0025 / mu_w 3..1 sopii ratadataan lahes yhta hyvin);
-# valittu piste ennusti pysahtymispaikat parhaiten (11 kivea: Y-virhe mediaani 32 cm, X 3,5 cm). vc (~0,1 m/s) oli
-# selvasti maaritelty. Eri jaalla / kivilla arvot voivat olla toiset.
+# valittu piste ennusti pysahtymispaikat parhaiten (11 kivea: Y-virhe mediaani 32 cm, X 3,5 cm).
+# Voimalaki (p, m, vc) valittiin niin, etta kappa (kiven pohjan karheus) on saman kiven heitoissa mahdollisimman
+# vakio (live 3 kivisarjaa + MAH 2 sarjaa, hajonta ~2-3 %); kappa vaihtelee kivittain, vc on jaan ominaisuus.
 ENNUSTE_KAYTOSSA = True              # laske kulkulinja (oranssi viiva puhelinnakymaan, ennuste hog-CSV:hen)
 ENNUSTE_NUMBA = True                 # numba-kaannetty simulointi (~50x nopeampi), jos numba on asennettu; muuten numpy
 ENNUSTE_MU_B = -0.002                # kitkan nopeusriippuvuus B (mu = A + B ln U); HUOM. eri kuin HOG_MU_B (hog-analyysi)
 ENNUSTE_MU_W = 1.5                   # naarmun seinan kitkakerroin (seinaan painuvan nyppylan kitka liikesuuntaa vastaan)
-ENNUSTE_VC_MS = 0.1                  # sitkean virumisen ja hauraan murtuman raja (painumanopeus, m/s)
+ENNUSTE_VC_MS = 0.14                 # seinan murtumisen ominaisnopeus (painumanopeus, m/s); jaan ominaisuus:
+                                     # live 2026-10-07 ~0,13, MAH00014 ~0,145 (p = 1, m = 6)
+ENNUSTE_LAKI_P = 1.0                 # f = x^p exp(-x^(m p)), x = v_n / vc: seinan vastus ennen murtumaa. p = 1 = viskoosi
+                                     # (sulamis)kalvo kontaktissa; tukee Honkanen ym. 2018 (sivuvoima ~ naarmukulma)
+ENNUSTE_LAKI_M = 6.0                 # Weibull-moduuli seinan lujuudelle. ARVIO: jaalle ei loydy luotettavaa arvoa;
+                                     # hauraille aineille tyypillisesti ~5-20, data (live + MAH) sopii m = 4-8
 ENNUSTE_C0 = 0.1                     # naarmutiheyden kerroin (todennakoisyys osua uraan kiven takana keskella)
 ENNUSTE_KAISTA_MM = 6.0              # running bandin leveys (mm)
 ENNUSTE_R_M = 0.0625                 # running bandin sade (m)

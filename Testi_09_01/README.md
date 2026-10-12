@@ -14,7 +14,10 @@ Tila: Y, nopeus v, kierre ω, kulkusuunnan kääntymä φ ja sivusiirtymä H.
   dv/dt ≈ −g (A + B ln v) − μ_w a⊥.
 * **Sivuttainen:** kiven etureuna tekee naarmuja, takareunan nyppylät ylittävät ne kulmassa α (sin α ≈ 2β |cos θ|,
   β = ωr/v) ja painuvat uran seinään nopeudella v_n = v sin α ≈ 2ωr |cos θ|. Seinän voima
-  f = (v_n/v_c)^(1/3) · exp(−(v_n/v_c)²): loivissa kulmissa jää virii sitkeästi (Glen n = 3), jyrkissä se murtuu.
+  f = x^p · exp(−x^(m·p)), x = v_n/v_c, p = 1, m = 6: x^p on seinän vastus ennen murtumaa (p = 1 = viskoosi
+  sulamiskalvo kontaktissa; sopii Honkanen ym. 2018 havaintoon, että sivuvoima ∝ naarmujen välinen kulma),
+  exp(−x^(m·p)) on Weibullin todennäköisyys sille, että seinä ei murru (murtunut seinä ei ohjaa). m on arvio
+  (hauraan aineen Weibull-moduuli; data sopii m = 4–8).
   a⊥ = κ g 0,01 Φ(ωr/v_c) – pienellä kierteellä a⊥ riippuu vain ω:sta.
 * **Kierre:** rengaskitkan momentti (kitkaero kiven puolten välillä) + naarmuvoimien momentti; pysähdyksen lähellä
   (β ≫ 1) kierre loppuu samaan aikaan kuin liike.
@@ -26,10 +29,12 @@ lasketaan numpy-erinä (ei scipy-riippuvuutta). Simulointi on numba-käännetty,
 (`ENNUSTE_NUMBA`); muuten käytetään numpy-versiota (sama tulos, ~140× hitaampi). Naarmuvoimien keskiarvot lasketaan kerran taulukoksi
 (`naarmu_taulukko.npz`, ~1 s ensimmäisellä kerralla).
 
-**Yhteiset vakiot (`asetukset.py` osio 13):** B = −0,002, μ_w = 1,5, v_c = 0,1 m/s. Ne ovat 26 heiton
-(live 2026-10-07) yhteissovituksen tulos eivätkä välttämättä absoluuttisia: B ja μ_w vaihtavat keskenään (harju
-B −0,0015…−0,0025 / μ_w 3…1 sopii ratadataan lähes yhtä hyvin), valittu piste ennusti pysähtymispaikat parhaiten.
-v_c (~0,1 m/s) oli selvästi määritelty. Eri jäällä tai kivillä arvot voivat olla toiset.
+**Yhteiset vakiot (`asetukset.py` osio 13):** B = −0,002, μ_w = 1,5, v_c = 0,14 m/s, p = 1, m = 6. B ja μ_w ovat
+26 heiton (live 2026-10-07) yhteissovituksen tulos eivätkä välttämättä absoluuttisia: B ja μ_w vaihtavat keskenään
+(harju B −0,0015…−0,0025 / μ_w 3…1 sopii ratadataan lähes yhtä hyvin), valittu piste ennusti pysähtymispaikat
+parhaiten. Voimalaki valittiin niin, että κ (kiven pohjan karheus) on saman kiven heitoissa mahdollisimman vakio
+(live 3 kivisarjaa ja MAH00014 2 sarjaa: hajonta noin 2–3 %). κ vaihtelee kivittäin, v_c on jään ominaisuus
+(live ≈ 0,13, MAH ≈ 0,145 m/s).
 
 Kulkulinjaa ei lasketa, jos kierteitä ei saatu tai hog-analyysi epäonnistui, eikä piirretä, jos sovituksen jäännös
 hog-välillä on suuri (Y rms > `ENNUSTE_MAX_Y_RMS_CM` 5 cm tai X rms > `ENNUSTE_MAX_X_RMS_CM` 1,5 cm; esim. lakaisu tai
@@ -584,9 +589,19 @@ Tulokset:
   paria) sekä peilisamankaltaisuus (ruudun i piirre · ruudun j peilikuvan piirre). Ruudun oma taso (peitto, etäisyys,
   valaistus) ja hidas viiveriippuvuus (3. asteen polynomi) poistetaan; peilisamankaltaisuudesta myös hidas ajallinen
   muutos (viiveen ja ajan polynomi).
-- **Pyörimisnopeus:** ω(t) = ω_loppu + `A.KIERRE_HIDASTUVUUS` (0,02 rad/s²) × (t_loppu − t). ω_loppu haetaan
-  500 ehdokkaasta, loppukierrosaika 0,6–40 s (`A.KIERRE_P_MIN_S`, `A.KIERRE_P_MAX_S`). Hakuväli on tarkoituksella laaja,
-  koska kierteitä voi olla hog-hog-välillä alle 1 tai yli 10.
+- **Pyörimisnopeus:** ω(t) = ω_loppu + α (t_loppu − t). ω_loppu haetaan 500 ehdokkaasta, loppukierrosaika 0,6–40 s
+  (`A.KIERRE_P_MIN_S`, `A.KIERRE_P_MAX_S`). Hakuväli on tarkoituksella laaja, koska kierteitä voi olla hog-hog-välillä
+  alle 1 tai yli 10.
+- **Hidastuvuus α** haetaan heittokohtaisesti (`A.KIERRE_ALPHA_HAKU`): karkea haku 0–0,07 rad/s² askeleella 0,01 ja
+  tarkennus parhaan ympärillä askeleella 0,005. Kriteeri on suurin toistomallin selitysaste; hyväksymisehdot (R²,
+  erottuvuus, peili) tarkistetaan vasta lopulliselle α:lle, koska muuten ne katkaisevat haun parhaan arvon vierestä.
+  MAH00014:llä parhaat α:t ovat 0,020–0,045 rad/s² (tarkkuus noin ±0,005–0,01; kierrokset muuttuvat 0–6 % kiinteään
+  0,02:een verrattuna). Piirteet ja ruutuparit lasketaan kerran. Haun aikana lasketaan vain toistomallin selitysaste
+  numba-käännetyllä, rinnakkaisella ytimellä (`A.KIERRE_NUMBA`); peilimalli ja hyväksyntä vain lopulliselle α:lle.
+  Yksi arvio kestää noin 1,5 s (numpylla noin 4 s, kiinteällä α:lla noin 1 s); ensimmäinen kutsu kääntää ytimen
+  (noin 2 s, välimuistiin). Haku pois → kiinteä `A.KIERRE_HIDASTUVUUS` (0,02). Tulos `kierre_alpha` (ja `_taysi`) hog-CSV:ssä; siitä
+  ω_far / ω_near = `kierrosaika_near_s` / `kierrosaika_far_s`, jolla voidaan myöhemmin arvioida v_c heittokohtaisesti
+  (kierteen hidastuminen kertoo naarmuvoiman momenttivarren, jossa κ supistuu pois).
 - **Malli 1 (toisto):** samankaltaisuus = c1 cos(2Δφ) + c2 cos(4Δφ), Δφ = φ_i − φ_j (kahvan muoto toistuu
   puolikierroksen välein). Ehdokas kelpaa vain, jos c1 > 0 ja c2 ≤ c1. Muuten kaksinkertainen kierrosaika sopisi
   yliaallon kautta (puolitetut kierteet).
