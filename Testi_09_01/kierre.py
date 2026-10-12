@@ -178,6 +178,63 @@ def _kierre_valmistele(obs, fps, n_pairs):
                 t_end=T[-1], u=T[-1] - T)
 
 
+# NUMBA (A.KIERRE_NUMBA): hidastuvuuden haun toistomallin selitysaste kaannettyna, rinnakkain loppukierrosaikojen yli,
+# yhdella lapikaynnilla parien yli (projektiot Q:lle kertyvat summina, ei w x parit -matriiseja). Lopullinen spektri
+# (myos peili) lasketaan kerran numpylla. Puuttuu tai kaannos epaonnistuu -> numpy-versio.
+_nb_r2 = None
+if A.KIERRE_NUMBA:
+    try:
+        import numba as _nb
+
+        @_nb.njit(cache=True, nogil=True, fastmath=True, parallel=True)
+        def _nb_r2(W, alpha, du, du2, s, Q, ss):
+            """vain toistomallin selitysaste (hidastuvuuden haku); sama kuin _kierre_spektri:n r2."""
+            nw, npar, nq = len(W), len(du), Q.shape[1]
+            r2 = np.zeros(nw)
+            for a in _nb.prange(nw):
+                w = W[a]
+                a11 = a22 = a12 = b1 = b2 = 0.0
+                q1 = np.zeros(nq); q2 = np.zeros(nq)
+                for p in range(npar):
+                    x1 = np.cos(2.0 * (-w * du[p] - alpha * du2[p]))
+                    x2 = 2.0 * x1 * x1 - 1.0
+                    a11 += x1 * x1; a22 += x2 * x2; a12 += x1 * x2
+                    b1 += x1 * s[p]; b2 += x2 * s[p]
+                    for c in range(nq):
+                        q1[c] += x1 * Q[p, c]; q2[c] += x2 * Q[p, c]
+                for c in range(nq):
+                    a11 -= q1[c] * q1[c]; a22 -= q2[c] * q2[c]; a12 -= q1[c] * q2[c]
+                det = a11 * a22 - a12 * a12 + 1e-12
+                c1 = (a22 * b1 - a12 * b2) / det
+                c2 = (a11 * b2 - a12 * b1) / det
+                r2[a] = (c1 * b1 + c2 * b2) / ss if (c1 > 0 and c2 <= c1) else 0.0
+            return r2
+    except Exception as _e:
+        _nb_r2 = None
+        print(f"[kierre] numba ei kaytossa ({_e!r}), kaytetaan numpya")
+
+
+def _nb_valmistele(P):
+    """numba-ytimen taulukot (kerran): parikohtainen vaihe-ero phi_i - phi_j = -w du - alpha du2."""
+    if "du" in P:
+        return
+    u, i, k = P["u"], P["i"], P["k"]
+    P["du"] = (u[i] - u[k]).astype(np.float64); P["du2"] = ((u[i] ** 2 - u[k] ** 2) / 2.0).astype(np.float64)
+    P["Q64"] = np.ascontiguousarray(P["Q"], np.float64); P["s64"] = P["s32"].astype(np.float64)
+    P["W64"] = _KIERRE_W.astype(np.float64)
+
+
+def _kierre_r2(P, alpha, chunk=50):
+    """Vain toistomallin selitysaste (hidastuvuuden haku): numba-ydin tai koko spektrin r2."""
+    if _nb_r2 is not None:
+        _nb_valmistele(P)
+        try:
+            return _nb_r2(P["W64"], float(alpha), P["du"], P["du2"], P["s64"], P["Q64"], P["ss"])
+        except Exception as e_:
+            print(f"[kierre] numba-r2 epaonnistui ({e_!r}), kaytetaan numpya")
+    return _kierre_spektri(P, alpha, chunk)[0]
+
+
 def _kierre_spektri(P, alpha, chunk=50):
     """Selitysasteet kaikille loppukierrosajoille annetulla hidastuvuudella: (r2 identtinen, r2 peili)."""
     i, k, Q, Qm, s32, sp32, u = P["i"], P["k"], P["Q"], P["Qm"], P["s32"], P["sp32"], P["u"]
@@ -218,20 +275,21 @@ def _kierre_spektri(P, alpha, chunk=50):
 
 def _kierre_hidastuvuus(P, chunk):
     """Hidastuvuus kahvasignaalista: karkea haku (A.KIERRE_ALPHA_KARKEA) ja tarkennus parhaan ymparilla
-    (A.KIERRE_ALPHA_ASKEL). Kriteeri: suurin identtisen piirteen selitysaste (hyvaksynta vasta lopulliselle)."""
+    (A.KIERRE_ALPHA_ASKEL). Kriteeri: suurin toistomallin selitysaste (hyvaksynta vasta lopulliselle; peilimalli
+    lasketaan vain lopulliselle hidastuvuudelle)."""
     a0, a1 = A.KIERRE_ALPHA_MIN, A.KIERRE_ALPHA_MAX
     tulos = {}
     def arvo(al):
         al = round(float(al), 6)
         if al not in tulos:
-            tulos[al] = _kierre_spektri(P, al, chunk)
-        return tulos[al][0].max()
+            tulos[al] = float(_kierre_r2(P, al, chunk).max())
+        return tulos[al]
     karkea = np.arange(a0, a1 + 1e-9, A.KIERRE_ALPHA_KARKEA)
     paras = max(karkea, key=arvo)
     hieno = np.arange(max(a0, paras - A.KIERRE_ALPHA_KARKEA), min(a1, paras + A.KIERRE_ALPHA_KARKEA) + 1e-9,
                       A.KIERRE_ALPHA_ASKEL)
-    paras = max(hieno, key=arvo)
-    return round(float(paras), 6), tulos[round(float(paras), 6)]
+    paras = round(float(max(hieno, key=arvo)), 6)
+    return paras, _kierre_spektri(P, paras, chunk)
 
 
 def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=50):

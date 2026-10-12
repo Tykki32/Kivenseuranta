@@ -596,8 +596,10 @@ Tulokset:
   tarkennus parhaan ympärillä askeleella 0,005. Kriteeri on suurin toistomallin selitysaste; hyväksymisehdot (R²,
   erottuvuus, peili) tarkistetaan vasta lopulliselle α:lle, koska muuten ne katkaisevat haun parhaan arvon vierestä.
   MAH00014:llä parhaat α:t ovat 0,020–0,045 rad/s² (tarkkuus noin ±0,005–0,01; kierrokset muuttuvat 0–6 % kiinteään
-  0,02:een verrattuna). Piirteet ja ruutuparit lasketaan kerran, joten haku (noin 10 α:aa) maksaa noin 10 spektrin
-  laskennan. Haku pois → kiinteä `A.KIERRE_HIDASTUVUUS` (0,02). Tulos `kierre_alpha` (ja `_taysi`) hog-CSV:ssä; siitä
+  0,02:een verrattuna). Piirteet ja ruutuparit lasketaan kerran. Haun aikana lasketaan vain toistomallin selitysaste
+  numba-käännetyllä, rinnakkaisella ytimellä (`A.KIERRE_NUMBA`); peilimalli ja hyväksyntä vain lopulliselle α:lle.
+  Yksi arvio kestää noin 1,5 s (numpylla noin 4 s, kiinteällä α:lla noin 1 s); ensimmäinen kutsu kääntää ytimen
+  (noin 2 s, välimuistiin). Haku pois → kiinteä `A.KIERRE_HIDASTUVUUS` (0,02). Tulos `kierre_alpha` (ja `_taysi`) hog-CSV:ssä; siitä
   ω_far / ω_near = `kierrosaika_near_s` / `kierrosaika_far_s`, jolla voidaan myöhemmin arvioida v_c heittokohtaisesti
   (kierteen hidastuminen kertoo naarmuvoiman momenttivarren, jossa κ supistuu pois).
 - **Malli 1 (toisto):** samankaltaisuus = c1 cos(2Δφ) + c2 cos(4Δφ), Δφ = φ_i − φ_j (kahvan muoto toistuu
