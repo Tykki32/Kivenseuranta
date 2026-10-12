@@ -293,9 +293,10 @@ KATSELU_VIIVE_MAX_S = 180.0          # keskikuvan viivepuskuri (s): Alku voi oll
 KATSELU_RISTI_SAKARA_PX = 24         # irroitusristin sakaran pituus (px)
 DEBUG_KOODAUS = "auto"               # debug-videon koodaus: auto (QSV jos on, muuten mp4v), qsv, x264, opencv
 DEBUG_KUTEN_PUHELIN = True           # debug-video (--debug) samalla nakymalla kuin puhelin: paneelit, liukusuorat,
-                                     #   irroitusristi ja laskettu kulkulinja; joka ruutu (taysi ruutunopeus), ei viivetta
-DEBUG_KOROSTUS_S = (0.0, 40.0)       # debug-video: viivat piirretaan heitoille, joiden kaukohogin ylityksesta on
-                                     #   Alku..Loppu s (puhelimessa kayttajan Alku/Loppu; tulos valmistuu lahihogilla)
+                                     #   irroitusristi ja laskettu kulkulinja; joka ruutu (taysi ruutunopeus)
+DEBUG_VIIVE_S = 25.0                 # debug-video: keskikuva nain monta s myohassa (videoaikaa; puhelimessa Alku), 0 = ei
+DEBUG_KOROSTUS_S = (25.0, 50.0)      # debug-video: viivat heitoille, joiden kaukohogin ylityksesta on Alku..Loppu s
+                                     #   (puhelimessa kayttajan Alku/Loppu): viiveella heitto nakyy alusta, viivat 25 s
 
 # Taustasaikeet/-prosessit (live-tallennus, ffmpeg) alemmalle prioriteetille, jotta seuranta saa ytimet ensin.
 TAUSTA_ALEMPI_PRIORITEETTI = True

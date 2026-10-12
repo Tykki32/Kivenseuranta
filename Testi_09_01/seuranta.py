@@ -199,6 +199,7 @@ class Seuranta:
         self.csv_writer = None
         self.debug_video_writer = None
         self.debug_composer = None
+        self._debug_viimeinen = None    # viimeisen debug-ruudun piirtoargumentit (viivastetyn loppuosan kirjoitus)
         self.katselu_composer = None
         self.haku_refiner = None
         self.track_refiner = None
@@ -436,12 +437,16 @@ class Seuranta:
         self.csv_writer.writerow(heitot.CSV_HEADER)
 
         if self.debug_video_output is not None:
-            # A.DEBUG_KUTEN_PUHELIN: sama nakyma kuin puhelimessa (paneelit, liukusuorat, irroitus, kulkulinja) joka ruutuun,
-            # ilman viivetta; viivat heitoille joiden kaukohogin ylityksesta on A.DEBUG_KOROSTUS_S sekuntia
+            # A.DEBUG_KUTEN_PUHELIN: sama nakyma kuin puhelimessa (paneelit, liukusuorat, irroitus, kulkulinja) joka ruutuun:
+            # keskikuva A.DEBUG_VIIVE_S myohassa (videoaikaa), viivat heitoille joiden kaukohogin ylityksesta on
+            # A.DEBUG_KOROSTUS_S sekuntia
             self.debug_composer = nakyma.DebugComposer(self.width, self.height, puhelin=A.DEBUG_KUTEN_PUHELIN)
             if A.DEBUG_KUTEN_PUHELIN:
                 self.debug_composer.tausta = calib.get("frame_undistorted")
                 self.debug_composer.korostus = tuple(A.DEBUG_KOROSTUS_S)
+                if A.DEBUG_VIIVE_S > 0:
+                    self.debug_composer.viive = float(A.DEBUG_VIIVE_S)
+                    self.debug_composer.viive_videoaika = True
             tw, vh, vw = self.debug_composer.total_w, self.debug_composer.video_h, self.debug_composer.video_w
             self.debug_video_writer = nakyma.AsyncVideoWriter(nakyma.open_debug_writer(self.debug_video_output, self.fps, (tw, vh)))
             print(f"Debug-video: stabiloitu+korjattu, kaannetty 90 astetta vastapaivaan, {tw}x{vh} (video {vw}x{vh} + "
@@ -549,9 +554,10 @@ class Seuranta:
         lp = self.live_prep
         if self.debug_video_writer is not None:
             t0 = time.perf_counter()
-            self.debug_video_writer.submit(render_frame, frame_u, lp.photo_gain, lp.photo_bias, list(draw_items), pose, header,
-                                           list(self.hog_results), plus_right, self.debug_composer,
-                                           self.live_state["local_pts_body"], timestamp)
+            dargs = [frame_u, lp.photo_gain, lp.photo_bias, list(draw_items), pose, header, list(self.hog_results), plus_right,
+                     self.debug_composer, self.live_state["local_pts_body"], timestamp]
+            self.debug_video_writer.submit(render_frame, *dargs)
+            self._debug_viimeinen = dargs
             yleiset.prof_add("py: debug-video (piirto + kirjoitus)", time.perf_counter() - t0)
         kv = katselu.active()
         if kv is not None and self.katselu_composer is not None and kv.due():
@@ -1026,6 +1032,16 @@ class Seuranta:
                 print(f"Kahvan varin kirjoitus epaonnistui: {e!r}")
         heitot.hog_kirjoita_csv(self.hog_results, self.csv_output)
         if self.debug_video_writer is not None:
+            dc = self.debug_composer
+            if dc is not None and dc.viive_videoaika and self._debug_viimeinen is not None:
+                # viivastetty keskikuva: viimeiset viive s puskurissa -> kirjoitetaan loppuun (viimeinen ruutu toistuu
+                # puskurin tayttona, ei nay), paneelit ja viivat lopullisilla tuloksilla
+                a = list(self._debug_viimeinen)
+                a[3], a[6] = [], list(self.hog_results)
+                t_loppu = float(a[10])
+                for k in range(1, int(round(dc.viive * self.fps)) + 1):
+                    a[10] = t_loppu + k / self.fps
+                    self.debug_video_writer.submit(render_frame, *a)
             self.debug_video_writer.release()
 
     def _yhteenveto(self, frame_index):
