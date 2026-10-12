@@ -44,9 +44,10 @@ Live-tilassa ennuste lasketaan taustasäikeessä kierrearvion perässä, joten v
 Suurimmat Y-virheet ovat todennäköisesti lakaistuja kiviä.
 
 **Debug-video puhelinnäkymänä** (`--debug`, `DEBUG_KUTEN_PUHELIN = True`): debug-videossa on sama näkymä kuin
-puhelimessa (paneelit, liukusuorat, irroitusristi, laskettu kulkulinja), mutta jokaisesta ruudusta (täysi ruutunopeus)
-ja ilman viivettä. Viivat piirretään heitoille, joiden kaukohogin ylityksestä on `DEBUG_KOROSTUS_S` = 0…40 s
-(puhelimessa käyttäjän Alku/Loppu); hog-analyysi valmistuu lähihogilla, joten viivat ilmestyvät silloin.
+puhelimessa (paneelit, liukusuorat, irroitusristi, laskettu kulkulinja) jokaisesta ruudusta (täysi ruutunopeus).
+Kuten puhelimessa, keskikuva on `DEBUG_VIIVE_S` = 25 s myöhässä (videoaikaa) ja viivat piirretään heitoille, joiden
+kaukohogin ylityksestä on `DEBUG_KOROSTUS_S` = 25…50 s: heitto näkyy kaukohogista alkaen viivoineen, ja viivat
+katoavat 25 s myöhemmin. Videon viimeiset 25 s kirjoitetaan loppuun puskurista (debug-video on 25 s lähdettä pidempi).
 `False` = vanha debug-video (kivien ääriviivat, kapeammat paneelit).
 
 **Paneelit video-ajossa ilman paneelitiedostoa:** jos `--paneelit` puuttuu eikä videon vieressä ole tallennettua

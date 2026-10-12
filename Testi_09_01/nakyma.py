@@ -182,6 +182,7 @@ class DebugComposer:
         self.nayta = (True, True) # puhelimen valinnat (katselu.py asettaa)
         self.korostus = None
         self.viive = None
+        self.viive_videoaika = False   # True (debug-video): viive videoajassa, ei seinakelloa
 
     def _geom(self, res, plus_right, W0):
         """Liukusuorat (vasen hakki punainen, oikea vihrea; jos liuku saatiin), irroitus (oranssi risti) ja laskettu
@@ -233,16 +234,20 @@ class DebugComposer:
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))       # yksittaiset kohinapikselit pois
         return cv2.dilate(m, np.ones((5, 5), np.uint8))                          # pieni reunavara kohteen ymparille
 
-    def _viivastetty(self, vid, cap_wall, viive):
+    def _viivastetty(self, vid, cap_wall, viive, nyt=None):
         """Puhelinnakyman keskikuva viive s myohassa (Alku). Videokuvat (kaannetty pieni kuva aariviivoineen)
-        JPEG:na rengaspuskuriin kaappausajan (seinakello) mukaan; palautetaan uusin kuva jonka kaappausaika <= nyt - viive."""
+        JPEG:na rengaspuskuriin kaappausajan (seinakello) mukaan; palautetaan uusin kuva jonka kaappausaika <= nyt - viive.
+        nyt annettu (debug-video): aika = videoaika, puskuri vain viiveen mittainen."""
         if not hasattr(self, "_rengas"):
             self._rengas = []
-        nyt = time.time()
+        videoaika = nyt is not None
+        if not videoaika:
+            nyt = time.time()
         ok, buf = cv2.imencode(".jpg", vid, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if ok:
-            self._rengas.append((nyt if cap_wall is None else float(cap_wall), buf))
-        while self._rengas and self._rengas[0][0] < nyt - A.KATSELU_VIIVE_MAX_S:
+            self._rengas.append((nyt if cap_wall is None or videoaika else float(cap_wall), buf))
+        pituus = viive + 2.0 if videoaika else A.KATSELU_VIIVE_MAX_S
+        while self._rengas and self._rengas[0][0] < nyt - pituus:
             self._rengas.pop(0)
         if viive <= 0 or not self._rengas:
             return vid, 0.0
@@ -371,7 +376,7 @@ class DebugComposer:
             # virhe), naytetaan uusin kuva; todellinen viive naytetaan aina, punaisena jos se on yli Alku-arvon.
             _cap = cap_wall
             try:
-                vid, tod = self._viivastetty(vid, cap_wall, viive)
+                vid, tod = self._viivastetty(vid, cap_wall, viive, now_video_s if self.viive_videoaika else None)
             except Exception:
                 tod = None
             if tod is None or _cap is not None:
