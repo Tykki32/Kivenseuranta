@@ -49,6 +49,11 @@ ja ilman viivettä. Viivat piirretään heitoille, joiden kaukohogin ylityksest�
 (puhelimessa käyttäjän Alku/Loppu); hog-analyysi valmistuu lähihogilla, joten viivat ilmestyvät silloin.
 `False` = vanha debug-video (kivien ääriviivat, kapeammat paneelit).
 
+**Paneelit video-ajossa ilman paneelitiedostoa:** jos `--paneelit` puuttuu eikä videon vieressä ole tallennettua
+`<video>_panel_corners.txt`:tä, avautuu referenssitiedoston valitsin; **Peruuta** = paneelit klikataan videon
+ensimmäisestä kuvasta (kuten live-tilassa; Enter = valmis, Esc = peruuta). Valinta tallennetaan videon viereen, joten
+seuraavalla kerralla samaa videota ei tarvitse klikata uudelleen.
+
 Hog-CSV:n uudet sarakkeet: `ennuste_X_cm`, `ennuste_Y_cm` (fyysinen koordinaatisto), `ennuste_liukuaika_s`
 (kaukohogista), `ennuste_A`, `ennuste_kappa`, `ennuste_w_far_rads`, `ennuste_y_rms_cm`, `ennuste_x_rms_cm`,
 `ennuste_laskenta_s`.

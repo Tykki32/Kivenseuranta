@@ -91,7 +91,8 @@ def _leikkaa_video(input_file, start_time, end_time):
 
 
 def _paneelit(video_file, panel_ref):
-    """Paneelit: tallennettu tiedosto videon vierella, tai automaattitunnistus referenssitiedoston lahelta."""
+    """Paneelit: tallennettu tiedosto videon vierella, automaattitunnistus referenssitiedoston lahelta, tai (jos
+    referenssitiedostoa ei valita) klikataan videon ensimmaisesta kuvasta kuten live-tilassa."""
     panel_data = paneelit.load_panel_data(video_file)
     if panel_data is not None:
         return panel_data
@@ -101,13 +102,10 @@ def _paneelit(video_file, panel_ref):
         print(f"Referenssi-paneelitiedosto: {reference_file}")
     else:
         reference_file = _valitse_tiedosto(
-            "Valitse referenssi-paneelitiedosto (*_panel_corners.txt samantyyppisesta kamera-asettelusta)",
+            "Valitse referenssi-paneelitiedosto (*_panel_corners.txt samantyyppisesta kamera-asettelusta; "
+            "Peruuta = klikkaa paneelit itse)",
             [("Paneelitiedostot", "*_panel_corners.txt"), ("Kaikki tiedostot", "*.*")],
         )
-    if not reference_file:
-        print("Referenssitiedostoa ei valittu.")
-        return None
-    reference_panels = paneelit.load_panel_reference(reference_file)
     cap = live.open_capture(video_file)
     if not cap.isOpened():
         raise RuntimeError("Videotiedostoa ei voitu avata.")
@@ -116,10 +114,20 @@ def _paneelit(video_file, panel_ref):
     if not ret:
         raise RuntimeError("Videon ensimmaista kuvaa ei voitu lukea.")
     first_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-    panel_data = paneelit.detect_panels_from_reference(first_gray, reference_panels, frame_bgr=first_frame)
+    if reference_file:
+        reference_panels = paneelit.load_panel_reference(reference_file)
+        panel_data = paneelit.detect_panels_from_reference(first_gray, reference_panels, frame_bgr=first_frame)
+    else:
+        print("Referenssitiedostoa ei valittu -> klikkaa paneelien keskelle videon ensimmaisessa kuvassa (suositus "
+              f"vahintaan {paneelit.MIN_AUTO_PANELS_BEFORE_MANUAL}), Enter = valmis, Esc = peruuta.")
+        panel_data = paneelit.select_panels_manually(first_gray, first_frame,
+                                                     window_name="Klikkaa paneelit (Enter=valmis, Esc=peruuta)")
+        if not panel_data:
+            print("Paneeleja ei valittu.")
+            return None
     filename = paneelit.save_panel_data(panel_data, video_file)
     print()
-    print(f"Paneelien koordinaatit tallennettu: {filename}")
+    print(f"Paneelien koordinaatit tallennettu: {filename} (kelpaa myos --paneelit-arvoksi samalla kamera-asettelulla)")
     return panel_data
 
 
