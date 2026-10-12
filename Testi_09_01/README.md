@@ -589,9 +589,17 @@ Tulokset:
   paria) sekä peilisamankaltaisuus (ruudun i piirre · ruudun j peilikuvan piirre). Ruudun oma taso (peitto, etäisyys,
   valaistus) ja hidas viiveriippuvuus (3. asteen polynomi) poistetaan; peilisamankaltaisuudesta myös hidas ajallinen
   muutos (viiveen ja ajan polynomi).
-- **Pyörimisnopeus:** ω(t) = ω_loppu + `A.KIERRE_HIDASTUVUUS` (0,02 rad/s²) × (t_loppu − t). ω_loppu haetaan
-  500 ehdokkaasta, loppukierrosaika 0,6–40 s (`A.KIERRE_P_MIN_S`, `A.KIERRE_P_MAX_S`). Hakuväli on tarkoituksella laaja,
-  koska kierteitä voi olla hog-hog-välillä alle 1 tai yli 10.
+- **Pyörimisnopeus:** ω(t) = ω_loppu + α (t_loppu − t). ω_loppu haetaan 500 ehdokkaasta, loppukierrosaika 0,6–40 s
+  (`A.KIERRE_P_MIN_S`, `A.KIERRE_P_MAX_S`). Hakuväli on tarkoituksella laaja, koska kierteitä voi olla hog-hog-välillä
+  alle 1 tai yli 10.
+- **Hidastuvuus α** haetaan heittokohtaisesti (`A.KIERRE_ALPHA_HAKU`): karkea haku 0–0,07 rad/s² askeleella 0,01 ja
+  tarkennus parhaan ympärillä askeleella 0,005. Kriteeri on suurin toistomallin selitysaste; hyväksymisehdot (R²,
+  erottuvuus, peili) tarkistetaan vasta lopulliselle α:lle, koska muuten ne katkaisevat haun parhaan arvon vierestä.
+  MAH00014:llä parhaat α:t ovat 0,020–0,045 rad/s² (tarkkuus noin ±0,005–0,01; kierrokset muuttuvat 0–6 % kiinteään
+  0,02:een verrattuna). Piirteet ja ruutuparit lasketaan kerran, joten haku (noin 10 α:aa) maksaa noin 10 spektrin
+  laskennan. Haku pois → kiinteä `A.KIERRE_HIDASTUVUUS` (0,02). Tulos `kierre_alpha` (ja `_taysi`) hog-CSV:ssä; siitä
+  ω_far / ω_near = `kierrosaika_near_s` / `kierrosaika_far_s`, jolla voidaan myöhemmin arvioida v_c heittokohtaisesti
+  (kierteen hidastuminen kertoo naarmuvoiman momenttivarren, jossa κ supistuu pois).
 - **Malli 1 (toisto):** samankaltaisuus = c1 cos(2Δφ) + c2 cos(4Δφ), Δφ = φ_i − φ_j (kahvan muoto toistuu
   puolikierroksen välein). Ehdokas kelpaa vain, jos c1 > 0 ja c2 ≤ c1. Muuten kaksinkertainen kierrosaika sopisi
   yliaallon kautta (puolitetut kierteet).

@@ -8,8 +8,9 @@ paattyessa kahvan savy = savy, jonka +-A.KAHVA_SAVY_TOL valilla on eniten piksel
 KIERTEET: joka ruudusta kiven akselin suuntainen harmaasavypala kahvasta. Palat kohdistetaan kiven runkoon
 (graniitti), piirteena kahvan ikkunan gradientti (Sobel) seka sen peilikuva. Peittyneet ruudut hylataan ajallisen
 jatkuvuuden perusteella. Kahvan muoto toistuu PUOLIKIERROKSEN valein ja kahva kulmassa phi nayttaa kulman -phi
-peilikuvalta: kaksi riippumatonta mittausta. Pyoriminen hidastuu: omega(t) = omega_loppu + A.KIERRE_HIDASTUVUUS
-(t_loppu - t). Loppukierrosaika haetaan laajalta valilta (0,6-40 s); hyvaksynta R^2:n, erottuvuuden ja toiston ja peilin
+peilikuvalta: kaksi riippumatonta mittausta. Pyoriminen hidastuu: omega(t) = omega_loppu + alpha (t_loppu - t); hidastuvuus
+alpha haetaan kahvasignaalista (A.KIERRE_ALPHA_HAKU; karkea haku + tarkennus, suurin selitysaste) tai on kiintea
+A.KIERRE_HIDASTUVUUS. Loppukierrosaika haetaan laajalta valilta (0,6-40 s); hyvaksynta R^2:n, erottuvuuden ja toiston ja peilin
 yhtapitavyyden mukaan. Kierteet = integraali omega dt / 2 pi kaukohogista lahihogiin. Kahva erottuu vasta n. 23 m:sta
 -> alkuosa ekstrapoloidaan.
 """
@@ -125,11 +126,8 @@ def _erottuvuus(sc, j):
     return float(sc[j] / max(sc[muu].max() if muu.any() else 0.0, 1e-5))
 
 
-def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=50):
-    """obs: [(ruutu, kierre_piirre-pala)]. Palauttaa dict(kierrokset, kierrosaika_far_s, kierrosaika_near_s, r2,
-    erottuvuus, peili_r2, peili_kierrosaika_s, n) tai None."""
-    if alpha is None:
-        alpha = A.KIERRE_HIDASTUVUUS
+def _kierre_valmistele(obs, fps, n_pairs):
+    """Piirteet, ruutuparit ja hitaat trendit (yhteiset kaikille hidastuvuuksille). Palauttaa dict tai None."""
     if len(obs) < A.KIERRE_MIN_RUUDUT:
         return None
     T = np.array([o[0] for o in obs], np.float64) / fps
@@ -174,11 +172,15 @@ def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=50):
     sp = sp - Qm @ (Qm.T @ sp)                     # peilille myos hidas ajallinen muutos pois
     Qm = Qm.astype(np.float32)
     ss, ssp = float(s @ s), float(sp @ sp)
-    s32, sp32 = s.astype(np.float32), sp.astype(np.float32)
     if ss <= 0 or ssp <= 0:
         return None
-    t_end = T[-1]
-    u = t_end - T
+    return dict(n=n, i=i, k=k, Q=Q, Qm=Qm, s32=s.astype(np.float32), sp32=sp.astype(np.float32), ss=ss, ssp=ssp,
+                t_end=T[-1], u=T[-1] - T)
+
+
+def _kierre_spektri(P, alpha, chunk=50):
+    """Selitysasteet kaikille loppukierrosajoille annetulla hidastuvuudella: (r2 identtinen, r2 peili)."""
+    i, k, Q, Qm, s32, sp32, u = P["i"], P["k"], P["Q"], P["Qm"], P["s32"], P["sp32"], P["u"]
     # kiertokulma phi(t) = -w u - alpha u^2 / 2 (omega(t) = w + alpha u, u = t_end - t)
     # identtinen: s = c1 cos(2 dphi) + c2 cos(4 dphi), dphi = phi_i - phi_j (puolikierroksen toisto + yliaalto).
     #   c1 > 0 ja c2 <= c1 vaaditaan: muuten kaksinkertainen kierrosaika sopisi yliaallon kautta.
@@ -202,7 +204,7 @@ def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=50):
         det = a11 * a22 - a12 ** 2 + 1e-12
         c1 = (a22 * b1 - a12 * b2) / det
         c2 = (a11 * b2 - a12 * b1) / det
-        r2[a:a + chunk] = np.where((c1 > 0) & (c2 <= c1), (c1 * b1 + c2 * b2) / ss, 0.0)
+        r2[a:a + chunk] = np.where((c1 > 0) & (c2 <= c1), (c1 * b1 + c2 * b2) / P["ss"], 0.0)
         Sg = ph[:, i] + ph[:, k]
         cs, sn = np.cos(Sg), np.sin(Sg)
         Y = np.stack([cs, sn, 2.0 * cs * cs - 1.0, 2.0 * sn * cs], axis=1)          # w x 4 x parit
@@ -210,7 +212,41 @@ def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=50):
         YtY = Y @ Y.transpose(0, 2, 1) + 1e-6 * np.eye(4, dtype=np.float32)[None]
         Ytm = Y @ sp32
         e = np.linalg.solve(YtY.astype(np.float64), Ytm[:, :, None].astype(np.float64))[:, :, 0]
-        r2p[a:a + chunk] = np.einsum("wc,wc->w", e, Ytm) / ssp
+        r2p[a:a + chunk] = np.einsum("wc,wc->w", e, Ytm) / P["ssp"]
+    return r2, r2p
+
+
+def _kierre_hidastuvuus(P, chunk):
+    """Hidastuvuus kahvasignaalista: karkea haku (A.KIERRE_ALPHA_KARKEA) ja tarkennus parhaan ymparilla
+    (A.KIERRE_ALPHA_ASKEL). Kriteeri: suurin identtisen piirteen selitysaste (hyvaksynta vasta lopulliselle)."""
+    a0, a1 = A.KIERRE_ALPHA_MIN, A.KIERRE_ALPHA_MAX
+    tulos = {}
+    def arvo(al):
+        al = round(float(al), 6)
+        if al not in tulos:
+            tulos[al] = _kierre_spektri(P, al, chunk)
+        return tulos[al][0].max()
+    karkea = np.arange(a0, a1 + 1e-9, A.KIERRE_ALPHA_KARKEA)
+    paras = max(karkea, key=arvo)
+    hieno = np.arange(max(a0, paras - A.KIERRE_ALPHA_KARKEA), min(a1, paras + A.KIERRE_ALPHA_KARKEA) + 1e-9,
+                      A.KIERRE_ALPHA_ASKEL)
+    paras = max(hieno, key=arvo)
+    return round(float(paras), 6), tulos[round(float(paras), 6)]
+
+
+def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=50):
+    """obs: [(ruutu, kierre_piirre-pala)]. Palauttaa dict(kierrokset, kierrosaika_far_s, kierrosaika_near_s, r2,
+    erottuvuus, peili_r2, peili_kierrosaika_s, alpha, n) tai None. alpha (hidastuvuus rad/s^2): annettu -> kaytetaan;
+    muuten haetaan kahvasignaalista (A.KIERRE_ALPHA_HAKU) tai kiintea A.KIERRE_HIDASTUVUUS."""
+    P = _kierre_valmistele(obs, fps, n_pairs)
+    if P is None:
+        return None
+    if alpha is None and A.KIERRE_ALPHA_HAKU:
+        alpha, (r2, r2p) = _kierre_hidastuvuus(P, chunk)
+    else:
+        if alpha is None:
+            alpha = A.KIERRE_HIDASTUVUUS
+        r2, r2p = _kierre_spektri(P, alpha, chunk)
     j = int(np.argmax(r2))
     erott = _erottuvuus(r2, j)
     jp = int(np.argmax(r2p))
@@ -224,6 +260,7 @@ def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=50):
         j = int(np.argmax(np.where(lahella, yht, -1.0)))
     if r2[j] < A.KIERRE_MIN_R2 or (not peili_ok and erott < A.KIERRE_MIN_EROTTUVUUS):
         return None
+    t_end = P["t_end"]
     w_end = float(_KIERRE_W[j])
     om = lambda t: w_end + alpha * (t_end - t)
     if om(t_near) <= 0:
@@ -231,7 +268,7 @@ def kierre_arvio(obs, fps, t_far, t_near, alpha=None, n_pairs=12000, chunk=50):
     rad = w_end * (t_near - t_far) + alpha * ((t_end - t_far) ** 2 - (t_end - t_near) ** 2) / 2.0
     return dict(kierrokset=rad / (2 * np.pi), kierrosaika_far_s=2 * np.pi / om(t_far),
                 kierrosaika_near_s=2 * np.pi / om(t_near), r2=float(r2[j]), erottuvuus=erott,
-                peili_r2=float(r2p[jp]), peili_kierrosaika_s=float(_KIERRE_P[jp]), n=n)
+                peili_r2=float(r2p[jp]), peili_kierrosaika_s=float(_KIERRE_P[jp]), alpha=float(alpha), n=P["n"])
 
 
 def kahva_hist(frame_u, pose, X, Y, Z, r_cm, piirre=False):

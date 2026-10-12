@@ -224,7 +224,12 @@ KAHVA_MIN_V = 60                     # ... ja kirkkaus >= tama (jaa ja graniitti
 KAHVA_SAVY_TOL = 10                  # kahvan savy +- tama (OpenCV H 0-179)
 KAHVA_SADE_KERROIN = 2.0             # ympyran sade = kerroin x kahvan sade (kahvan karki mukaan)
 KAHVA_Z_LISA_CM = 0.0                # ympyran keskipisteen korkeus H_total:n ylapuolella
-KIERRE_HIDASTUVUUS = 0.02            # pyorimisen hidastuvuus rad/s^2 (MAH00014:n 12 selvan kiven yhteinen arvo)
+KIERRE_ALPHA_HAKU = True             # pyorimisen hidastuvuus alpha (rad/s^2) haetaan heittokohtaisesti kahvasignaalista
+KIERRE_ALPHA_MIN = 0.0               # hakuvali (MAH00014: parhaat 0,020-0,045, tarkkuus n. +-0,005-0,01)
+KIERRE_ALPHA_MAX = 0.07
+KIERRE_ALPHA_KARKEA = 0.01           # karkea haku ...
+KIERRE_ALPHA_ASKEL = 0.005           # ... ja tarkennus parhaan ymparilla
+KIERRE_HIDASTUVUUS = 0.02            # kiintea hidastuvuus, jos haku pois (MAH00014:n 12 selvan kiven yhteinen arvo)
 KIERRE_Y_MAX_CM = 2300.0             # kierrepiirre kerataan vasta kun kivi on lahempana (kahva erottuu ~23 m:sta)
 KIERRE_TAYSI_Y_MAX_CM = 2300.0       # sama taysresoluutioiselle piirteelle
 KIERRE_MIN_RUUDUT = 60               # vahintaan nain monta ruutua jatkuvuussuodatuksen jalkeen
