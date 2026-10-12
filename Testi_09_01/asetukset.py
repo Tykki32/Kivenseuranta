@@ -235,6 +235,11 @@ KIERRE_P_MAX_S = 40.0
 KIERRE_P_N = 500
 KIERRE_PEILI_MIN_R2 = 0.03           # peilisignaali riittava -> sen kierrosajan on osuttava samaan (muuten hylataan)
 KIERRE_PEILI_TOL = 0.15              # sallittu ero kierrosajoissa (suhteellinen)
+# Toinen, riippumaton arvio: kahvan siluetin leveys (kierre.kierre_leveys; vaihtelee kerran puolikierroksessa)
+KIERRE_LEVEYS_KAYTOSSA = True
+KIERRE_YHTAPITAVYYS = 0.12           # nykyinen ja leveys yhtapitavat, jos ero < 12 % -> tulos niiden keskiarvo
+KIERRE_LEVEYS_MIN_EROTT = 2.0        # ... ja leveyden erottuvuus >= tama -> "varma" (muuten "melko varma")
+KIERRE_LEVEYS_YKSIN_EROTT = 2.5      # nykyinen ei antanut tulosta: leveytta kaytetaan yksin vain talla erottuvuudella
 
 # =====================================================================================================================
 # 8. PAIKALLINEN TAYSI RESOLUUTIO (live; paikallinen.py)
@@ -325,7 +330,8 @@ ENNUSTE_R_M = 0.0625                 # running bandin sade (m)
 ENNUSTE_K2_M2 = 0.0096               # kiven hitausneliö k^2 = I / m (m^2), kiven profiilista
 ENNUSTE_RENGAS_PISTEET = 24          # rengaskitkan integrointipisteet kehalla
 ENNUSTE_DT_S = 0.05                  # integrointiaskel (s); 0,05 antaa saman tuloksen kuin 0,01 (Heun)
-ENNUSTE_KIERRE_SIGMA = 0.02          # kierrepakotteen tarkkuus (kierrosta)
+ENNUSTE_KIERRE_SIGMA = 0.02          # kierrepakotteen tarkkuus (kierrosta), kun kierteet varma / melko varma
+ENNUSTE_KIERRE_SIGMA_EPAVARMA = 0.5  # ... kun kierteet epavarma (vain yksi arvio tai arviot eri mielta): loysa pakote
 ENNUSTE_PISTE_VALI_CM = 25.0         # kulkulinjan pisteiden vali piirrossa (cm)
 ENNUSTE_MAX_Y_RMS_CM = 5.0           # sovituksen jaannos hog-valilla: yli -> kulkulinjaa ei piirreta (esim. lakaisu,
 ENNUSTE_MAX_X_RMS_CM = 1.5           #   harja tai pelaaja seurannassa)
