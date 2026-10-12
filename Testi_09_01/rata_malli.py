@@ -266,7 +266,7 @@ def _jaannokset(D, Q, palauta=False):
         yy = -Y[:, 0, n]
         tf = np.interp(-D["yf"], yy, t); tn = np.interp(-D["yn"], yy, t)
         rot[n] = (np.interp(tn, t, cum[:, n]) - np.interp(tf, t, cum[:, n])) / (2 * np.pi)
-    rr = (rot - D["kierteet"]) / A.ENNUSTE_KIERRE_SIGMA
+    rr = (rot - D["kierteet"]) / D.get("sigma", A.ENNUSTE_KIERRE_SIGMA)
     R = np.vstack([_rob(ry), _rob(rx), rr[None, :]]).T
     if palauta:
         return R, dict(c0=c0, c1=c1, ry=ry * 1.5, rx=(c0 + c1 * S - bx), rot=rot)
@@ -306,7 +306,10 @@ def ennusta(res, rows):
     """Kulkulinja hog-analyysin tuloksesta (res: analyze_hog + kierteet) ja radan riveista (frame, t, dict).
     Palauttaa dict(ok=True, polku [(X, Y) cm] kaukohogista pysahdykseen, pysahtyy_X_cm, pysahtyy_Y_cm, ...),
     dict(ok=False, syy) jos sovitus on huono, tai None jos lahtotiedot eivat riita (ei kierteita / hog-analyysia)."""
-    kt = res.get("kierteet_taysi", res.get("kierteet"))
+    kt = res.get("kierteet_yhd")
+    if kt is None:                                       # ei yhdistelmaa (vanha tulos): jaksohaun arvo
+        kt = res.get("kierteet_taysi", res.get("kierteet"))
+    sigma = A.ENNUSTE_KIERRE_SIGMA_EPAVARMA if res.get("kierre_varmuus") == "epavarma" else A.ENNUSTE_KIERRE_SIGMA
     if not res.get("ok") or kt is None or res.get("t_near_hog_s") is None or not np.isfinite(kt) or kt <= 0:
         return None
     t0 = float(res["t0"]); ylo, yhi = res["y_lo_cm"], res["y_hi_cm"]
@@ -321,7 +324,7 @@ def ennusta(res, rows):
     yf, yn = float(res["far_hog_cm"]), float(res["near_hog_cm"])
     ts = min(t_far, float(t.min())) - 0.1
     D = dict(t=t, y=y, x=x, wx=wx, s=np.sign(res.get("kurvi_k_ms2") or 1.0) or 1.0, yf=yf, yn=yn, ts=ts,
-             te=float(t.max()) + 0.1, kierteet=float(kt))
+             te=float(t.max()) + 0.1, kierteet=float(kt), sigma=sigma)
     v0 = float(res["v_far_hog_ms"])
     y0 = yf + 100.0 * v0 * (t_far - ts)
     a0 = float(res["mu_a"]) + (A.HOG_MU_B - A.ENNUSTE_MU_B) * np.log(1.5)

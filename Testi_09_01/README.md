@@ -50,12 +50,29 @@ kaukohogin ylityksestä on `DEBUG_KOROSTUS_S` = 25…50 s: heitto näkyy kaukoho
 katoavat 25 s myöhemmin. Videon viimeiset 25 s kirjoitetaan loppuun puskurista (debug-video on 25 s lähdettä pidempi).
 `False` = vanha debug-video (kivien ääriviivat, kapeammat paneelit).
 
+**Kierteet: toinen riippumaton arvio ja varmuusluokka** (`kierre.kierre_leveys`, `kierre.yhdista_kierteet`, asetukset osio 7):
+kahvan siluetti kiven kuvun yläpuolella on leveimmillään, kun kahva on sivuttain, ja kapeimmillaan, kun se osoittaa
+kameraa kohti tai poispäin, joten leveys vaihtelee kerran puolikierroksessa. Leveys mitataan samoista kierrepaloista kuin
+jaksohaku (tausta rivi kerrallaan kahvan sivuilta, hidas trendi pois 3. asteen polynomilla), ja siihen sovitetaan
+hidastuva kierre kauko- ja lähihogin välille (ω_lähi / ω_kauko 0,45–1,05; Huber-painotus häiriöille). Testissä
+(22 kiveä, MAH00014 + 0001) tulos oli 0–6 % nykyisen jaksohaun kanssa kaikilla kivillä, joille jaksohaku antoi tuloksen.
+Yhdistelmä (`kierteet_yhd`, `kierre_varmuus` hog-CSV:ssä ja paneelissa):
+
+| Varmuus | Ehto | Paneelin väri | Ennusteen kierrepakote |
+|---|---|---|---|
+| varma | jaksohaku ja leveys < 12 % toisistaan, leveyden erottuvuus ≥ 2 | vihreä | 0,02 kierrosta |
+| melko varma | jaksohaku ja leveys < 12 % toisistaan | keltainen | 0,02 kierrosta |
+| epävarma | eri mieltä (jaksohaun arvo käytetään) tai vain toinen saatiin (leveys yksin vain erottuvuudella ≥ 2,5) | punainen | 0,5 kierrosta |
+
+Arvo on yhtäpitävissä tapauksissa arvioiden keskiarvo. Koko matkan lakaistuilla kivillä (lakaisijan jalat kahvan takana
+90–100 % ruuduista) kumpikaan arvio ei toimi tällä kuvakulmalla.
+
 **Paneelit video-ajossa ilman paneelitiedostoa:** jos `--paneelit` puuttuu eikä videon vieressä ole tallennettua
 `<video>_panel_corners.txt`:tä, avautuu referenssitiedoston valitsin; **Peruuta** = paneelit klikataan videon
 ensimmäisestä kuvasta (kuten live-tilassa; Enter = valmis, Esc = peruuta). Valinta tallennetaan videon viereen, joten
 seuraavalla kerralla samaa videota ei tarvitse klikata uudelleen.
 
-Hog-CSV:n uudet sarakkeet: `ennuste_X_cm`, `ennuste_Y_cm` (fyysinen koordinaatisto), `ennuste_liukuaika_s`
+Hog-CSV:n uudet sarakkeet: `kierteet_leveys`, `kierre_leveys_erott`, `kierteet_yhd`, `kierre_varmuus`, `ennuste_X_cm`, `ennuste_Y_cm` (fyysinen koordinaatisto), `ennuste_liukuaika_s`
 (kaukohogista), `ennuste_A`, `ennuste_kappa`, `ennuste_w_far_rads`, `ennuste_y_rms_cm`, `ennuste_x_rms_cm`,
 `ennuste_laskenta_s`.
 

@@ -78,7 +78,11 @@ def pysahdys_text(res, plus_right=None):
 
 
 def kierre_text(res):
-    """(teksti, vari BGR). Taysi resoluutio -> vihrea; muuten 720p-arvo punaisella; ei arvoa -> valkoinen."""
+    """(teksti, vari BGR). Yhdistetty arvio (jaksohaku + kahvan siluetin leveys, kierre.yhdista_kierteet) varmuuden mukaan:
+    varma vihrea, melko varma keltainen, epavarma punainen. Ilman yhdistelmaa vanha: taysi resoluutio vihrea, 720p punainen."""
+    if res.get("kierteet_yhd") is not None:
+        vari = {"varma": (0, 220, 0), "melko varma": (0, 220, 220)}.get(res.get("kierre_varmuus"), (0, 0, 255))
+        return f"kierteita: {res['kierteet_yhd']:.1f}", vari
     if res.get("kierteet_taysi") is not None:
         return f"kierteita: {res['kierteet_taysi']:.1f}", (0, 220, 0)
     if res.get("kierteet") is not None:

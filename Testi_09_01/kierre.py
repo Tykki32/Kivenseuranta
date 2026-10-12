@@ -307,3 +307,92 @@ def kahva_kirjoita(stone_registry, hog_results, csv_output):
         r["kahva_h"] = h_
         r["kahva_vari"] = kahva_vari_nimi(h_)
     print(f"Kahvan vari: {len(hues)} rataa, {n_rows} ruutua -> {path}")
+
+
+# ------------------------------------------------------------------
+# TOINEN ARVIO: KAHVAN SILUETIN LEVEYS (riippumaton jaksohausta)
+# Kahvan siluetti kiven kuvun ylapuolella on leveimmillaan kun kahva on sivuttain ja kapeimmillaan kun se osoittaa
+# kameraa kohti / poispain -> leveys vaihtelee kerran PUOLIKIERROKSESSA. Leveys w(t) jokaisesta kierre_piirre-palasta
+# (tausta rivi kerrallaan kahvan sivuilta: lakaisija kiven takana), hidas trendi pois robustilla 3. asteen polynomilla.
+# Malli: w ~ a cos 2 theta + b sin 2 theta, omega lineaarinen kaukohogista lahihogiin, omega_lahi / omega_kauko in
+# [0,45, 1,05] (kierre hidastuu, ei kiihdy). Haku (omega_kauko, suhde) Huber-painotetuilla pienimmilla neliöilla.
+# Erottuvuus = paras selitysaste / paras kun keskiomega +-25 % ja x2, /2 pois. Testi (22 kivea): yhtapitava nykyisen
+# arvion kanssa 0-6 % kaikilla kivilla joille nykyinen arvio saatiin.
+# ------------------------------------------------------------------
+_LEV_WF = np.geomspace(0.2, 4.5, 260)
+_LEV_RHO = np.linspace(0.45, 1.05, 13)
+
+
+def _leveys(g, r0=6, r1=22, kynnys=10.0):
+    """kahvan siluetin sivuttaisleveys (px) 48x48-palassa kiven kuvun ylapuolella; tausta rivi kerrallaan sivuilta."""
+    p = g.astype(np.float32)
+    bg = np.median(np.c_[p[:, 2:9], p[:, 39:46]], axis=1)[:, None]
+    d = np.abs(cv2.GaussianBlur(p, (0, 0), 0.6) - bg)[r0:r1, 6:42]
+    w = np.clip((d - kynnys) / 20.0, 0, 1)
+    n = float(w.sum())
+    if n < 2:
+        return 0.0
+    xs = np.arange(w.shape[1], dtype=np.float32)[None, :]
+    mx = float((w * xs).sum() / n)
+    return float(np.sqrt((w * (xs - mx) ** 2).sum() / n))
+
+
+def kierre_leveys(obs, fps, t_far, t_near):
+    """obs: [(ruutu, kierre_piirre-pala)]. Palauttaa dict(kierrokset, omega_far, omega_near, r2, erottuvuus, n) tai None."""
+    if t_near is None or len(obs) < A.KIERRE_MIN_RUUDUT:
+        return None
+    T = np.array([o[0] for o in obs], np.float64) / fps
+    w = np.array([_leveys(o[1]) for o in obs])
+    m = np.isfinite(w) & (T >= t_far - 0.3) & (T <= t_near + 1.5)
+    T, w = T[m], w[m]
+    if len(T) < A.KIERRE_MIN_RUUDUT:
+        return None
+    tt = (T - T.mean()) / max(T.std(), 1e-6)
+    h = np.ones(len(T), bool)
+    for _ in range(5):
+        co = np.polyfit(tt[h], w[h], 3)
+        r = w - np.polyval(co, tt)
+        h = np.abs(r) < 3.5 * (1.4826 * np.median(np.abs(r[h])) + 1e-3)
+    x = w - np.polyval(co, tt)
+    x = x / (1.4826 * np.median(np.abs(x)) + 1e-6)
+    D = t_near - t_far
+    tau = T - t_far
+    S = np.zeros((len(_LEV_RHO), len(_LEV_WF)))
+    for i, rho in enumerate(_LEV_RHO):
+        th = 2.0 * np.outer(tau + (rho - 1.0) * tau ** 2 / (2.0 * D), _LEV_WF)          # (n, nWF)
+        c, s = np.cos(th), np.sin(th)
+        W = np.ones_like(th)
+        for _ in range(3):                                                             # IRLS (Huber, c = 1,5)
+            scc, sss, scs = (W * c * c).sum(0), (W * s * s).sum(0), (W * c * s).sum(0)
+            bc, bs = (W * c * x[:, None]).sum(0), (W * s * x[:, None]).sum(0)
+            det = np.maximum(scc * sss - scs ** 2, 1e-9)
+            a_ = (bc * sss - bs * scs) / det
+            b_ = (bs * scc - bc * scs) / det
+            r = x[:, None] - a_ * c - b_ * s
+            W = 1.0 / np.maximum(1.0, np.abs(r) / 1.5)
+        S[i] = 1.0 - (W * r ** 2).sum(0) / (W * x[:, None] ** 2).sum(0)
+    i, j = np.unravel_index(np.argmax(S), S.shape)
+    wmean = _LEV_WF[None, :] * (1.0 + _LEV_RHO[:, None]) / 2.0
+    wb = wmean[i, j]
+    muu = np.ones_like(S, bool)
+    for f_ in (1.0, 2.0, 0.5):
+        muu &= ~((wmean > wb * f_ / 1.25) & (wmean < wb * f_ * 1.25))
+    erott = float(S[i, j] / max(S[muu].max(), 1e-3))
+    wf, rho = float(_LEV_WF[j]), float(_LEV_RHO[i])
+    return dict(kierrokset=wf * (1.0 + rho) / 2.0 * D / (2.0 * np.pi), omega_far=wf, omega_near=wf * rho,
+                r2=float(S[i, j]), erottuvuus=erott, n=int(len(T)))
+
+
+def yhdista_kierteet(k_nyk, lev):
+    """Nykyinen (jaksohaku) + siluetin leveys -> (kierteet, varmuus). varma: yhtapitavat (A.KIERRE_YHTAPITAVYYS) ja leveyden
+    erottuvuus >= A.KIERRE_LEVEYS_MIN_EROTT; melko varma: yhtapitavat; epavarma: eri mielta (nykyinen kaytetaan) tai vain toinen
+    saatiin (leveys yksin vain jos erottuvuus >= A.KIERRE_LEVEYS_YKSIN_EROTT; koko matkan lakaistuilla kivilla se ei toimi)."""
+    k_lev = None if lev is None else lev["kierrokset"]
+    if k_nyk is not None and k_lev is not None and abs(np.log(k_nyk / k_lev)) < np.log(1.0 + A.KIERRE_YHTAPITAVYYS):
+        luokka = "varma" if lev["erottuvuus"] >= A.KIERRE_LEVEYS_MIN_EROTT else "melko varma"
+        return 0.5 * (k_nyk + k_lev), luokka
+    if k_nyk is not None:
+        return k_nyk, "epavarma"
+    if k_lev is not None and lev["erottuvuus"] >= A.KIERRE_LEVEYS_YKSIN_EROTT:
+        return k_lev, "epavarma"
+    return None, None
