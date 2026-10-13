@@ -83,6 +83,11 @@ def _forward_motion_cm(st):
     return float(np.median([q[2] for q in h[:5]]) - np.median([q[2] for q in h[-5:]]))
 
 
+def _heitto(s):
+    """Rata on ylittanyt kaukohogin (heitetty kivi): vain naista tulostetaan radan tapahtumat konsoliin."""
+    return s.get("min_y_seen", 1e9) < rata.FAR_HOGLINE_Y_CM
+
+
 def edessa_hahmo_osuus(img, pose, bx, by, r_cm):
     """Osuus kiven edessa (pienempi Y, kameran puolella) olevan jaakaistan pisteista, jotka ovat etualaa (img =
     taustanvaimennettu seurantakuva: tausta, jaa ja varjot valkoisia) - pelaajan paan edessa on vartalo, aidon kiven
@@ -627,13 +632,12 @@ class Seuranta:
                 if s["misses"] < self.track_lost_max_misses:
                     still_active.append(s)
                 elif s["confirmed"]:
-                    print(f"[frame {frame_index}] Kivi {s['stone_id']} kadotettu."
-                          + (" Pysahtymista ei vahvistettu (ei pysahtymispaikkaa)." if s.get("pysahdys_ehdokas") is not None else ""))
+                    if _heitto(s):
+                        print(f"[frame {frame_index}] Kivi {s['stone_id']} kadotettu."
+                              + (" Pysahtymista ei vahvistettu (ei pysahtymispaikkaa)." if s.get("pysahdys_ehdokas") is not None else ""))
                     self._rata_loppui(s, frame_index)
                 else:
-                    s["pending_rows"] = []
-                    print(f"[frame {frame_index}] Ehdokas {s['stone_id']} hylatty (kadotettu ennen kuin liikkui riittavasti - "
-                          "todennakoisesti jo paikallaan ollut kohde, ei aito heitto).")
+                    s["pending_rows"] = []                   # ehdokas kadotettu ennen liikevahvistusta: ei aito heitto
         self.active_stones = still_active
         self._yhdista_duplikaatit(frame_index)
         yleiset.prof_add("py: SEURANTA jalkeen: tulossilmukka yht. (sis. varidiagn., CSV, portti)", time.perf_counter() - t_post0)
@@ -712,9 +716,10 @@ class Seuranta:
             window = s["confirmed_tarkka_window"]
             if len(window) >= A.VAHVISTETTU_TARKKA_IKKUNA and (sum(window) / len(window)) < A.VAHVISTETTU_MIN_TARKKA:
                 reject_low_tarkka = True
-                print(f"[frame {frame_index}] Kivi {s['stone_id']} lopetetaan (tarkka-osuus (liukuva ikkuna) {sum(window)}/"
-                      f"{len(window)} ({100 * sum(window) / len(window):.0f}%) pudonnut pysyvasti liian matalaksi - "
-                      "todennakoisesti SEURANTA ajautunut pelaajaan/lakaisijaan aidon kiven vierella).")
+                if _heitto(s):
+                    print(f"[frame {frame_index}] Kivi {s['stone_id']} lopetetaan (tarkka-osuus (liukuva ikkuna) {sum(window)}/"
+                          f"{len(window)} ({100 * sum(window) / len(window):.0f}%) pudonnut pysyvasti liian matalaksi - "
+                          "todennakoisesti SEURANTA ajautunut pelaajaan/lakaisijaan aidon kiven vierella).")
             else:
                 s.setdefault("all_rows", []).append((frame_index, timestamp, dict(refined)))
                 heitot.write_stone_csv_row(self.csv_writer, frame_index, timestamp, s["stone_id"], refined)
@@ -773,9 +778,7 @@ class Seuranta:
         pre_rms_med = float(np.median(pre_rms)) if pre_rms else 1e9
         if (n_pending >= A.VAHVISTUS_MIN_RUUTUJA and tarkka_frac < A.VAHVISTUS_MIN_TARKKA
                 and pre_rms_med >= A.VAHVISTUS_PELASTUS_MAX_RMS):
-            s["pending_rows"] = []
-            print(f"[frame {frame_index}] Ehdokas {s['stone_id']} hylatty (tarkka-osuus {n_tarkka}/{n_pending} ({tarkka_frac:.0%}) "
-                  "liian matala ennen liikevahvistusta - todennakoisesti pelaaja/lakaisija, ei aito kivi).")
+            s["pending_rows"] = []                       # tarkka-osuus liian matala: pelaaja/lakaisija, ei aito kivi
             return True
         s["confirmed"] = True
         self.n_confirmed_stones += 1
@@ -803,10 +806,8 @@ class Seuranta:
             y_now = float(np.median([h[2] for h in history[-5:]]))
             y_then = float(np.median([h[2] for h in history[:5]]))
             if y_now - y_then > A.LOPETA_TAAKSEPAIN_CM:
-                if not s.get("confirmed"):
+                if not s.get("confirmed"):                 # taaksepain liikkuva rata: ei heitetty kivi
                     s["pending_rows"] = []
-                print(f"[frame {frame_index}] Rata {s['stone_id']} liikkuu taaksepain ({y_now - y_then:.0f} cm / "
-                      f"{A.PYSAHTYNYT_S:.0f} s) - ei heitetty kivi, lopetetaan seuranta.")
                 return True
         # pysahtyminen: liikkunut < A.PYSAHTYNYT_CM viimeisen A.PYSAHTYNYT_S aikana
         if history[-1][0] - history[0][0] >= self.stop_tracking_frames:
@@ -815,13 +816,11 @@ class Seuranta:
             if displacement < A.PYSAHTYNYT_CM:
                 if s["confirmed"] and A.SEURAA_PYSAHTYMISEEN:
                     return self._pysahtyi(s, history, frame_index)
-                if s["confirmed"]:
+                if s["confirmed"] and _heitto(s):
                     print(f"[frame {frame_index}] Kivi {s['stone_id']} pysahtynyt (liikkunut {displacement:.1f}cm viimeisen "
                           f"{A.PYSAHTYNYT_S:.0f}s aikana) - lopetetaan seuranta.")
                 else:
-                    s["pending_rows"] = []
-                    print(f"[frame {frame_index}] Ehdokas {s['stone_id']} hylatty (ei liikkunut riittavasti - todennakoisesti "
-                          "jo paikallaan ollut kohde, ei aito heitto).")
+                    s["pending_rows"] = []                   # ehdokas ei liikkunut: paikallaan ollut kohde, ei aito heitto
                 return True
         return False
 
@@ -849,8 +848,7 @@ class Seuranta:
         # yksittainen huono sovitus ei ole liiketta: verrataan 5 viimeisen paikan mediaania
         Xm, Ym = np.median(np.array(s["pysahdys_paikat"][-5:]), 0)
         if math.hypot(Xm - X0, Ym - Y0) > A.PYSAHDYS_MAX_SIIRTO_CM:
-            print(f"[frame {frame_index}] Kivi {s['stone_id']} liikkui pysahtymisen jalkeen - ehdokas hylataan.")
-            s["pysahdys_ehdokas"] = None
+            s["pysahdys_ehdokas"] = None                     # liikkui pysahtymisen jalkeen: pysahdysehdokas pois
             s.pop("hidas_alku", None)
             return False
         uudet = s["pysahdys_paikat"][10:]                  # vahvistusjakson paikat (10 ensimmaista = ehdokkaan paikat)
@@ -898,8 +896,7 @@ class Seuranta:
         if losers:
             for s_lose in stones:
                 if s_lose["stone_id"] in losers:
-                    s_lose["pending_rows"] = []
-                    print(f"[frame {frame_index}] Rata {s_lose['stone_id']} yhdistetty toiseen (duplikaatti, < {A.DUPLIKAATTI_CM:.0f} cm).")
+                    s_lose["pending_rows"] = []              # duplikaatti (< A.DUPLIKAATTI_CM): yhdistetty toiseen
             self.active_stones = [x for x in stones if x["stone_id"] not in losers]
 
     # ---- HAKU: uudet kivet ----
@@ -937,8 +934,6 @@ class Seuranta:
                 if edessa > A.EDESSA_MAX_OSUUS:
                     already = True
                     self.n_haku_edessa += 1
-                    print(f"[frame {frame_index}] HAKU-ehdokas ({bx:.1f}, {by:.1f}) hylatty: hahmo edessa "
-                          f"({100 * edessa:.0f} %) - todennakoisesti pelaajan paa")
             # ehdokas liikkuvan heittokiven takana (heittaja liukuu kiven perassa, harjaajat) -> ei uutta rataa
             if not already and A.HAKU_TAKANA_MAX_CM > 0:
                 for hs in stones:
@@ -948,8 +943,6 @@ class Seuranta:
                     if A.HAKU_TAKANA_MIN_CM < dy < A.HAKU_TAKANA_MAX_CM and abs(bx - hs["last_xy"][0]) < A.HAKU_TAKANA_SIVU_CM:
                         already = True
                         self.n_haku_takana += 1
-                        print(f"[frame {frame_index}] HAKU-ehdokas ({bx:.1f}, {by:.1f}) hylatty: {dy:.0f} cm liikkuvan "
-                              f"heittokiven {hs['stone_id']} takana (edessa hahmoa {100 * edessa:.0f} %)")
                         break
             # paikat taynna -> huonoin rata pois uuden ehdokkaan tielta
             if not already and len(stones) >= A.MAX_KIVIA:
@@ -957,8 +950,6 @@ class Seuranta:
                 if victim is not None:
                     victim["pending_rows"] = []
                     self.active_stones = stones = [x for x in stones if x["stone_id"] != victim["stone_id"]]
-                    print(f"[frame {frame_index}] Rata {victim['stone_id']} poistettu (paikanvaraus uudelle ehdokkaalle, "
-                          "huonoin sovitus).")
             if already or len(stones) >= A.MAX_KIVIA:
                 continue
             stone_id = self.next_stone_id
@@ -971,9 +962,6 @@ class Seuranta:
                 "confirmed_tarkka_window": deque(maxlen=A.VAHVISTETTU_TARKKA_IKKUNA),
             })
             draw_items.append((bx, by, stone_id, (0, 255, 255), f"{stone_id} UUSI"))
-            print(f"[frame {frame_index}] Uusi kivi-ehdokas {stone_id}: ({bx:.1f}, {by:.1f}) cm (odottaa liikevahvistusta "
-                  f"ennen CSV-kirjausta) [ehdokasominaisuudet score={hr.get('score')} rms={hr.get('rms_px')} "
-                  f"n_body={hr.get('n_body')} n_ring={hr.get('n_ring')} tarkka={hr.get('tarkka')} edessa={edessa:.2f}]")
 
     # =================================================================================================================
     # RAPORTIT JA LOPETUS

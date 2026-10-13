@@ -202,9 +202,6 @@ def hog_check_lopussa(s, frame_index, fps, results, odota=None):
         return
     res = hog_analyysi.analyze_hog(rows, rata.NEAR_HOGLINE_Y_CM, rata.FAR_HOGLINE_Y_CM, tee_cm=rata.NEAR_HOUSE_Y_CM,
                                    osittainen=True)
-    if not res.get("ok"):
-        print(f"[frame {frame_index}] Kivi {s['stone_id']}: rata katkesi ennen lahihogia, osittainen hog-analyysi ei onnistunut "
-              f"({res.get('reason', '')}).")
     _hog_tulos(s, res, rows, frame_index, fps, results, odota)
 
 
