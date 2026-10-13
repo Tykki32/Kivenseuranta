@@ -589,10 +589,12 @@ Tulokset:
   paria) sekä peilisamankaltaisuus (ruudun i piirre · ruudun j peilikuvan piirre). Ruudun oma taso (peitto, etäisyys,
   valaistus) ja hidas viiveriippuvuus (3. asteen polynomi) poistetaan; peilisamankaltaisuudesta myös hidas ajallinen
   muutos (viiveen ja ajan polynomi).
-- **Pyörimisnopeus:** ω(t) = ω_loppu + α (t_loppu − t). ω_loppu haetaan 500 ehdokkaasta, loppukierrosaika 0,6–40 s
+- **Pyörimisnopeus:** ω(t) = ω_loppu + α (t_loppu − t), α = `A.KIERRE_HIDASTUVUUS` (0,025 rad/s²). ω_loppu haetaan 500 ehdokkaasta, loppukierrosaika 0,6–40 s
   (`A.KIERRE_P_MIN_S`, `A.KIERRE_P_MAX_S`). Hakuväli on tarkoituksella laaja, koska kierteitä voi olla hog-hog-välillä
   alle 1 tai yli 10.
-- **Hidastuvuus α** haetaan heittokohtaisesti (`A.KIERRE_ALPHA_HAKU`): karkea haku 0–0,07 rad/s² askeleella 0,01 ja
+- **Hidastuvuuden haku (valinnainen, oletuksena pois):** live 2026-10-03:lla haku antoi α:t 0–0,065 rad/s² ja vain
+  6/22 heittoa osui mallin alueelle → kahvasignaali liian kohinainen; kiinteä 0,025 (haun mediaani) on varmempi.
+  Päällä (`A.KIERRE_ALPHA_HAKU`) α haetaan heittokohtaisesti: karkea haku 0–0,07 rad/s² askeleella 0,01 ja
   tarkennus parhaan ympärillä askeleella 0,005. Kriteeri on suurin toistomallin selitysaste; hyväksymisehdot (R²,
   erottuvuus, peili) tarkistetaan vasta lopulliselle α:lle, koska muuten ne katkaisevat haun parhaan arvon vierestä.
   MAH00014:llä parhaat α:t ovat 0,020–0,045 rad/s² (tarkkuus noin ±0,005–0,01; kierrokset muuttuvat 0–6 % kiinteään
