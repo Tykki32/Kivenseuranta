@@ -110,22 +110,23 @@ edellinen keskipiste + edellinen siirtymä; väri valitaan automaattisesti (20 r
   (videon ruutuajoitus), ei paikkaperusteinen. Vaihe ei ole sama kolmessa heitossa (koherenssi 0,45), joten sitä ei voi korjata yhdellä
   yhteisellä aikamallilla. Yksilöllisten ruutujen ajaksi oletetaan k/25 s (jäännöshajonta 1,0-1,6 cm vs 1,7-2,7 cm jos f/30).
 
-### Kiven mitat, akseli ja kahvan korkeus kaarista (`mittaa_kahva.py`, `kivi_netti.py`: `kaaripisteet`, `sovita_akseli_ja_korkeus`)
+### Kiven mitat, akseli ja kahvan korkeus kaarista (`mittaa_kahva.py`, `kivi_netti.py`: `kaaripisteet`, `sovita_akseli_ja_korkeus`) -- KESKEN, ALLA OLEVA KAHVAN KORKEUS PERUTTU
 
 **Kiven mitat.** WCF-säännöt (varmat): ympärysmitta enintään 914 mm (halkaisija enintään 291 mm, R <= 14,55 cm), korkeus vähintään
 114 mm (graniittirunko ilman kahvaa), paino kahvoineen 17,24-19,96 kg. Muut mitat vaihtelevat valmistajan mukaan (tyypillisiä, ei
 säädeltyjä): runko 28-29 cm x 11,4-12,5 cm, kokonaiskorkeus kahvan kanssa ~17-18 cm, juoksupinta (running band) rengas Ø ~12,5 cm,
 leveimmän kohdan (iskukaista) korkeus alhaalla ~2-4 cm jään yläpuolella. Mallissa: iskukaista R = 14,55 cm, z = 3 cm (oletus).
 
-**Menetelmä (käyttäjän ehdotus):** kiven akselin keskikohta jäällä ja kahvan keskikohta korkeudella h ovat samalla pystysuoralla.
-1. Kiven kameran puoleinen alareuna (graniitin alfa 0,5 -rajan oikeanpuoleisin piste riveittäin, keskimmäiset 60 %) sovitetaan
-   3D-ympyrällä (z = 3 cm, R = 14,55 cm) -> akselin (X, Y) jäällä. Sovitus 0,3-0,6 px RMS.
-2. Kahvan etureuna (keltaisen/punaisen alueen kameran puoleinen reuna riveittäin; takareuna ei erotu) sovitetaan 3D-ympyrällä
-   (sade R_KAHVA = 9 cm, sama akseli) -> kahvan tason korkeus z.
-   Kaaren muoto ei erota sädettä ja korkeutta toisistaan (kaari on matala), joten sade on kiinteä: r = 7 / 8 / 9 / 10 cm ->
-   z = 15,7 / 16,4 / 17,2 / 17,9 cm (mediaani, IQR ± 0,4 cm). Alakaaren R:n ja akselin vapaa sovitus on yhtä degeneroitunut.
-3. Tulos (Y > 250 cm, r = 9 cm): kahvan taso z = 17,0 (IQR 16,8-17,4), 17,6, 17,2 cm kolmessa heitossa -> kiven kokonaiskorkeus
-   ~17 cm, mikä vastaa tyypillistä kiveä (runko 11,4-12 + kahva ~5). `KAHVA_Z_CM` = 17,2: väriseurannan maa-asema laskettuna
-   tälle korkeudelle on sama kuin alakaaren akseli (Y-ero alle 1 cm; X-ero 0,2-2,3 cm kahvan epäsymmetrian vuoksi).
-4. Alakaaren akselin hajonta on Y 2,4-2,7 cm ja X 0,2-1,1 cm (huonompi kuin kahvan sentroidin), joten reitin seurantaan käytetään
-   kahvan väriä ja alakaarta absoluuttisen paikan/korkeuden kiinnittämiseen.
+**Idea:** kiven akselin keskikohta jäällä ja kahvan keskikohta korkeudella h ovat samalla pystysuoralla -> h kuvapisteiden erosta.
+
+**Mitä on tehty ja mikä on vialla:**
+* Alareunan kaari (graniitin alfa 0,5 -rajan kameran puoleinen reuna) sopii 3D-ympyrään (z = 3 cm, R = 14,55 cm) 0,3-0,6 px:llä ->
+  akselin (X, Y). Ympyrän säde ja korkeus ovat kuitenkin tästä kaaresta degeneroituneet (vapaa sovitus ei erota niitä).
+* **Kahvan reuna: ensimmäinen versio sovitti väärän reunan.** Keltaisen kahvalevyn kameran puoleinen (oikea) reuna on suora viiva, koska
+  kiven graniittireuna peittää levyn lähemmän puoliskon; se ei ole muovin reuna. Muovin näkyvä reuna on VASEN kaari (kaukana kamerasta).
+  Siksi aiemmin raportoitu kahvan taso 17,0-17,6 cm on PERUTTU.
+* Vasemman kaaren sovitus 3D-ympyrään (vaakataso, keskipiste kiven akselilla): RMS 1,0-3,4 px, säde 10-14 cm (keltainen) tai 7-9 cm
+  (punainen), korkeus 14-19 cm -> epäyhtenäinen, malli ei kuvaa kahvan muotoa/asentoa. Kuvasta mitattu kahvalevyn ääriviiva on ellipsi
+  kuvasuhteella 0,48-0,54 (vaakaympyrän ennuste 0,47-0,55) ja pitkä akseli 37-46 px (~15-16 cm), mutta kaaren keskipiste ei ole samalla
+  pystysuoralla alareunan kaaren akselin kanssa (3-5 px sivusuunnassa).
+* `KAHVA_Z_CM` palautettu oletukseen 15 cm (ei mitattu).

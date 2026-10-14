@@ -314,7 +314,7 @@ def sovita_pehmea(cam, kivi, alfa, X0, Y0, askel0=2.0):
 # =====================================================================================================================
 KAHVA_H = (19, 31)        # kahvan sävy (OpenCV H 0..180); sormet ovat punertavampia
 KAHVA_SMIN, KAHVA_VMIN = 45, 165
-KAHVA_Z_CM = 17.2         # kahvan tason korkeus jaan ylapuolella (mitattu: alareunan kaari + kahvan etureuna, r = 9 cm); vaikuttaa Y-siirtoon
+KAHVA_Z_CM = 15.0         # OLETUS kahvan tason korkeudelle (ei varmistettu; aiempi 17,2 cm perustui vaaraan reunaan)
 
 
 PUNAINEN_H = (8, 170)     # punainen: H <= 8 tai H >= 170
@@ -380,16 +380,25 @@ def etaisyys_monikulmioon(P, poly):
     return np.sqrt(((Q - P[:, None, :]) ** 2).sum(2)).min(1)
 
 
+def _poista_ulokkeet(L, ikkuna=9, raja_px=2.5):
+    """Kahvan vasemman reunan pisteista pois ulokkeet (kahvan varsi, sormet): piste pois jos se on yli raja_px vasemmalla
+    juoksevasta mediaanista (rivijarjestyksessa)."""
+    L = L[np.argsort(L[:, 1])]
+    u = L[:, 0]
+    med = np.array([np.median(u[max(0, i - ikkuna // 2): i + ikkuna // 2 + 1]) for i in range(len(u))])
+    return L[u >= med - raja_px]
+
+
 def kaaripisteet(cam, frame, uv0, vari="keltainen"):
-    """(kahvan etureuna, kiven alareuna) kuvapisteina: kummallekin kuvan rivi kerrallaan kamerapuolen (suurin u) reunapiste;
-    vain keskimmaiset 60 % riveista (kulmat pois). uv0 = kahvan likimaarainen paikka kuvassa."""
+    """(kahvan nakyva reuna, kiven alareuna) kuvapisteina. Kahvan muovilevy on ellipsi, jonka kameran puoleinen (oikea) puoli
+    peittyy kiven graniittireunan taakse; nakyva ellipsin reuna on VASEN kaari: riveittain kahvamaskin vasemmanpuoleisin piste
+    (ulokkeet pois). Alareuna: graniitin alfa 0,5 -rajan oikeanpuoleisin piste riveittain. Kummassakin keskimmaiset 60-80 % riveista."""
     m = cv2.morphologyEx(kahva_maski(frame, vari), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     n, lab, st, cen = cv2.connectedComponentsWithStats(m)
     k = min((i for i in range(1, n) if st[i, 4] >= 30), key=lambda i: np.hypot(cen[i][0] - uv0[0], cen[i][1] - uv0[1]))
     ys, xs = np.where(lab == k)
-    H = np.array([(xs[ys == y].max() + 0.5, y) for y in np.unique(ys)], float)
-    lo, hi = np.percentile(H[:, 1], [20, 80])
-    H = H[(H[:, 1] >= lo) & (H[:, 1] <= hi)]
+    H = np.array([(xs[ys == y].min() - 0.5, y) for y in np.unique(ys)], float)
+    H = _poista_ulokkeet(H)
     fg, g, h = cam.maskit(frame)
     al = alfa_kartta(cam, frame, g)
     x0, y0 = int(uv0[0]) - 70, int(uv0[1]) - 70
@@ -403,16 +412,19 @@ def kaaripisteet(cam, frame, uv0, vari="keltainen"):
     return H, G
 
 
-def sovita_akseli_ja_korkeus(cam, H, G, uv0, R_ala=R_ALA_CM, z_ala=Z_ALA_CM, r_kahva=R_KAHVA_CM):
-    """1) alareunan kaari -> akselin (X, Y) jaalla (ympyra z = z_ala, sade R_ala); 2) sama akseli, kahvan etureunan kaari ->
-    kahvan tason korkeus z (sade r_kahva). Palauttaa (X, Y, z_kahva, rms_ala_px, rms_kahva_px)."""
+def sovita_akseli_ja_korkeus(cam, H, G, uv0, R_ala=R_ALA_CM, z_ala=Z_ALA_CM):
+    """1) alareunan kaari -> akselin (X, Y) jaalla (ympyra z = z_ala, sade R_ala); 2) sama akseli, kahvan vasen (nakyva) kaari ->
+    kahvalevyn ympyran korkeus z ja sade r (kaaren paat antavat sateen, sijainti korkeuden). Palauttaa
+    (X, Y, z, r, rms_ala_px, rms_kahva_px)."""
     from scipy.optimize import least_squares
     X0, Y0 = maan_paikka(cam, uv0[0], uv0[1], z=15.0)
     s1 = least_squares(lambda p: etaisyys_monikulmioon(G, ympyra_kuvaan(cam, p[0], p[1], z_ala, R_ala)), [X0, Y0])
     X, Y = s1.x
     best = None
-    for z0 in (8.0, 14.0, 20.0):
-        s2 = least_squares(lambda p: etaisyys_monikulmioon(H, ympyra_kuvaan(cam, X, Y, p[0], r_kahva)), [z0], bounds=([2.0], [40.0]))
+    for z0, r0 in ((10.0, 7.0), (15.0, 8.0), (20.0, 6.0)):
+        s2 = least_squares(lambda p: etaisyys_monikulmioon(H, ympyra_kuvaan(cam, X, Y, p[0], p[1])), [z0, r0],
+                           bounds=([2.0, 3.0], [40.0, 14.0]), loss="soft_l1", f_scale=1.0)
         if best is None or s2.cost < best.cost:
             best = s2
-    return X, Y, float(best.x[0]), float(np.sqrt(s1.cost * 2 / len(G))), float(np.sqrt(best.cost * 2 / len(H)))
+    d = etaisyys_monikulmioon(H, ympyra_kuvaan(cam, X, Y, best.x[0], best.x[1]))
+    return X, Y, float(best.x[0]), float(best.x[1]), float(np.sqrt(s1.cost * 2 / len(G))), float(np.sqrt(np.mean(d ** 2)))
