@@ -149,3 +149,23 @@ Kokeilut (kokeilukoodi, ei repossa; 193 ruutua, kaikki kolme heittoa, Y = 150-64
   (heitto 1 Y=234 keskimäärin -0,2 px, heitto 2 Y=470 +-1 px).
 Siis lukuina vasemman sarakkeen kuvat (heitto 1 Y=236: RMS 0,25 px; heitto 2 Y=467: RMS 0,8 px) eivät poikkea muista; mikä niissä näyttää
 huonolta, tarkentuu käyttäjän palautteesta (kirjain A-D).
+
+### Kiinteän kokoinen kahvamalli ja kuvan sumeus (`kahva_malli.py`, `mittaa_kahva_malli.py`, `piirra_kahva.py`)
+
+Palaute (kuvat heitto 1 Y=236 ja heitto 2 Y=467): etureuna (A) hyvä; keltaisessa B ja D liian lyhyet (muovi jatkuu), punaisessa B liian alhaalla
+(heijastukset). Syyt: (1) sisälle-rajoite ja kärkiehto käyttivät värimaskia, josta käsi/hanska puuttuu -> käsi pakotti ellipsin takareunan (C)
+eteenpäin ja katkaisi kärjet; (2) videon kromakanavat (a*, b*) ovat paljon sumeampia kuin kirkkaus: renkaiden reunoista mitattu pistelevitys
+sigma = 2,1 px (kroma) vs 0,8 px (L; kroma 4:2:0), joten varikynnyksellä saatu silhuetti perääntyy kärjissä (1-2 px kaukana).
+Korjaus (käyttäjän ehdotus: kaikilla kahvoilla sama koko oppimisvaiheessa):
+* muovin juuri = vaakasuora soikio kiven akselilla (korkeus z = 17 cm), puoliakselit A (sivu) ja B (radan suunta) yhteiset kaikille ruuduille;
+  per ruutu sovitetaan vain akselin (X, Y); kärjet tulevat koosta, eivät silhuetista
+* malli = soikion peitto sumennettuna sigma = 2,1 px, verrataan väriin (keltainen b*, punainen a*) alipikselinä; vahvistus ja siirto ruuduittain
+  lineaarisesti; käsi, hanska ja iho ovat "ei väliä" (paino 0): käsi ellipsin sisällä ei haittaa, vain jää ei saa näkyä
+* alkuarvo ruudukkohaulla (vanha silhuettipohjainen alkuarvo valitsi osassa punaisia ruutuja hoglinen vaaleanpunaisen raidan)
+* koko opittu 49 puhtaasta keltaisesta ruudusta (Y = 330-520 cm): A = 11,05 cm, B = 7,9 cm (`tulokset/kahvamalli_koko_vasen.json`);
+  vain punaisista ruuduista A = 10,7 cm (3 % pienempi) -> sama koko -oletus pitää noin 3 % tarkkuudella
+* kaikki 193 ruutua sovittuvat, sovituksen RMS 0,07-0,08 (0 = täydellinen) kaikilla kolmella heitolla (`tulokset/kahvamalli_vasen.csv`)
+* kärjet ylittävät varikynnyksen silhuetin kärjet mediaanina 0,7-1,1 px (ylös) ja 0,9-1,3 px (alas) Y = 150-550 cm, 0,3-0,7 px lähellä hogline.
+Mitat ovat kuvan mittakaavassa; kiven halkaisija mittautuu samalla mittakaavalla ~7 % WCF-maksimia isommaksi (R 15,6 vs 14,55), joten
+todelliset mitat voivat olla vastaavasti pienempiä (noin 10,3 x 7,4 cm).
+Kuvat: `tulokset/kahva_vasen_sarake_malli.jpg` (A-D kirjaimin, valkoinen = vanha vapaa ellipsi), `tulokset/kahva_malli_kuusi.jpg`.
