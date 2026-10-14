@@ -174,7 +174,7 @@ def viivapisteet(harju, malli, viiva, rajat_cm, puoli_leveys_px, min_harju, ohit
         vals = cv2.remap(harju, q[:, 0:1].astype(np.float32), q[:, 1:2].astype(np.float32), cv2.INTER_LINEAR).ravel()
         vals = np.convolve(vals, np.ones(3) / 3.0, mode="same")
         i = int(np.argmax(vals[1:-1])) + 1
-        if vals[i] < min_harju:
+        if vals[i] < min_harju or i <= 2 or i >= len(vals) - 3:       # harju haun reunalla = ei oikea viiva
             continue
         # alipikselitarkennus paraabelilla
         a, b, c = vals[i - 1], vals[i], vals[i + 1]
@@ -240,6 +240,181 @@ def sovita(frame, ellipses, H0, k1_vapaa=True, kierrokset=3, verbose=True):
     return malli, viivapts, ring_pts
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# TARKENNUS: renkaiden ja hoglinen reunat alipikselitarkkuudella (puolitasokohta)
+# ---------------------------------------------------------------------------------------------------------------------
+HOG_LEVEYS_CM = 10.0                     # hoglinen leveys; virallinen mitta T-viivaan on SISAREUNALLE (pesan puoleinen reuna)
+REUNA_IKKUNA_CM = 14.0                   # tasanteet r0 -+ (9..14) cm, reuna haetaan r0 +- 8 cm
+REUNA_MIN_KONTRASTI = 50.0
+RENGAS_REUNAT = {                        # nimi: (r0, kanava (BGR-indeksi), "sisa korkea" = sisapuolella kirkkaampi)
+    "sin_ulko": (rata.BLUE_OUTER_RADIUS_CM, 2, False),
+    "sin_sisa": (rata.BLUE_INNER_RADIUS_CM, 2, True),
+    "pun_ulko": (rata.RED_OUTER_RADIUS_CM, 1, False),
+    "pun_sisa": (rata.RED_INNER_RADIUS_CM, 1, True),
+}
+
+
+def _nayte(kanava_img, malli, xy):
+    p = malli.fyysinen_kuvaksi(xy).astype(np.float32)
+    return cv2.remap(kanava_img, p[:, 0:1], p[:, 1:2], cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE).ravel()
+
+
+def rengasreunat(frame, malli, askel_aste=2.0):
+    """Renkaiden reunapisteet kuvapisteina: sateittaiset profiilit nykyisen mallin top-down-avaruudessa, reuna = kohta
+    jossa kanava ylittaa sisa- ja ulkotasanteen puolivalin (sumeassa kuvassa symmetrinen -> ei harhaa)."""
+    kanavat = [frame[..., i].astype(np.float32) for i in range(3)]
+    thetas = np.deg2rad(np.arange(0.0, 360.0, askel_aste))
+    out = {}
+    for nimi, (r0, ch, sisa_korkea) in RENGAS_REUNAT.items():
+        radii = r0 + np.arange(-REUNA_IKKUNA_CM, REUNA_IKKUNA_CM + 1e-6, 0.25)
+        pts = []
+        for th in thetas:
+            xy = np.column_stack([radii * math.cos(th), radii * math.sin(th)])
+            prof = _nayte(kanavat[ch], malli, xy)
+            rel = radii - r0
+            a = float(np.mean(prof[(rel >= -REUNA_IKKUNA_CM) & (rel <= -9.0)]))     # sisatasanne
+            b = float(np.mean(prof[(rel >= 9.0) & (rel <= REUNA_IKKUNA_CM)]))       # ulkotasanne
+            if abs(a - b) < REUNA_MIN_KONTRASTI or (a > b) != sisa_korkea:
+                continue
+            half = 0.5 * (a + b)
+            seg = np.where(np.abs(rel) <= 8.0)[0]
+            f = prof[seg] - half
+            cross = np.where(np.sign(f[:-1]) != np.sign(f[1:]))[0]
+            if len(cross) == 0:
+                continue
+            k = cross[np.argmin(np.abs(rel[seg][cross]))]
+            t = f[k] / (f[k] - f[k + 1])
+            r_edge = rel[seg][k] + t * (rel[seg][k + 1] - rel[seg][k]) + r0
+            pts.append([r_edge * math.cos(th), r_edge * math.sin(th)])
+        if pts:
+            P = np.array(pts)
+            rr = np.hypot(P[:, 0], P[:, 1])[:, None]
+            u = P / rr
+            sc = 1.0 / np.maximum(np.linalg.norm(malli.fyysinen_kuvaksi(P + 0.5 * u) - malli.fyysinen_kuvaksi(P - 0.5 * u), axis=1), 1e-6)
+            out[nimi] = (malli.fyysinen_kuvaksi(P), sc)         # kuvapisteet, cm / px reunan suunnassa
+        else:
+            out[nimi] = (np.zeros((0, 2)), np.zeros(0))
+    return out
+
+
+def hogreunat(frame, malli, x_vali=(-225.0, 225.0), askel_cm=6.0):
+    """Hoglinen sisa- (pesan puoleinen, pienempi Y) ja ulkoreuna kuvapisteina. Profiili Y-suunnassa jokaisella X:lla:
+    tummin kohta -> reunat puolitasokohdista valkoisen jaan ja viivan valilla. Logojen valkoiset kohdat ohitetaan."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    y_c = HOG_Y_CM + 0.5 * HOG_LEVEYS_CM
+    ys = np.arange(y_c - 30.0, y_c + 30.0 + 1e-6, 0.25)
+    inner, outer = [], []
+    for x in np.arange(x_vali[0], x_vali[1] + 1e-6, askel_cm):
+        prof = _nayte(gray, malli, np.column_stack([np.full_like(ys, x), ys]))
+        prof = np.convolve(prof, np.ones(5) / 5.0, mode="same")
+        i = int(np.argmin(prof[20:-20])) + 20
+        lo = float(np.mean(prof[:8 * 4]))
+        hi = float(np.mean(prof[-8 * 4:]))
+        dark = float(np.mean(prof[max(0, i - 2):i + 3]))
+        if min(lo, hi) - dark < 40.0 or abs(lo - hi) > 25.0:
+            continue
+        half = 0.5 * (0.5 * (lo + hi) + dark)
+
+        def crossing(step):
+            j = i
+            while 0 < j < len(prof) - 1 and prof[j] < half:
+                j += step
+            if not 0 < j < len(prof) - 1:
+                return None
+            jj = j - step
+            t = (half - prof[jj]) / (prof[j] - prof[jj])
+            return ys[jj] + t * (ys[j] - ys[jj])
+
+        y_in, y_out = crossing(-1), crossing(+1)
+        if y_in is None or y_out is None or not 6.0 <= (y_out - y_in) <= 14.0:
+            continue
+        inner.append([x, y_in])
+        outer.append([x, y_out])
+    def f(a):
+        if not a:
+            return np.zeros((0, 2)), np.zeros(0)
+        P = np.array(a)
+        dy = np.column_stack([np.zeros(len(P)), np.full(len(P), 0.5)])
+        sc = 1.0 / np.maximum(np.linalg.norm(malli.fyysinen_kuvaksi(P + dy) - malli.fyysinen_kuvaksi(P - dy), axis=1), 1e-6)
+        return malli.fyysinen_kuvaksi(P), sc
+    return f(inner), f(outer)
+
+
+def sovita_reunoilla(frame, malli, k1_vapaa=True, kierrokset=4, verbose=True):
+    """Parametrit: 8 homografian, k1 ja g = tumman alueen kutistuma kuvapikseleina (sumea ja teroitettu kuva: puolitasokohta
+    on hieman tumman alueen sisapuolella; cm-virhe = g * cm/px reunan suunnassa -> suurempi radan suunnassa)."""
+    centre = malli.centre
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    harju = _harju(gray)
+    S = np.diag([1.0 / K1_SCALE_PX, 1.0 / K1_SCALE_PX, 1.0])
+    Hn = malli.H @ np.linalg.inv(S)
+    p0 = np.concatenate([(Hn / Hn[2, 2]).ravel()[:8], [malli.k1, 0.0, 0.0]])
+
+    def to_model(p):
+        return Malli(_h_from_params(p) @ S, p[8] if k1_vapaa else 0.0, centre)
+
+    for kierros in range(kierrokset):
+        rengas = rengasreunat(frame, malli)
+        (hog_in, sc_in), (hog_out, sc_out) = hogreunat(frame, malli)
+        lp = {
+            "keskiviiva": viivapisteet(harju, malli, ("X", 0.0), (-450.0, 1000.0), 10, 5.0, 190.0),
+            "T-viiva": viivapisteet(harju, malli, ("Y", 0.0), (-300.0, 300.0), 10, 5.0, 190.0),
+        }
+
+        def resid(p):
+            m = to_model(p)
+            g, gh = p[9], p[10]
+            parts = []
+            for nimi, (pts, sc) in rengas.items():
+                if len(pts):
+                    xy = m.kuva_fyysiseksi(pts)
+                    sign = 1.0 if RENGAS_REUNAT[nimi][2] else -1.0
+                    parts.append(np.hypot(xy[:, 0], xy[:, 1]) - RINGS_CM[nimi] - sign * g * sc)
+            if len(hog_in):
+                parts.append(m.kuva_fyysiseksi(hog_in)[:, 1] - HOG_Y_CM - gh * sc_in)
+                parts.append(m.kuva_fyysiseksi(hog_out)[:, 1] - (HOG_Y_CM + HOG_LEVEYS_CM) + gh * sc_out)
+            for nimi, col in (("keskiviiva", 0), ("T-viiva", 1)):
+                if len(lp[nimi]) >= 3:
+                    parts.append(m.kuva_fyysiseksi(lp[nimi])[:, col])
+            if k1_vapaa:
+                parts.append(np.array([p[8] * 30.0]))
+            return np.concatenate(parts)
+
+        sol = least_squares(resid, p0, loss="soft_l1", f_scale=1.0, max_nfev=400)
+        p0 = sol.x
+        malli = to_model(sol.x)
+        malli.g_px, malli.g_hog_px = float(sol.x[9]), float(sol.x[10])
+        if verbose:
+            r = resid(sol.x)
+            print(f"  tarkennus {kierros + 1}: RMS {math.sqrt(np.mean(r ** 2)):.2f} cm, MAD {1.4826 * np.median(np.abs(r)):.2f} cm, "
+                  f"k1 {malli.k1:+.4f}, g {malli.g_px:+.3f} px, g_hog {malli.g_hog_px:+.3f} px; reunapisteita " + ", ".join(f"{n} {len(v[0])}" for n, v in rengas.items())
+                  + f", hogline {len(hog_in)}, keski {len(lp['keskiviiva'])}, T {len(lp['T-viiva'])}")
+    return malli, dict(rengas=rengas, hog_in=(hog_in, sc_in), hog_out=(hog_out, sc_out), viivat=lp, g=malli.g_px, g_hog=malli.g_hog_px)
+
+
+def residuaalit_reunat(malli, d):
+    """Residuaalit (cm) kutistuma g huomioiden: RMS, mediaani (etumerkillinen) ja n."""
+    g, gh = d["g"], d["g_hog"]
+    out = {}
+
+    def stat(e):
+        return (float(np.sqrt(np.mean(e ** 2))), float(np.median(e)), len(e))
+
+    for nimi, (pts, sc) in d["rengas"].items():
+        if len(pts):
+            xy = malli.kuva_fyysiseksi(pts)
+            sign = 1.0 if RENGAS_REUNAT[nimi][2] else -1.0
+            out[nimi] = stat(np.hypot(xy[:, 0], xy[:, 1]) - RINGS_CM[nimi] - sign * g * sc)
+    for nimi, (pts, sc), tgt, sg in (("hog_sisareuna", d["hog_in"], HOG_Y_CM, 1.0), ("hog_ulkoreuna", d["hog_out"], HOG_Y_CM + HOG_LEVEYS_CM, -1.0)):
+        if len(pts):
+            out[nimi] = stat(malli.kuva_fyysiseksi(pts)[:, 1] - tgt - sg * gh * sc)
+    for nimi, col in (("keskiviiva", 0), ("T-viiva", 1)):
+        pts = d["viivat"][nimi]
+        if len(pts) >= 3:
+            out[nimi] = stat(malli.kuva_fyysiseksi(pts)[:, col])
+    return out
+
+
 def residuaalit(malli, ring_pts, viivapts):
     """Selkokieliset residuaalit (cm)."""
     out = {}
@@ -285,7 +460,8 @@ def piirra_overlay(td):
     col = (0, 0, 255)
     cv2.line(out, _px(0, TOPDOWN_Y_CM[0]), _px(0, TOPDOWN_Y_CM[1]), col, 1, cv2.LINE_AA)                       # keskiviiva
     cv2.line(out, _px(TOPDOWN_X_CM[0], 0), _px(TOPDOWN_X_CM[1], 0), col, 1, cv2.LINE_AA)                       # T-viiva
-    cv2.line(out, _px(TOPDOWN_X_CM[0], HOG_Y_CM), _px(TOPDOWN_X_CM[1], HOG_Y_CM), col, 1, cv2.LINE_AA)          # hogline
+    cv2.line(out, _px(TOPDOWN_X_CM[0], HOG_Y_CM), _px(TOPDOWN_X_CM[1], HOG_Y_CM), col, 1, cv2.LINE_AA)          # hogline (sisareuna)
+    cv2.line(out, _px(TOPDOWN_X_CM[0], HOG_Y_CM + HOG_LEVEYS_CM), _px(TOPDOWN_X_CM[1], HOG_Y_CM + HOG_LEVEYS_CM), (0, 160, 255), 1, cv2.LINE_AA)  # ulkoreuna
     cv2.line(out, _px(TOPDOWN_X_CM[0], -rata.HOUSE_RADIUS_CM), _px(TOPDOWN_X_CM[1], -rata.HOUSE_RADIUS_CM), col, 1, cv2.LINE_AA)  # takaraja
     for x in (-237.5, 237.5):                                                                                   # radan reunat (4,75 m)
         cv2.line(out, _px(x, TOPDOWN_Y_CM[0]), _px(x, TOPDOWN_Y_CM[1]), (255, 160, 0), 1, cv2.LINE_AA)
@@ -302,14 +478,19 @@ def kalibroi_puoli(video, puoli, ulos, k1_vapaa=True):
     ellipses = etsi_renkaat(frame)
     H0 = alkuhomografia(frame, ellipses)
     malli, viivapts, ring_pts = sovita(frame, ellipses, H0, k1_vapaa=k1_vapaa)
-    res = residuaalit(malli, ring_pts, viivapts)
-    print("  residuaalit (cm RMS): " + ", ".join(f"{k} {v:.2f}" if v is not None else f"{k} -" for k, v in res.items()))
+    res_a = residuaalit(malli, ring_pts, viivapts)
+    print("  ellipsisovitus, residuaalit (cm RMS): " + ", ".join(f"{k} {v:.2f}" if v is not None else f"{k} -" for k, v in res_a.items()))
+    malli, d = sovita_reunoilla(frame, malli, k1_vapaa=k1_vapaa)
+    resr = residuaalit_reunat(malli, d)
+    print("  reunasovitus, residuaalit (cm RMS / mediaani / n): "
+          + ", ".join(f"{k} {v[0]:.2f}/{v[1]:+.2f}/{v[2]}" for k, v in resr.items()))
+    res = {k: {"rms_cm": v[0], "mediaani_cm": v[1], "n": v[2]} for k, v in resr.items()}
     td = topdown(frame, malli)
     cv2.imwrite(os.path.join(ulos, f"topdown_{puoli}.png"), td)
     cv2.imwrite(os.path.join(ulos, f"topdown_{puoli}_tarkistus.jpg"), piirra_overlay(td), [cv2.IMWRITE_JPEG_QUALITY, 90])
     with open(os.path.join(ulos, f"kalibrointi_{puoli}.json"), "w") as f:
         json.dump({"puoli": puoli, "rajaus_xywh": PUOLET[puoli], "kierto": "90 astetta vastapaivaan",
-                   "H_kuva_fyysinen": malli.H.tolist(), "k1": malli.k1, "k1_skaala_px": K1_SCALE_PX,
+                   "H_kuva_fyysinen": malli.H.tolist(), "k1": malli.k1, "kutistuma_g_px": getattr(malli, "g_px", 0.0), "kutistuma_hog_px": getattr(malli, "g_hog_px", 0.0), "k1_skaala_px": K1_SCALE_PX,
                    "kuvan_keskipiste": malli.centre.tolist(), "hogline_y_cm": HOG_Y_CM, "residuaalit_cm_rms": res}, f, indent=1)
     return malli, frame, td
 

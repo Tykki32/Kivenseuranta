@@ -34,7 +34,15 @@ näkyy sekä lähi- että kaukopesä ja molemmat hoglinjat. Tässä kuvassa näk
 
 `python kalibrointi_netti.py Recording.2026-10-14.115218.mp4 --ulos tulokset` kalibroi kummankin puoliskon (vasen, oikea):
 moodikuva -> renkaat + T-/keski-/hogline -> homografia + objektiivin k1 -> top-down (origo = pesän keskipiste, Y kohti
-hoglinea, 2 px/cm). Tulokset kansiossa `tulokset/` (`topdown_*.png`, `topdown_*_tarkistus.jpg` ympyrät ja viivat päällä,
-`kalibrointi_*.json`).
-Residuaalit (cm RMS): vasen: renkaat 0,7-1,4 (sisäsininen 4,0 maskin reuna), keskiviiva 1,9, hogline 1,7, T-viiva 5,3;
-oikea: renkaat 0,9-1,5 (sisäsininen 3,4), keskiviiva 1,6, hogline 2,1, T-viiva 5,6.
+hoglinea, 2 px/cm). Tulokset kansiossa `tulokset/` (`topdown_*.png`, `topdown_*_tarkistus.jpg`, `kalibrointi_*.json`).
+
+Kaksivaiheinen sovitus:
+1. Ellipsisovitus maskeista + viivat -> hyvä alkuarvo (RMS ~2 cm).
+2. Reunasovitus: renkaiden neljä reunaa (sin_ulko 182,9 / sin_sisa 121,9 / pun_ulko 61,0 / pun_sisa 15,2 cm) haetaan
+   säteittäisistä profiileista alipikselitarkkuudella (puolitasokohta), hoglinen molemmat reunat Y-profiileista, keski- ja
+   T-viiva harjahaulla. Parametrit: homografia, k1 (tulee ~0), tumman alueen kutistuma g (px; sumea/teroitettu kuva: puoli-
+   tasokohta on ~0,4-0,6 px tumman alueen sisäpuolella, cm-virhe on suurempi radan suunnassa) ja erikseen hoglinen g (~0).
+3. **Hoglinen virallinen paikka on sen sisäreuna** (pesan puoleinen reuna): Y = 640 cm, ulkoreuna 650 cm (leveys 10 cm).
+
+Residuaalit (cm RMS): vasen: renkaat 0,2-0,4, hoglinen reunat 0,3, keskiviiva 0,4, T-viiva 1,0 (vain 10 pistettä);
+oikea: renkaat 0,25-0,45, hogline 0,3, keskiviiva 1,0, T-viiva 1,4.
