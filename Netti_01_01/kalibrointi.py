@@ -790,6 +790,12 @@ def calibrate_camera_from_image_with_seed(filename):
     blue_outer, blue_inner = kp.find_house_pair(
         near_blue_mask, kp.NEAR_BLUE_MIN_AREA, kp.NEAR_BLUE_MIN_RATIO, kp.NEAR_BLUE_MIN_SIZE_RATIO
     )
+    if blue_outer is not None:
+        # punainen haetaan vain sinisen ulkorenkaan sisalta: muuten esim. puulattia tai punaiset kivet (punainen sävy)
+        # voivat olla kuvan suurin punainen alue ja tulla valituksi pesaksi
+        inside = np.zeros(near_red_mask.shape[:2], dtype=np.uint8)
+        cv2.ellipse(inside, blue_outer, 255, thickness=-1)
+        near_red_mask = cv2.bitwise_and(near_red_mask, inside)
     red_outer, red_inner = kp.find_house_pair(
         near_red_mask, kp.NEAR_RED_MIN_AREA, kp.NEAR_RED_MIN_RATIO, kp.NEAR_RED_MIN_SIZE_RATIO
     )
@@ -798,7 +804,12 @@ def calibrate_camera_from_image_with_seed(filename):
         raise RuntimeError("Lahemman pesan renkaita ei loytynyt kokonaan.")
 
     segments = kp.detect_line_segments(frame, blue_outer)
-    t_pair, centerline_pair, t_line, centerline, house_center = kp.select_t_and_centerline(segments, blue_outer)
+    try:
+        t_pair, centerline_pair, t_line, centerline, house_center = kp.select_t_and_centerline(segments, blue_outer)
+    except RuntimeError:
+        # viivat himmeita (matala kontrasti) -> haetaan myos ymparistoaan hieman tummemmat viivat
+        segments = kp.detect_line_segments(frame, blue_outer, faint=True)
+        t_pair, centerline_pair, t_line, centerline, house_center = kp.select_t_and_centerline(segments, blue_outer)
     v_t, v_cl = kp.build_image_directions(t_pair, centerline_pair)
 
     observations = kp.build_calibration_observations(blue_outer, blue_inner, red_outer, red_inner)

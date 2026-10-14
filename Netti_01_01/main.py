@@ -90,9 +90,15 @@ def _leikkaa_video(input_file, start_time, end_time):
     return video_file
 
 
-def _paneelit(video_file, panel_ref):
+def _paneelit(video_file, panel_ref, ei_paneeleja=False):
     """Paneelit: tallennettu tiedosto videon vierella, automaattitunnistus referenssitiedoston lahelta, tai (jos
-    referenssitiedostoa ei valita) klikataan videon ensimmaisesta kuvasta kuten live-tilassa."""
+    referenssitiedostoa ei valita) klikataan videon ensimmaisesta kuvasta kuten live-tilassa.
+    ei_paneeleja: ei paneeleja lainkaan -> kalibroinnin aikana ei stabilointia (kamera katossa, kuva oletetaan
+    riittavan vakaaksi moodikuvaan); kalibroinnin jalkeen stabilointi vaihekorrelaatiolla moodikuvaan."""
+    if ei_paneeleja:
+        print()
+        print("Ei paneeleja: kuvan oletetaan olevan riittavan vakaa moodikuvan keraamiseen, stabilointi alkaa moodikuvasta.")
+        return []
     panel_data = paneelit.load_panel_data(video_file)
     if panel_data is not None:
         return panel_data
@@ -131,7 +137,7 @@ def _paneelit(video_file, panel_ref):
     return panel_data
 
 
-def main(debug=False, start_time=None, end_time=None, video=None, live_cfg=None, panel_ref=None):
+def main(debug=False, start_time=None, end_time=None, video=None, live_cfg=None, panel_ref=None, ei_paneeleja=False):
     if A.OPENCV_SAIKEET > 0:
         cv2.setNumThreads(int(A.OPENCV_SAIKEET))
     if live_cfg is not None:
@@ -150,7 +156,7 @@ def main(debug=False, start_time=None, end_time=None, video=None, live_cfg=None,
         print(f"Video: {input_file}")
         video_file = _leikkaa_video(input_file, start_time, end_time)
 
-    panel_data = _paneelit(video_file, panel_ref)
+    panel_data = _paneelit(video_file, panel_ref, ei_paneeleja)
     if panel_data is None:
         return
 
@@ -325,6 +331,8 @@ def _argumentit():
     p.add_argument("--max-frame", type=int, default=0, help="Pysayta ajo kun tama ruutu on kasitelty (nopea testi).")
     p.add_argument("--paneelit", default=None,
                    help="Referenssi-paneelitiedosto (*_panel_corners.txt). Live-tilassa ilman tata paneelit klikataan kamerakuvasta.")
+    p.add_argument("--ei-paneeleja", action="store_true",
+                   help="Ei paneelien valintaa/stabilointia moodikuvaa varten (kamera katossa: kuva oletetaan vakaaksi).")
     p.add_argument("--katselu", nargs="?", type=int, const=8080, default=None,
                    help="Seurannan nakyma puhelimen selaimeen samassa wifissa (portti, oletus 8080).")
     # elava kamerasyote
@@ -369,7 +377,7 @@ if __name__ == "__main__":
         live_src, live_cfg = _start_live(args)
     try:
         main(debug=args.debug and not args.no_debug, start_time=args.start, end_time=args.end, video=args.video,
-             live_cfg=live_cfg, panel_ref=args.paneelit)
+             live_cfg=live_cfg, panel_ref=args.paneelit, ei_paneeleja=args.ei_paneeleja)
     finally:
         if live_src is not None:
             _finish_live(live_src, live_cfg)

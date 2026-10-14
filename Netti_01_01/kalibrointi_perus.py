@@ -913,7 +913,13 @@ def _detect_line_segments_from_edges(edges, roi_mask):
     return segments
 
 
-def detect_line_segments(frame, ellipse):
+# Himmeat viivat (esim. nettivideon pakattu kuva: viiva vain ~20 harmaasavya ymparistoa tummempi, gradientti ~10 jaa
+# Cannyn kynnyksen 50 alle): viiva = pikseli, joka on selvasti ymparistonsa (suuri mediaanisuodatus) tummempi.
+FAINT_LINE_MEDIAN = 31
+FAINT_LINE_MIN_DARKER = 7
+
+
+def detect_line_segments(frame, ellipse, faint=False):
 
     h, w = frame.shape[:2]
 
@@ -939,6 +945,12 @@ def detect_line_segments(frame, ellipse):
 
     segments = _detect_line_segments_from_edges(gray_edges, roi_mask)
     segments += _detect_line_segments_from_edges(ice_edges, roi_mask)
+
+    if faint:
+        darker = cv2.medianBlur(gray, FAINT_LINE_MEDIAN).astype(np.int16) - gray.astype(np.int16)
+        ridge = (darker >= FAINT_LINE_MIN_DARKER).astype(np.uint8) * 255
+        ridge = cv2.morphologyEx(ridge, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        segments += _detect_line_segments_from_edges(cv2.Canny(ridge, 50, 150), roi_mask)
 
     return segments
 
