@@ -30,7 +30,19 @@ import rata
 
 # puoliskon rajaus alkuperaisesta 1920x1080-ruudusta: (x, y, leveys, korkeus). Ylareunan TV-grafiikka (minikartta,
 # sponsoribanneri) jaa rajauksen ylapuolelle.
-PUOLET = {"vasen": (0, 280, 960, 800), "oikea": (960, 280, 960, 800)}
+PUOLET = {"vasen": (0, 190, 960, 890), "oikea": (960, 190, 960, 890)}
+
+# Kummankin puoliskon kuva on kameran 16:9-kuvan keskileikkaus (960x1080), joten optinen keskipiste (ja vaaristyman keskipiste)
+# on puoliskon keskella (480, 540). Kuvassa jonka moodikuva() antaa (rajaus + 90 asteen kierto vastapaivaan) se on:
+# x = 540 - rajaus_y, y = (rajaus_leveys - 1) - 480.
+PERIAPISTE_PUOLISKOSSA = (480.0, 540.0)
+
+
+def periapiste(puoli):
+    x0, y0, w, h = PUOLET[puoli]
+    px, py = PERIAPISTE_PUOLISKOSSA
+    return np.array([py - y0, (w - 1) - px])
+
 
 HOG_Y_CM = 640.0                 # hoglinen etaisyys T-viivasta
 RINGS_CM = {"sin_ulko": rata.BLUE_OUTER_RADIUS_CM, "sin_sisa": rata.BLUE_INNER_RADIUS_CM,
@@ -187,9 +199,7 @@ def viivapisteet(harju, malli, viiva, rajat_cm, puoli_leveys_px, min_harju, ohit
 # =====================================================================================================================
 # SOVITUS
 # =====================================================================================================================
-def sovita(frame, ellipses, H0, k1_vapaa=True, kierrokset=3, verbose=True):
-    h, w = frame.shape[:2]
-    centre = np.array([w / 2.0, h / 2.0])
+def sovita(frame, ellipses, H0, centre, k1_vapaa=True, kierrokset=3, verbose=True):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     harju = _harju(gray)
     ring_pts = {k: _ellipse_points(e) for k, e in ellipses.items()}
@@ -415,6 +425,30 @@ def residuaalit_reunat(malli, d):
     return out
 
 
+def kamera_asento(malli):
+    """Kameran sisaiset ja ulkoiset parametrit tasohomografiasta (Zhang): K = [[f,0,cx],[0,f,cy],[0,0,1]] (optinen
+    keskipiste tunnettu, f ortogonaalisuusehdosta r1.r2 = 0), p = K (R X + t), X fyysinen (X, Y, Z) cm, Z ylos jaasta.
+    Kuvapisteet ovat vaaristymakorjattuja (k1 pois): kayta malli.kuva_oikaistuksi()."""
+    Hp = np.linalg.inv(malli.H)          # fyysinen (X, Y, 1) -> oikaistu kuvapiste
+    cx, cy = malli.centre
+    col = lambda h: np.array([h[0] - cx * h[2], h[1] - cy * h[2], h[2]])
+    a, b = col(Hp[:, 0]), col(Hp[:, 1])
+    f = math.sqrt(abs(-(a[0] * b[0] + a[1] * b[1]) / (a[2] * b[2])))
+    K = np.array([[f, 0.0, cx], [0.0, f, cy], [0.0, 0.0, 1.0]])
+    M = np.linalg.inv(K) @ Hp
+    sc = 2.0 / (np.linalg.norm(M[:, 0]) + np.linalg.norm(M[:, 1]))
+    r1, r2, t = M[:, 0] * sc, M[:, 1] * sc, M[:, 2] * sc
+    U, _, Vt = np.linalg.svd(np.column_stack([r1, r2, np.cross(r1, r2)]))
+    R = U @ Vt
+    C = -R.T @ t
+    if C[2] < 0:                          # kamera on jaan ylapuolella
+        R = R.copy()
+        R[:, :2] *= -1.0
+        t = -t
+        C = -R.T @ t
+    return K, R, t, C
+
+
 def residuaalit(malli, ring_pts, viivapts):
     """Selkokieliset residuaalit (cm)."""
     out = {}
@@ -477,7 +511,7 @@ def kalibroi_puoli(video, puoli, ulos, k1_vapaa=True):
     cv2.imwrite(os.path.join(ulos, f"moodikuva_{puoli}.png"), frame)
     ellipses = etsi_renkaat(frame)
     H0 = alkuhomografia(frame, ellipses)
-    malli, viivapts, ring_pts = sovita(frame, ellipses, H0, k1_vapaa=k1_vapaa)
+    malli, viivapts, ring_pts = sovita(frame, ellipses, H0, periapiste(puoli), k1_vapaa=k1_vapaa)
     res_a = residuaalit(malli, ring_pts, viivapts)
     print("  ellipsisovitus, residuaalit (cm RMS): " + ", ".join(f"{k} {v:.2f}" if v is not None else f"{k} -" for k, v in res_a.items()))
     malli, d = sovita_reunoilla(frame, malli, k1_vapaa=k1_vapaa)
@@ -488,10 +522,13 @@ def kalibroi_puoli(video, puoli, ulos, k1_vapaa=True):
     td = topdown(frame, malli)
     cv2.imwrite(os.path.join(ulos, f"topdown_{puoli}.png"), td)
     cv2.imwrite(os.path.join(ulos, f"topdown_{puoli}_tarkistus.jpg"), piirra_overlay(td), [cv2.IMWRITE_JPEG_QUALITY, 90])
+    K, R, t, C = kamera_asento(malli)
+    print(f"  kamera: f {K[0, 0]:.0f} px, paikka (X, Y, Z) = ({C[0]:.0f}, {C[1]:.0f}, {C[2]:.0f}) cm, optisen akselin kulma pystysta "
+          f"{math.degrees(math.acos(min(1.0, abs((R.T @ np.array([0, 0, 1.0]))[2])))):.1f} astetta")
     with open(os.path.join(ulos, f"kalibrointi_{puoli}.json"), "w") as f:
         json.dump({"puoli": puoli, "rajaus_xywh": PUOLET[puoli], "kierto": "90 astetta vastapaivaan",
                    "H_kuva_fyysinen": malli.H.tolist(), "k1": malli.k1, "kutistuma_g_px": getattr(malli, "g_px", 0.0), "kutistuma_hog_px": getattr(malli, "g_hog_px", 0.0), "k1_skaala_px": K1_SCALE_PX,
-                   "kuvan_keskipiste": malli.centre.tolist(), "hogline_y_cm": HOG_Y_CM, "residuaalit_cm_rms": res}, f, indent=1)
+                   "kuvan_keskipiste": malli.centre.tolist(), "K": K.tolist(), "R": R.tolist(), "t": t.tolist(), "kameran_paikka_cm": C.tolist(), "hogline_y_cm": HOG_Y_CM, "residuaalit_cm_rms": res}, f, indent=1)
     return malli, frame, td
 
 
