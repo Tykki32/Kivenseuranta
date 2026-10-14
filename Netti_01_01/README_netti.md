@@ -110,42 +110,29 @@ edellinen keskipiste + edellinen siirtymä; väri valitaan automaattisesti (20 r
   (videon ruutuajoitus), ei paikkaperusteinen. Vaihe ei ole sama kolmessa heitossa (koherenssi 0,45), joten sitä ei voi korjata yhdellä
   yhteisellä aikamallilla. Yksilöllisten ruutujen ajaksi oletetaan k/25 s (jäännöshajonta 1,0-1,6 cm vs 1,7-2,7 cm jos f/30).
 
-### Kiven mitat, akseli ja kahvan korkeus kaarista (`mittaa_kahva.py`, `kivi_netti.py`: `kaaripisteet`, `sovita_akseli_ja_korkeus`) -- KESKEN, ALLA OLEVA KAHVAN KORKEUS PERUTTU
+### Kiven mitat, kahvan muovin ellipsi ja korkeus (`mittaa_kahva.py`, `kivi_netti.py`: `kahva_silhuetti`, `sovita_kuvaellipsi`, `kahva_keskipiste_3d`)
 
 **Kiven mitat.** WCF-säännöt (varmat): ympärysmitta enintään 914 mm (halkaisija enintään 291 mm, R <= 14,55 cm), korkeus vähintään
 114 mm (graniittirunko ilman kahvaa), paino kahvoineen 17,24-19,96 kg. Muut mitat vaihtelevat valmistajan mukaan (tyypillisiä, ei
-säädeltyjä): runko 28-29 cm x 11,4-12,5 cm, kokonaiskorkeus kahvan kanssa ~17-18 cm, juoksupinta (running band) rengas Ø ~12,5 cm,
-leveimmän kohdan (iskukaista) korkeus alhaalla ~2-4 cm jään yläpuolella. Mallissa: iskukaista R = 14,55 cm, z = 3 cm (oletus).
+säädeltyjä): runko 28-29 cm x 11,4-12,5 cm, kokonaiskorkeus kahvan kanssa ~17-18 cm, juoksupinta Ø ~12,5 cm, leveimmän kohdan
+(iskukaista) korkeus ~2-4 cm jään yläpuolella. Mallissa: iskukaista R = 14,55 cm, z = 3 cm (oletus).
 
-**Idea:** kiven akselin keskikohta jäällä ja kahvan keskikohta korkeudella h ovat samalla pystysuoralla -> h kuvapisteiden erosta.
+**Idea (käyttäjän):** kiven akselin keskikohta jäällä ja kahvan muovin juuren keskikohta korkeudella h ovat samalla pystysuoralla.
 
-**Mitä on tehty ja mikä on vialla:**
-* Alareunan kaari (graniitin alfa 0,5 -rajan kameran puoleinen reuna) sopii 3D-ympyrään (z = 3 cm, R = 14,55 cm) 0,3-0,6 px:llä ->
-  akselin (X, Y). Ympyrän säde ja korkeus ovat kuitenkin tästä kaaresta degeneroituneet (vapaa sovitus ei erota niitä).
-* **Kahvan reuna: ensimmäinen versio sovitti väärän reunan.** Keltaisen kahvalevyn kameran puoleinen (oikea) reuna on suora viiva, koska
-  kiven graniittireuna peittää levyn lähemmän puoliskon; se ei ole muovin reuna. Muovin näkyvä reuna on VASEN kaari (kaukana kamerasta).
-  Siksi aiemmin raportoitu kahvan taso 17,0-17,6 cm on PERUTTU.
-* Vasemman kaaren sovitus 3D-ympyrään (vaakataso, keskipiste kiven akselilla): RMS 1,0-3,4 px, säde 10-14 cm (keltainen) tai 7-9 cm
-  (punainen), korkeus 14-19 cm -> epäyhtenäinen, malli ei kuvaa kahvan muotoa/asentoa. Kuvasta mitattu kahvalevyn ääriviiva on ellipsi
-  kuvasuhteella 0,48-0,54 (vaakaympyrän ennuste 0,47-0,55) ja pitkä akseli 37-46 px (~15-16 cm), mutta kaaren keskipiste ei ole samalla
-  pystysuoralla alareunan kaaren akselin kanssa (3-5 px sivusuunnassa).
-* `KAHVA_Z_CM` palautettu oletukseen 15 cm (ei mitattu).
+**Menetelmä:**
+1. *Muovin silhuetti:* Lab-väri (keltainen: b* >= puolet tasanteesta, a* <= 10; punainen: a*, tumma, ja poikkeaa moodikuvasta dE >= 12, jolloin jään
+   vaaleanpunaiset logot jäävät pois), raja alipikselinä 8x ylinäytteistetystä kuvasta (puolitaso). Iho (a* > 10) ei ole muovia.
+2. *Ellipsi kuvatasossa* (keskipiste, puoliakselit a (sivu) ja b (radan suunta), kierto): etureuna (leveimmästä kohdasta kohti kameraa)
+   tarkasti; kärjet (silhuetin ylin ja alin kohta) enintään 2 mm (0,35 px) ellipsin sisäpuolella; takaosa muovin silhuetin SISÄLLÄ
+   (yksipuolinen rajoite: etäisyyskenttä maskista, rangaistus vain jos ellipsin piste on ulkopuolella, jolloin jäätä ei näy välistä).
+   Mallin periaate: projisoitu muoto sovitetaan suoraan etureunan pisteisiin (point-to-contour), ei vapaata ellipsisovitusta; silhuetin
+   sisällä pysyminen = "malli projisoituu siluetin sisälle" -termi (signed distance transform), kuten siluettipohjaisessa asennonmäärityksessä.
+3. *3D:* ellipsin keskipiste (u, v) on kiven akselilla; Y otetaan alareunan kaaresta (iskukaista), jolloin (X, z) ratkeaa kahdesta yhtälöstä
+   (u, v) = projektio(X, Y, z) -> kahvan juuren korkeus z.
 
-**Päivitys (kahvan etureuna oikein):** edellinen versio käytti vain keskimmäisiä 60 % riveistä ja jätti kaaren päät pois, jolloin etureuna
-näytti suoralta. Nyt etureuna = kahvamaskin komponentin ulkoreunan pisteet leveimmästä kohdasta (ylin ja alin kärki) kohti kameraa, koko
-pystyalue mukana (`kaaripisteet`). Tulokset (`tulokset/kahva_etureuna.jpg`; magenta = sovitus, vihreä = etureunan pisteet):
-* Kahvan ympyrä (vaakataso, vapaa z ja r) etureunaan, keskipiste alareunan kaaren akselilla: RMS 1,2-2,6 px, r osuu rajaan 14 cm -> ei sovi.
-* Sama kun keskipisteen sivusuuntainen siirto vapaa: keltaiset kahvat RMS 0,4-0,7 px, z 19,3-19,4 cm, r 11-12 cm, dX +0,9...+3,6 cm.
-* Yhteissovitus (sama akseli (X, Y) sekä alareunan kaarelle että kahvan etureunalle, 4 parametria X, Y, z, r): keltainen heitto 1: z 19,4 cm
-  (IQR 19,1-20,6), r 12,5 cm; heitto 3: z 20,2 cm, r 13,2 cm; RMS alakaari 0,7-1,1 px, kahva 0,7-0,9 px; akseli siirtyy alakaaren sovituksesta
-  X +1,4...+1,8 cm (Y alle 0,1 cm). Punainen (heitto 2): z 18,0 cm, r 9,2 cm, kahvan RMS 1,8 px (maski epäpuhdas).
-* Kuvan kahvalevy on leveydeltaan ~37-46 px (~20-24 cm), eli levy on isompi kuin oletettu 9 cm sade. Ellipsin kuvasuhde täsmää
-  vaakaympyrään, mutta etukaaren pullistuma on pieni (4-5 px) levyn leveyteen nähden, joten sovitus on herkkä r:n ja z:n yhdistelmälle.
-
-**Päivitys 2 (muovin tunnistus):** kahvan muovi tunnistetaan nyt Lab-värin keltaisuudesta (b* >= 16, a* <= 10) eikä HSV-kynnyksellä
-(S >= 45, V >= 165), joka leikkasi levyn vaaleat/varjoisat kärjet pois ja teki etukaaresta liian loivan. Iho (a* > 10) jää pois. Muovi on
-nuolenkärjen muotoinen: oikea (kameran puoleinen) reuna on sileä kaari, vasemmalla muovi kapenee varreksi. Etureuna = kaari ylimmästä
-kärjestä alimpaan kärkeen kameran puolella; sovitus: yhteissovitus (akseli X, Y sekä alareunan kaarelle että kahvan etureunalle; z, r vapaat).
-Tulos (heitot 1 ja 3, keltainen): kahvan taso z = 18,8-20,4 cm (mediaani ~19,4), r = 11-14 cm, RMS 0,7-1,0 px; r ja z korreloivat
-(suurempi r -> pienempi z), joten luku z = 19,4 cm edellyttää r = 11,5-12 cm. `tulokset/kahva_etureuna.jpg`: magenta = kahvan ympyrä (paksu osa =
-etukaari), vihreä = etureunan pisteet, syaani = alareunan ympyrä, keltainen = alakaaren pisteet.
+**Tulos (vasen, Y = 200-500 cm, 3 heittoa, kuva `tulokset/kahva_ellipsi.jpg`):** etureunan RMS 0,3-0,8 px, kärkirako <= 0,15 px, ulkopuolelle
+jäävä osa enintään 0,1-0,8 px (mediaani 0,2-0,3 px). Kahvan korkeus z = 16,9 (keltainen), 17,1 (punainen), 17,1 (keltainen) cm: sama
+keltaisella ja punaisella kahvalla. Muovin juuri on SOIKIO (ei ympyrä): puoliakselit 10,5 x 7,3 cm (~21 x 14,5 cm), sama kummallakin
+värillä. Akselin sivusiirto alareunan kaaren akseliin nähden +1,5 / -0,1 / +0,7 cm.
+Huom: Y > 500 cm alareunan kaari häiriintyy (hogline sulautuu kiven reunaan), siellä z on virheellinen (8-9 cm) -> käytä Y < 500.
+z:n epävarmuus ~ ±3 cm, koska Y tulee alareunan kaaresta (R = 14,55 cm, z = 3 cm oletukset): Y:n 5 cm virhe -> ~3 cm virhe z:ssä.

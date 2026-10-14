@@ -1,7 +1,13 @@
-"""Kiven akseli (alareunan kaari) ja kahvan korkeus (etureunan kaari): python mittaa_kahva.py VIDEO tulokset vasen
-Lukee tulokset/kahvaradat_<puoli>.csv (variseuranta), kirjoittaa kaariradat_<puoli>.csv ja tulostaa korkeuden tilastot."""
+"""Kahvan muovin ellipsi ja korkeus: python mittaa_kahva.py VIDEO tulokset vasen [--askel 3] [--kuva kuva.jpg]
+
+Joka seurannan ruudusta (tulokset/kahvaradat_<puoli>.csv):
+ 1) kiven alareunan kaari (iskukaista R = 14,55 cm, z = 3 cm) -> akseli jaalla (X, Y)
+ 2) kahvan muovin silhuetti (Lab-keltaisuus tai punaisuus, alipikseli) ja siihen kuvatason ellipsi: etureuna tarkasti, karjet
+    lahes maksimikohdassa (~2 mm sisalla), takaosa muovin sisalla (yksipuolinen etaisyyskenttarajoite)
+ 3) ellipsin keskipiste on kiven akselilla: (X, z) ratkaistaan kun Y on alareunan kaaresta -> kahvan korkeus z
+Kirjoittaa kahvaellipsit_<puoli>.csv ja tulostaa tilastot."""
+import argparse
 import csv
-import sys
 
 import cv2
 import numpy as np
@@ -9,33 +15,55 @@ import numpy as np
 import aja_kivi as ak
 import kivi_netti as kv
 
-video, kansio, puoli = sys.argv[1], sys.argv[2], sys.argv[3]
-cam = kv.Kamera(puoli, f"{kansio}/kalibrointi_{puoli}.json", f"{kansio}/moodikuva_{puoli}.png")
-cap = cv2.VideoCapture(video)
-ikk = [(8, 22), (56, 66), (104, 114)]
-ak.yksilolliset_ruudut(video, ikk, puoli)
+ap = argparse.ArgumentParser()
+ap.add_argument("video")
+ap.add_argument("kansio")
+ap.add_argument("puoli")
+ap.add_argument("--askel", type=int, default=3, help="joka n:s seurannan piste")
+ap.add_argument("--ymin", type=float, default=200.0)
+ap.add_argument("--ymax", type=float, default=600.0)
+a = ap.parse_args()
+
+cam = kv.Kamera(a.puoli, f"{a.kansio}/kalibrointi_{a.puoli}.json", f"{a.kansio}/moodikuva_{a.puoli}.png")
+cap = cv2.VideoCapture(a.video)
+ak.yksilolliset_ruudut(a.video, [(8, 22), (56, 66), (104, 114)], a.puoli)
 t2f = {round(t, 3): f for f, t in ak.T_KARTTA.items()}
-rows = list(csv.DictReader(open(f"{kansio}/kahvaradat_{puoli}.csv")))
-out, zs = [], {}
-for r in rows:
+rows = [r for r in csv.DictReader(open(f"{a.kansio}/kahvaradat_{a.puoli}.csv"))]
+out = []
+for i, r in enumerate(rows):
+    if i % a.askel or not (a.ymin <= float(r["Y_cm"]) <= a.ymax):
+        continue
     f = t2f.get(round(float(r["t_s"]), 3))
     if f is None:
         continue
-    u, v = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[float(r["X_cm"]), float(r["Y_cm"]), kv.KAHVA_Z_CM]]))
     fr = cam.ruutu(cap, f)
+    u, v = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[float(r["X_cm"]), float(r["Y_cm"]), 15.0]]))
     try:
-        H, G = kv.kaaripisteet(cam, fr, (u[0], v[0]), r["vari"])
-        X, Y, z, e1, e2 = kv.sovita_akseli_ja_korkeus(cam, H, G, (u[0], v[0]))
-    except Exception:
+        G = kv.alareuna_pisteet(cam, fr, (u[0], v[0]))
+        Xa, Ya, e_ala = kv.sovita_alakaari(cam, G, (u[0], v[0]))
+        s = kv.kahva_silhuetti(fr, (u[0], v[0]), vari=r["vari"], tausta=cam.mode)
+        o = kv.sovita_kuvaellipsi(s, painot=(1.0, 10.0, 10.0))
+        uc, vc, ea, eb, phi = o["p"]
+        Xh, z, res = kv.kahva_keskipiste_3d(cam, uc, vc, Ya, X0=Xa)
+        pj = lambda x, y, zz: kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[x, y, zz]]))
+        u0, v0 = pj(Xh, Ya, z)
+        sx = np.hypot(pj(Xh + 1, Ya, z)[0][0] - u0[0], pj(Xh + 1, Ya, z)[1][0] - v0[0])
+        sy = np.hypot(pj(Xh, Ya + 1, z)[0][0] - u0[0], pj(Xh, Ya + 1, z)[1][0] - v0[0])
+    except Exception as e:
         continue
-    out.append((r["rata"], r["t_s"], X, Y, z, e1, e2))
-    if float(r["Y_cm"]) > 250:
-        zs.setdefault(r["rata"], []).append(z)
-with open(f"{kansio}/kaariradat_{puoli}.csv", "w", newline="") as fh:
-    wr = csv.writer(fh)
-    wr.writerow(["rata", "t_s", "X_akseli_cm", "Y_akseli_cm", "kahvan_taso_cm", "alakaaren_rms_px", "kahvan_rms_px"])
+    out.append(dict(rata=r["rata"], vari=r["vari"], t_s=r["t_s"], frame=f, X_ala=Xa, Y_ala=Ya, e_ala=e_ala, X_kahva=Xh, z_cm=z,
+                    a_cm=ea / sx, b_cm=eb / sy, uc=uc, vc=vc, a_px=ea, b_px=eb, phi_deg=np.degrees(phi), rms_front=o["rms_front"],
+                    cont_max=o["cont_max"], tip=max(o["tip_top"], o["tip_bot"])))
+with open(f"{a.kansio}/kahvaellipsit_{a.puoli}.csv", "w", newline="") as fh:
+    wr = csv.DictWriter(fh, fieldnames=list(out[0].keys()))
+    wr.writeheader()
     for o in out:
-        wr.writerow([o[0], o[1], f"{o[2]:.2f}", f"{o[3]:.2f}", f"{o[4]:.2f}", f"{o[5]:.2f}", f"{o[6]:.2f}"])
-for k, z in zs.items():
-    z = np.array(z)
-    print(f"heitto {int(k) + 1}: kahvan taso (Y > 250 cm, r_kahva = {kv.R_KAHVA_CM} cm) mediaani {np.median(z):.1f} cm, IQR {np.percentile(z, 25):.1f}-{np.percentile(z, 75):.1f}, n = {len(z)}")
+        wr.writerow({k: (f"{v:.3f}" if isinstance(v, float) else v) for k, v in o.items()})
+for k in sorted(set(o["rata"] for o in out)):
+    q = [o for o in out if o["rata"] == k]
+    ok = [o for o in q if o["rms_front"] < 0.8 and o["cont_max"] < 0.7]
+    z = np.array([o["z_cm"] for o in ok])
+    print(f"heitto {int(k) + 1} ({q[0]['vari']}): {len(q)} ruutua, hyvia {len(ok)}; etureunan RMS mediaani {np.median([o['rms_front'] for o in ok]):.2f} px, "
+          f"ulkopuolella max mediaani {np.median([o['cont_max'] for o in ok]):.2f} px; kahvan korkeus z mediaani {np.median(z):.1f} cm "
+          f"(IQR {np.percentile(z, 25):.1f}-{np.percentile(z, 75):.1f}); soikion puoliakselit {np.median([o['a_cm'] for o in ok]):.1f} x "
+          f"{np.median([o['b_cm'] for o in ok]):.1f} cm; akselin sivusiirto {np.median([o['X_kahva'] - o['X_ala'] for o in ok]):+.1f} cm")
