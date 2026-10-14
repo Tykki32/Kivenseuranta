@@ -341,7 +341,7 @@ def piirra(radat, tulokset, ref, polku):
         a.axvline(la["Y_lahto"], color="b", lw=1, ls="--")
         a.axvline(la["Y_90"], color="b", lw=1, ls="-.")
         merkit(a, k, ir)
-        a.set(xlabel="Y (cm)", ylabel="nopeus (m/s)", title="nopeus ja kiihtyvyys; sin. = lahto / tyonnon loppu")
+        a.set(xlabel="Y (cm)", ylabel="nopeus (m/s)", title="nopeus ja kiihtyvyys (kiihtyvyyden kohina ~+-0,2 m/s2); sin. = lahto / tyonto")
         a = ax[3, j]
         if ir is not None:
             for jas, P in zip(ir["jasenet"], ir["profiilit"]):
