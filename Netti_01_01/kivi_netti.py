@@ -314,7 +314,7 @@ def sovita_pehmea(cam, kivi, alfa, X0, Y0, askel0=2.0):
 # =====================================================================================================================
 KAHVA_H = (19, 31)        # kahvan sävy (OpenCV H 0..180); sormet ovat punertavampia
 KAHVA_SMIN, KAHVA_VMIN = 45, 165
-KAHVA_Z_CM = 15.0         # oletettu kahvan keskikorkeus jaan ylapuolella (vaikuttaa vain tasaiseen Y-siirtoon)
+KAHVA_Z_CM = 17.2         # kahvan tason korkeus jaan ylapuolella (mitattu: alareunan kaari + kahvan etureuna, r = 9 cm); vaikuttaa Y-siirtoon
 
 
 PUNAINEN_H = (8, 170)     # punainen: H <= 8 tai H >= 170
@@ -351,3 +351,68 @@ def kahva_sentroidi(cam, frame, ennuste_uv, vari="keltainen", max_etaisyys_px=30
 
 def kuva_maahan(cam, u, v, z=KAHVA_Z_CM):
     return maan_paikka(cam, u, v, z=z)
+
+
+# =====================================================================================================================
+# KAARISOVITUS: alareunan kaari (jaalla) ja kahvan etureuna -> akseli ja korkeus
+# =====================================================================================================================
+# Kiven mitat (WCF: ymparysmitta <= 914 mm -> halkaisija <= 291 mm, korkeus >= 114 mm ilman kahvaa, paino 17,24-19,96 kg).
+# Kuvasta nakyvan alareunan kaaren oletetaan olevan iskukaistan ympyra: sade R_ALA ja korkeus Z_ALA jaan ylapuolella (oletus).
+R_ALA_CM = 14.55
+Z_ALA_CM = 3.0
+R_KAHVA_CM = 9.0          # kahvan peitelevyn sade (mitattu kuvasta: sivusuuntainen leveys ~17-18 cm), vain etureuna nakyy
+TH_KAARI = np.linspace(0.0, 2.0 * np.pi, 181)
+
+
+def ympyra_kuvaan(cam, X, Y, z, r):
+    pts = np.column_stack([X + r * np.cos(TH_KAARI), Y + r * np.sin(TH_KAARI), np.full_like(TH_KAARI, z)])
+    u, v = kivimalli.project_3d(cam.K, cam.R, cam.t, pts)
+    return np.column_stack([u, v])
+
+
+def etaisyys_monikulmioon(P, poly):
+    A = poly
+    B = np.roll(poly, -1, axis=0)
+    AB = B - A
+    L2 = np.maximum((AB ** 2).sum(1), 1e-9)
+    t = np.clip(((P[:, None, :] - A[None]) * AB[None]).sum(2) / L2[None], 0, 1)
+    Q = A[None] + t[..., None] * AB[None]
+    return np.sqrt(((Q - P[:, None, :]) ** 2).sum(2)).min(1)
+
+
+def kaaripisteet(cam, frame, uv0, vari="keltainen"):
+    """(kahvan etureuna, kiven alareuna) kuvapisteina: kummallekin kuvan rivi kerrallaan kamerapuolen (suurin u) reunapiste;
+    vain keskimmaiset 60 % riveista (kulmat pois). uv0 = kahvan likimaarainen paikka kuvassa."""
+    m = cv2.morphologyEx(kahva_maski(frame, vari), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    n, lab, st, cen = cv2.connectedComponentsWithStats(m)
+    k = min((i for i in range(1, n) if st[i, 4] >= 30), key=lambda i: np.hypot(cen[i][0] - uv0[0], cen[i][1] - uv0[1]))
+    ys, xs = np.where(lab == k)
+    H = np.array([(xs[ys == y].max() + 0.5, y) for y in np.unique(ys)], float)
+    lo, hi = np.percentile(H[:, 1], [20, 80])
+    H = H[(H[:, 1] >= lo) & (H[:, 1] <= hi)]
+    fg, g, h = cam.maskit(frame)
+    al = alfa_kartta(cam, frame, g)
+    x0, y0 = int(uv0[0]) - 70, int(uv0[1]) - 70
+    sub = (al[y0:y0 + 140, x0:x0 + 140] > 0.5).astype(np.uint8)
+    n2, lab2, st2, cen2 = cv2.connectedComponentsWithStats(sub)
+    k2 = max(range(1, n2), key=lambda i: st2[i, 4])
+    ys2, xs2 = np.where(lab2 == k2)
+    G = np.array([(xs2[ys2 == y].max() + 0.5 + x0, y + y0) for y in np.unique(ys2)], float)
+    lo, hi = np.percentile(G[:, 1], [20, 80])
+    G = G[(G[:, 1] >= lo) & (G[:, 1] <= hi)]
+    return H, G
+
+
+def sovita_akseli_ja_korkeus(cam, H, G, uv0, R_ala=R_ALA_CM, z_ala=Z_ALA_CM, r_kahva=R_KAHVA_CM):
+    """1) alareunan kaari -> akselin (X, Y) jaalla (ympyra z = z_ala, sade R_ala); 2) sama akseli, kahvan etureunan kaari ->
+    kahvan tason korkeus z (sade r_kahva). Palauttaa (X, Y, z_kahva, rms_ala_px, rms_kahva_px)."""
+    from scipy.optimize import least_squares
+    X0, Y0 = maan_paikka(cam, uv0[0], uv0[1], z=15.0)
+    s1 = least_squares(lambda p: etaisyys_monikulmioon(G, ympyra_kuvaan(cam, p[0], p[1], z_ala, R_ala)), [X0, Y0])
+    X, Y = s1.x
+    best = None
+    for z0 in (8.0, 14.0, 20.0):
+        s2 = least_squares(lambda p: etaisyys_monikulmioon(H, ympyra_kuvaan(cam, X, Y, p[0], r_kahva)), [z0], bounds=([2.0], [40.0]))
+        if best is None or s2.cost < best.cost:
+            best = s2
+    return X, Y, float(best.x[0]), float(np.sqrt(s1.cost * 2 / len(G))), float(np.sqrt(best.cost * 2 / len(H)))
