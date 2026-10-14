@@ -1,0 +1,359 @@
+<title>Kahvan ellipsit</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Asettelu: kapea sarake työkalukortteja; jokaisessa kortissa iso kuva, johon ellipsi ja neljä vedettävää pistettä.
+   Sävyt: viileä harmaa pohja, yksi aksentti (ellipsin magenta, sama kuin analyysikuvissa), vihreä = tallennettu. */
+:root {
+  --bg: #f3f5f8; --surface: #ffffff; --fg: #1a2130; --muted: #566073; --line: #d6dce6;
+  --accent: #d1127f; --accent-fg: #ffffff; --ok: #1b7a4b; --ok-bg: #e2f3ea; --edit: #8a5a00; --edit-bg: #fbefd4;
+  --idle: #566073; --idle-bg: #e8ecf2; --focus: #1d5fd6;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --surface: #1b212b; --fg: #e6eaf1; --muted: #9aa5b8; --line: #2f3846;
+    --accent: #ff4fb0; --accent-fg: #1a0612; --ok: #55d392; --ok-bg: #173428; --edit: #f0c25e; --edit-bg: #3a2f12;
+    --idle: #9aa5b8; --idle-bg: #262e3a; --focus: #7aa7ff; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #1b212b; --fg: #e6eaf1; --muted: #9aa5b8; --line: #2f3846;
+  --accent: #ff4fb0; --accent-fg: #1a0612; --ok: #55d392; --ok-bg: #173428; --edit: #f0c25e; --edit-bg: #3a2f12;
+  --idle: #9aa5b8; --idle-bg: #262e3a; --focus: #7aa7ff; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  padding-block: 20px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 15px; font-weight: 600; margin: 0; }
+.lede { margin: 6px 0 0; max-width: 72ch; color: var(--muted); }
+.lede b { color: var(--fg); font-weight: 600; }
+.bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.bar label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 14px; }
+.bar .count { font-family: var(--mono); font-size: 13px; color: var(--fg); margin-right: auto; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); gap: 18px; align-items: start; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.card > header { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.card .meta { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+.chip { margin-left: auto; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--idle-bg); color: var(--idle); }
+.chip[data-s="saved"] { background: var(--ok-bg); color: var(--ok); }
+.chip[data-s="edited"] { background: var(--edit-bg); color: var(--edit); }
+.stage { overflow: auto; border-radius: 6px; border: 1px solid var(--line); background: #0000000d; max-height: 78vh; }
+.canvas { position: relative; width: 100%; aspect-ratio: 1 / 1; touch-action: none; user-select: none; -webkit-user-select: none; background: #888; }
+.canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.canvas svg * { vector-effect: non-scaling-stroke; }
+.layer { position: absolute; inset: 0; pointer-events: none; }
+.h { position: absolute; width: 0; height: 0; pointer-events: none; }
+.h .knob { position: absolute; left: -14px; top: -14px; width: 28px; height: 28px; border-radius: 50%; background: rgba(255,255,255,0.92);
+  border: 2px solid #161616; color: #161616; font: 600 14px/24px var(--sans); text-align: center; cursor: grab; pointer-events: auto; touch-action: none; }
+.h .stem { position: absolute; left: 0; top: -1px; height: 2px; width: 26px; background: #161616; transform-origin: 0 50%; pointer-events: auto; touch-action: none; cursor: grab; }
+.h.drag .knob { background: #ffe45c; cursor: grabbing; }
+.h:focus { outline: none; }
+.h:focus-visible .knob { outline: 3px solid var(--focus); outline-offset: 2px; }
+.h .knob.m { left: -11px; top: -11px; width: 22px; height: 22px; font-size: 16px; line-height: 17px; background: rgba(255,255,255,0.7); }
+.readout { font-family: var(--mono); font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.controls label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+.controls input[type="range"] { width: 120px; accent-color: var(--accent); }
+.controls select, .controls input[type="text"] { font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+.controls input[type="text"] { flex: 1 1 180px; min-width: 0; }
+button { font: inherit; font-size: 13.5px; font-weight: 500; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button:disabled { opacity: 0.55; cursor: default; }
+.err { color: #b3261e; font-size: 13px; }
+:root[data-theme="dark"] .err { color: #ff8a80; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .err { color: #ff8a80; } }
+details.json { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+details.json summary { cursor: pointer; font-weight: 500; }
+details.json textarea { width: 100%; margin: 10px 0 8px; font: 12px/1.4 var(--mono); background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; min-height: 140px; }
+.note { color: var(--muted); font-size: 13px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Kahvan ellipsit</h1>
+    <p class="lede">Vedä pisteitä <b>A–D</b> niin, että ellipsi sopii kahvan muoviin: <b>A</b> etureuna (kameran puoli), <b>B</b> ja <b>D</b> muovin ylin ja alin kohta,
+      <b>C</b> takareuna, jonka pitää jäädä muovin tai käden alle. Käsi saa olla ellipsin sisällä, jäätä ei. Piste liikkuu vain oman akselinsa suunnassa ja vastakkainen pää pysyy paikallaan;
+      keltainen risti on ellipsin tarkka kohta. Nuolinäppäimet siirtävät valittua pistettä 0,1 px (Shift 0,5 px). Tallenna kuva, kun ellipsi on oikein.</p>
+  </header>
+  <div class="bar">
+    <span class="count" id="count">Tallennettu 0 / 0</span>
+    <label><input type="checkbox" id="tg-model" checked> Alkuarvo (valkoinen, katkoviiva)</label>
+    <label><input type="checkbox" id="tg-sil"> Värikynnyksen silhuetti (syaani)</label>
+    <button id="save-all" type="button">Tallenna muokatut</button>
+  </div>
+  <section class="cards" id="cards" aria-label="Kuvat"></section>
+  <details class="json">
+    <summary>Tulokset JSON-muodossa</summary>
+    <p class="note">Varakeino, jos tallennus ei toimi: kopioi teksti ja liitä se keskusteluun.</p>
+    <textarea id="json" readonly spellcheck="false"></textarea>
+    <button id="copy-json" type="button">Kopioi</button> <span class="note" id="copy-msg"></span>
+  </details>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var FRAMES = /*__FRAMES__*/[];
+  var S = /*__S__*/11, W = /*__W__*/80, VB = S * W;
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var db = null, saveBusy = {};
+  var st = {};          // id -> {f, cur, init, saved, note, savedNote, el:{...}}
+  var showModel = true, showSil = false, ready = false;
+
+  function clone(p) { return { uc: p.uc, vc: p.vc, a: p.a, b: p.b, phi: p.phi }; }
+  function same(p, q) { return !!p && !!q && Math.abs(p.uc - q.uc) < 1e-6 && Math.abs(p.vc - q.vc) < 1e-6 && Math.abs(p.a - q.a) < 1e-6 && Math.abs(p.b - q.b) < 1e-6 && Math.abs(p.phi - q.phi) < 1e-8; }
+  function axes(p) { var c = Math.cos(p.phi), s = Math.sin(p.phi); return { e1: [c, s], e2: [-s, c] }; }
+  function pts(p) {
+    var x = axes(p), e1 = x.e1, e2 = x.e2;
+    return { A: [p.uc + e1[0] * p.b, p.vc + e1[1] * p.b], C: [p.uc - e1[0] * p.b, p.vc - e1[1] * p.b],
+             B: [p.uc - e2[0] * p.a, p.vc - e2[1] * p.a], D: [p.uc + e2[0] * p.a, p.vc + e2[1] * p.a] };
+  }
+  function fmt(x, n) { return (Math.round(x * Math.pow(10, n)) / Math.pow(10, n)).toFixed(n).replace(".", ","); }
+  function sg(x) { var r = Math.round(x * 10) / 10; return (r > 0 ? "+" : r < 0 ? "−" : "±") + fmt(Math.abs(r), 1); }
+  function px(u) { return (u + 0.5) * S; }                 // kuvapiste (leikkeen px, keskipiste = kokonaisluku) -> SVG-yksikkö
+  function pct(u) { return (px(u) / VB * 100) + "%"; }
+
+  function mk(tag, attrs, parent) { var e = document.createElementNS(SVGNS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+  function h(tag, cls, text, parent) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; if (parent) parent.appendChild(e); return e; }
+
+  function isEdited(s) { return !same(s.cur, s.saved || s.init) || s.note !== (s.saved ? s.savedNote : ""); }
+  function stateOf(s) { if (s.saved && !isEdited(s)) return "saved"; return isEdited(s) ? "edited" : "idle"; }
+
+  function draftSave(s) { try { localStorage.setItem("kahva-ellipsi-" + s.f.id, JSON.stringify({ cur: s.cur, note: s.note })); } catch (e) {} }
+  function draftClear(s) { try { localStorage.removeItem("kahva-ellipsi-" + s.f.id); } catch (e) {} }
+  function draftLoad(s) { try { var d = JSON.parse(localStorage.getItem("kahva-ellipsi-" + s.f.id)); if (d && d.cur && isFinite(d.cur.uc)) { s.cur = clone(d.cur); s.note = d.note || ""; } } catch (e) {} }
+
+  function build(f) {
+    var s = { f: f, init: clone(f.model), cur: clone(f.model), saved: null, note: "", savedNote: "", el: {}, zoom: 1, drag: null };
+    st[f.id] = s;
+    var card = h("article", "card", null, document.getElementById("cards"));
+    var head = h("header", null, null, card);
+    h("h2", null, "Heitto " + f.heitto + " · " + f.vari, head);
+    h("span", "meta", "Y = " + f.Y + " cm", head);
+    s.el.chip = h("span", "chip", "Alkuarvo", head);
+    var stage = h("div", "stage", null, card);
+    var cv = h("div", "canvas", null, stage); s.el.cv = cv; s.el.stage = stage;
+    var svg = mk("svg", { viewBox: "0 0 " + VB + " " + VB, preserveAspectRatio: "none", "aria-hidden": "true" }, cv);
+    mk("image", { href: f.img, x: 0, y: 0, width: VB, height: VB }, svg);
+    s.el.sil = mk("polyline", { fill: "none", stroke: "#18d2e6", "stroke-width": 1.5, points: (f.sil || []).map(function (q) { return px(q[0]) + "," + px(q[1]); }).join(" "), visibility: "hidden" }, svg);
+    s.el.m1 = mk("ellipse", { fill: "none", stroke: "#000", "stroke-opacity": 0.55, "stroke-width": 3.5, "stroke-dasharray": "7 5" }, svg);
+    s.el.m2 = mk("ellipse", { fill: "none", stroke: "#fff", "stroke-width": 1.8, "stroke-dasharray": "7 5" }, svg);
+    s.el.e1 = mk("ellipse", { fill: "rgba(209,18,127,0.06)", stroke: "#000", "stroke-opacity": 0.45, "stroke-width": 4 }, svg);
+    s.el.e2 = mk("ellipse", { fill: "none", stroke: "#e0129b", "stroke-width": 2.2 }, svg);
+    s.el.gx = mk("line", { stroke: "#ffe45c", "stroke-width": 1, "stroke-dasharray": "4 4", visibility: "hidden" }, svg);
+    s.el.cross = {};
+    ["A", "B", "C", "D"].forEach(function (k) { s.el.cross[k] = mk("path", { fill: "none", stroke: "#ffe45c", "stroke-width": 1.4 }, svg); });
+    var layer = h("div", "layer", null, cv);
+    s.el.hd = {}; s.el.kn = {}; s.el.stem = {};
+    ["A", "B", "C", "D", "M"].forEach(function (k) {
+      var d = h("div", "h", null, layer);
+      d.tabIndex = 0; d.setAttribute("role", "slider");
+      d.setAttribute("aria-label", k === "M" ? "Koko ellipsin siirto" : "Piste " + k + (k === "A" ? ", etureuna" : k === "B" ? ", ylin kohta" : k === "C" ? ", takareuna" : ", alin kohta"));
+      d.dataset.k = k; s.el.hd[k] = d;
+      if (k !== "M") s.el.stem[k] = h("span", "stem", null, d);
+      s.el.kn[k] = h("span", "knob" + (k === "M" ? " m" : ""), k === "M" ? "+" : k, d);
+      d.addEventListener("pointerdown", function (ev) { onDown(s, k, ev); });
+      d.addEventListener("pointermove", function (ev) { onMove(s, ev); });
+      d.addEventListener("pointerup", function (ev) { onUp(s, ev); });
+      d.addEventListener("pointercancel", function (ev) { onUp(s, ev); });
+      d.addEventListener("keydown", function (ev) { onKey(s, k, ev); });
+      d.addEventListener("focus", function () { s.focus = k; draw(s); });
+      d.addEventListener("blur", function () { if (s.focus === k) { s.focus = null; draw(s); } });
+    });
+    s.el.read = h("div", "readout", null, card);
+    var ctl = h("div", "controls", null, card);
+    var l1 = h("label", null, "Kallistus ", ctl); var rg = h("input", null, null, l1); rg.type = "range"; rg.min = -10; rg.max = 10; rg.step = 0.1; rg.value = 0; rg.id = "tilt-" + f.id; s.el.tilt = rg;
+    s.el.tiltv = h("span", null, "0°", l1); s.el.tiltv.style.fontFamily = "var(--mono)";
+    rg.addEventListener("input", function () { s.cur.phi = parseFloat(rg.value) * Math.PI / 180; changed(s); });
+    var l2 = h("label", null, "Suurennus ", ctl); var sel = h("select", null, null, l2); sel.id = "zoom-" + f.id;
+    [1, 2, 3, 4].forEach(function (z) { var o = h("option", null, z + "×", sel); o.value = z; });
+    sel.addEventListener("change", function () { s.zoom = parseInt(sel.value, 10); cv.style.width = (100 * s.zoom) + "%"; });
+    var nt = h("input", null, null, ctl); nt.type = "text"; nt.placeholder = "Huomio (valinnainen), esim. muovi jatkuu hanskan alla"; nt.id = "note-" + f.id; s.el.note = nt;
+    nt.addEventListener("input", function () { s.note = nt.value; changed(s); });
+    var rs = h("button", null, "Palauta alkuarvo", ctl); rs.type = "button";
+    rs.addEventListener("click", function () { s.cur = clone(s.init); s.note = ""; nt.value = ""; changed(s); });
+    var sv = h("button", "primary", "Tallenna", ctl); sv.type = "button"; s.el.save = sv;
+    sv.addEventListener("click", function () { save(s); });
+    s.el.err = h("div", "err", "", card); s.el.err.hidden = true;
+    draftLoad(s); nt.value = s.note || "";
+    draw(s);
+  }
+
+  function draw(s) {
+    var p = s.cur, P = pts(p), deg = p.phi * 180 / Math.PI, i;
+    var rot = "rotate(" + deg + " " + px(p.uc) + " " + px(p.vc) + ")";
+    [s.el.e1, s.el.e2].forEach(function (e) { e.setAttribute("cx", px(p.uc)); e.setAttribute("cy", px(p.vc)); e.setAttribute("rx", p.b * S); e.setAttribute("ry", p.a * S); e.setAttribute("transform", rot); });
+    var q = s.init, rot0 = "rotate(" + (q.phi * 180 / Math.PI) + " " + px(q.uc) + " " + px(q.vc) + ")";
+    [s.el.m1, s.el.m2].forEach(function (e) { e.setAttribute("cx", px(q.uc)); e.setAttribute("cy", px(q.vc)); e.setAttribute("rx", q.b * S); e.setAttribute("ry", q.a * S); e.setAttribute("transform", rot0); e.setAttribute("visibility", showModel ? "visible" : "hidden"); });
+    s.el.sil.setAttribute("visibility", showSil && s.f.sil ? "visible" : "hidden");
+    ["A", "B", "C", "D"].forEach(function (k) {
+      var x = px(P[k][0]), y = px(P[k][1]), r = 9;
+      s.el.cross[k].setAttribute("d", "M" + (x - r) + " " + y + "H" + (x + r) + "M" + x + " " + (y - r) + "V" + (y + r));
+      s.el.hd[k].style.left = pct(P[k][0]); s.el.hd[k].style.top = pct(P[k][1]);
+      var ax = axes(p), o = k === "A" ? ax.e1 : k === "C" ? [-ax.e1[0], -ax.e1[1]] : k === "B" ? [-ax.e2[0], -ax.e2[1]] : ax.e2;
+      s.el.kn[k].style.transform = "translate(" + (o[0] * 26) + "px," + (o[1] * 26) + "px)";
+      s.el.stem[k].style.transform = "rotate(" + Math.atan2(o[1], o[0]) + "rad)";
+    });
+    s.el.hd.M.style.left = pct(p.uc); s.el.hd.M.style.top = pct(p.vc);
+    var act = s.drag && s.drag.k !== "M" ? s.drag.k : (s.focus && s.focus !== "M" ? s.focus : null);
+    if (act) {
+      var vert = act === "B" || act === "D", gx = s.el.gx;
+      if (vert) { gx.setAttribute("x1", 0); gx.setAttribute("x2", VB); gx.setAttribute("y1", px(P[act][1])); gx.setAttribute("y2", px(P[act][1])); }
+      else { gx.setAttribute("y1", 0); gx.setAttribute("y2", VB); gx.setAttribute("x1", px(P[act][0])); gx.setAttribute("x2", px(P[act][0])); }
+      gx.setAttribute("visibility", "visible");
+    } else s.el.gx.setAttribute("visibility", "hidden");
+    var P0 = pts(s.init);
+    s.el.read.textContent = "";
+    h("span", null, "a " + fmt(p.a, 2) + " px", s.el.read); h("span", null, "b " + fmt(p.b, 2) + " px", s.el.read); h("span", null, "kallistus " + fmt(deg, 1) + "°", s.el.read);
+    h("span", null, "alkuarvosta: A " + sg(P.A[0] - P0.A[0]) + " · B " + sg(-(P.B[1] - P0.B[1])) + " · C " + sg(-(P.C[0] - P0.C[0])) + " · D " + sg(P.D[1] - P0.D[1]) + " px (+ = ellipsi ulottuu pidemmälle)", s.el.read);
+    s.el.tilt.value = deg.toFixed(1); s.el.tiltv.textContent = fmt(deg, 1) + "°";
+    var state = stateOf(s);
+    s.el.chip.dataset.s = state; s.el.chip.textContent = state === "saved" ? "Tallennettu" : state === "edited" ? "Muokattu" : "Alkuarvo";
+    s.el.save.textContent = state === "idle" ? "Hyväksy alkuarvo" : "Tallenna"; s.el.save.disabled = !!saveBusy[s.f.id] || state === "saved";
+    updateCount();
+    updateJson();
+  }
+
+  function changed(s) { draftSave(s); s.el.err.hidden = true; draw(s); }
+
+  function toLocal(s, ev) {
+    var r = s.el.cv.getBoundingClientRect();
+    return [((ev.clientX - r.left) / r.width) * W - 0.5, ((ev.clientY - r.top) / r.height) * W - 0.5];
+  }
+  function onDown(s, k, ev) {
+    ev.preventDefault();
+    s.el.hd[k].focus(); s.el.hd[k].setPointerCapture(ev.pointerId); s.el.hd[k].classList.add("drag");
+    var P = toLocal(s, ev), p = s.cur, x = axes(p), d = [P[0] - p.uc, P[1] - p.vc], off = 0;
+    if (k !== "M") {
+      var al = (k === "A" || k === "C") ? d[0] * x.e1[0] + d[1] * x.e1[1] : d[0] * x.e2[0] + d[1] * x.e2[1];
+      off = al - (k === "A" ? p.b : k === "C" ? -p.b : k === "B" ? -p.a : p.a);   // kahvan ja tarkan pisteen vali akselilla
+    }
+    s.drag = { k: k, id: ev.pointerId, grab: [P[0] - p.uc, P[1] - p.vc], off: off };
+    draw(s);
+  }
+  function onMove(s, ev) {
+    if (!s.drag || s.drag.id !== ev.pointerId) return;
+    var P = toLocal(s, ev), p = s.cur, k = s.drag.k;
+    if (k === "M") { p.uc = P[0] - s.drag.grab[0]; p.vc = P[1] - s.drag.grab[1]; }
+    else {
+      var x = axes(p), d = [P[0] - p.uc, P[1] - p.vc];
+      var along = (k === "A" || k === "C") ? d[0] * x.e1[0] + d[1] * x.e1[1] : d[0] * x.e2[0] + d[1] * x.e2[1];
+      moveEnd(s, k, along - s.drag.off, true);
+    }
+    changed(s);
+  }
+  function onUp(s, ev) {
+    if (!s.drag || s.drag.id !== ev.pointerId) return;
+    s.el.hd[s.drag.k].classList.remove("drag"); s.drag = null; draw(s);
+  }
+  // k-pää siirretään akselin suuntaiseen kohtaan "pos" (keskipisteestä mitattuna), vastakkainen pää pysyy paikallaan
+  function moveEnd(s, k, pos, absolute) {
+    var p = s.cur, x = axes(p), cur, opp, e, sizeKey;
+    if (k === "A") { cur = p.b; opp = -p.b; e = x.e1; sizeKey = "b"; }
+    else if (k === "C") { cur = -p.b; opp = p.b; e = x.e1; sizeKey = "b"; }
+    else if (k === "B") { cur = -p.a; opp = p.a; e = x.e2; sizeKey = "a"; }
+    else { cur = p.a; opp = -p.a; e = x.e2; sizeKey = "a"; }
+    var np = absolute ? pos : cur + pos;
+    var size = Math.abs(np - opp) / 2;
+    if (size < 1.5) return;
+    p[sizeKey] = size;
+    var sh = (np + opp) / 2;
+    p.uc += e[0] * sh; p.vc += e[1] * sh;
+  }
+  function onKey(s, k, ev) {
+    var step = ev.shiftKey ? 0.5 : (ev.altKey ? 0.02 : 0.1), key = ev.key, dx = 0, dy = 0;
+    if (key === "ArrowLeft") dx = -step; else if (key === "ArrowRight") dx = step; else if (key === "ArrowUp") dy = -step; else if (key === "ArrowDown") dy = step; else return;
+    ev.preventDefault();
+    var p = s.cur, x = axes(p);
+    if (k === "M") { p.uc += dx; p.vc += dy; }
+    else if (k === "A" || k === "C") { var dl = dx * x.e1[0] + dy * x.e1[1]; if (!dl) { changed(s); return; } moveEnd(s, k, dl, false); }
+    else { var dv = dx * x.e2[0] + dy * x.e2[1]; if (!dv) { changed(s); return; } moveEnd(s, k, dv, false); }
+    changed(s);
+  }
+
+  function docOf(s) {
+    var f = s.f, p = s.cur, P = pts(p), m = s.init, Pm = pts(m), deg = p.phi * 180 / Math.PI;
+    function fr(q) { return [f.x0 + q[0], f.y0 + q[1]]; }
+    return {
+      id: f.id, heitto: f.heitto, rata: f.rata, vari: f.vari, Y_cm: f.Y, frame: f.frame, t_s: f.t_s, x0: f.x0, y0: f.y0, ikkuna_px: W, suurennus: S,
+      ellipsi_ruutu: { uc: f.x0 + p.uc, vc: f.y0 + p.vc, a: p.a, b: p.b, kallistus_deg: deg },
+      ellipsi_leike: { uc: p.uc, vc: p.vc, a: p.a, b: p.b, kallistus_deg: deg },
+      pisteet_ruutu: { A: fr(P.A), B: fr(P.B), C: fr(P.C), D: fr(P.D) },
+      alkuarvo_ruutu: { uc: f.x0 + m.uc, vc: f.y0 + m.vc, a: m.a, b: m.b, kallistus_deg: m.phi * 180 / Math.PI, A: fr(Pm.A), B: fr(Pm.B), C: fr(Pm.C), D: fr(Pm.D) },
+      huomio: s.note || "", tallennettu: new Date().toISOString()
+    };
+  }
+
+  function save(s) {
+    var id = s.f.id;
+    if (!db) { showErr(s, "Tallennus ei ole käytössä tässä näkymässä. Kopioi tulokset JSON-osiosta sivun alalaidasta."); return; }
+    if (saveBusy[id]) return;
+    saveBusy[id] = true; draw(s);
+    var snapCur = clone(s.cur), snapNote = s.note;
+    db.doc("ellipsit/" + id).set(docOf(s)).then(function () {
+      s.saved = snapCur; s.savedNote = snapNote; draftClear(s);
+    }).catch(function (e) {
+      showErr(s, "Tallennus ei onnistunut" + (e && e.code ? " (" + e.code + ")" : "") + ". Kokeile uudelleen tai kopioi tulokset JSON-osiosta.");
+    }).then(function () { saveBusy[id] = false; draw(s); });
+  }
+  function showErr(s, msg) { s.el.err.textContent = msg; s.el.err.hidden = false; }
+
+  function updateCount() {
+    if (!ready) return;
+    var n = FRAMES.length, k = 0;
+    FRAMES.forEach(function (f) { if (stateOf(st[f.id]) === "saved") k++; });
+    document.getElementById("count").textContent = "Tallennettu " + k + " / " + n;
+    var ed = FRAMES.filter(function (f) { return stateOf(st[f.id]) === "edited"; }).length;
+    var b = document.getElementById("save-all"); b.disabled = ed === 0; b.textContent = ed ? "Tallenna muokatut (" + ed + ")" : "Tallenna muokatut";
+  }
+  var jsonTimer = null;
+  function updateJson() {
+    if (!ready) return;
+    clearTimeout(jsonTimer);
+    jsonTimer = setTimeout(function () {
+      var out = FRAMES.map(function (f) { var d = docOf(st[f.id]); d.tila = stateOf(st[f.id]); delete d.tallennettu; return d; });
+      document.getElementById("json").value = JSON.stringify(out, null, 1);
+    }, 150);
+  }
+
+  function init() {
+    FRAMES.forEach(build);
+    ready = true;
+    document.getElementById("tg-model").addEventListener("change", function (e) { showModel = e.target.checked; FRAMES.forEach(function (f) { draw(st[f.id]); }); });
+    document.getElementById("tg-sil").addEventListener("change", function (e) { showSil = e.target.checked; FRAMES.forEach(function (f) { draw(st[f.id]); }); });
+    document.getElementById("save-all").addEventListener("click", function () { FRAMES.forEach(function (f) { if (stateOf(st[f.id]) === "edited") save(st[f.id]); }); });
+    document.getElementById("copy-json").addEventListener("click", function () {
+      var t = document.getElementById("json"), msg = document.getElementById("copy-msg");
+      t.select();
+      var done = function (ok) { msg.textContent = ok ? "Kopioitu." : "Kopiointi ei onnistunut, valitse teksti ja kopioi käsin."; };
+      try { navigator.clipboard.writeText(t.value).then(function () { done(true); }, function () { done(false); }); } catch (e) { done(false); }
+    });
+    updateCount(); updateJson();
+    if (window.claude && window.claude.use) {
+      window.claude.use("db").then(function (d) {
+        if (!d) return;
+        db = d;
+        d.collection("ellipsit").onSnapshot(function (snap) {
+          snap.docs.forEach(function (doc) {
+            var v = doc.data(), s = st[doc.id];
+            if (!s || !v || !v.ellipsi_leike) return;
+            var e = v.ellipsi_leike, saved = { uc: e.uc, vc: e.vc, a: e.a, b: e.b, phi: e.kallistus_deg * Math.PI / 180 };
+            var wasEdited = isEdited(s) && !!localStorage_has(s);
+            s.saved = saved; s.savedNote = v.huomio || "";
+            if (!wasEdited && !s.drag) { s.cur = clone(saved); s.note = s.savedNote; s.el.note.value = s.note; }
+            draw(s);
+          });
+        }, function () {});
+      }, function () {});
+    }
+  }
+  function localStorage_has(s) { try { return localStorage.getItem("kahva-ellipsi-" + s.f.id) != null; } catch (e) { return false; } }
+  init();
+})();
+</script>

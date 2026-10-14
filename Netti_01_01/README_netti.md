@@ -169,3 +169,10 @@ Korjaus (käyttäjän ehdotus: kaikilla kahvoilla sama koko oppimisvaiheessa):
 Mitat ovat kuvan mittakaavassa; kiven halkaisija mittautuu samalla mittakaavalla ~7 % WCF-maksimia isommaksi (R 15,6 vs 14,55), joten
 todelliset mitat voivat olla vastaavasti pienempiä (noin 10,3 x 7,4 cm).
 Kuvat: `tulokset/kahva_vasen_sarake_malli.jpg` (A-D kirjaimin, valkoinen = vanha vapaa ellipsi), `tulokset/kahva_malli_kuusi.jpg`.
+
+**Käsin säädettävät esimerkkiellipsit (`luo_ellipsityokalu.py`, `ellipsityokalu_pohja.html`).** Käyttäjä voi raahata ellipsin neljää pistettä (A etureuna,
+B yläkärki, C takareuna, D alakärki) kahdeksassa ruudussa niin, että ellipsi sopii muoviin; piste liikkuu oman akselinsa suuntaan ja vastakkainen
+pää pysyy paikallaan (nuolinäppäimet 0,1 px). Alkuarvo on kiinteän kokoisen mallin ellipsi. Sivu on Artifact (tietokantakokoelma `ellipsit`, yksi
+dokumentti per ruutu: ellipsi ja pisteet ruutukoordinaateissa, alkuarvo, huomio). Sivun luonti:
+`python luo_ellipsityokalu.py VIDEO tulokset vasen --ulos sivu.html [--ruudut rata:Y,...]`. Käyttäjän tallentamat ellipsit ovat "oikea vastaus" mallin
+koon (A, B), sumeuden ja kärkien säätöön sekä ilman kokoa olettavan tunnistuksen arviointiin.
