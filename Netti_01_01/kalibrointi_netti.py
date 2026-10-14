@@ -340,7 +340,7 @@ def hogreunat(frame, malli, x_vali=(-225.0, 225.0), askel_cm=6.0):
     return f(inner), f(outer)
 
 
-def sovita_reunoilla(frame, malli, k1_vapaa=True, kierrokset=4, verbose=True):
+def sovita_reunoilla(frame, malli, k1_vapaa=True, kierrokset=4, verbose=True, hog_paino=1.0):
     """Parametrit: 8 homografian, k1 ja g = tumman alueen kutistuma kuvapikseleina (sumea ja teroitettu kuva: puolitasokohta
     on hieman tumman alueen sisapuolella; cm-virhe = g * cm/px reunan suunnassa -> suurempi radan suunnassa)."""
     centre = malli.centre
@@ -371,8 +371,8 @@ def sovita_reunoilla(frame, malli, k1_vapaa=True, kierrokset=4, verbose=True):
                     sign = 1.0 if RENGAS_REUNAT[nimi][2] else -1.0
                     parts.append(np.hypot(xy[:, 0], xy[:, 1]) - RINGS_CM[nimi] - sign * g * sc)
             if len(hog_in):
-                parts.append(m.kuva_fyysiseksi(hog_in)[:, 1] - HOG_Y_CM - gh * sc_in)
-                parts.append(m.kuva_fyysiseksi(hog_out)[:, 1] - (HOG_Y_CM + HOG_LEVEYS_CM) + gh * sc_out)
+                parts.append(hog_paino * (m.kuva_fyysiseksi(hog_in)[:, 1] - HOG_Y_CM - gh * sc_in))
+                parts.append(hog_paino * (m.kuva_fyysiseksi(hog_out)[:, 1] - (HOG_Y_CM + HOG_LEVEYS_CM) + gh * sc_out))
             for nimi, col in (("keskiviiva", 0), ("T-viiva", 1)):
                 if len(lp[nimi]) >= 3:
                     parts.append(m.kuva_fyysiseksi(lp[nimi])[:, col])
