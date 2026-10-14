@@ -58,22 +58,35 @@ Puolisko rajataan nyt y = 190...1080 (hack ja heittäjä mukaan); TV-grafiikka j
 ## Kiven tunnistus ja mittaus (`kivi_netti.py`, `aja_kivi.py`, `piirra_radat.py`)
 
 `python aja_kivi.py Recording.mp4 --puoli vasen --ulos tulokset --ikkunat 8-22,56-66,104-114` ->
-`tulokset/kivet_vasen.csv` (kaikki havainnot), `tulokset/radat_vasen.csv` (ketjutetut radat); `python piirra_radat.py tulokset vasen`
--> `tulokset/radat_vasen.png`.
+`tulokset/kivet_vasen.csv` (kaikki havainnot), `tulokset/radat_vasen.csv` (radat: raaka + tasoitettu paikka, nopeus);
+`python piirra_radat.py tulokset vasen` -> `tulokset/radat_vasen.png`. Oikealla puoliskolla ei heitetä (tässä videossa).
 
 * **Videon aikaperusta:** nauhoite on 25 r/s -virrasta 30 r/s:ksi, joten joka 6. ruutu on edellisen kopio (|ero|:n 99,9.
   persentiili < 15, oikeilla ruuduilla staattisessakin kuvassa >= 30). Kopiot ohitetaan ja aika = yksilöllisen ruudun
   järjestysnumero / 25 (muuten nopeus vaihtelee ±2 cm/ruutu).
-* **Esikäsittely:** puolisko rajataan ja käännetään kuten kalibroinnissa, k1 korjataan, tausta = moodikuva. Graniitti =
-  taustasta poikkeava, tumma, epäkylläinen (V 75-175, S < 70), kahva = vaalea/värillinen (S >= 45).
-* **Tunnistus:** siemenet graniittikomponenteista ja kahvakomponenteista; jokainen siemen sovitetaan kiven 3D-siluettimallilla
-  (kameran K, R, t; `kivimalli.build_local_stone_rings`) graniitti+kahva-maskiin (1 - IoU, koordinaattihaku), sitten alipikseli-
-  tarkennus alfa-kartalla (peittävyys taustan ja graniitin V:stä). Hylkäys: err > 0,5 tai peitto < 0,55.
-* **Ketjutus:** vakionopeusennuste, portti 18 cm + 8 cm/puuttuva ruutu, aukko enintään 14 ruutua.
-* **Tulos (vasen puolisko):** kolme heittoa seurataan hackista (Y ≈ -255 cm) hoglineen (Y = 640): t = 8-18 s, 59-64 s, 104-111 s.
-  Nopeus T-viivalla 2,0 / 2,0 / 2,4 m/s.
-* **Mitat (alustava):** siluettisovitus antaa R_max 15,6-16,1 cm (WCF max 14,55) ja H_total 12-16 cm (huonosti määrätty). Malli ei
-  sisällä kahvaa, joka työntyy rungon ulkopuolelle ja kasvattaa siluettia -> kahva pitää mallintaa erikseen ennen kuin mitat
-  ovat luotettavat.
-* **Tunnetut puutteet:** nopeuskäyrässä on kuoppia samoilla Y:n arvoilla kaikissa heitoissa (taustan renkaat/viivat vaikuttavat
-  alfakarttaan); Y-suunnan hajonta ~1,5-2,5 cm ruudulta (kamera katsoo radan suuntaan: 1 px = 1,3-3 cm).
+* **Esikäsittely:** puolisko rajataan ja käännetään kuten kalibroinnissa, k1 korjataan, tausta = moodikuva. Siemenet:
+  graniittimaski (taustasta poikkeava, V 75-175, S < 70) ja kahvamaski.
+* **Taustan vaikutus (korjattu):** graniitin peittävyys `alfa_kartta` lasketaan värien sekoitusmallista pikseli = a * graniitti
+  + (1 - a) * tausta, a = (p - b).(g - b) / |g - b|^2 (g = graniitin BGR (130, 126, 136), b = moodikuvan pikseli). Aiempi
+  V-suhde jakoi tumman taustan (punainen rengas) pienellä nimittäjällä, jolloin kiven varjo punaisella renkaalla näytti
+  graniitilta ja kiven reunapikselit sinisellä/punaisella renkaalla katosivat; nyt reuna on sama jäällä ja renkailla. Jään
+  varjo (a < 0,3) nollataan (0,5-taso säilyy).
+* **Kahva ja yläpinta (mallinnettu):** yläpinta on kiiltävä ja vaalea eikä näy graniittina, ja kahva (keltainen, sormet
+  peittävät) ei erotu sormista värillä. Siksi kiven yläpinnan ympyrä (z = H, sade 0,78 R) ja kahvan yläympyrä (sade 0,5 R,
+  8 cm yläpinnan yläpuolella) muodostavat "ei väliä" -alueen (kupera peite), jossa siluetti ei saa eikä menetä. Graniittina
+  mitataan vain sivuseinä + reuna (puolikuu); sovitus: 1 - IoU alipikselitarkkuudella (siluetti 4x ylinäytteistetty).
+* **Mitat:** R_max 15,59 / 15,68 / 15,85 cm ja H_total 15,59 / 15,51 / 16,12 cm kolmessa heitossa (keskiarvo R 15,7, H 15,7;
+  nimellinen WCF max R 14,55). Oikean kameran yksi saapuva kivi: R 14,9, H 16,1 (10 havaintoa, huono sovitus). Mittojen
+  hajonta heitosta toiseen on alle 0,3 cm, joten ne toistuvat, mutta ovat ~8 % nimellistä suuremmat (lateraalinen leveys
+  72 px vs 67 px nimellisellä); syy auki: kiven profiili on yksinkertainen malli, mahdollinen pikselien anisotropia tai
+  mittakaava. Oletuksena käytetään mitattuja (MITATTU_R_CM, MITATTU_H_CM), koska kiven jalan paikka Y riippuu H:sta (kamera
+  katsoo radan suuntaan: 4 cm korkeusvirhe ~ 9 cm Y-virhe).
+* **Ketjutus ja aukkojen täyttö:** vakionopeusennuste (portti 18 cm + 8 cm/puuttuva ruutu, aukko enintään 14 ruutua); jäljelle
+  jääneet aukot (kasi/vartalo kiven päällä, tunnistus ei löydä) täytetään sovittamalla siluetti interpoloidusta paikasta.
+* **Tasoitus:** paikallinen 2. asteen sovitus +-6 ruutua, painot 1/(err + 0,1)^2.
+* **Tulos (vasen puolisko):** kolme heittoa seurataan hackista (Y ~ -255 cm) hoglineen (Y = 640): t = 8-18 s, 59-64 s,
+  104-111 s. Nopeus T-viivalla ~1,9 / 2,0 / 2,3 m/s. Heitto 1 kulkee 5,5 astetta oikealle (X: -5 -> 84 cm), 2 ja 3 lähes suoraan.
+* **Tunnetut puutteet:** nopeuskäyrässä on ~±0,3 m/s aaltoilua (jakso ~160-190 cm, kaikissa heitoissa); todennäköinen syy on
+  heittäjän/lakaisijoiden jalkojen ja käsien ajoittainen peittäminen (askelrytmi ~1 Hz), ei vielä varmistettu. Y-hajonta
+  ruudulta ~1,5-2,5 cm (1 px = 1,3-3 cm radan suunnassa). Varsinaiseen liu'un/irroituksen tunnistukseen tarvitaan lisäksi
+  kiven ja käden etäisyys (kahvan ympärillä oleva sormiaukko), joka on seuraava vaihe.

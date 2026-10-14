@@ -35,7 +35,7 @@ def _tyo(i):
     if fr is None:
         return i, []
     dets, (fg, g, h) = kv.tunnista(cam, kivi, fr)
-    al = kv.alfa_kartta(cam, fr, g, h)
+    al = kv.alfa_kartta(cam, fr, g)
     out = []
     for d in dets:
         X, Y, e = kv.sovita_pehmea(cam, kivi, al, d["X"], d["Y"])
@@ -69,8 +69,8 @@ def yksilolliset_ruudut(video, ikkunat, puoli="vasen"):
 
 
 def ketjuta(rows, portti_cm=18.0, portti_per_ruutu_cm=8.0, max_aukko=14, min_pisteet=10, min_siirtyma_cm=150.0):
-    """rows: [(frame, k, X, Y, err)] -> radat: listat (t, X, Y, err), t = radan ensimmaisen ruudun f/30 + (k - k0)/25
-    (yksilollisten ruutujen tasavali, ei kopioruutuja). Vakionopeusennuste: havainto liitetaan rataan, jonka ennustettu
+    """rows: [(frame, k, X, Y, err)] -> radat: listat (frame, k, X, Y, err) (aikaleimaa() antaa t = radan ensimmaisen ruudun
+    f/30 + (k - k0)/25: yksilollisten ruutujen tasavali, ei kopioruutuja). Vakionopeusennuste: havainto liitetaan rataan, jonka ennustettu
     paikka on lahinna (portti portti_cm + portti_per_ruutu_cm per puuttuva ruutu); aukko enintaan max_aukko ruutua."""
     rows = sorted(rows)
     tracks = []
@@ -109,9 +109,63 @@ def ketjuta(rows, portti_cm=18.0, portti_per_ruutu_cm=8.0, max_aukko=14, min_pis
     keep = []
     for tr in tracks:
         if len(tr) >= min_pisteet and np.hypot(tr[-1][2] - tr[0][2], tr[-1][3] - tr[0][3]) >= min_siirtyma_cm:
-            f0, k0 = tr[0][0], tr[0][1]
-            keep.append([(f0 / 30.0 + (d[1] - k0) / FPS_LAHDE, d[2], d[3], d[4]) for d in tr])
+            keep.append(tr)
     return keep
+
+
+def taydenna(radat_raaka, ruudut, cam, kivi, cap, max_err=0.55, max_poikkeama_cm=12.0):
+    """Aukkojen taytto: radan puuttuvissa yksilollisissa ruuduissa sovitetaan siluetti lineaarisesti interpoloidusta paikasta
+    (ilman erillista tunnistusta, joka epaonnistuu kun kasi/vartalo peittaa kiven). Hyvaksytaan jos err <= max_err ja paikka
+    on enintaan max_poikkeama_cm interpoloidusta. radat_raaka: ketjuta() ennen ajan muunnosta: listat (frame, k, X, Y, err)."""
+    k2f = {}
+    for f, k in ruudut:
+        k2f.setdefault(k, f)
+    out = []
+    for tr in radat_raaka:
+        tr = sorted(tr, key=lambda d: d[1])
+        uusi = list(tr)
+        for a, b in zip(tr[:-1], tr[1:]):
+            for k in range(a[1] + 1, b[1]):
+                f = None
+                # ikkunoiden rajoilla k ei ole yksikasitteinen: etsi ruutu jonka numero on a:n ja b:n valissa
+                for ff, kk in ruudut:
+                    if kk == k and a[0] < ff < b[0]:
+                        f = ff
+                        break
+                if f is None:
+                    continue
+                u = (k - a[1]) / (b[1] - a[1])
+                X0, Y0 = a[2] + u * (b[2] - a[2]), a[3] + u * (b[3] - a[3])
+                fr = cam.ruutu(cap, f)
+                fg, g, h = cam.maskit(fr)
+                X, Y, e = kv.sovita_pehmea(cam, kivi, kv.alfa_kartta(cam, fr, g), X0, Y0)
+                if e <= max_err and np.hypot(X - X0, Y - Y0) <= max_poikkeama_cm:
+                    uusi.append((f, k, X, Y, e))
+        out.append(sorted(uusi, key=lambda d: d[1]))
+    return out
+
+
+def aikaleimaa(tr):
+    f0, k0 = tr[0][0], tr[0][1]
+    return [(f0 / 30.0 + (d[1] - k0) / FPS_LAHDE, d[2], d[3], d[4]) for d in tr]
+
+
+def silota(tr, puoli_ikkuna=6, min_paino_err=0.1):
+    """Radan tasoitus: paikallinen toisen asteen sovitus +-puoli_ikkuna havaintoa, painot 1 / (err + 0,1)^2 (huonosti sopivat
+    ruudut -- kasi tai vartalo kiven paalla -- vaikuttavat vahemman). Palauttaa taulukon (t, X, Y, vX, vY, v) [cm, cm/s]."""
+    a = np.array(tr, dtype=np.float64)
+    t, X, Y, e = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+    out = np.zeros((len(t), 6))
+    for i in range(len(t)):
+        j0, j1 = max(0, i - puoli_ikkuna), min(len(t), i + puoli_ikkuna + 1)
+        w = 1.0 / (e[j0:j1] + min_paino_err) ** 2
+        tt = t[j0:j1] - t[i]
+        deg = 2 if (j1 - j0) >= 5 else 1
+        cx = np.polyfit(tt, X[j0:j1], deg, w=np.sqrt(w))
+        cy = np.polyfit(tt, Y[j0:j1], deg, w=np.sqrt(w))
+        vx, vy = cx[-2], cy[-2]
+        out[i] = (t[i], cx[-1], cy[-1], vx, vy, np.hypot(vx, vy))
+    return out
 
 
 if __name__ == "__main__":
@@ -139,13 +193,17 @@ if __name__ == "__main__":
                 wr.writerow([i, kmap[i], f"{i / fps:.3f}", f"{X:.2f}", f"{Y:.2f}", f"{e:.3f}", f"{p:.3f}"])
                 rows.append((i, kmap[i], X, Y, e))
     radat = ketjuta(rows)
+    cam = kv.Kamera(a.puoli, os.path.join(a.ulos, f"kalibrointi_{a.puoli}.json"), os.path.join(a.ulos, f"moodikuva_{a.puoli}.png"))
+    radat = taydenna(radat, ruudut, cam, kv.Kivi(), cv2.VideoCapture(a.video))
+    radat = [aikaleimaa(tr) for tr in radat]
     path2 = os.path.join(a.ulos, f"radat_{a.puoli}.csv")
     with open(path2, "w", newline="") as f:
         wr = csv.writer(f)
-        wr.writerow(["rata", "t_s", "X_cm", "Y_cm", "err"])
+        wr.writerow(["rata", "t_s", "X_cm", "Y_cm", "err", "X_tasoitettu_cm", "Y_tasoitettu_cm", "vX_cm_s", "vY_cm_s", "v_cm_s"])
         for k, tr in enumerate(radat):
-            for t, X, Y, e in tr:
-                wr.writerow([k, f"{t:.3f}", f"{X:.2f}", f"{Y:.2f}", f"{e:.3f}"])
+            sm = silota(tr)
+            for (t, X, Y, e), q in zip(tr, sm):
+                wr.writerow([k, f"{t:.3f}", f"{X:.2f}", f"{Y:.2f}", f"{e:.3f}", f"{q[1]:.2f}", f"{q[2]:.2f}", f"{q[3]:.1f}", f"{q[4]:.1f}", f"{q[5]:.1f}"])
     print(path, len(rows), "havaintoa;", path2, len(radat), "rataa:")
     for k, tr in enumerate(radat):
         print(f"  rata {k}: t {tr[0][0]:.2f}-{tr[-1][0]:.2f} s, {len(tr)} pistetta, Y {tr[0][2]:.0f} -> {tr[-1][2]:.0f} cm, X {tr[0][1]:.0f} -> {tr[-1][1]:.0f} cm")

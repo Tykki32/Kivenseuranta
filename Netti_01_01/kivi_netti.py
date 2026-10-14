@@ -96,10 +96,17 @@ def komponentit(mask, min_area=150):
 SHIFT = 4        # alipikselipiirto (cv2.fillConvexPoly, 1/16 px)
 
 
+# Nettivideosta mitatut siluettimitat (vasen kamera, kolme heittoa, varien sekoitusalfa: R 15,59 / 15,68 / 15,85, H 15,59 / 15,51 / 16,12; oikea kamera
+# yksi saapuva kivi: R 14,9, H 16,1): nimellista (WCF max R 14,55, H 11,4) suuremmat, koska siluetti sisaltaa pyoristetyn
+# ylareunan ja mallin profiili on yksinkertainen. Kaytetaan mallin oletuksena, jotta paikka (jalan kohta) ei vinoudu.
+MITATTU_R_CM = 15.7
+MITATTU_H_CM = 15.7
+
+
 class Kivi:
     """Kiven 3D-malli (graniittirunko, kivimalli.build_local_stone_rings) ja sen siluetti kuvassa."""
 
-    def __init__(self, R_max=kivimalli.STONE_NOMINAL_RADIUS_CM, H_total=kivimalli.STONE_HEIGHT_CM):
+    def __init__(self, R_max=MITATTU_R_CM, H_total=MITATTU_H_CM):
         self.set_mitat(R_max, H_total)
 
     def set_mitat(self, R_max, H_total):
@@ -228,37 +235,69 @@ def piirra(frame, dets, gran=None, handle=None):
 
 
 # =====================================================================================================================
-# PEHMEA (ALIPIKSELI) SOVITUS: alfa-havainto + ylinaytteistetty siluetti
+# PEHMEA (ALIPIKSELI) SOVITUS: alfa-havainto + ylinaytteistetty siluetti, kahva = "ei valia"-alue
 # =====================================================================================================================
 G_TASO = 135.0           # graniitin tyypillinen V (alfa = 1)
+JAA_V = 235.0            # jaan V, jos moodikuvan pikseli ei ole jaata
 SS = 4                   # siluetin ylinaytteistus
+NEUTRAALI_S = 50         # graniitti on vareetonta: S alle taman (varjo punaisella/sinisella renkaalla ei ole)
+VARJO_ALARAJA = 0.3      # alfa < tama = jaan varjo -> 0 (0,5-taso sailyy: alfa' = (a - 0,3) / 0,4)
+
+# Ylapinta ja kahva: kiven ylapinta (ympyra z = H, sade TOP_R_FRAC * R) on valkoisen kiilteen takia vaalea eika nay graniittina,
+# ja kahva (pystysylinteri akselilla, sade HANDLE_R_FRAC * R, korkeus HANDLE_H_CM ylapinnan ylapuolelle) peittaa ylapintaa.
+# Niiden yhteinen siluetti (+ heittajan kasi) on "ei valia"-aluetta: siella siluetti ei saa eika menetta. Graniittina nakyy
+# vain sivuseina + reuna (puolikuu).
+TOP_R_FRAC = 0.78
+HANDLE_R_FRAC = 0.5
+HANDLE_H_CM = 8.0
 
 
-def alfa_kartta(cam, frame, gran, handle):
-    """Graniitin peittavyys 0..1 (taustan V:n ja graniittitason V:n suhde), vain graniittimaskin (laajennetun) alueella;
-    kahva = 1. 0,5-taso on kiven reuna ilman maskikynnyksen harhaa."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    vbg = cam.mode_hsv[..., 2].astype(np.float32)
-    a = np.clip((vbg - hsv[..., 2].astype(np.float32)) / np.maximum(vbg - G_TASO, 30.0), 0.0, 1.0)
+GRANIITTI_BGR = np.array([130.0, 126.0, 136.0])      # graniitin mitattu vari (kuvan mediaani)
+
+
+def alfa_kartta(cam, frame, gran, handle=None):
+    """Graniitin peittavyys 0..1 varien sekoitusmallista: pikseli = a * graniitti + (1 - a) * tausta (tausta = moodikuva
+    pikselille), a = (p - b) . (g - b) / |g - b|^2. Toimii samoin jaalla ja sinisella/punaisella renkaalla: renkaan pikseli
+    ilman kivea antaa a = 0, ja jaan/renkaan varjo (tumma tausta, sama savy) antaa vain pienen a:n, koska (p - b) on b:n
+    suuntainen eika graniitin suuntainen. Jaan varjo (a < VARJO_ALARAJA) nollataan; 0,5-taso sailyy: a' = (a - 0,3) / 0,4.
+    Vain graniittimaskin laajennetulla alueella ja kun |g - b| on riittava."""
+    b = cam.mode.astype(np.float32)
+    p = frame.astype(np.float32)
+    d = GRANIITTI_BGR.astype(np.float32)[None, None, :] - b
+    dd = np.sum(d * d, axis=2)
+    a = np.sum((p - b) * d, axis=2) / np.maximum(dd, 1.0)
+    a = np.where(dd > 2500.0, a, 0.0)
+    a = np.clip((np.clip(a, 0.0, 1.0) - VARJO_ALARAJA) / (1.0 - 2.0 * VARJO_ALARAJA), 0.0, 1.0)
+    hsv_v = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[..., 2]
     near = cv2.dilate(gran, np.ones((5, 5), np.uint8)) > 0
-    a = np.where(near & (hsv[..., 1] < 90), a, 0.0)
-    hd = cv2.dilate(handle, np.ones((3, 3), np.uint8)) > 0
-    return np.where(hd, 1.0, a).astype(np.float32)
+    return np.where(near & (hsv_v > 60), a, 0.0).astype(np.float32)
 
 
-def peitto_kartta(cam, kivi, X, Y, ikkuna):
-    """Siluetin peittoaste 0..1 ikkunassa (ylinaytteistettu)."""
+def _ylinaytteista(h, ikkuna):
     x0, y0, x1, y1 = ikkuna
-    h = (kivi.hull(cam, X, Y) - np.array([x0, y0], dtype=np.float32)) * SS
+    hh = (h - np.array([x0, y0], dtype=np.float32)) * SS
     m = np.zeros(((y1 - y0) * SS, (x1 - x0) * SS), np.uint8)
-    cv2.fillConvexPoly(m, np.round(h * 16).astype(np.int32), 255, cv2.LINE_8, 4)
+    cv2.fillConvexPoly(m, np.round(hh * 16).astype(np.int32), 255, cv2.LINE_8, 4)
     return cv2.resize(m, (x1 - x0, y1 - y0), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
 
 
-def pehmea_virhe(cam, kivi, alfa, X, Y, ikkuna):
-    c = peitto_kartta(cam, kivi, X, Y, ikkuna)
+def kahva_hull(cam, kivi, X, Y):
+    """Ei valia -alueen siluetti: ylapinnan ympyra + kahvan ylaympyra (kupera peite)."""
+    th = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False)
+    pts = [[X + TOP_R_FRAC * kivi.R_max * np.cos(a), Y + TOP_R_FRAC * kivi.R_max * np.sin(a), kivi.H_total] for a in th]
+    pts += [[X + HANDLE_R_FRAC * kivi.R_max * np.cos(a), Y + HANDLE_R_FRAC * kivi.R_max * np.sin(a), kivi.H_total + HANDLE_H_CM] for a in th]
+    u, v = kivimalli.project_3d(cam.K, cam.R, cam.t, np.array(pts))
+    return cv2.convexHull(np.column_stack([u, v]).astype(np.float32))[:, 0, :]
+
+
+def pehmea_virhe(cam, kivi, alfa, X, Y, ikkuna, kahva_ei_valia=True):
+    c = _ylinaytteista(kivi.hull(cam, X, Y), ikkuna)
     o = alfa[ikkuna[1]:ikkuna[3], ikkuna[0]:ikkuna[2]]
-    return 1.0 - float(np.minimum(c, o).sum()) / max(float(np.maximum(c, o).sum()), 1.0)
+    if kahva_ei_valia:
+        w = 1.0 - _ylinaytteista(kahva_hull(cam, kivi, X, Y), ikkuna)
+    else:
+        w = 1.0
+    return 1.0 - float((np.minimum(c, o) * w).sum()) / max(float((np.maximum(c, o) * w).sum()), 1.0)
 
 
 def sovita_pehmea(cam, kivi, alfa, X0, Y0, askel0=2.0):
