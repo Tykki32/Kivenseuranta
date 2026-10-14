@@ -14,6 +14,7 @@ from multiprocessing import Pool
 import cv2
 import numpy as np
 
+import aikaperusta as aikap
 import kivi_netti as kv
 import kivi_tarkka as kt
 
@@ -238,6 +239,9 @@ if __name__ == "__main__":
     radat = ketjuta(rows)
     cam = kv.Kamera(a.puoli, os.path.join(a.ulos, f"kalibrointi_{a.puoli}.json"), os.path.join(a.ulos, f"moodikuva_{a.puoli}.png"))
     radat = taydenna(radat, ruudut, cam, kt.Runko.lataa(a.ulos, a.puoli), cv2.VideoCapture(a.video))
+    # todellinen aikaperusta (aikaperusta.py): jokaiselle radalle oma aikajana; tunnistamatta jaaneet kopioruudut pois
+    aikajanat = [aikap.Aikajana([d[0] for d in tr], [d[3] for d in tr]) for tr in radat]
+    radat = [[d for d in tr if int(d[0]) not in aj.kopio] for tr, aj in zip(radat, aikajanat)]
     # kahvan variseuranta (ei siluettia): siemen = radan ensimmainen piste jossa kivi on liikkeella (Y > -230)
     vari_radat = []
     for tr in radat:
@@ -245,24 +249,27 @@ if __name__ == "__main__":
         u, v = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[q[2], q[3], kv.KAHVA_Z_CM]]))
         vari = valitse_vari(cam, cv2.VideoCapture(a.video), ruudut, q[0], (u[0], v[0]))
         vari_radat.append((vari, vari_seuranta(cam, cv2.VideoCapture(a.video), ruudut, q[0], (u[0], v[0]), vari)))
-    radat = [aikaleimaa(tr) for tr in radat]
+    radat_f = radat
+    radat = [aikaleimaa(tr) for tr in radat_f]
     path2 = os.path.join(a.ulos, f"radat_{a.puoli}.csv")
     with open(path2, "w", newline="") as f:
         wr = csv.writer(f)
-        wr.writerow(["rata", "t_s", "X_cm", "Y_cm", "err", "X_tasoitettu_cm", "Y_tasoitettu_cm", "vX_cm_s", "vY_cm_s", "v_cm_s"])
-        for k, tr in enumerate(radat):
-            sm = silota(tr)
-            for (t, X, Y, e), q in zip(tr, sm):
-                wr.writerow([k, f"{t:.3f}", f"{X:.2f}", f"{Y:.2f}", f"{e:.3f}", f"{q[1]:.2f}", f"{q[2]:.2f}", f"{q[3]:.1f}", f"{q[4]:.1f}", f"{q[5]:.1f}"])
+        wr.writerow(["rata", "t_s", "X_cm", "Y_cm", "err", "X_tasoitettu_cm", "Y_tasoitettu_cm", "vX_cm_s", "vY_cm_s", "v_cm_s", "ruutu", "t_kor_s"])
+        for k, (tf, tr, aj) in enumerate(zip(radat_f, radat, aikajanat)):
+            tk = aj.aika([d[0] for d in tf])
+            sm = silota([(tkk, X, Y, e) for tkk, (_, X, Y, e) in zip(tk, tr)])
+            for d, (t, X, Y, e), q, tkk in zip(tf, tr, sm, tk):
+                wr.writerow([k, f"{t:.3f}", f"{X:.2f}", f"{Y:.2f}", f"{e:.3f}", f"{q[1]:.2f}", f"{q[2]:.2f}", f"{q[3]:.1f}", f"{q[4]:.1f}", f"{q[5]:.1f}", d[0], f"{tkk:.3f}"])
     path3 = os.path.join(a.ulos, f"kahvaradat_{a.puoli}.csv")
     with open(path3, "w", newline="") as f:
         wr = csv.writer(f)
-        wr.writerow(["rata", "vari", "t_s", "X_cm", "Y_cm", "kahvan_ala_px", "X_tasoitettu_cm", "Y_tasoitettu_cm", "vX_cm_s", "vY_cm_s", "v_cm_s"])
-        for k, (vari, tr) in enumerate(vari_radat):
+        wr.writerow(["rata", "vari", "t_s", "X_cm", "Y_cm", "kahvan_ala_px", "X_tasoitettu_cm", "Y_tasoitettu_cm", "vX_cm_s", "vY_cm_s", "v_cm_s", "ruutu", "t_kor_s"])
+        for k, ((vari, tr), aj) in enumerate(zip(vari_radat, aikajanat)):
             tt = aikaleimaa(tr)
-            sm = silota([(t, X, Y, 0.2) for t, X, Y, _ in tt])
-            for d, (t, X, Y, _), q in zip(tr, tt, sm):
-                wr.writerow([k, vari, f"{t:.3f}", f"{d[2]:.2f}", f"{d[3]:.2f}", d[4], f"{q[1]:.2f}", f"{q[2]:.2f}", f"{q[3]:.1f}", f"{q[4]:.1f}", f"{q[5]:.1f}"])
+            tk = aj.aika([d[0] for d in tr])
+            sm = silota([(tkk, X, Y, 0.2) for tkk, (_, X, Y, _) in zip(tk, tt)])
+            for d, (t, X, Y, _), q, tkk in zip(tr, tt, sm, tk):
+                wr.writerow([k, vari, f"{t:.3f}", f"{d[2]:.2f}", f"{d[3]:.2f}", d[4], f"{q[1]:.2f}", f"{q[2]:.2f}", f"{q[3]:.1f}", f"{q[4]:.1f}", f"{q[5]:.1f}", d[0], f"{tkk:.3f}"])
     print(path, len(rows), "havaintoa;", path2, len(radat), "rataa;", path3)
     for k, tr in enumerate(radat):
         print(f"  rata {k}: t {tr[0][0]:.2f}-{tr[-1][0]:.2f} s, {len(tr)} pistetta, Y {tr[0][2]:.0f} -> {tr[-1][2]:.0f} cm, X {tr[0][1]:.0f} -> {tr[-1][1]:.0f} cm")

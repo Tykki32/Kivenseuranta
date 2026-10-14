@@ -1,0 +1,6 @@
+{
+ "_selite": "Silmin todettu irtoaminen kontaktiarkeista (ruutu kerrallaan, kaikki yksilolliset ruudut): ruutu_ote = viimeinen ruutu, jossa sormet viela pitavat kahvasta; ruutu_irti = ensimmainen ruutu, jossa sormien ja kahvan valilla on selva rako. Ruudut ovat 30 r/s -videon ruutunumeroita (radat_vasen.csv, sarake ruutu). Fysikaalinen irroitus on valissa ruutu_ote ... ruutu_irti (+-1 ruutu lukuepavarmuus). Korjaa tarvittaessa.",
+ "0": {"ruutu_ote": 496, "ruutu_irti": 502, "lahde": "keltainen kahva: sormet kietoutuneina sarveen ruutuun 496 asti, sormenpaat koskettavat viela sarven karjessa ruuduissa 498-501, rako ruudussa 502"},
+ "1": {"ruutu_ote": 1880, "ruutu_irti": 1884, "lahde": "punainen kahva: ote kahvassa ruutuun 1880 asti, sormenpaat sarven karjessa ruuduissa 1881-1883, rako ruudussa 1884"},
+ "2": {"ruutu_ote": 3309, "ruutu_irti": 3314, "lahde": "keltainen kahva: ote kahvassa ruutuun 3309 asti, sormenpaat sarven karjessa ruuduissa 3310-3313, rako ruudussa 3314"}
+}

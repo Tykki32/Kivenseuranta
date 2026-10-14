@@ -73,9 +73,9 @@ paitsi minikartan alareuna.
 `tulokset/kivet_vasen.csv` (kaikki havainnot), `tulokset/radat_vasen.csv` (radat: raaka + tasoitettu paikka, nopeus);
 `python piirra_radat.py tulokset vasen` -> `tulokset/radat_vasen.png`. Oikealla puoliskolla ei heitetä (tässä videossa).
 
-* **Videon aikaperusta:** nauhoite on 25 r/s -virrasta 30 r/s:ksi, joten joka 6. ruutu on edellisen kopio (|ero|:n 99,9.
-  persentiili < 15, oikeilla ruuduilla staattisessakin kuvassa >= 30). Kopiot ohitetaan ja aika = yksilöllisen ruudun
-  järjestysnumero / 25 (muuten nopeus vaihtelee ±2 cm/ruutu).
+* **Videon aikaperusta:** nauhoite on 25 r/s -virrasta 30 r/s:ksi, joten joka 6. ruutu on edellisen kopio (|ero|:n 99,9. persentiili < 15, oikeilla ruuduilla
+  staattisessakin kuvassa >= 30). Kopiot ohitetaan; `t_s` = ikkunan alku + yksilöllisen ruudun järjestysnumero / 25 on kuitenkin vain RUUTUAVAIN (kaikki muut tiedostot
+  hakevat ruudun sillä), EI todellinen aika: lähdevirrasta puuttuu ruutuja. Todellinen aika `t_kor_s` ja ruutunumero `ruutu` ovat `radat_*.csv`:ssä, ks. "Videon todellinen aikaperusta".
 * **Esikäsittely:** puolisko rajataan ja käännetään kuten kalibroinnissa, k1 korjataan, tausta = moodikuva. Siemenet:
   graniittimaski (taustasta poikkeava, V 75-175, S < 70) ja kahvamaski.
 * **Taustan vaikutus (korjattu):** graniitin peittävyys `alfa_kartta` lasketaan värien sekoitusmallista pikseli = a * graniitti
@@ -91,14 +91,34 @@ paitsi minikartan alareuna.
   jääneet aukot (kasi/vartalo kiven päällä, tunnistus ei löydä) täytetään sovittamalla siluetti interpoloidusta paikasta.
 * **Tasoitus:** paikallinen 2. asteen sovitus +-6 ruutua, painot 1/(err + 0,1)^2.
 * **Tulos (vasen puolisko, korjattu kamera + tarkka runkomalli):** kolme heittoa seurataan hackista (Y ~ -300 cm) kuvan reunaan (Y ~ 750 cm, hogline
-  Y = 640): t = 8,3-17,8 s (229 pistettä), 59,0-63,9 s (105), 106,0-110,9 s (111). Keskinopeus Y = 300...500 cm: 1,94 / 2,17 / 2,81 m/s (vanhalla, virheellisellä
-  asennolla 1,70 / 1,95 / 2,33 m/s: 11-20 % liian pieniä). Heitto 1 kulkee 4,3 astetta oikealle (X: 17 -> 65 cm T-viivasta hoglinelle), heitot 2 ja 3 lähes suoraan
+  Y = 640): t = 8,3-17,8 s (229 pistettä), 59,0-63,9 s (105), 106,0-110,9 s (111). Keskinopeus Y = 300...500 cm: 1,94 / 2,17 / 2,76 m/s k/25-aikaperustalla (vanhalla,
+  virheellisellä asennolla 1,70 / 1,95 / 2,33 m/s) ja 1,86 / 2,09 / 2,49 m/s todellisella aikaperustalla ("Videon todellinen aikaperusta", nykyiset `radat_*.csv`-arvot). Heitto 1 kulkee 4,3 astetta oikealle (X: 17 -> 65 cm T-viivasta hoglinelle), heitot 2 ja 3 lähes suoraan
   (+0,6 / -0,6 astetta). Hogline-ylityksen jälkeen kivi on kuvan reunassa (Y > 640: kiven oikea osa leikkautuu pois, malli sovitetaan näkyvään osaan).
   Ketjutus ei enää yhdistä eri ikkunoiden (8-22, 56-66, 104-114 s) ruutuja toisiinsa, ja radan on edettävä vähintään 500 cm.
-* **Tunnetut puutteet:** nopeuskäyrässä on ~±0,3 m/s aaltoilua (jakso ~1 s, kaikissa heitoissa, myös vapaasti liukuvalla kivellä Y > 550 cm). Syy on aikaperustassa, ei
-  mittauksessa: kiven siluettiseurannan ja kahvan väriseurannan Y-jäännökset (paikallinen 2. asteen sovitus) korreloivat 0,91-0,94 ja ovat yhtä suuret (1,2-1,9 cm = ~8 ms
-  nopeudella 2,2 m/s), kun taas sivusuunnassa (aikaperusta ei vaikuta) hajonta on vain 0,03-0,16 cm. Suora seuraus: radan suunnan nopeus ja kiihtyvyys on laskettava
-  tasoitetusta radasta, ja liu'un/irroituksen tunnistus kannattaa tehdä paikasta (kiven ja käden/kahvan suhteellinen liike), ei raakanopeudesta.
+* **Aiemmin tunnettu puute (korjattu):** nopeuskäyrässä oli ~±0,2-0,3 m/s aaltoilua (jakso ~1 s, kaikissa heitoissa, myös vapaasti liukuvalla kivellä), jonka tulkittiin
+  johtuvan videon ruutuajoituksesta eikä korjattavan. Syy oli kuitenkin ruutuaikaperustassa k/25: lähdevirrasta puuttuu ruutuja, ja ajan voi lukea kiven omasta siirtymästä
+  (ks. seuraava luku). Korjauksen jälkeen vapaan lennon nopeuden hajonta on 0,03-0,06 m/s (ennen 0,12-0,21).
+* **Ohjatun vaiheen häiriöt:** kun heittäjän vartalo on kiven vieressä (Y ~ -100...200 cm), siluettiseurannan Y-paikassa on yksittäisiä 3-10 cm:n poikkeamia ja radassa
+  aukkoja (jopa ~10 ruutua); `err`-sarake ei paljasta niitä. Liu'un/irroituksen tunnistus käyttää siksi robustia (Huber) sovitusta.
+
+### Videon todellinen aikaperusta (`aikaperusta.py`, `aja_kivi.py`)
+
+Aiempi oletus "aika = yksilöllisen ruudun järjestysnumero / 25" oli väärä. Nauhoitteessa on säännöllisen 25 -> 30 r/s -muunnoksen kopioruutujen (joka 6.) lisäksi ylimääräisiä
+kopioruutuja: lähdevirrasta puuttuu tai viivästyy ruutuja, jolloin 30 r/s -videossa näkyy ylimääräinen kopio ja seuraavassa ruudussa kivi on siirtynyt KAKSI ruutuväliä
+(8 cm nopeudella 2 m/s). Yksilöllisiä ruutuja on kiven liikkuessa 22,8-23,8 / s eikä 25 / s, joten k/25 jää jälkeen ja nopeus ja kiihtyvyys heilahtelevat. Kumpikaan yksinkertainen aikaperusta ei sovi: ruutunumero / 30 antaa 25 -> 30 r/s -muunnoksen 6 ruudun sahalaidan (0...27 ms, vapaan lennon Y(t)-sovituksen jäännöksessä +-2-3 cm) ja k/25 jää jälkeen aina,
+kun lähdevirrasta puuttuu ruutu (askel 40 ms).
+
+**Menetelmä** (`aikaperusta.Aikajana`): jokaiselle radan näytteelle määritetään LÄHDEVIRRAN RUUTUINDEKSI j (kokonaisluku) kiven siirtymästä. Kahden peräkkäisen näytteen Y-ero jaetaan
+paikallisella nopeudella (nopeus 30 r/s -kellosta, tarkkuus ~2 %, riittää kokonaisluvun arviointiin): nopeudella 2 m/s yksi ruutuväli on 8 cm ja Y-kohina 0,5-0,9 cm, joten ruutujen
+määrä (1, 2, 3, ...) on yksiselitteinen. Hitaassa vaiheessa (alle 3 cm/ruutu eli alle 0,75 m/s: lepo ja työnnön alku) j luetaan 30 r/s -ruutunumeroiden hilasta ensimmäisestä nopeasta
+näytteestä taaksepäin (+-1 ruutu). Jos kaksi peräkkäistä näytettä on samassa paikassa (|dY| < 1 cm) vaikka kivi liikkuu, myöhempi on tunnistamatta jäänyt kopioruutu ja se pudotetaan
+(3 / 1 / 0 näytettä). Aika `t_kor_s` = j / 25 + vakio (vakio: sama kuin videon aika ensimmäisessä nopeassa näytteessä). Sama aikajana (ruutunumero -> t) kelpaa kahvaradalle.
+Koska j on kokonaisluku, korjaus ei voi "sovittaa kohinaa": alle ruutuvälin aikavirhe jää näkyviin.
+
+**Tulos** (vapaa lento Y > 480 cm, Y(t):n 2. asteen sovituksen jäännöksen RMS): 3,3 / 2,1 / 2,5 cm (k/25) -> 0,55 / 0,67 / 0,78 cm; vapaan lennon nopeuden hajonta (Y 550...730) 0,21 / 0,12 / 0,14 -> 0,03 / 0,06 / 0,06 m/s;
+keskinopeus Y = 300...500: 1,94 / 2,17 / 2,76 -> 1,86 / 2,09 / 2,49 m/s; vapaan lennon hidastuvuus -0,06 ... -0,10 m/s2 (uskottava). Videon kello jää lähdevirran kellosta 0,10 / 0,15 / 0,10 s heiton loppuun mennessä
+(1,7 / 2,9 / 2,2 % ensimmäisestä nopeasta näytteestä lukien). `radat_*.csv` ja `kahvaradat_*.csv` saivat sarakkeet `ruutu` (30 r/s -ruutunumero) ja `t_kor_s` (todellinen aika); tasoitus ja nopeudet lasketaan `t_kor_s`:stä
+(`piirra_radat.py` myös). `t_s` säilyy ruutuavaimena. Päivitys: `python aja_kivi.py VIDEO --puoli vasen --ulos tulokset --ketjuta-vain`; tarkistus: `python aikaperusta.py tulokset vasen VIDEO`.
 
 ### Väriseuranta (kahva) ja vertailu siluettiseurantaan (`aja_kivi.py`, `vertaa_seurannat.py`)
 
@@ -114,10 +134,8 @@ edellinen keskipiste + edellinen siirtymä; väri valitaan automaattisesti (20 r
 * Y > 250 cm: väri- ja siluettiseuranta eroavat vakiolla ~2 cm (riippuu oletetusta kahvan korkeudesta) ja vaihtelevat alle 1 cm.
 * Y < 250 cm (heittäjän käsi kahvan päällä): värimaskin sivusuuntainen hajonta on selvästi isompi (sormet peittävät kahvaa) -> hyödyllinen
   vihje irroitukseen.
-* **Nopeuden aaltoilu ±0,2 m/s (jakso 0,9-1,0 s) on samanlainen molemmilla menetelmillä ja jatkuu vapaana liikkuvalla kivellä, joten se ei
-  johdu seurannasta, taustaviivoista eikä kahvasta.** Jakso on sama kolmessa heitossa (nopeudet 1,7-2,3 m/s), eli se on aikaperusteinen
-  (videon ruutuajoitus), ei paikkaperusteinen. Vaihe ei ole sama kolmessa heitossa (koherenssi 0,45), joten sitä ei voi korjata yhdellä
-  yhteisellä aikamallilla. Yksilöllisten ruutujen ajaksi oletetaan k/25 s (jäännöshajonta 1,0-1,6 cm vs 1,7-2,7 cm jos f/30).
+* **Nopeuden aaltoilu ±0,2 m/s (jakso 0,9-1,0 s) oli samanlainen molemmilla menetelmillä ja jatkui vapaana liikkuvalla kivellä, joten se ei johtunut seurannasta, taustaviivoista eikä kahvasta.**
+  Syy löytyi videon aikaperustasta: lähdevirrasta puuttuvia ruutuja ei ollut huomioitu (k/25), ks. "Videon todellinen aikaperusta". Korjatulla ajalla `t_kor_s` aaltoilu poistuu (0,03-0,06 m/s).
 
 ### Kiven mitat, kahvan muovin ellipsi ja korkeus (`mittaa_kahva.py`, `kivi_netti.py`: `kahva_silhuetti`, `sovita_kuvaellipsi`, `kahva_keskipiste_3d`)
 
@@ -256,3 +274,61 @@ magenta = kahvan levy).
 * *Kahvan levyn ja rungon akselin ero:* levyn mallin akseli (z0 = 15 cm) ja rungon siluetin akseli eroavat radan suunnassa -0,3 / +0,2 / +1,4 / +0,9 / +0,6 cm (Y = 250-350 ... 650-750) ja sivusuunnassa
   -0,07 ... -0,45 cm; heitoittain dY = +0,5 / -0,1 / +1,6 cm. Kahvan säde osuu rungon akseliin korkeudella 14,4-15,5 cm. Kahvan väriseurannan keskipiste (`kahvaradat_*.csv`, z = 15 cm) poikkeaa
   rungon akselista enemmän (1,2 / 3,3 / 2,5 cm heitoittain): irroituksen tunnistuksessa on käytettävä levyn mallia (`kahvamalli_*.csv`), ei värin keskipistettä.
+
+### Kiven liuku ja irroitus (`liuku_irroitus.py`)
+
+Pyyntö: tunnista kiven liuku ja irroitus (irroituksen suunta). Hypoteesi: irroituksen voi todennäköisesti tunnistaa pelkästään siitä, että kivi kulkee näkyvällä matkalla hyvin tasaisesti
+2. asteen yhtälön mukaan ilman teräviä suunnanmuutoksia. Toteutus on tämän hypoteesin tilastollinen koe, ja se toimii vain todellisella aikaperustalla (ks. "Videon todellinen aikaperusta": k/25-ajalla
+ruutuajoituksen virhe, 2-3 cm RMS, peittää kiihtyvyyden muutoksen 0,1-0,3 m/s2 kokonaan).
+
+`python liuku_irroitus.py VIDEO tulokset vasen [--ulos tulokset/liuku_irroitus_vasen] [--ei-ruutuja]` -> `<ulos>.json` (kaikki luvut), `<ulos>.png` (rata, suunta, nopeus ja kiihtyvyys, vaihtokohdan profiili),
+`<ulos>_ruudut_h1..3.jpg` (kaikki yksilölliset ruudut irroituksen ympäriltä, punainen kehys = kinemaattinen irroitus, vihreä teksti = silmin todettu irtoamisväli). Vain numpy (+ matplotlib, cv2 kuviin);
+syötteenä pelkkä `radat_<puoli>.csv`, ei kahvaa eikä kättä.
+
+* **Liuku:** lähtö = viimeinen hetki ennen työntöä, jolloin nopeus < 0,15 m/s (hack); työnnön loppu = nopeus >= 90 % tasanteesta (tasanne = nopeuden mediaani Y = -50...300 cm). Jos rata alkaa jo liikkeestä
+  (heitto 2: kivi näkyy vasta kun nopeus on 0,8 m/s), lähtö ARVIOIDAAN vakiokiihtyvyydellä taaksepäin (+-0,2 s). Liuku = lähdöstä irroitukseen.
+* **Irroitus = vapaan lennon alku:** irroituksen jälkeen kivi on vapaa kappale, jolloin X(Y) on paraabeli (kaarto) JA Y(t) on 2. asteen polynomi (vakiohidastuvuus). Ennen irroitusta heittäjä työntää ja ohjaa:
+  kiihtyvyys ja kaarevuus ovat toiset. Malli: kaksi paraabelia, joiden arvo JA ensimmäinen derivaatta (nopeus, suunta) jatkuvat vaihtokohdassa ja joiden 2. derivaatta hyppää (C1-sovitus), molemmille
+  kanaville (Y(t) ja X(Y)) yhteinen vaihtokohta, khi^2-summa, Huber-kustannus (yksittäiset 3-10 cm:n mittausvirheet ohjatussa vaiheessa eivät hallitse). Kohinan sigma otetaan radan viimeisen 3 m:n
+  (vapaa lento) robustista hajonnasta: sigma_Y 0,5-0,9 cm, sigma_X 0,06-0,27 cm. Vaihtokohta haetaan ruudukolla (20 ms), 2-sigma-väli profiilista.
+* **Vakaus (kokoelma + tarkennus):** ohjattu vaihe ei ole paraabeli koko matkaltaan, joten vaihtokohta haetaan useilla ikkunoilla. Kierros 0: ikkuna alkaa työnnön lopusta + 0,5 ... 3 m (karkea). Tarkennuskierrokset:
+  ikkuna alkaa L = 1,5 / 2 / 2,5 / 3 m ENNEN edellistä vaihtokohtaa (paikallinen ikkuna on lähempänä mallia), kunnes vaihtokohta muuttuu < 10 cm (2-4 kierrosta). Tulos = jäsenten mediaani, vaihteluväli = jäsenten ääriarvot.
+* **Merkitsevyys:** khi^2-parannus yhteen paraabeliin verrattuna, kynnys 40. Nollahypoteesi (yksi paraabeli + Gaussin kohina, 40 simulointia/heitto): 99. persentiili 34 / 29 / 9, suurin 35; todellisissa vapaan lennon
+  ikkunoissa (taustaviivat, logot mukana) suurin 33. Havaitut jäsenten arvot 45-1309 (mediaanit 326 / 1247 / 135).
+* **Irroitustila:** vapaan lennon sovitus (t >= t_r + 0,12 s), arvot hetkellä t_r: paikka, suunta (kulma Y-akseliin, + = oikealle heittäjästä katsoen), nopeus, hidastuvuus, kaarevuus. Suunnan virhe =
+  sovituksen LS-virhe + vaihtokohdan epävarmuus (kaarevuus * puoli Y-väliä) + radan paikallisen suunnan (ikkuna 120 cm) hajonta paraabelin ympärillä (taustaviivojen/logojen sivuttaishäiriö), neliösummana.
+
+**Tulos (vasen puolisko).** Silmin todettu irtoaminen (`tulokset/irroitus_visuaalinen_vasen.json`, kontaktiarkit ruutu kerrallaan): `ruutu_ote` = viimeinen ruutu, jossa sormet vielä pitävät kahvasta, `ruutu_irti` = ensimmäinen
+ruutu, jossa sormien ja kahvan välillä on selvä rako; fysikaalinen irroitus on niiden välissä (+-1 ruutu lukuepävarmuus, korjaa tarvittaessa).
+
+| | heitto 1 (keltainen) | heitto 2 (punainen) | heitto 3 (keltainen) |
+|---|---|---|---|
+| lähtö (t, Y) | 12,28 s, -296 cm | 59,08 s, -286 cm (arvio) | 107,11 s, -297 cm |
+| työntö: kesto, matka, tasanne | 1,20 s, 86 cm, 1,79 m/s | 0,82 s, 73 cm, 2,08 m/s | 0,84 s, 87 cm, 2,37 m/s |
+| **irroitus (kinemaattinen)** Y, vaihteluväli | **376 cm** (352...408) | **254 cm** (208...280) | **361 cm** (344...384) |
+| irroitus t | 16,71 s | 62,24 s | 110,42 s |
+| silmin todettu irtoaminen Y (ruudut) | 359...393 cm (496...502) | 377...411 cm (1880...1884) | 354...394 cm (3309...3314) |
+| ero silmin todettuun | välissä | **123 cm (0,6 s) ennen** | välissä |
+| khi^2-parannus (jäsenten mediaani) | 326 | 1247 | 135 |
+| liuku: kesto, matka | 4,43 s, 673 cm | 3,15 s, 540 cm | 3,31 s, 658 cm |
+| **suunta irroituksessa** | **+4,97 +- 0,23 astetta** (oikealle) | **+1,04 +- 0,07** | **-0,20 +- 0,28** |
+| nopeus irroituksessa | 1,87 m/s | 2,13 m/s | 2,52 m/s |
+| hidastuvuus vapaassa lennossa | -0,064 m/s2 | -0,064 m/s2 | -0,098 m/s2 |
+| kaarevuus (vapaa lento) | -0,63e-4 /cm (vasemmalle) | -0,21e-4 /cm | ~0 |
+| X irroituksessa | 44,7 cm | -15,0 cm | -20,7 cm |
+
+Herkkyys: vaihtokohta pysyy +-15 cm:ssä, kun ikkunajoukko (L = 1-2 m / 2-3 m / 1,5 ja 2,5 m) tai käytetyn radan loppu (Y <= 640 / 700 / kaikki) vaihtuu: 367-389 / 254-280 / 349-369 cm. Kanavat erikseen:
+Y(t) 369 / 238 / 366 cm, X(Y) 391 / 273 / 327 cm.
+
+**Tulkinta (rehellisesti).**
+* *Hypoteesi toimii sellaisenaan:* vapaan lennon alku erottuu radasta selvästi (khi^2-parannus 45-1309 vs nollahypoteesin <= 35) ja on vakaa. Heitoissa 1 ja 3 kiihtyvyys vaihtuu työntävästä (+0,06 ... +0,37 m/s2) vapaan lennon
+  hidastuvuuteen (-0,06 ... -0,10 m/s2) ja kaarevuus muuttuu samassa kohdassa; vaihtokohta osuu silmin todetun irtoamisvälin sisään (+-0,15 s).
+* *Mitä vaihtokohta tarkoittaa:* se on hetki, jonka jälkeen käden vaikutus rataan on nolla (kivi on vapaa kappale), ei sormien irtoamishetki. Heitossa 2 käsi seuraa kahvassa vielä ~1,2 m (0,6 s) ilman että rata tai nopeus muuttuu
+  (jatkokoe: vaihtokohdan jälkeen ei ole toista selvää vaihtokohtaa: khi^2-parannus 8-30 ikkunoilla Y >= 314 cm ja 47 ikkunalla Y >= 284 cm, eli kynnyksen tuntumassa), joten sormien irtoaminen ei näy radassa lainkaan: pelkällä ratatasaisuudella tulos on tässä aikaisempi kuin kuvasta nähtävä irtoaminen.
+  Jos tarvitaan sormien irtoamishetki myös tällaisille liu'ille, se vaatii kuvapohjaisen käden/kahvan erotuksen (aiemmassa kokeessa keltaisella kahvalla +-0,05-0,2 s, punaisella ei toiminut).
+* *Mittausraja:* vapaassa lennossa paikan kohina on Y 0,5-0,9 cm ja X 0,06-0,27 cm (taustaviivat/logot Y ~ 520-660: sivusuunnassa +-0,5 cm häiriöt); ohjatussa vaiheessa heittäjän vartalo aiheuttaa 3-10 cm:n yksittäisiä virheitä ja aukkoja
+  (kiihtyvyys ennen irroitusta ei ole luotettava: heitossa 2 hold-vaiheen a1 ei ole fysikaalinen), joten vaihtokohdan tarkkuus on realistisesti +-0,1-0,15 s kun signaali (työntö) on selvä.
+* *Kierron suuntaa ei mitata kuvasta:* kahvan sarven suunta (maatasossa) ei ollut riittävän luotettava (kulma hyppii +-30 astetta). Radan kaarevuuden merkki kertoo kaarron: negatiivinen = rata kaartuu vasemmalle (tavallisen curl-säännön
+  mukaan kierto vastapäivään ylhäältä katsoen); heitoissa 2 ja 3 kaarto on lähes nolla.
+* *Validointi on pieni:* kolme heittoa, silmämääräinen viite. Koe kannattaa toistaa useammalla heitolla (ja oikean puolen kameralla).
+

@@ -9,10 +9,11 @@ import numpy as np
 
 kansio, puoli = sys.argv[1], sys.argv[2]
 sil, var = {}, {}
+# aika: todellinen t_kor_s (aikaperusta.py), jos sarake on; muuten ruutuavain t_s
 for r in csv.DictReader(open(f"{kansio}/radat_{puoli}.csv")):
-    sil.setdefault(int(r["rata"]), []).append([float(r[c]) for c in ("t_s", "X_tasoitettu_cm", "Y_tasoitettu_cm", "v_cm_s")] + [float(r["X_cm"]), float(r["Y_cm"])])
+    sil.setdefault(int(r["rata"]), []).append([float(r.get("t_kor_s") or r["t_s"])] + [float(r[c]) for c in ("X_tasoitettu_cm", "Y_tasoitettu_cm", "v_cm_s")] + [float(r["X_cm"]), float(r["Y_cm"])])
 for r in csv.DictReader(open(f"{kansio}/kahvaradat_{puoli}.csv")):
-    var.setdefault(int(r["rata"]), []).append([float(r[c]) for c in ("t_s", "X_tasoitettu_cm", "Y_tasoitettu_cm", "v_cm_s", "X_cm", "Y_cm")] + [r["vari"]])
+    var.setdefault(int(r["rata"]), []).append([float(r.get("t_kor_s") or r["t_s"])] + [float(r[c]) for c in ("X_tasoitettu_cm", "Y_tasoitettu_cm", "v_cm_s", "X_cm", "Y_cm")] + [r["vari"]])
 fig, ax = plt.subplots(1, 3, figsize=(16, 4.3))
 col = ["tab:blue", "tab:orange", "tab:green"]
 for k in sorted(var):

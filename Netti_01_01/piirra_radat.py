@@ -1,4 +1,4 @@
-"""Kivien radat (radat_<puoli>.csv) -> kuva: Y(t), X(t) ja nopeus. python piirra_radat.py tulokset vasen"""
+"""Kivien radat (radat_<puoli>.csv) -> kuva: Y(t), X(Y) ja nopeus (todellinen aika t_kor_s, ks. aikaperusta.py). python piirra_radat.py tulokset vasen"""
 import csv
 import sys
 
@@ -10,7 +10,7 @@ import numpy as np
 kansio, puoli = sys.argv[1], sys.argv[2]
 tr = {}
 for r in csv.DictReader(open(f"{kansio}/radat_{puoli}.csv")):
-    tr.setdefault(int(r["rata"]), []).append((float(r["t_s"]), float(r["X_tasoitettu_cm"]), float(r["Y_tasoitettu_cm"]), float(r["v_cm_s"]) / 100.0))
+    tr.setdefault(int(r["rata"]), []).append((float(r.get("t_kor_s") or r["t_s"]), float(r["X_tasoitettu_cm"]), float(r["Y_tasoitettu_cm"]), float(r["v_cm_s"]) / 100.0))
 fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
 for k, v in tr.items():
     t, X, Y, sp = np.array(v).T
