@@ -21,6 +21,7 @@ KOPIO_KYNNYS = 15.0       # |ero|:n 99,9. persentiili (harmaasavy, puolisko tays
                           # (kopiot 2-12, oikeat ruudut staattisessakin kuvassa >= 30, liikkuvassa kivessa ~200)
 
 _G = {}
+T_KARTTA = {}            # ruutu -> aika (s) = ikkunan alku + k / 25 (yksilollisten ruutujen tasavali)
 
 
 def _alusta(video, puoli, ulos):
@@ -63,14 +64,14 @@ def yksilolliset_ruudut(video, ikkunat, puoli="vasen"):
             prev = g
             if not kopio:
                 out.append((f, k))
+                T_KARTTA[f] = t0 + k / FPS_LAHDE
                 k += 1
     cap.release()
     return out
 
 
 def ketjuta(rows, portti_cm=18.0, portti_per_ruutu_cm=8.0, max_aukko=14, min_pisteet=10, min_siirtyma_cm=150.0):
-    """rows: [(frame, k, X, Y, err)] -> radat: listat (frame, k, X, Y, err) (aikaleimaa() antaa t = radan ensimmaisen ruudun
-    f/30 + (k - k0)/25: yksilollisten ruutujen tasavali, ei kopioruutuja). Vakionopeusennuste: havainto liitetaan rataan, jonka ennustettu
+    """rows: [(frame, k, X, Y, err)] -> radat: listat (frame, k, X, Y, err) (aikaleimaa() antaa ajan). Vakionopeusennuste: havainto liitetaan rataan, jonka ennustettu
     paikka on lahinna (portti portti_cm + portti_per_ruutu_cm per puuttuva ruutu); aukko enintaan max_aukko ruutua."""
     rows = sorted(rows)
     tracks = []
@@ -145,9 +146,44 @@ def taydenna(radat_raaka, ruudut, cam, kivi, cap, max_err=0.55, max_poikkeama_cm
     return out
 
 
+def vari_seuranta(cam, cap, ruudut, f_alku, uv_alku, vari, max_hukka=12, max_etaisyys_px=35.0):
+    """Puhdas varisuuntaus ilman siluettia: kahvan vari -> kuvan sentroidi -> maa-asema (z = KAHVA_Z_CM). Seuraa ruutu
+    ruudulta (yksilolliset ruudut) alkupisteesta: ennuste = edellinen sentroidi + edellinen siirtyma. Palauttaa
+    [(frame, k, X, Y, ala_px)]. Loppuu kun kahva puuttuu max_hukka ruutua perakkain."""
+    kdict = dict(ruudut)
+    seq = [(f, kdict[f]) for f, _ in ruudut if f >= f_alku]
+    out = []
+    prev, vel, hukka = np.array(uv_alku, float), np.zeros(2), 0
+    for f, k in seq:
+        fr = cam.ruutu(cap, f)
+        r = kv.kahva_sentroidi(cam, fr, prev + vel, vari=vari, max_etaisyys_px=max_etaisyys_px)
+        if r is None:
+            hukka += 1
+            if hukka > max_hukka:
+                break
+            continue
+        hukka = 0
+        uv = np.array(r[:2])
+        vel = uv - prev if out else np.zeros(2)
+        prev = uv
+        X, Y = kv.kuva_maahan(cam, uv[0], uv[1])
+        out.append((f, k, X, Y, r[2]))
+    return out
+
+
+def valitse_vari(cam, cap, ruudut, f_alku, uv_alku, n=20):
+    """Kahvan vari: kokeillaan keltaista ja punaista n ruudun matkalta, valitaan se jolla loytyy enemman havaintoja."""
+    best = None
+    for vari in ("keltainen", "punainen"):
+        tr = vari_seuranta(cam, cap, [r for r in ruudut if r[0] >= f_alku][:n], f_alku, uv_alku, vari, max_hukka=n)
+        if best is None or len(tr) > best[0]:
+            best = (len(tr), vari)
+    return best[1]
+
+
 def aikaleimaa(tr):
-    f0, k0 = tr[0][0], tr[0][1]
-    return [(f0 / 30.0 + (d[1] - k0) / FPS_LAHDE, d[2], d[3], d[4]) for d in tr]
+    """(frame, k, X, Y, err) -> (t, X, Y, err), t = T_KARTTA[frame]: kaikilla radoilla sama aikajana (ikkunan alku + k / 25)."""
+    return [(T_KARTTA[d[0]], d[2], d[3], d[4]) for d in tr]
 
 
 def silota(tr, puoli_ikkuna=6, min_paino_err=0.1):
@@ -195,6 +231,13 @@ if __name__ == "__main__":
     radat = ketjuta(rows)
     cam = kv.Kamera(a.puoli, os.path.join(a.ulos, f"kalibrointi_{a.puoli}.json"), os.path.join(a.ulos, f"moodikuva_{a.puoli}.png"))
     radat = taydenna(radat, ruudut, cam, kv.Kivi(), cv2.VideoCapture(a.video))
+    # kahvan variseuranta (ei siluettia): siemen = radan ensimmainen piste jossa kivi on liikkeella (Y > -230)
+    vari_radat = []
+    for tr in radat:
+        q = next((d for d in tr if d[3] > -230), tr[0])
+        u, v = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[q[2], q[3], kv.KAHVA_Z_CM]]))
+        vari = valitse_vari(cam, cv2.VideoCapture(a.video), ruudut, q[0], (u[0], v[0]))
+        vari_radat.append((vari, vari_seuranta(cam, cv2.VideoCapture(a.video), ruudut, q[0], (u[0], v[0]), vari)))
     radat = [aikaleimaa(tr) for tr in radat]
     path2 = os.path.join(a.ulos, f"radat_{a.puoli}.csv")
     with open(path2, "w", newline="") as f:
@@ -204,6 +247,15 @@ if __name__ == "__main__":
             sm = silota(tr)
             for (t, X, Y, e), q in zip(tr, sm):
                 wr.writerow([k, f"{t:.3f}", f"{X:.2f}", f"{Y:.2f}", f"{e:.3f}", f"{q[1]:.2f}", f"{q[2]:.2f}", f"{q[3]:.1f}", f"{q[4]:.1f}", f"{q[5]:.1f}"])
-    print(path, len(rows), "havaintoa;", path2, len(radat), "rataa:")
+    path3 = os.path.join(a.ulos, f"kahvaradat_{a.puoli}.csv")
+    with open(path3, "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["rata", "vari", "t_s", "X_cm", "Y_cm", "kahvan_ala_px", "X_tasoitettu_cm", "Y_tasoitettu_cm", "vX_cm_s", "vY_cm_s", "v_cm_s"])
+        for k, (vari, tr) in enumerate(vari_radat):
+            tt = aikaleimaa(tr)
+            sm = silota([(t, X, Y, 0.2) for t, X, Y, _ in tt])
+            for d, (t, X, Y, _), q in zip(tr, tt, sm):
+                wr.writerow([k, vari, f"{t:.3f}", f"{d[2]:.2f}", f"{d[3]:.2f}", d[4], f"{q[1]:.2f}", f"{q[2]:.2f}", f"{q[3]:.1f}", f"{q[4]:.1f}", f"{q[5]:.1f}"])
+    print(path, len(rows), "havaintoa;", path2, len(radat), "rataa;", path3)
     for k, tr in enumerate(radat):
         print(f"  rata {k}: t {tr[0][0]:.2f}-{tr[-1][0]:.2f} s, {len(tr)} pistetta, Y {tr[0][2]:.0f} -> {tr[-1][2]:.0f} cm, X {tr[0][1]:.0f} -> {tr[-1][1]:.0f} cm")

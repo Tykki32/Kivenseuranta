@@ -307,3 +307,47 @@ def sovita_pehmea(cam, kivi, alfa, X0, Y0, askel0=2.0):
     r = minimize(f, [X0, Y0], method="Nelder-Mead", options=dict(initial_simplex=[[X0, Y0], [X0 + askel0, Y0], [X0, Y0 + askel0]],
                                                                   xatol=0.03, fatol=1e-5, maxiter=80))
     return float(r.x[0]), float(r.x[1]), float(r.fun)
+
+
+# =====================================================================================================================
+# VARISEURANTA: kahvan vari (keltainen) -> kuvan keskipiste alipikselitarkkuudella -> maa-asema
+# =====================================================================================================================
+KAHVA_H = (19, 31)        # kahvan sävy (OpenCV H 0..180); sormet ovat punertavampia
+KAHVA_SMIN, KAHVA_VMIN = 45, 165
+KAHVA_Z_CM = 15.0         # oletettu kahvan keskikorkeus jaan ylapuolella (vaikuttaa vain tasaiseen Y-siirtoon)
+
+
+PUNAINEN_H = (8, 170)     # punainen: H <= 8 tai H >= 170
+PUNAINEN_SMIN, PUNAINEN_VMIN, PUNAINEN_VMAX = 100, 55, 168   # kahva V ~75-156 (varjossa matalampi), punainen rengas V ~180 -> erottuvat kirkkaudella
+
+
+def kahva_maski(frame, vari="keltainen"):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    if vari == "keltainen":
+        m = (hsv[..., 0] >= KAHVA_H[0]) & (hsv[..., 0] <= KAHVA_H[1]) & (hsv[..., 1] >= KAHVA_SMIN) & (hsv[..., 2] >= KAHVA_VMIN)
+    else:
+        m = ((hsv[..., 0] <= PUNAINEN_H[0]) | (hsv[..., 0] >= PUNAINEN_H[1])) & (hsv[..., 1] >= PUNAINEN_SMIN) & (hsv[..., 2] >= PUNAINEN_VMIN) & (hsv[..., 2] <= PUNAINEN_VMAX)
+    return m.astype(np.uint8)
+
+
+def kahva_sentroidi(cam, frame, ennuste_uv, vari="keltainen", max_etaisyys_px=30.0, min_ala=15):
+    """Kahvakomponentti, jonka keskipiste on lahinna ennustetta (kuvapiste); palauttaa (u, v, ala) tai None."""
+    m = kahva_maski(frame, vari)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    n, lab, st, cen = cv2.connectedComponentsWithStats(m)
+    best = None
+    for k in range(1, n):
+        if st[k, cv2.CC_STAT_AREA] < min_ala:
+            continue
+        d = float(np.hypot(cen[k][0] - ennuste_uv[0], cen[k][1] - ennuste_uv[1]))
+        if d <= max_etaisyys_px and (best is None or d < best[0]):
+            best = (d, k)
+    if best is None:
+        return None
+    k = best[1]
+    ys, xs = np.where(lab == k)
+    return float(xs.mean()), float(ys.mean()), int(st[k, cv2.CC_STAT_AREA])
+
+
+def kuva_maahan(cam, u, v, z=KAHVA_Z_CM):
+    return maan_paikka(cam, u, v, z=z)

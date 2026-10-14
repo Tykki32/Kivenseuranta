@@ -90,3 +90,22 @@ Puolisko rajataan nyt y = 190...1080 (hack ja heittäjä mukaan); TV-grafiikka j
   heittäjän/lakaisijoiden jalkojen ja käsien ajoittainen peittäminen (askelrytmi ~1 Hz), ei vielä varmistettu. Y-hajonta
   ruudulta ~1,5-2,5 cm (1 px = 1,3-3 cm radan suunnassa). Varsinaiseen liu'un/irroituksen tunnistukseen tarvitaan lisäksi
   kiven ja käden etäisyys (kahvan ympärillä oleva sormiaukko), joka on seuraava vaihe.
+
+### Väriseuranta (kahva) ja vertailu siluettiseurantaan (`aja_kivi.py`, `vertaa_seurannat.py`)
+
+Kivi on nyt niin isolla resoluutiolla, että kahvan väri riittää yksin seurantaan (ei siluettimallia, ei taustan vaikutusta):
+kahvan maski (keltainen: H 19-31, S >= 45, V >= 165; punainen: H <= 8 tai >= 170, S >= 100, V 55-168, kahva V ~75-156 on tummempi
+kuin punainen rengas V ~180) -> lähimmän komponentin keskipiste (alipikseli) -> maa-asema z = 15 cm korkeudella. Ennuste =
+edellinen keskipiste + edellinen siirtymä; väri valitaan automaattisesti (20 ruudun koe). Tulos `tulokset/kahvaradat_vasen.csv`
+(raaka ja tasoitettu paikka, nopeus), kuva `tulokset/seurantojen_vertailu_vasen.png`.
+
+* Kaikki kolme heittoa (keltainen, punainen, keltainen kahva) seurataan pelkällä värillä hackista hoglinelle (Y ≈ -230 -> 640 cm), 137/118/101 pistettä.
+* Vapaana liikkuvan kiven (Y > 250 cm) sivusuuntainen raaka hajonta on 0,2-0,3 cm RMS (keltainen), eikä renkaiden, T-viivan tai hoglinen
+  kohdalla ole hyppyä: tausta ei vaikuta.
+* Y > 250 cm: väri- ja siluettiseuranta eroavat vakiolla ~2 cm (riippuu oletetusta kahvan korkeudesta) ja vaihtelevat alle 1 cm.
+* Y < 250 cm (heittäjän käsi kahvan päällä): värimaskin sivusuuntainen hajonta on selvästi isompi (sormet peittävät kahvaa) -> hyödyllinen
+  vihje irroitukseen.
+* **Nopeuden aaltoilu ±0,2 m/s (jakso 0,9-1,0 s) on samanlainen molemmilla menetelmillä ja jatkuu vapaana liikkuvalla kivellä, joten se ei
+  johdu seurannasta, taustaviivoista eikä kahvasta.** Jakso on sama kolmessa heitossa (nopeudet 1,7-2,3 m/s), eli se on aikaperusteinen
+  (videon ruutuajoitus), ei paikkaperusteinen. Vaihe ei ole sama kolmessa heitossa (koherenssi 0,45), joten sitä ei voi korjata yhdellä
+  yhteisellä aikamallilla. Yksilöllisten ruutujen ajaksi oletetaan k/25 s (jäännöshajonta 1,0-1,6 cm vs 1,7-2,7 cm jos f/30).
