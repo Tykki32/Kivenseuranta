@@ -18,7 +18,7 @@ from scipy.optimize import least_squares
 
 import kivi_netti as kv
 
-Z0_CM = 17.0              # soikion korkeus (aiempi arvio: 16,9-17,1 cm, +-3 cm)
+Z0_CM = 15.0              # soikion korkeus kalibrointitasosta (korjattu kamera; tarkennetaan rungon akselin ja kahvan sateen leikkauksesta)
 A_CM = 11.4               # puoliakseli sivusuunnassa (kuvan mittakaavassa; kalibroitu kasin merkityista ellipseista, kalibroi_kahvamalli.py)
 B_CM = 8.6                # puoliakseli radan suunnassa (samoin)
 SIGMA_PX = 2.1            # kromakanavan (a*, b*) pistelevitys px (renkaiden reunoista; L: 0,8 px)

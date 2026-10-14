@@ -96,11 +96,11 @@ def komponentit(mask, min_area=150):
 SHIFT = 4        # alipikselipiirto (cv2.fillConvexPoly, 1/16 px)
 
 
-# Nettivideosta mitatut siluettimitat (vasen kamera, kolme heittoa, varien sekoitusalfa: R 15,59 / 15,68 / 15,85, H 15,59 / 15,51 / 16,12; oikea kamera
-# yksi saapuva kivi: R 14,9, H 16,1): nimellista (WCF max R 14,55, H 11,4) suuremmat, koska siluetti sisaltaa pyoristetyn
-# ylareunan ja mallin profiili on yksinkertainen. Kaytetaan mallin oletuksena, jotta paikka (jalan kohta) ei vinoudu.
-MITATTU_R_CM = 15.7
-MITATTU_H_CM = 15.7
+# KARKEA siluettimalli (vain tunnistuksen siemenet ja alkuarvaukset; tarkka kiintea runkomalli on kivi_tarkka.py ja sen opetus kalibroi_kivi.py).
+# HUOM: aiemmat arvot R 15,7 / H 15,7 mitattiin virheellisella kameran asennolla (f = 2293 px, ei toistanut maatason homografiaa); korjatulla
+# asennolla (f = 3129 px, kamera radan keskella) kiven sivusuuntainen puolileveys on 13,7-14,1 cm VAKIO koko radalla (Y = -270...750 cm).
+MITATTU_R_CM = 13.7
+MITATTU_H_CM = 16.0
 
 
 class Kivi:
@@ -314,7 +314,7 @@ def sovita_pehmea(cam, kivi, alfa, X0, Y0, askel0=2.0):
 # =====================================================================================================================
 KAHVA_H = (19, 31)        # kahvan sävy (OpenCV H 0..180); sormet ovat punertavampia
 KAHVA_SMIN, KAHVA_VMIN = 45, 165
-KAHVA_Z_CM = 15.0         # OLETUS kahvan tason korkeudelle (ei varmistettu; aiempi 17,2 cm perustui vaaraan reunaan)
+KAHVA_Z_CM = 15.0         # kahvan muovilevyn tason korkeus kalibrointitasosta (korjattu kamera: kahvan sade osuu rungon akseliin z = 14,4-15,5 cm, keskiarvo ~15)
 
 
 PUNAINEN_H = (8, 170)     # punainen: H <= 8 tai H >= 170

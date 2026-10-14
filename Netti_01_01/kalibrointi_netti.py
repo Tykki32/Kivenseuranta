@@ -426,20 +426,30 @@ def residuaalit_reunat(malli, d):
 
 
 def kamera_asento(malli):
-    """Kameran sisaiset ja ulkoiset parametrit tasohomografiasta (Zhang): K = [[f,0,cx],[0,f,cy],[0,0,1]] (optinen
-    keskipiste tunnettu, f ortogonaalisuusehdosta r1.r2 = 0), p = K (R X + t), X fyysinen (X, Y, Z) cm, Z ylos jaasta.
-    Kuvapisteet ovat vaaristymakorjattuja (k1 pois): kayta malli.kuva_oikaistuksi()."""
+    """Kameran sisaiset ja ulkoiset parametrit tasohomografiasta (Zhang): K = [[f,0,cx],[0,f,cy],[0,0,1]], p = K (R X + t),
+    X fyysinen (X, Y, Z) cm, Z ylos jaasta. Kuvapisteet ovat vaaristymakorjattuja (k1 pois): kayta malli.kuva_oikaistuksi().
+    Homografiasta saadaan KAKSI ehtoa (r1.r2 = 0 ja |r1| = |r2|). Aiempi versio kaytti vain ensimmaista (f = 2293 px), jolloin toinen ehto
+    jai rikki (sarakkeiden pituudet erosivat 27 %), asento ei toistanut maatason homografiaa (ero 20-110 px, Y = 200-600 cm) ja korkeudet,
+    paikat ja mittakaavat vinoutuivat. Nyt f ja optisen keskipisteen poikittaiskoordinaatti cy ratkaistaan molemmista ehdoista (cx kiinteasti
+    kuvan keskipisteesta radan suunnassa): asento toistaa homografian tarkasti ja kamera osuu radan keskelle (Y ~ 17,2 m)."""
+    from scipy.optimize import least_squares
     Hp = np.linalg.inv(malli.H)          # fyysinen (X, Y, 1) -> oikaistu kuvapiste
-    cx, cy = malli.centre
-    col = lambda h: np.array([h[0] - cx * h[2], h[1] - cy * h[2], h[2]])
-    a, b = col(Hp[:, 0]), col(Hp[:, 1])
-    f = math.sqrt(abs(-(a[0] * b[0] + a[1] * b[1]) / (a[2] * b[2])))
+    cx, cy0 = malli.centre
+
+    def ehdot(p):
+        f, cy = p
+        M = np.linalg.inv(np.array([[f, 0.0, cx], [0.0, f, cy], [0.0, 0.0, 1.0]])) @ Hp
+        n1, n2 = np.linalg.norm(M[:, 0]), np.linalg.norm(M[:, 1])
+        return [float(M[:, 0] @ M[:, 1]) / (n1 * n2), (n1 - n2) / (n1 + n2)]
+
+    f0 = math.sqrt(abs(-((Hp[0, 0] - cx * Hp[2, 0]) * (Hp[0, 1] - cx * Hp[2, 1]) + (Hp[1, 0] - cy0 * Hp[2, 0]) * (Hp[1, 1] - cy0 * Hp[2, 1])) / (Hp[2, 0] * Hp[2, 1])))
+    sol = least_squares(ehdot, [f0, cy0], x_scale=[1000.0, 100.0], xtol=1e-14, ftol=1e-14)
+    f, cy = float(sol.x[0]), float(sol.x[1])
     K = np.array([[f, 0.0, cx], [0.0, f, cy], [0.0, 0.0, 1.0]])
     M = np.linalg.inv(K) @ Hp
     sc = 2.0 / (np.linalg.norm(M[:, 0]) + np.linalg.norm(M[:, 1]))
     r1, r2, t = M[:, 0] * sc, M[:, 1] * sc, M[:, 2] * sc
-    U, _, Vt = np.linalg.svd(np.column_stack([r1, r2, np.cross(r1, r2)]))
-    R = U @ Vt
+    R = np.column_stack([r1, r2, np.cross(r1, r2)])
     C = -R.T @ t
     if C[2] < 0:                          # kamera on jaan ylapuolella
         R = R.copy()

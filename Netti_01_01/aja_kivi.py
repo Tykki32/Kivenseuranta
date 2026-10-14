@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 import kivi_netti as kv
+import kivi_tarkka as kt
 
 FPS_LAHDE = 25.0          # alkuperaisen virran ruutunopeus
 KOPIO_KYNNYS = 15.0       # |ero|:n 99,9. persentiili (harmaasavy, puolisko taysresoluutiolla) alle taman = kopioruutu
@@ -26,21 +27,22 @@ T_KARTTA = {}            # ruutu -> aika (s) = ikkunan alku + k / 25 (yksilollis
 
 def _alusta(video, puoli, ulos):
     _G["cam"] = kv.Kamera(puoli, os.path.join(ulos, f"kalibrointi_{puoli}.json"), os.path.join(ulos, f"moodikuva_{puoli}.png"))
-    _G["kivi"] = kv.Kivi()
+    _G["kivi"] = kv.Kivi()                                    # karkea siluetti: vain siemenet ja alkuarvaus
+    _G["runko"] = kt.Runko.lataa(ulos, puoli)                  # tarkka runkomalli (kiintea koko), kalibroi_kivi.py
     _G["cap"] = cv2.VideoCapture(video)
 
 
 def _tyo(i):
-    cam, kivi, cap = _G["cam"], _G["kivi"], _G["cap"]
+    cam, kivi, cap, runko = _G["cam"], _G["kivi"], _G["cap"], _G["runko"]
     fr = cam.ruutu(cap, i)
     if fr is None:
         return i, []
     dets, (fg, g, h) = kv.tunnista(cam, kivi, fr)
-    al = kv.alfa_kartta(cam, fr, g)
+    alfa, ok = kt.havainto(cam, fr, kv.alfa_kartta(cam, fr, g))
     out = []
     for d in dets:
-        X, Y, e = kv.sovita_pehmea(cam, kivi, al, d["X"], d["Y"])
-        out.append((X, Y, e, d["peitto"]))
+        s = kt.sovita(cam, runko, alfa, ok, d["X"], d["Y"])
+        out.append((s["X"], s["Y"], s["rms"], d["peitto"], s["kelvolliset"]))
     return i, out
 
 
@@ -70,7 +72,7 @@ def yksilolliset_ruudut(video, ikkunat, puoli="vasen"):
     return out
 
 
-def ketjuta(rows, portti_cm=18.0, portti_per_ruutu_cm=8.0, max_aukko=14, min_pisteet=10, min_siirtyma_cm=150.0):
+def ketjuta(rows, portti_cm=18.0, portti_per_ruutu_cm=8.0, max_aukko=14, min_pisteet=10, min_siirtyma_cm=500.0):
     """rows: [(frame, k, X, Y, err)] -> radat: listat (frame, k, X, Y, err) (aikaleimaa() antaa ajan). Vakionopeusennuste: havainto liitetaan rataan, jonka ennustettu
     paikka on lahinna (portti portti_cm + portti_per_ruutu_cm per puuttuva ruutu); aukko enintaan max_aukko ruutua."""
     rows = sorted(rows)
@@ -88,7 +90,8 @@ def ketjuta(rows, portti_cm=18.0, portti_per_ruutu_cm=8.0, max_aukko=14, min_pis
     for f in sorted(set(r[0] for r in rows)):
         dets = [r for r in rows if r[0] == f]
         k = dets[0][1]
-        free = [tr for tr in tracks if 0 < k - tr[-1][1] <= max_aukko]
+        # ikkunat (tallennuksen osat) ovat erillisia: ketjutetaan vain ruutuja, joiden numero on lahella (k alkaa ikkunassa nollasta)
+        free = [tr for tr in tracks if 0 < k - tr[-1][1] <= max_aukko and 0 < f - tr[-1][0] <= 2 * max_aukko + 2]
         pairs = []
         for di, d in enumerate(dets):
             for ti, tr in enumerate(free):
@@ -114,10 +117,10 @@ def ketjuta(rows, portti_cm=18.0, portti_per_ruutu_cm=8.0, max_aukko=14, min_pis
     return keep
 
 
-def taydenna(radat_raaka, ruudut, cam, kivi, cap, max_err=0.55, max_poikkeama_cm=12.0):
+def taydenna(radat_raaka, ruudut, cam, runko, cap, max_err=0.15, min_kelv=0.2, max_poikkeama_cm=12.0):
     """Aukkojen taytto: radan puuttuvissa yksilollisissa ruuduissa sovitetaan siluetti lineaarisesti interpoloidusta paikasta
-    (ilman erillista tunnistusta, joka epaonnistuu kun kasi/vartalo peittaa kiven). Hyvaksytaan jos err <= max_err ja paikka
-    on enintaan max_poikkeama_cm interpoloidusta. radat_raaka: ketjuta() ennen ajan muunnosta: listat (frame, k, X, Y, err)."""
+    (ilman erillista tunnistusta, joka epaonnistuu kun kasi/vartalo peittaa kiven). Hyvaksytaan jos rms <= max_err, kelvollisia pikseleita
+    vahintaan min_kelv ja paikka on enintaan max_poikkeama_cm interpoloidusta. radat_raaka: ketjuta() ennen ajan muunnosta: listat (frame, k, X, Y, err)."""
     k2f = {}
     for f, k in ruudut:
         k2f.setdefault(k, f)
@@ -138,10 +141,10 @@ def taydenna(radat_raaka, ruudut, cam, kivi, cap, max_err=0.55, max_poikkeama_cm
                 u = (k - a[1]) / (b[1] - a[1])
                 X0, Y0 = a[2] + u * (b[2] - a[2]), a[3] + u * (b[3] - a[3])
                 fr = cam.ruutu(cap, f)
-                fg, g, h = cam.maskit(fr)
-                X, Y, e = kv.sovita_pehmea(cam, kivi, kv.alfa_kartta(cam, fr, g), X0, Y0)
-                if e <= max_err and np.hypot(X - X0, Y - Y0) <= max_poikkeama_cm:
-                    uusi.append((f, k, X, Y, e))
+                alfa, ok = kt.havainto(cam, fr)
+                s = kt.sovita(cam, runko, alfa, ok, X0, Y0)
+                if s["rms"] <= max_err and s["kelvolliset"] >= min_kelv and np.hypot(s["X"] - X0, s["Y"] - Y0) <= max_poikkeama_cm:
+                    uusi.append((f, k, s["X"], s["Y"], s["rms"]))
         out.append(sorted(uusi, key=lambda d: d[1]))
     return out
 
@@ -209,28 +212,32 @@ if __name__ == "__main__":
     ap.add_argument("video")
     ap.add_argument("--puoli", default="vasen")
     ap.add_argument("--ulos", default="tulokset")
-    ap.add_argument("--ikkunat", default="12-22,58-66,106-114", help="sekuntivalit, esim. 8-22,28-35")
+    ap.add_argument("--ikkunat", default="8-22,56-66,104-114", help="sekuntivalit, esim. 8-22,28-35")
     ap.add_argument("--saikeet", type=int, default=4)
+    ap.add_argument("--ketjuta-vain", action="store_true", help="ei uutta tunnistusta: ketjutetaan olemassa olevan kivet_<puoli>.csv:n havainnot")
     a = ap.parse_args()
     ikk = [tuple(float(x) for x in w.split("-")) for w in a.ikkunat.split(",")]
     ruudut = yksilolliset_ruudut(a.video, ikk, a.puoli)
     print(len(ruudut), "yksilollista ruutua")
     kmap = dict(ruudut)
     fps = 30.0
-    with Pool(a.saikeet, initializer=_alusta, initargs=(a.video, a.puoli, a.ulos)) as pool:
-        res = pool.map(_tyo, [f for f, _ in ruudut], chunksize=4)
     rows = []
     path = os.path.join(a.ulos, f"kivet_{a.puoli}.csv")
-    with open(path, "w", newline="") as f:
-        wr = csv.writer(f)
-        wr.writerow(["frame", "yksilo_k", "t_s", "X_cm", "Y_cm", "err", "peitto"])
-        for i, dets in res:
-            for X, Y, e, p in dets:
-                wr.writerow([i, kmap[i], f"{i / fps:.3f}", f"{X:.2f}", f"{Y:.2f}", f"{e:.3f}", f"{p:.3f}"])
-                rows.append((i, kmap[i], X, Y, e))
+    if a.ketjuta_vain:
+        rows = [(int(r["frame"]), int(r["yksilo_k"]), float(r["X_cm"]), float(r["Y_cm"]), float(r["err"])) for r in csv.DictReader(open(path))]
+    else:
+        with Pool(a.saikeet, initializer=_alusta, initargs=(a.video, a.puoli, a.ulos)) as pool:
+            res = pool.map(_tyo, [f for f, _ in ruudut], chunksize=4)
+        with open(path, "w", newline="") as f:
+            wr = csv.writer(f)
+            wr.writerow(["frame", "yksilo_k", "t_s", "X_cm", "Y_cm", "err", "peitto", "kelvolliset"])
+            for i, dets in res:
+                for X, Y, e, p, kel in dets:
+                    wr.writerow([i, kmap[i], f"{i / fps:.3f}", f"{X:.3f}", f"{Y:.3f}", f"{e:.4f}", f"{p:.3f}", f"{kel:.3f}"])
+                    rows.append((i, kmap[i], X, Y, e))
     radat = ketjuta(rows)
     cam = kv.Kamera(a.puoli, os.path.join(a.ulos, f"kalibrointi_{a.puoli}.json"), os.path.join(a.ulos, f"moodikuva_{a.puoli}.png"))
-    radat = taydenna(radat, ruudut, cam, kv.Kivi(), cv2.VideoCapture(a.video))
+    radat = taydenna(radat, ruudut, cam, kt.Runko.lataa(a.ulos, a.puoli), cv2.VideoCapture(a.video))
     # kahvan variseuranta (ei siluettia): siemen = radan ensimmainen piste jossa kivi on liikkeella (Y > -230)
     vari_radat = []
     for tr in radat:

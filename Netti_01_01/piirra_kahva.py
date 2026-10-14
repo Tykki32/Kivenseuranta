@@ -45,8 +45,15 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
 def ruutu(rata, Y):
-    r = min((r for r in rows if r["rata"] == rata), key=lambda r: abs(float(r["Y_cm"]) - Y))
-    f = t2f[round(float(r["t_s"]), 3)]
+    # kasin merkitty ruutu: kayta merkinnan omaa ruutua (merkinnan Y_cm on tallennettu merkintahetken asennolla, se voi poiketa nykyisesta seurannasta)
+    lab = [d for d in MERKINNAT if d["rata"] == int(rata) and abs(d["Y_cm"] - Y) <= 15]
+    if lab:
+        d = min(lab, key=lambda d: abs(d["Y_cm"] - Y))
+        r = min((r for r in rows if r["rata"] == rata), key=lambda r: abs(float(r["t_s"]) - d["t_s"]))
+        f = d["frame"]
+    else:
+        r = min((r for r in rows if r["rata"] == rata), key=lambda r: abs(float(r["Y_cm"]) - Y))
+        f = t2f[round(float(r["t_s"]), 3)]
     fr = cam.ruutu(cap, f)
     u, v = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[float(r["X_cm"]), float(r["Y_cm"]), 15.0]]))
     uv0 = (float(u[0]), float(v[0]))
@@ -67,7 +74,7 @@ def ruutu(rata, Y):
             for i in range(len(E) - 1):
                 cv2.line(big, P(E[i]), P(E[i + 1]), (255, 255, 255), 1, cv2.LINE_AA)
     for d in MERKINNAT:
-        if d["rata"] == int(rata) and abs(d["Y_cm"] - float(r["Y_cm"])) <= 6:
+        if d["rata"] == int(rata) and d["frame"] == f:
             e = d["ellipsi_ruutu"]
             th = np.linspace(0, 2 * np.pi, 200)
             ph = np.radians(e["kallistus_deg"])

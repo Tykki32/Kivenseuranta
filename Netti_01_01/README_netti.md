@@ -49,11 +49,23 @@ oikea: renkaat 0,25-0,45, hogline 0,3, keskiviiva 1,0, T-viiva 1,4.
 
 ### Kameran asento (kalibrointi_netti.py)
 
-Kummankin puoliskon kuva on kameran 16:9-kuvan keskileikkaus (960x1080), joten optinen keskipiste on puoliskon keskellä
-(480, 540). Tasohomografiasta (Zhang) saatu K, R, t: vasen f = 2293 px, kamera (X, Y, Z) = (4, 1380, 572) cm; oikea f = 2285 px,
-(-2, 1377, 576) cm. Kamerat ovat siis samanlaiset ja ~5,7 m korkeudessa, 66 astetta pystysuunnasta (katsovat radan suuntaan).
-Näin itsenäisesti sovitetut puoliskot antavat samat f, korkeuden ja etäisyyden, mikä vahvistaa kalibroinnin.
-Puolisko rajataan nyt y = 190...1080 (hack ja heittäjä mukaan); TV-grafiikka jää rajauksen ulkopuolelle paitsi minikartan alareuna.
+Kummankin puoliskon kuva on kameran 16:9-kuvan keskileikkaus (960x1080), joten optinen keskipiste on puoliskon keskellä (480, 540);
+rajauksen (y0 = 190) ja 90 asteen kierron jälkeen cx = 540 - 190 = 350 px ja cy ~ 480 px.
+
+**Korjaus (aiempi asento oli virheellinen).** Aiempi laskenta ratkaisi polttovälin f vain yhdestä ehdosta (r1 ja r2 kohtisuorassa) ja
+ortonormeerasi R:n SVD:llä; tulos (f = 2293 px, kamera (4, 1380, 572) cm) EI toistanut maatason homografiaa, joten kaikki maatason
+ulkopuoliset suureet (kiven korkeus, sivusuuntainen mittakaava korkeudella, kahvan korkeus, Y-asemat z > 0 ja nopeudet) olivat vinossa:
+kiven säde näytti 15,0-15,7 cm ja nopeudet olivat 11-20 % liian pieniä (keskinopeus Y = 300-500 cm: 1,70 / 1,95 / 2,33 -> 1,94 / 2,17 / 2,81 m/s). Nyt (f, cy) ratkaistaan kahdesta ehdosta yhtä aikaa
+(r1 . r2 = 0 ja |r1| = |r2|, cx = 350 kiinteä), R = [r1 r2 r1 x r2] ilman SVD:tä:
+* vasen f = 3129 px, cy = 471,5 (odotettu ~480: cy EI ole annettu vaan tulee ehdoista), kamera (X, Y, Z) = (4, 1718, 524) cm;
+  oikea f = 3139 px, cy = 484,5, kamera (-2, 1724, 527) cm;
+* kamerat ovat siis radan KESKELLÄ (talon keskipisteestä 17,4 m, Y = 1737) ~5,2 m korkeudessa ja katsovat radan päihin loivasti
+  (17-26 astetta vaakatasosta kiven kohdalla) -> kiven sivu näkyy lähes sivusta, yläpinta vain ohuena ellipsinä;
+* maatason toisto 0,000 px; sivusuuntainen mittakaava Y = 464 cm kohdalla 2,31 px/cm (vanha 2,15), radan suuntaan 0,895 px/cm
+  (vanha 1,15), korkeussuunnassa -2,14 px/cm (vanha -1,85).
+Vanha asento on tallessa kalibrointitiedostoissa avaimella `vanha_asento`. Seuraukset ovat alla: kiven koko, kahvan muovi (nyt pyöreä
+levy, ei soikio) ja nopeudet. Puolisko rajataan y = 190...1080 (hack ja heittäjä mukaan); TV-grafiikka jää rajauksen ulkopuolelle
+paitsi minikartan alareuna.
 
 ## Kiven tunnistus ja mittaus (`kivi_netti.py`, `aja_kivi.py`, `piirra_radat.py`)
 
@@ -71,25 +83,22 @@ Puolisko rajataan nyt y = 190...1080 (hack ja heittäjä mukaan); TV-grafiikka j
   V-suhde jakoi tumman taustan (punainen rengas) pienellä nimittäjällä, jolloin kiven varjo punaisella renkaalla näytti
   graniitilta ja kiven reunapikselit sinisellä/punaisella renkaalla katosivat; nyt reuna on sama jäällä ja renkailla. Jään
   varjo (a < 0,3) nollataan (0,5-taso säilyy).
-* **Kahva ja yläpinta (mallinnettu):** yläpinta on kiiltävä ja vaalea eikä näy graniittina, ja kahva (keltainen, sormet
-  peittävät) ei erotu sormista värillä. Siksi kiven yläpinnan ympyrä (z = H, sade 0,78 R) ja kahvan yläympyrä (sade 0,5 R,
-  8 cm yläpinnan yläpuolella) muodostavat "ei väliä" -alueen (kupera peite), jossa siluetti ei saa eikä menetä. Graniittina
-  mitataan vain sivuseinä + reuna (puolikuu); sovitus: 1 - IoU alipikselitarkkuudella (siluetti 4x ylinäytteistetty).
-* **Mitat:** R_max 15,59 / 15,68 / 15,85 cm ja H_total 15,59 / 15,51 / 16,12 cm kolmessa heitossa (keskiarvo R 15,7, H 15,7;
-  nimellinen WCF max R 14,55). Oikean kameran yksi saapuva kivi: R 14,9, H 16,1 (10 havaintoa, huono sovitus). Mittojen
-  hajonta heitosta toiseen on alle 0,3 cm, joten ne toistuvat, mutta ovat ~8 % nimellistä suuremmat (lateraalinen leveys
-  72 px vs 67 px nimellisellä); syy auki: kiven profiili on yksinkertainen malli, mahdollinen pikselien anisotropia tai
-  mittakaava. Oletuksena käytetään mitattuja (MITATTU_R_CM, MITATTU_H_CM), koska kiven jalan paikka Y riippuu H:sta (kamera
-  katsoo radan suuntaan: 4 cm korkeusvirhe ~ 9 cm Y-virhe).
+* **Siemenet ja tarkka sovitus:** tunnistus (`kivi_netti.tunnista`) käyttää karkeaa siluettimallia (`kivi_netti.Kivi`, R 13,7 / H 16 cm,
+  pohjapiirros kivimalli.py) vain siemeniin ja alkuarvauksiin. Lopullinen paikka (X, Y) sovitetaan KIINTEÄLLÄ tarkalla runkomallilla
+  (`kivi_tarkka.py`, ks. "Kiven tarkka runkomalli ja koon pysyvyys" alla): koko ei vapaudu ruudulta toiselle. Yläpinta (kiiltävä, ei graniittia) ja
+  kahva ovat "ei väliä" -aluetta, ja ruudun kelvolliset pikselit (ei muovia, ihoa, hihoja, kiiltoreikiä) merkitään `kelvolliset`-sarakkeeseen.
 * **Ketjutus ja aukkojen täyttö:** vakionopeusennuste (portti 18 cm + 8 cm/puuttuva ruutu, aukko enintään 14 ruutua); jäljelle
   jääneet aukot (kasi/vartalo kiven päällä, tunnistus ei löydä) täytetään sovittamalla siluetti interpoloidusta paikasta.
 * **Tasoitus:** paikallinen 2. asteen sovitus +-6 ruutua, painot 1/(err + 0,1)^2.
-* **Tulos (vasen puolisko):** kolme heittoa seurataan hackista (Y ~ -255 cm) hoglineen (Y = 640): t = 8-18 s, 59-64 s,
-  104-111 s. Nopeus T-viivalla ~1,9 / 2,0 / 2,3 m/s. Heitto 1 kulkee 5,5 astetta oikealle (X: -5 -> 84 cm), 2 ja 3 lähes suoraan.
-* **Tunnetut puutteet:** nopeuskäyrässä on ~±0,3 m/s aaltoilua (jakso ~160-190 cm, kaikissa heitoissa); todennäköinen syy on
-  heittäjän/lakaisijoiden jalkojen ja käsien ajoittainen peittäminen (askelrytmi ~1 Hz), ei vielä varmistettu. Y-hajonta
-  ruudulta ~1,5-2,5 cm (1 px = 1,3-3 cm radan suunnassa). Varsinaiseen liu'un/irroituksen tunnistukseen tarvitaan lisäksi
-  kiven ja käden etäisyys (kahvan ympärillä oleva sormiaukko), joka on seuraava vaihe.
+* **Tulos (vasen puolisko, korjattu kamera + tarkka runkomalli):** kolme heittoa seurataan hackista (Y ~ -300 cm) kuvan reunaan (Y ~ 750 cm, hogline
+  Y = 640): t = 8,3-17,8 s (229 pistettä), 59,0-63,9 s (105), 106,0-110,9 s (111). Keskinopeus Y = 300...500 cm: 1,94 / 2,17 / 2,81 m/s (vanhalla, virheellisellä
+  asennolla 1,70 / 1,95 / 2,33 m/s: 11-20 % liian pieniä). Heitto 1 kulkee 4,3 astetta oikealle (X: 17 -> 65 cm T-viivasta hoglinelle), heitot 2 ja 3 lähes suoraan
+  (+0,6 / -0,6 astetta). Hogline-ylityksen jälkeen kivi on kuvan reunassa (Y > 640: kiven oikea osa leikkautuu pois, malli sovitetaan näkyvään osaan).
+  Ketjutus ei enää yhdistä eri ikkunoiden (8-22, 56-66, 104-114 s) ruutuja toisiinsa, ja radan on edettävä vähintään 500 cm.
+* **Tunnetut puutteet:** nopeuskäyrässä on ~±0,3 m/s aaltoilua (jakso ~1 s, kaikissa heitoissa, myös vapaasti liukuvalla kivellä Y > 550 cm). Syy on aikaperustassa, ei
+  mittauksessa: kiven siluettiseurannan ja kahvan väriseurannan Y-jäännökset (paikallinen 2. asteen sovitus) korreloivat 0,91-0,94 ja ovat yhtä suuret (1,2-1,9 cm = ~8 ms
+  nopeudella 2,2 m/s), kun taas sivusuunnassa (aikaperusta ei vaikuta) hajonta on vain 0,03-0,16 cm. Suora seuraus: radan suunnan nopeus ja kiihtyvyys on laskettava
+  tasoitetusta radasta, ja liu'un/irroituksen tunnistus kannattaa tehdä paikasta (kiven ja käden/kahvan suhteellinen liike), ei raakanopeudesta.
 
 ### Väriseuranta (kahva) ja vertailu siluettiseurantaan (`aja_kivi.py`, `vertaa_seurannat.py`)
 
@@ -111,6 +120,9 @@ edellinen keskipiste + edellinen siirtymä; väri valitaan automaattisesti (20 r
   yhteisellä aikamallilla. Yksilöllisten ruutujen ajaksi oletetaan k/25 s (jäännöshajonta 1,0-1,6 cm vs 1,7-2,7 cm jos f/30).
 
 ### Kiven mitat, kahvan muovin ellipsi ja korkeus (`mittaa_kahva.py`, `kivi_netti.py`: `kahva_silhuetti`, `sovita_kuvaellipsi`, `kahva_keskipiste_3d`)
+
+> **HUOM (korjaus):** tämän osan luvut (kahvan korkeus z = 16,9-17,1 cm, soikio 10,5 x 7,3 cm, kiven R 14,5 / z = 3 cm oletukset) mitattiin vanhalla, virheellisellä
+> kameran asennolla. Korjatulla asennolla kahvan muovi on PYÖREÄ levy (A = 10,1, B = 9,9 cm) tasolla z0 ~ 15 cm; ks. "Kiinteän kokoinen kahvamalli" ja "Kiven tarkka runkomalli" alla.
 
 **Kiven mitat.** WCF-säännöt (varmat): ympärysmitta enintään 914 mm (halkaisija enintään 291 mm, R <= 14,55 cm), korkeus vähintään
 114 mm (graniittirunko ilman kahvaa), paino kahvoineen 17,24-19,96 kg. Muut mitat vaihtelevat valmistajan mukaan (tyypillisiä, ei
@@ -152,6 +164,8 @@ huonolta, tarkentuu käyttäjän palautteesta (kirjain A-D).
 
 ### Kiinteän kokoinen kahvamalli ja kuvan sumeus (`kahva_malli.py`, `mittaa_kahva_malli.py`, `kalibroi_kahvamalli.py`, `piirra_kahva.py`)
 
+> **HUOM:** alla olevat mitat (A 11,4 / B 8,6 cm, z = 17 cm) ovat vanhalta kameran asennolta; korjatulla asennolla A = 10,1, B = 9,9 cm, z0 = 15 cm, ks. kappale "Päivitys korjatulle kameralle".
+
 Palaute (kuvat heitto 1 Y=236 ja heitto 2 Y=467): etureuna (A) hyvä; keltaisessa B ja D liian lyhyet (muovi jatkuu), punaisessa B liian alhaalla
 (heijastukset). Syyt: (1) sisälle-rajoite ja kärkiehto käyttivät värimaskia, josta käsi/hanska puuttuu -> käsi pakotti ellipsin takareunan (C)
 eteenpäin ja katkaisi kärjet; (2) videon kromakanavat (a*, b*) ovat paljon sumeampia kuin kirkkaus: renkaiden reunoista mitattu pistelevitys
@@ -176,9 +190,69 @@ Kuvat: `tulokset/kahva_malli_vs_merkinnat.jpg` (magenta = malli, vihreä = käsi
 `tulokset/kahva_vasen_sarake_malli.jpg`, `tulokset/kahva_malli_kuusi.jpg` (ensimmäinen versio). Kaikki 193 ruutua: `tulokset/kahvamalli_vasen.csv`
 (sovituksen RMS 0,06-0,07 kaikilla heitoilla).
 
+**Päivitys korjatulle kameralle (kalibroi_kahvamalli.py uudelleen samoista 8 merkinnästä, ruudukko A 9,4-11,8, B 9,4-12,6 cm).** A = 10,1 cm (sivu), B = 9,9 cm
+(radan suunta), jäännös 0,41 px, leave-one-out 0,54 px (aiemmin 0,41 / 0,47 px vanhalla asennolla), kromasiirrot (x: keltainen +0,36, punainen -0,49 px; y: +0,68 px).
+Muovilevy on siis PYÖREÄ (A ~ B, Ø ~20 cm): vanhan asennon epäfyysinen 11,4 x 8,6 soikio oli kameran asentovirheen jälki. Koe: A ja B vapaina ruutu kerrallaan
+(65 ruutua, Y 150-750 cm): A = 9,85 / 9,85 / 9,6 / 9,85 / 9,7 cm ja B = 9,4 / 9,9 / 9,4 / 9,9 / 9,65 cm Y-lokeroissa 250-350 ... 650-750, eli koko pysyy vakiona +-1,5 mm
+(kameran sivumittakaavassa ei ole Y-riippuvaa virhettä). Tason korkeus z0 = 15,0 cm (kahvan säde osuu rungon akseliin 14,4-15,5 cm korkeudella). Kuva `tulokset/kivet_ruudut.jpg`
+(magenta = kahvan levy), tulokset `tulokset/kahvamalli_vasen.csv`.
+
 **Käsin säädettävät esimerkkiellipsit (`luo_ellipsityokalu.py`, `ellipsityokalu_pohja.html`).** Käyttäjä voi raahata ellipsin neljää pistettä (A etureuna,
 B yläkärki, C takareuna, D alakärki) kahdeksassa ruudussa niin, että ellipsi sopii muoviin; piste liikkuu oman akselinsa suuntaan ja vastakkainen
 pää pysyy paikallaan (nuolinäppäimet 0,1 px). Alkuarvo on kiinteän kokoisen mallin ellipsi. Sivu on Artifact (tietokantakokoelma `ellipsit`, yksi
 dokumentti per ruutu: ellipsi ja pisteet ruutukoordinaateissa, alkuarvo, huomio). Sivun luonti:
 `python luo_ellipsityokalu.py VIDEO tulokset vasen --ulos sivu.html [--ruudut rata:Y,...]`. Käyttäjän tallentamat ellipsit ovat "oikea vastaus" mallin
 koon (A, B), sumeuden ja kärkien säätöön sekä ilman kokoa olettavan tunnistuksen arviointiin.
+
+### Kiven tarkka runkomalli ja koon pysyvyys (`kivi_tarkka.py`, `kalibroi_kivi.py`, `testaa_kivi_koko.py`, `piirra_kivet.py`)
+
+Palaute: tunnista kivet tarkasti niin, että ne ovat samankokoisia ja samankorkuisia koko matkan (millien erot sallittu). Ratkaisu: kivellä on yksi
+KIINTEÄ 3D-malli (koko ei vapaudu ruudulta toiselle eikä kivestä toiseen), ruutukohtaisesti sovitetaan vain akselin paikka (X, Y); koon pysyvyys
+tarkistetaan erikseen VAPAALLA ruutukohtaisella sovituksella (X, Y, R, H). Edellytys oli kameran asennon korjaus (ks. "Kameran asento"): vanhalla asennolla
+kiven säde näytti 15,0-15,7 cm ja korkeus riippui etäisyydestä.
+
+**Malli.** Pyörähdyskappale: profiili r(z) 11 solmusta (Catmull-Rom, z = 0 ... H kalibrointitasosta) ja korkeus H. Kuvan sumeus sigma_eff = hypot(0,31 px, b * s_lat),
+b = 0,56 cm: reunan fysikaalinen pehmeys (kiiltävän graniitin reunalla tumma ydin päättyy ennen geometrista siluettia, joten pehmeys kasvaa kuvamittakaavan s_lat
+(1,5-2,8 px/cm) mukana; mitattu reunan 10-90 %:n leveys 2,8-4,7 px) + gamma 1,3 (videon gamma: tumma kohde näkyy hieman pienempänä). Havainto: graniitin peittävyys
+`alfa_kartta` (0..1); malli = kiven siluetti (renkaiden kupera peite) ilman yläpinnan ellipsiä, sumennettuna ja gammalla; residuaali (malli - alfa) * paino reunakaistalla
+(+-6 px alkuasennon reunasta, alipikseli, 4x ylinäytteistys). Kelvolliset pikselit (`kivi_tarkka.havainto`): ei kahvan muovia, ihoa eikä hihoja (jäällä: Lab a*b* poikkeaa taustasta > 9
+tai L < 28; värillisellä taustalla (renkaat): etäisyys janasta tausta-graniitti > 45), ei kiiltoreikiä graniitin sisällä (alfa < 0,5 -alue < 80 px), ei taustan reunoja
+(gradientti); yläpinnan ellipsi on pehmeä "ei väliä" -alue. Profiili on siis TUMMAN GRANIITTIYDIMEN profiili: sen reuna on alfa = 0,5 -taso, ei geometrinen ulkoreuna.
+
+**Opetus** (`python kalibroi_kivi.py VIDEO tulokset vasen --H 12.3`): kimppusovitus (bundle adjustment, scipy `least_squares`, harva Jacobin rakenne): profiilin solmut, sigma_opt ja b
+yhteisinä parametreina, jokaiselle 241 ruudulle oma (X, Y); 486 000 residuaalia; silotus- ja yksihuippurangaistus (yläpuolella r ei saa kasvaa).
+Tulos `tulokset/kivimalli_vasen.json`: r = 8,0 / 9,9 / 11,7 / 12,0 / 12,8 / 13,6 / 13,7 / 13,7 / 13,8 / 13,9 / 14,1 cm solmuissa z = 0 / 0,5 / 1,2 / 2,2 / 3,4 / 4,9 / 6,4 / 7,9 / 9,3 / 10,8 / 12,3 cm,
+residuaalin RMS 0,066. Kun alkuarvoja muutetaan (r -5 % ... +4 %, b 0,3 ... 0,9 cm), yläosan profiili (z > 4,9 cm) toistuu +-0,3 cm:iin ja RMS pysyy 0,066-0,068:ssa;
+jalka (z < 2 cm: r(0) = 6,9 ... 8,3) on heikosti määrätty. Akselin paikka ei silti riipu mallin valinnasta: eri malleilla sivusuunnan ero on <= 0,01 cm ja radan suunnan vakiosiirtymä
+-0,3 ... +0,5 cm (ei Y-riippuvuutta).
+
+**Koe: koko ja korkeus pysyvät vakiona** (`python testaa_kivi_koko.py VIDEO tulokset vasen` -> `tulokset/kivi_koko_vasen.png/.csv`): jokaiselle hyvin näkyvälle ruudulle
+(kelvollisia pikseleitä > 35 %, 195 ruutua) sovitetaan vapaasti (X, Y, sade R keskikorkeudella, korkeus H) kiinteällä profiilin muodolla kolmesta alkuarvosta.
+
+| Y (cm) | n | R keskikorkeudella, mediaani (hajonta) cm | H, mediaani (hajonta) cm | heitto 1 R / H | heitto 2 R / H | heitto 3 R / H |
+|---|---|---|---|---|---|---|
+| 150...300 | 30 | 13,86 (0,28) | 12,19 (0,99) | 13,77 / 12,15 | 13,98 / 12,66 | 13,82 / 11,76 |
+| 300...450 | 50 | 13,66 (0,13) | 11,84 (0,68) | 13,57 / 11,85 | 13,69 / 11,79 | 13,76 / 11,87 |
+| 450...600 | 45 | 13,56 (0,41) | 11,78 (0,85) | 13,46 / 11,73 | 13,56 / 11,54 | 13,72 / 12,02 |
+| 600...750 | 24 | 13,55 (0,54) | 11,86 (1,09) | 13,51 / 12,14 | 13,59 / 11,60 | - |
+| Y 100...650 (vapaa liuku) | 137 | 13,68 (0,31) | 11,89 (0,83) | 13,55 / 11,89 | 13,65 / 11,80 | 13,76 / 11,94 |
+
+Lukuina: kolmen kiven korkeus on 11,89 / 11,80 / 11,94 cm (ero 1,4 mm) ja sivusuuntainen puolileveys 13,55 / 13,65 / 13,76 cm (ero 2 mm); radan varrella R pienenee 1-3 mm (13,86 -> 13,55 cm
+lokeroissa Y = 150-300 -> 600-750, malliton mittaus 13,75 -> 13,61 cm) ja H pysyy +-2 mm:ssä (lokeroiden mediaanit 11,8-11,9 cm, hajonta ruutua kohti 0,7-1,1 cm). Täysin malliton vertailu (`R_suora`: alfa-kartan 50 %:n reunat kiven leveimmässä kohdassa, ei mallia): puolileveys 13,75 / 13,67 / 13,60 / 13,61 cm
+Y-lokeroissa 150-300 / 300-450 / 450-600 / 600-720 (ruutukohtainen hajonta 0,05-0,10 cm) ja heitoittain 13,63 / 13,59 / 13,80 cm. Kahvan levyn (väriympyrä, terävä reuna) koko on Y:n suhteen
+vakio (A, B +-1,5 mm), joten pieni R:n lasku Y:n mukana kuuluu tumman ytimen reunaan (valaistus/heijastus), ei kameran sivumittakaavaan. Valmis luku: **kiven (näkyvän tumman graniitin)
+sivusuuntainen puolileveys 13,7 cm (halkaisija 27,3 cm), korkeus 12,3 cm kalibrointitasosta; koko pysyy samana +-1,5 mm radan varrella ja +-1-2 mm kolmella kivellä.**
+Kuvat: `tulokset/kivi_koko_vasen.png` (R(Y), H(Y) heitoittain), `tulokset/kivet_ruudut.jpg` (siluetti 18 ruudussa: 3 heittoa x Y = -200 ... 700 cm; syaani = runko, keltainen = ylärengas,
+magenta = kahvan levy).
+
+**Rajoitteet (rehellisesti).**
+* *Korkeus H ei ole siluetista tarkasti mitattavissa:* kiven yläpinta jää kahvan muovin alle, joten H on korreloitunut profiilin yläosan kanssa. Kun H kiinnitetään ja profiili sovitetaan, kustannus
+  kasvaa H:n mukana (H = 9,5 / 11,5 / 12,5 / 13,5 / 14,5 / 15,5 cm: 960 / 977 / 1004 / 1072 / 1155 / 1276), mutta alle ~11 cm:n arvoilla profiilin yläreuna leviää epäfyysisesti (r 14,4 ... 16 cm). Siluetti suosii siis matalaa runkoa,
+  jos yläreunan leveneminen sallitaan. H on kiinnitetty arvoon 12,3 cm (vapaa ruutukohtainen H-mediaani 11,9 cm; ilman levenevää yläreunaa alaraja on 13,5 cm; WCF: runko >= 11,4 cm, tyypillisesti 11,4-12,7 cm)
+  ja pysyvyys osoitetaan sen ympärillä. Kalibrointitaso on maalattujen viivojen taso; jään pinta on sen yläpuolella (arviolta 0-2 cm). Kahvan levyn taso z0 ~ 15 cm on ~2,7 cm rungon yläreunan
+  yläpuolella (levy on pyöreä ja ohut: A ~ B, ei kupua).
+* *Taloalue (Y ~ -190 ... 190 cm):* maalatut renkaat ovat graniitin kanssa samankirkkaita, joten kiven reuna näkyy vain kromalla (sumea, sigma 2,1 px) ja kiven varjo sinisellä
+  renkaalla on tumma; kelvollisia pikseleitä on vähän (6-30 %) ja sivusuuntainen hajonta 0,2-0,6 cm (vapaalla jäällä 0,03-0,16 cm). `kelvolliset`-sarake (kivet_vasen.csv) kertoo luotettavuuden.
+* *Kahvan levyn ja rungon akselin ero:* levyn mallin akseli (z0 = 15 cm) ja rungon siluetin akseli eroavat radan suunnassa -0,3 / +0,2 / +1,4 / +0,9 / +0,6 cm (Y = 250-350 ... 650-750) ja sivusuunnassa
+  -0,07 ... -0,45 cm; heitoittain dY = +0,5 / -0,1 / +1,6 cm. Kahvan säde osuu rungon akseliin korkeudella 14,4-15,5 cm. Kahvan väriseurannan keskipiste (`kahvaradat_*.csv`, z = 15 cm) poikkeaa
+  rungon akselista enemmän (1,2 / 3,3 / 2,5 cm heitoittain): irroituksen tunnistuksessa on käytettävä levyn mallia (`kahvamalli_*.csv`), ei värin keskipistettä.

@@ -41,6 +41,8 @@ if __name__ == "__main__":
     ap.add_argument("kansio")
     ap.add_argument("puoli")
     ap.add_argument("--merkinnat", default=None)
+    ap.add_argument("--A", default="11.0:11.8:0.2", help="alku:loppu:askel (cm), puoliakseli sivusuunnassa")
+    ap.add_argument("--B", default="8.0:9.2:0.3", help="alku:loppu:askel (cm), puoliakseli radan suunnassa")
     a = ap.parse_args()
     merkinnat = json.load(open(a.merkinnat or f"{a.kansio}/kahva_ellipsit_kasin.json"))
     cam = kv.Kamera(a.puoli, f"{a.kansio}/kalibrointi_{a.puoli}.json", f"{a.kansio}/moodikuva_{a.puoli}.png")
@@ -59,8 +61,11 @@ if __name__ == "__main__":
     n = len(merkinnat)
     vari = np.array([d["vari"] for d in merkinnat])
     kasin = [np.concatenate([np.array(d["pisteet_ruutu"][k], float) for k in "ABCD"]) for d in merkinnat]
-    As = [11.0, 11.2, 11.4, 11.6, 11.8]
-    Bs = [8.0, 8.3, 8.6, 8.9, 9.2]
+    def ruudukko(spec):
+        a0, a1, st = (float(x) for x in spec.split(":"))
+        return [round(float(v), 3) for v in np.arange(a0, a1 + 1e-9, st)]
+
+    As, Bs = ruudukko(a.A), ruudukko(a.B)
     R = {}
     with Pool(4) as pool:
         for A in As:
@@ -90,14 +95,13 @@ if __name__ == "__main__":
         return b
 
     e, (A, B), sh = paras(list(range(n)))
-    raw = np.sqrt(np.mean(R[(11.4, 8.6)] ** 2))
     se = []
     for i in range(n):
         idx = [j for j in range(n) if j != i]
         _, k2, sh2 = paras(idx)
         se.append(jaannos(R[k2], i, sh2) ** 2)
     loo = float(np.sqrt(np.mean(np.concatenate(se))))
-    lahto = float(np.sqrt(np.mean(np.concatenate([R[k] for k in [(A, B)]]) ** 2)))
+    lahto = float(np.sqrt(np.mean(R[(A, B)] ** 2)))
     print(f"{n} merkittya ruutua: A = {A:.1f} cm, B = {B:.1f} cm; siirrot (du keltainen, du punainen, dv) = ({sh[0]:+.2f}, {sh[1]:+.2f}, {sh[2]:+.2f}) px")
     print(f"jaannos merkintoihin: ilman siirtoja {lahto:.2f} px, siirtojen kanssa {e:.2f} px, leave-one-out {loo:.2f} px (4 pistetta, 8 koordinaattia)")
     asetukset = km.lataa_asetukset()
