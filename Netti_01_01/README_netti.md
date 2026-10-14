@@ -150,25 +150,31 @@ Kokeilut (kokeilukoodi, ei repossa; 193 ruutua, kaikki kolme heittoa, Y = 150-64
 Siis lukuina vasemman sarakkeen kuvat (heitto 1 Y=236: RMS 0,25 px; heitto 2 Y=467: RMS 0,8 px) eivät poikkea muista; mikä niissä näyttää
 huonolta, tarkentuu käyttäjän palautteesta (kirjain A-D).
 
-### Kiinteän kokoinen kahvamalli ja kuvan sumeus (`kahva_malli.py`, `mittaa_kahva_malli.py`, `piirra_kahva.py`)
+### Kiinteän kokoinen kahvamalli ja kuvan sumeus (`kahva_malli.py`, `mittaa_kahva_malli.py`, `kalibroi_kahvamalli.py`, `piirra_kahva.py`)
 
 Palaute (kuvat heitto 1 Y=236 ja heitto 2 Y=467): etureuna (A) hyvä; keltaisessa B ja D liian lyhyet (muovi jatkuu), punaisessa B liian alhaalla
 (heijastukset). Syyt: (1) sisälle-rajoite ja kärkiehto käyttivät värimaskia, josta käsi/hanska puuttuu -> käsi pakotti ellipsin takareunan (C)
 eteenpäin ja katkaisi kärjet; (2) videon kromakanavat (a*, b*) ovat paljon sumeampia kuin kirkkaus: renkaiden reunoista mitattu pistelevitys
-sigma = 2,1 px (kroma) vs 0,8 px (L; kroma 4:2:0), joten varikynnyksellä saatu silhuetti perääntyy kärjissä (1-2 px kaukana).
+sigma = 2,1 px (kroma) vs 0,8 px (L; kroma 4:2:0), joten värikynnyksellä saatu silhuetti perääntyy kärjissä (1-2 px).
 Korjaus (käyttäjän ehdotus: kaikilla kahvoilla sama koko oppimisvaiheessa):
 * muovin juuri = vaakasuora soikio kiven akselilla (korkeus z = 17 cm), puoliakselit A (sivu) ja B (radan suunta) yhteiset kaikille ruuduille;
   per ruutu sovitetaan vain akselin (X, Y); kärjet tulevat koosta, eivät silhuetista
 * malli = soikion peitto sumennettuna sigma = 2,1 px, verrataan väriin (keltainen b*, punainen a*) alipikselinä; vahvistus ja siirto ruuduittain
   lineaarisesti; käsi, hanska ja iho ovat "ei väliä" (paino 0): käsi ellipsin sisällä ei haittaa, vain jää ei saa näkyä
+* heijastukset: malli > havainto -jäännös painaa 0,6 (muovin sisällä oleva valo ei vedä ellipsiä pois)
 * alkuarvo ruudukkohaulla (vanha silhuettipohjainen alkuarvo valitsi osassa punaisia ruutuja hoglinen vaaleanpunaisen raidan)
-* koko opittu 49 puhtaasta keltaisesta ruudusta (Y = 330-520 cm): A = 11,05 cm, B = 7,9 cm (`tulokset/kahvamalli_koko_vasen.json`);
-  vain punaisista ruuduista A = 10,7 cm (3 % pienempi) -> sama koko -oletus pitää noin 3 % tarkkuudella
-* kaikki 193 ruutua sovittuvat, sovituksen RMS 0,07-0,08 (0 = täydellinen) kaikilla kolmella heitolla (`tulokset/kahvamalli_vasen.csv`)
-* kärjet ylittävät varikynnyksen silhuetin kärjet mediaanina 0,7-1,1 px (ylös) ja 0,9-1,3 px (alas) Y = 150-550 cm, 0,3-0,7 px lähellä hogline.
-Mitat ovat kuvan mittakaavassa; kiven halkaisija mittautuu samalla mittakaavalla ~7 % WCF-maksimia isommaksi (R 15,6 vs 14,55), joten
-todelliset mitat voivat olla vastaavasti pienempiä (noin 10,3 x 7,4 cm).
-Kuvat: `tulokset/kahva_vasen_sarake_malli.jpg` (A-D kirjaimin, valkoinen = vanha vapaa ellipsi), `tulokset/kahva_malli_kuusi.jpg`.
+
+**Kalibrointi käyttäjän käsin säätämistä ellipseistä** (`tulokset/kahva_ellipsit_kasin.json`, 8 ruutua, 3 heittoa, molemmat värit; raahattava sivu).
+Ensimmäisen mallin (A 11,05, B 7,9, ilman siirtoja) pisteet poikkesivat merkinnöistä 0,92 px RMS: B (yläkärki) oli kaikissa 8 ruudussa 0,5-2,4 px liian
+lyhyt (keskimäärin 1,3), C (takareuna) keltaisissa 1,6 px liian edessä, A (etureuna) oikein (keskimäärin +0,06 px); D keltaisissa +0,5, punaisissa -0,6 px.
+`kalibroi_kahvamalli.py` ratkaisee merkinnöistä: koko A = 11,4 cm, B = 8,6 cm (kuvan mittakaavassa), kromahavainnon vakiosiirtymät (x: keltainen +0,34,
+punainen -0,50 px; y: +0,58 px kummallakin) -> asetukset `tulokset/kahvamalli_asetukset_vasen.json`. Jäännös merkintöihin 0,41 px RMS ja
+leave-one-out (vakiot 7 ruudusta, ennuste 8.) 0,47 px (4 pistettä, 8 koordinaattia; ruutukohtaisesti 0,17-0,79). Keltainen ja punainen sopivat samaan
+kokoon (A 11,5 / 11,2, B 8,6 / 8,2 erikseen sovitettuna), joten sama koko -oletus pitää alle 3 % tarkkuudella. Mitat ovat kuvan mittakaavassa;
+kiven halkaisija mittautuu samalla mittakaavalla ~7 % WCF-maksimia isommaksi, joten todelliset mitat voivat olla ~7 % pienempiä (noin 10,6 x 8,0 cm).
+Kuvat: `tulokset/kahva_malli_vs_merkinnat.jpg` (magenta = malli, vihreä = käsin merkitty), `tulokset/kahva_malli_uudet_ruudut.jpg` (15 merkitsemätöntä ruutua),
+`tulokset/kahva_vasen_sarake_malli.jpg`, `tulokset/kahva_malli_kuusi.jpg` (ensimmäinen versio). Kaikki 193 ruutua: `tulokset/kahvamalli_vasen.csv`
+(sovituksen RMS 0,06-0,07 kaikilla heitoilla).
 
 **Käsin säädettävät esimerkkiellipsit (`luo_ellipsityokalu.py`, `ellipsityokalu_pohja.html`).** Käyttäjä voi raahata ellipsin neljää pistettä (A etureuna,
 B yläkärki, C takareuna, D alakärki) kahdeksassa ruudussa niin, että ellipsi sopii muoviin; piste liikkuu oman akselinsa suuntaan ja vastakkainen

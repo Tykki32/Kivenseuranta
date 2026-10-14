@@ -4,12 +4,12 @@ python piirra_kahva.py VIDEO tulokset vasen --ruudut 0:236,1:467 [--ulos tulokse
 --ruudut    lista rata:Y_cm (rata = 0, 1, 2 = heitto 1, 2, 3; Y = lahin seurannan piste, kahvaradat_<puoli>.csv)
 --kirjaimet merkitsee ellipsin osat kirjaimilla (A etureuna, B ylakarki, C takareuna, D alakarki)
 --vanha     piirtaa lisaksi ruutukohtaisen vapaan ellipsin (silhuetin etureuna + karjet + sisalle-rajoite) ohuella valkoisella
-Ellipsi on kiintean kokoinen malli (kahva_malli.py): koko tulokset/kahvamalli_koko_<puoli>.json (mittaa_kahva_malli.py --opi).
-Vari: magenta = malli, syaani = muovin silhuetti (varikynnys, vertailuksi), valkoinen = vapaa ellipsi (--vanha)."""
+--merkinnat piirtaa lisaksi kasin merkityn ellipsin (raahattava sivu, tulokset/kahva_ellipsit_kasin.json) vihreana
+Ellipsi on kiintean kokoinen malli (kahva_malli.py); asetukset tulokset/kahvamalli_asetukset_<puoli>.json (kalibroi_kahvamalli.py).
+Vari: magenta = malli, syaani = muovin silhuetti (varikynnys, vertailuksi), valkoinen = vapaa ellipsi (--vanha), vihrea = kasin merkitty."""
 import argparse
 import csv
 import json
-import os
 
 import cv2
 import numpy as np
@@ -28,6 +28,7 @@ ap.add_argument("--suurennus", type=int, default=10)
 ap.add_argument("--sarakkeita", type=int, default=2)
 ap.add_argument("--kirjaimet", action="store_true")
 ap.add_argument("--vanha", action="store_true")
+ap.add_argument("--merkinnat", default=None)
 a = ap.parse_args()
 
 cam = kv.Kamera(a.puoli, f"{a.kansio}/kalibrointi_{a.puoli}.json", f"{a.kansio}/moodikuva_{a.puoli}.png")
@@ -36,12 +37,10 @@ cap = cv2.VideoCapture(a.video)
 ak.yksilolliset_ruudut(a.video, [(8, 22), (56, 66), (104, 114)], a.puoli)
 t2f = {round(t, 3): f for f, t in ak.T_KARTTA.items()}
 rows = list(csv.DictReader(open(f"{a.kansio}/kahvaradat_{a.puoli}.csv")))
-A, B = km.A_CM, km.B_CM
-json_polku = f"{a.kansio}/kahvamalli_koko_{a.puoli}.json"
-if os.path.exists(json_polku):
-    d = json.load(open(json_polku))
-    A, B = d["A_cm"], d["B_cm"]
+ast = km.lataa_asetukset(a.kansio, a.puoli)
+A, B = ast["A_cm"], ast["B_cm"]
 S = a.suurennus
+MERKINNAT = json.load(open(a.merkinnat)) if a.merkinnat else []
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
@@ -52,7 +51,7 @@ def ruutu(rata, Y):
     u, v = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[float(r["X_cm"]), float(r["Y_cm"]), 15.0]]))
     uv0 = (float(u[0]), float(v[0]))
     crop, mode, x0, y0 = km.leike(cam, fr, uv0)
-    m = km.sovita(kev, crop, mode, x0, y0, r["vari"], uv0, A, B)
+    m = km.sovita_asetuksilla(kev, crop, mode, x0, y0, r["vari"], uv0, ast)
     big = cv2.resize(crop, None, fx=S, fy=S, interpolation=cv2.INTER_CUBIC)
     P = lambda pt: (int(round((pt[0] - x0 + 0.5) * S)), int(round((pt[1] - y0 + 0.5) * S)))
     try:
@@ -67,6 +66,15 @@ def ruutu(rata, Y):
             E = kv.sovita_kuvaellipsi(s, painot=(1.0, 10.0, 10.0))["E"]
             for i in range(len(E) - 1):
                 cv2.line(big, P(E[i]), P(E[i + 1]), (255, 255, 255), 1, cv2.LINE_AA)
+    for d in MERKINNAT:
+        if d["rata"] == int(rata) and abs(d["Y_cm"] - float(r["Y_cm"])) <= 6:
+            e = d["ellipsi_ruutu"]
+            th = np.linspace(0, 2 * np.pi, 200)
+            ph = np.radians(e["kallistus_deg"])
+            xx, yy = e["b"] * np.cos(th), e["a"] * np.sin(th)
+            G = np.column_stack([e["uc"] + np.cos(ph) * xx - np.sin(ph) * yy, e["vc"] + np.sin(ph) * xx + np.cos(ph) * yy])
+            for i in range(len(G) - 1):
+                cv2.line(big, P(G[i]), P(G[i + 1]), (60, 220, 60), 2, cv2.LINE_AA)
     teksti = f"heitto {int(rata) + 1} ({r['vari']}) Y={float(r['Y_cm']):.0f} cm"
     if m is None:
         cv2.putText(big, teksti + "  (mallia ei sovitettu)", (8, 26), FONT, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
@@ -88,7 +96,7 @@ def ruutu(rata, Y):
         merkki(E[np.argmin(E[:, 0])], "C", -45, 0)
         merkki(E[np.argmax(E[:, 1])], "D", 0, 40)
     cv2.putText(big, teksti, (8, 26), FONT, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-    cv2.putText(big, f"malli A = {A:.1f} cm, B = {B:.1f} cm, z = {km.Z0_CM:.0f} cm, sovituksen RMS {m['rms']:.3f}", (8, 2 * km.H * S - 12), FONT, 0.55, (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.putText(big, f"malli A = {A:.1f} cm, B = {B:.1f} cm, z = {ast["z0_cm"]:.0f} cm, sovituksen RMS {m['rms']:.3f}", (8, 2 * km.H * S - 12), FONT, 0.55, (0, 0, 255), 2, cv2.LINE_AA)
     return big
 
 
@@ -98,7 +106,7 @@ rimg = [np.hstack(tiles[i:i + cols] + [np.zeros_like(tiles[0])] * (cols - len(ti
 img = np.vstack(rimg)
 sel = np.full((70, img.shape[1], 3), 255, np.uint8)
 cv2.putText(sel, "magenta = kiintean kokoinen malli (soikio kiven akselilla)   syaani = muovin silhuetti (varikynnys)", (10, 26), FONT, 0.6, (60, 60, 60), 2, cv2.LINE_AA)
-cv2.putText(sel, "valkoinen = vapaa ellipsi (vanha menetelma, --vanha)   kasi ja hanska eivat vaikuta sovitukseen", (10, 54), FONT, 0.6, (60, 60, 60), 2, cv2.LINE_AA)
+cv2.putText(sel, "valkoinen = vapaa ellipsi (vanha menetelma, --vanha)   vihrea = kasin merkitty (--merkinnat)   kasi ja hanska eivat vaikuta sovitukseen", (10, 54), FONT, 0.6, (60, 60, 60), 2, cv2.LINE_AA)
 img = np.vstack([img, sel])
 ulos = a.ulos or f"{a.kansio}/kahva_ruudut.jpg"
 cv2.imwrite(ulos, img, [cv2.IMWRITE_JPEG_QUALITY, 92])

@@ -1,8 +1,9 @@
 """Kahvan muovin kiintean kokoinen malli (oppimisvaihe): kaikilla kahvoilla oletetaan sama muovin koko.
 
 Muovin juuri on vaakasuora soikio (puoliakselit A sivusuunnassa (X), B radan suunnassa (Y)), jonka keskipiste on kiven akselilla
-korkeudella Z0_CM. Soikio projisoidaan kameralla kuvaan; per ruutu sovitetaan vain akselin paikka (X, Y). Koko (A, B) on kaikille
-ruuduille yhteinen ja opitaan puhtaista ruuduista (`opi_koko`); lopullisessa koodissa kokoa ei voi olettaa, sillä kahvat voivat erota.
+korkeudella Z0_CM. Soikio projisoidaan kameralla kuvaan; per ruutu sovitetaan vain akselin paikka (X, Y). Koko (A, B), kromahavainnon
+vakiosiirtymat ja painot on kalibroitu käyttäjän käsin merkitsemistä ellipseistä (kalibroi_kahvamalli.py); lopullisessa koodissa kokoa ei voi
+olettaa, sillä kahvat voivat erota.
 
 Havainto ja malli (alipikseli, kuvan sumeus huomioiden):
 * havainto p (0..1): muovin vari (keltainen: b*, punainen: a*) taustasta (moodikuva) muovin tasanteeseen
@@ -18,14 +19,28 @@ from scipy.optimize import least_squares
 import kivi_netti as kv
 
 Z0_CM = 17.0              # soikion korkeus (aiempi arvio: 16,9-17,1 cm, +-3 cm)
-A_CM = 11.0               # puoliakseli sivusuunnassa (opittu puhtaista keltaisista ruuduista, Y = 330-520 cm)
-B_CM = 8.3                # puoliakseli radan suunnassa (opittu; vaihtelee 8,0-8,6 heittojen valilla)
+A_CM = 11.4               # puoliakseli sivusuunnassa (kuvan mittakaavassa; kalibroitu kasin merkityista ellipseista, kalibroi_kahvamalli.py)
+B_CM = 8.6                # puoliakseli radan suunnassa (samoin)
 SIGMA_PX = 2.1            # kromakanavan (a*, b*) pistelevitys px (renkaiden reunoista; L: 0,8 px)
+W_YLI = 0.6               # paino kun malli > havainto (heijastus, valo muovin sisalla): painaa vahemman kuin muovi mallin ulkopuolella
+SIIRTO_PX = {"keltainen": (0.34, 0.58), "punainen": (-0.50, 0.58)}   # kromahavainnon siirtyma geometriaan nahden (px, kuvan x ja y), kasin merkityista
 H = 56                    # leikkeen puolikas (px)
 N = 2 * H
 SS = 4                    # peiton ylinaytteistus
 TH = np.linspace(0.0, 2.0 * np.pi, 120, endpoint=False)
 CT, ST = np.cos(TH), np.sin(TH)
+
+
+def lataa_asetukset(kansio=None, puoli="vasen"):
+    """Oletusasetukset, ja jos tulokset/kahvamalli_asetukset_<puoli>.json on olemassa, sen arvot (kalibroi_kahvamalli.py)."""
+    import json
+    import os
+    a = dict(A_cm=A_CM, B_cm=B_CM, z0_cm=Z0_CM, sigma_px=SIGMA_PX, w_yli=W_YLI, siirto_px={k: list(v) for k, v in SIIRTO_PX.items()})
+    if kansio is not None:
+        p = os.path.join(kansio, f"kahvamalli_asetukset_{puoli}.json")
+        if os.path.exists(p):
+            a.update(json.load(open(p)))
+    return a
 
 
 class Kevyt:
@@ -97,10 +112,17 @@ def _lin(cv, po, wv):
     return g, o, (g * cv + o - po) * wv
 
 
-def sovita(cam, crop, mode, x0, y0, vari, uv0, A=A_CM, B=B_CM, z0=Z0_CM, sigma=SIGMA_PX):
+def sovita(cam, crop, mode, x0, y0, vari, uv0, A=None, B=None, z0=None, sigma=None, w_yli=None, siirto=None):
     """Akselin (X, Y) sovitus ruutuun kiintean kokoisella soikiolla. uv0 = karkea kuvapiste (kahvan vari-seuranta).
     Vaiheet: (1) ruudukkohaku etupuolen peittovirheella, (2) tarkennus pienimmalla neliosumma etureunan kaistalla (soft-L1).
+    siirto = kromahavainnon vakiosiirtyma geometriaan nahden (px; havainto piirretaan polygoni + siirto); palautettu poly on geometrinen.
     Palauttaa dict (X, Y, poly, rms, n, vahvistus, siirto, kontrasti) tai None."""
+    A = A_CM if A is None else A
+    B = B_CM if B is None else B
+    z0 = Z0_CM if z0 is None else z0
+    sigma = SIGMA_PX if sigma is None else sigma
+    w_yli = W_YLI if w_yli is None else w_yli
+    sh = np.array(SIIRTO_PX.get(vari, (0.0, 0.0)) if siirto is None else siirto, float)
     h = havainto(crop, mode, vari)
     if h is None:
         return None
@@ -111,7 +133,7 @@ def sovita(cam, crop, mode, x0, y0, vari, uv0, A=A_CM, B=B_CM, z0=Z0_CM, sigma=S
 
     def kuva(X, Y):
         poly = soikio_kuvaan(cam, X, Y, z0, A, B)
-        return poly, peitto(poly, x0, y0, sigma)
+        return poly, peitto(poly + sh, x0, y0, sigma)
 
     # (1) ruudukko: etupuolen (u >= keskipiste - 2) pikselit soikion korkeusvalilla, vahvistus ja siirto vapaat
     best = None
@@ -142,36 +164,21 @@ def sovita(cam, crop, mode, x0, y0, vari, uv0, A=A_CM, B=B_CM, z0=Z0_CM, sigma=S
 
     def res(q):
         poly = soikio_kuvaan(cam, q[0], q[1], z0, A, B)
-        c = peitto(poly, x0, y0, sigma)
-        return _lin(c[idx], po, wv)[2]
+        c = peitto(poly + sh, x0, y0, sigma)
+        r = _lin(c[idx], po, wv)[2]
+        return np.where(r > 0, w_yli * r, r)      # malli > havainto (heijastus, valo) painaa vahemman kuin muovi mallin ulkopuolella
 
     sol = least_squares(res, [Xg, Yg], loss="soft_l1", f_scale=0.25, diff_step=1e-3, max_nfev=40,
                         bounds=([Xg - 2.0, Yg - 4.0], [Xg + 2.0, Yg + 4.0]))
     r = res(sol.x)
     poly = soikio_kuvaan(cam, sol.x[0], sol.x[1], z0, A, B)
-    cfin = peitto(poly, x0, y0, sigma)
+    cfin = peitto(poly + sh, x0, y0, sigma)
     g, o, _ = _lin(cfin[idx], po, wv)
     return dict(X=float(sol.x[0]), Y=float(sol.x[1]), poly=poly, rms=float(np.sqrt(np.mean(r ** 2))), n=int(len(idx[0])),
                 cost=float(np.sum(r ** 2)), vahvistus=g, siirto=o, kontrasti=kontrasti)
 
 
-def _opi_tyo(args):
-    cam, crop, mode, x0, y0, vari, uv0, A, B = args
-    r = sovita(cam, crop, mode, x0, y0, vari, uv0, A, B)
-    return None if r is None else (r["cost"], r["n"])
-
-
-def opi_koko(cam, leikkeet, A0=A_CM, B0=B_CM, pool=None):
-    """Yhteinen koko (A, B) puhtaista ruuduista: minimoi soikiopeiton neliovirheen summan (Nelder-Mead).
-    leikkeet = [(crop, mode, x0, y0, vari, uv0)]. Palauttaa (A, B, J) (J = painotettu keskineliovirhe)."""
-    from scipy.optimize import minimize
-
-    def J(q):
-        args = [(cam, c, m, x0, y0, v, uv, q[0], q[1]) for (c, m, x0, y0, v, uv) in leikkeet]
-        res = pool.map(_opi_tyo, args) if pool is not None else [_opi_tyo(a) for a in args]
-        res = [r for r in res if r is not None]
-        return sum(r[0] for r in res) / max(sum(r[1] for r in res), 1)
-
-    x0 = np.array([A0, B0])
-    sol = minimize(J, x0, method="Nelder-Mead", options=dict(initial_simplex=[x0, x0 + [0.5, 0.0], x0 + [0.0, 0.5]], xatol=0.02, fatol=1e-7, maxiter=60))
-    return float(sol.x[0]), float(sol.x[1]), float(sol.fun)
+def sovita_asetuksilla(cam, crop, mode, x0, y0, vari, uv0, ast):
+    """sovita() asetuksilla ast (lataa_asetukset)."""
+    return sovita(cam, crop, mode, x0, y0, vari, uv0, A=ast["A_cm"], B=ast["B_cm"], z0=ast["z0_cm"], sigma=ast["sigma_px"], w_yli=ast["w_yli"],
+                  siirto=ast["siirto_px"].get(vari))

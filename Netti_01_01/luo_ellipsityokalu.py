@@ -48,11 +48,7 @@ if __name__ == "__main__":
     ak.yksilolliset_ruudut(a.video, [(8, 22), (56, 66), (104, 114)], a.puoli)
     t2f = {round(t, 3): f for f, t in ak.T_KARTTA.items()}
     rows = list(csv.DictReader(open(f"{a.kansio}/kahvaradat_{a.puoli}.csv")))
-    A, B = km.A_CM, km.B_CM
-    polku = f"{a.kansio}/kahvamalli_koko_{a.puoli}.json"
-    if os.path.exists(polku):
-        d = json.load(open(polku))
-        A, B = d["A_cm"], d["B_cm"]
+    ast = km.lataa_asetukset(a.kansio, a.puoli)
     frames = []
     for arg in a.ruudut.split(","):
         rata, Y = arg.split(":")
@@ -62,7 +58,7 @@ if __name__ == "__main__":
         u, v = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[float(r["X_cm"]), float(r["Y_cm"]), 15.0]]))
         uv0 = (float(u[0]), float(v[0]))
         crop, mode, cx0, cy0 = km.leike(cam, fr, uv0)
-        m = km.sovita(kev, crop, mode, cx0, cy0, r["vari"], uv0, A, B)
+        m = km.sovita_asetuksilla(kev, crop, mode, cx0, cy0, r["vari"], uv0, ast)
         if m is None:
             print("ohitetaan (mallia ei sovitettu):", arg)
             continue
