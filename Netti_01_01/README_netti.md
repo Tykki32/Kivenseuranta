@@ -136,3 +136,16 @@ keltaisella ja punaisella kahvalla. Muovin juuri on SOIKIO (ei ympyrä): puoliak
 värillä. Akselin sivusiirto alareunan kaaren akseliin nähden +1,5 / -0,1 / +0,7 cm.
 Huom: Y > 500 cm alareunan kaari häiriintyy (hogline sulautuu kiven reunaan), siellä z on virheellinen (8-9 cm) -> käytä Y < 500.
 z:n epävarmuus ~ ±3 cm, koska Y tulee alareunan kaaresta (R = 14,55 cm, z = 3 cm oletukset): Y:n 5 cm virhe -> ~3 cm virhe z:ssä.
+
+**Ellipsin tarkistus (palaute: vasemman sarakkeen kuvissa seuranta edelleen huono).** `piirra_kahva.py` piirtää valitut ruudut isona ja
+selitteellä, ellipsin osat kirjaimilla (A etureuna, B yläkärki, C takareuna, D alakärki):
+`python piirra_kahva.py VIDEO tulokset vasen --ruudut 0:236,1:467 --kirjaimet` (kuva `tulokset/kahva_vasen_sarake.jpg`).
+Kokeilut (kokeilukoodi, ei repossa; 193 ruutua, kaikki kolme heittoa, Y = 150-640 cm):
+* *Muotokoe:* etureunaan sovitettiin super-ellipsi |x/b|^n + |y/a|^n = 1 (n vapaa). n:n mediaani 2,04 (IQR 1,9-2,1) ja etureunan RMS ei
+  parane (0,82 vs 0,87 px) -> muovin juuren etureuna on kuvassa ellipsin kaari; "laatikkomainen" muoto ei selitä huonoja kuvia.
+* *Etureunan RMS Y:n mukaan:* 0,6 (150-250), 0,8 (250-350), 0,5 (350-450), 0,8 (450-550), 1,6 px (550-650, hogline kiven vieressä).
+  Heitto 1 mediaani 0,5 px, heitot 2 ja 3 ~1,1 px.
+* *Riippumaton reunatesti* (varikanavan puolitasoristeys riveittäin silhuetin oikealla reunalla): ellipsi on reunassa +-0,5 px
+  (heitto 1 Y=234 keskimäärin -0,2 px, heitto 2 Y=470 +-1 px).
+Siis lukuina vasemman sarakkeen kuvat (heitto 1 Y=236: RMS 0,25 px; heitto 2 Y=467: RMS 0,8 px) eivät poikkea muista; mikä niissä näyttää
+huonolta, tarkentuu käyttäjän palautteesta (kirjain A-D).
