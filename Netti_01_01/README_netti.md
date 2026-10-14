@@ -54,3 +54,26 @@ Kummankin puoliskon kuva on kameran 16:9-kuvan keskileikkaus (960x1080), joten o
 (-2, 1377, 576) cm. Kamerat ovat siis samanlaiset ja ~5,7 m korkeudessa, 66 astetta pystysuunnasta (katsovat radan suuntaan).
 Näin itsenäisesti sovitetut puoliskot antavat samat f, korkeuden ja etäisyyden, mikä vahvistaa kalibroinnin.
 Puolisko rajataan nyt y = 190...1080 (hack ja heittäjä mukaan); TV-grafiikka jää rajauksen ulkopuolelle paitsi minikartan alareuna.
+
+## Kiven tunnistus ja mittaus (`kivi_netti.py`, `aja_kivi.py`, `piirra_radat.py`)
+
+`python aja_kivi.py Recording.mp4 --puoli vasen --ulos tulokset --ikkunat 8-22,56-66,104-114` ->
+`tulokset/kivet_vasen.csv` (kaikki havainnot), `tulokset/radat_vasen.csv` (ketjutetut radat); `python piirra_radat.py tulokset vasen`
+-> `tulokset/radat_vasen.png`.
+
+* **Videon aikaperusta:** nauhoite on 25 r/s -virrasta 30 r/s:ksi, joten joka 6. ruutu on edellisen kopio (|ero|:n 99,9.
+  persentiili < 15, oikeilla ruuduilla staattisessakin kuvassa >= 30). Kopiot ohitetaan ja aika = yksilöllisen ruudun
+  järjestysnumero / 25 (muuten nopeus vaihtelee ±2 cm/ruutu).
+* **Esikäsittely:** puolisko rajataan ja käännetään kuten kalibroinnissa, k1 korjataan, tausta = moodikuva. Graniitti =
+  taustasta poikkeava, tumma, epäkylläinen (V 75-175, S < 70), kahva = vaalea/värillinen (S >= 45).
+* **Tunnistus:** siemenet graniittikomponenteista ja kahvakomponenteista; jokainen siemen sovitetaan kiven 3D-siluettimallilla
+  (kameran K, R, t; `kivimalli.build_local_stone_rings`) graniitti+kahva-maskiin (1 - IoU, koordinaattihaku), sitten alipikseli-
+  tarkennus alfa-kartalla (peittävyys taustan ja graniitin V:stä). Hylkäys: err > 0,5 tai peitto < 0,55.
+* **Ketjutus:** vakionopeusennuste, portti 18 cm + 8 cm/puuttuva ruutu, aukko enintään 14 ruutua.
+* **Tulos (vasen puolisko):** kolme heittoa seurataan hackista (Y ≈ -255 cm) hoglineen (Y = 640): t = 8-18 s, 59-64 s, 104-111 s.
+  Nopeus T-viivalla 2,0 / 2,0 / 2,4 m/s.
+* **Mitat (alustava):** siluettisovitus antaa R_max 15,6-16,1 cm (WCF max 14,55) ja H_total 12-16 cm (huonosti määrätty). Malli ei
+  sisällä kahvaa, joka työntyy rungon ulkopuolelle ja kasvattaa siluettia -> kahva pitää mallintaa erikseen ennen kuin mitat
+  ovat luotettavat.
+* **Tunnetut puutteet:** nopeuskäyrässä on kuoppia samoilla Y:n arvoilla kaikissa heitoissa (taustan renkaat/viivat vaikuttavat
+  alfakarttaan); Y-suunnan hajonta ~1,5-2,5 cm ruudulta (kamera katsoo radan suuntaan: 1 px = 1,3-3 cm).
