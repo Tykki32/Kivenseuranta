@@ -29,3 +29,12 @@ niin, että rata kulkee vaakasuunnassa kuten alkuperäisessä kuvassa:
 Tulos: moodikuva (24 näytettä) on puhdas, ihmiset ja kivet häviävät; sininen/punainen pesä, T-viiva ja keskiviiva
 löytyvät. Kalibrointi pysähtyy vaiheeseen "kaukaista pesaa ei löytynyt": nykyinen kalibrointi olettaa, että kuvassa
 näkyy sekä lähi- että kaukopesä ja molemmat hoglinjat. Tässä kuvassa näkyy vain yksi pesä + sen hogline.
+
+## Yhden pesän kalibrointi (`kalibrointi_netti.py`)
+
+`python kalibrointi_netti.py Recording.2026-10-14.115218.mp4 --ulos tulokset` kalibroi kummankin puoliskon (vasen, oikea):
+moodikuva -> renkaat + T-/keski-/hogline -> homografia + objektiivin k1 -> top-down (origo = pesän keskipiste, Y kohti
+hoglinea, 2 px/cm). Tulokset kansiossa `tulokset/` (`topdown_*.png`, `topdown_*_tarkistus.jpg` ympyrät ja viivat päällä,
+`kalibrointi_*.json`).
+Residuaalit (cm RMS): vasen: renkaat 0,7-1,4 (sisäsininen 4,0 maskin reuna), keskiviiva 1,9, hogline 1,7, T-viiva 5,3;
+oikea: renkaat 0,9-1,5 (sisäsininen 3,4), keskiviiva 1,6, hogline 2,1, T-viiva 5,6.
