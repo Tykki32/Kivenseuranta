@@ -324,7 +324,10 @@ PUNAINEN_SMIN, PUNAINEN_VMIN, PUNAINEN_VMAX = 100, 55, 168   # kahva V ~75-156 (
 def kahva_maski(frame, vari="keltainen"):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     if vari == "keltainen":
-        m = (hsv[..., 0] >= KAHVA_H[0]) & (hsv[..., 0] <= KAHVA_H[1]) & (hsv[..., 1] >= KAHVA_SMIN) & (hsv[..., 2] >= KAHVA_VMIN)
+        # Lab: muovi on keltainen myos vaalealla/varjoisella reunalla (b* >= 16) mutta ei punertava (iho a* > 10): tayttaa
+        # kaaren paat, joita HSV-kynnys (S >= 45, V >= 165) leikkasi pois
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.int16)
+        m = ((lab[..., 2] - 128) >= 16) & ((lab[..., 1] - 128) <= 10)
     else:
         m = ((hsv[..., 0] <= PUNAINEN_H[0]) | (hsv[..., 0] >= PUNAINEN_H[1])) & (hsv[..., 1] >= PUNAINEN_SMIN) & (hsv[..., 2] >= PUNAINEN_VMIN) & (hsv[..., 2] <= PUNAINEN_VMAX)
     return m.astype(np.uint8)

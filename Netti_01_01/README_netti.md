@@ -141,3 +141,11 @@ pystyalue mukana (`kaaripisteet`). Tulokset (`tulokset/kahva_etureuna.jpg`; mage
   X +1,4...+1,8 cm (Y alle 0,1 cm). Punainen (heitto 2): z 18,0 cm, r 9,2 cm, kahvan RMS 1,8 px (maski epäpuhdas).
 * Kuvan kahvalevy on leveydeltaan ~37-46 px (~20-24 cm), eli levy on isompi kuin oletettu 9 cm sade. Ellipsin kuvasuhde täsmää
   vaakaympyrään, mutta etukaaren pullistuma on pieni (4-5 px) levyn leveyteen nähden, joten sovitus on herkkä r:n ja z:n yhdistelmälle.
+
+**Päivitys 2 (muovin tunnistus):** kahvan muovi tunnistetaan nyt Lab-värin keltaisuudesta (b* >= 16, a* <= 10) eikä HSV-kynnyksellä
+(S >= 45, V >= 165), joka leikkasi levyn vaaleat/varjoisat kärjet pois ja teki etukaaresta liian loivan. Iho (a* > 10) jää pois. Muovi on
+nuolenkärjen muotoinen: oikea (kameran puoleinen) reuna on sileä kaari, vasemmalla muovi kapenee varreksi. Etureuna = kaari ylimmästä
+kärjestä alimpaan kärkeen kameran puolella; sovitus: yhteissovitus (akseli X, Y sekä alareunan kaarelle että kahvan etureunalle; z, r vapaat).
+Tulos (heitot 1 ja 3, keltainen): kahvan taso z = 18,8-20,4 cm (mediaani ~19,4), r = 11-14 cm, RMS 0,7-1,0 px; r ja z korreloivat
+(suurempi r -> pienempi z), joten luku z = 19,4 cm edellyttää r = 11,5-12 cm. `tulokset/kahva_etureuna.jpg`: magenta = kahvan ympyrä (paksu osa =
+etukaari), vihreä = etureunan pisteet, syaani = alareunan ympyrä, keltainen = alakaaren pisteet.
