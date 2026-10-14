@@ -130,3 +130,14 @@ leveimmän kohdan (iskukaista) korkeus alhaalla ~2-4 cm jään yläpuolella. Mal
   kuvasuhteella 0,48-0,54 (vaakaympyrän ennuste 0,47-0,55) ja pitkä akseli 37-46 px (~15-16 cm), mutta kaaren keskipiste ei ole samalla
   pystysuoralla alareunan kaaren akselin kanssa (3-5 px sivusuunnassa).
 * `KAHVA_Z_CM` palautettu oletukseen 15 cm (ei mitattu).
+
+**Päivitys (kahvan etureuna oikein):** edellinen versio käytti vain keskimmäisiä 60 % riveistä ja jätti kaaren päät pois, jolloin etureuna
+näytti suoralta. Nyt etureuna = kahvamaskin komponentin ulkoreunan pisteet leveimmästä kohdasta (ylin ja alin kärki) kohti kameraa, koko
+pystyalue mukana (`kaaripisteet`). Tulokset (`tulokset/kahva_etureuna.jpg`; magenta = sovitus, vihreä = etureunan pisteet):
+* Kahvan ympyrä (vaakataso, vapaa z ja r) etureunaan, keskipiste alareunan kaaren akselilla: RMS 1,2-2,6 px, r osuu rajaan 14 cm -> ei sovi.
+* Sama kun keskipisteen sivusuuntainen siirto vapaa: keltaiset kahvat RMS 0,4-0,7 px, z 19,3-19,4 cm, r 11-12 cm, dX +0,9...+3,6 cm.
+* Yhteissovitus (sama akseli (X, Y) sekä alareunan kaarelle että kahvan etureunalle, 4 parametria X, Y, z, r): keltainen heitto 1: z 19,4 cm
+  (IQR 19,1-20,6), r 12,5 cm; heitto 3: z 20,2 cm, r 13,2 cm; RMS alakaari 0,7-1,1 px, kahva 0,7-0,9 px; akseli siirtyy alakaaren sovituksesta
+  X +1,4...+1,8 cm (Y alle 0,1 cm). Punainen (heitto 2): z 18,0 cm, r 9,2 cm, kahvan RMS 1,8 px (maski epäpuhdas).
+* Kuvan kahvalevy on leveydeltaan ~37-46 px (~20-24 cm), eli levy on isompi kuin oletettu 9 cm sade. Ellipsin kuvasuhde täsmää
+  vaakaympyrään, mutta etukaaren pullistuma on pieni (4-5 px) levyn leveyteen nähden, joten sovitus on herkkä r:n ja z:n yhdistelmälle.

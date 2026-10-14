@@ -380,25 +380,21 @@ def etaisyys_monikulmioon(P, poly):
     return np.sqrt(((Q - P[:, None, :]) ** 2).sum(2)).min(1)
 
 
-def _poista_ulokkeet(L, ikkuna=9, raja_px=2.5):
-    """Kahvan vasemman reunan pisteista pois ulokkeet (kahvan varsi, sormet): piste pois jos se on yli raja_px vasemmalla
-    juoksevasta mediaanista (rivijarjestyksessa)."""
-    L = L[np.argsort(L[:, 1])]
-    u = L[:, 0]
-    med = np.array([np.median(u[max(0, i - ikkuna // 2): i + ikkuna // 2 + 1]) for i in range(len(u))])
-    return L[u >= med - raja_px]
-
-
 def kaaripisteet(cam, frame, uv0, vari="keltainen"):
-    """(kahvan nakyva reuna, kiven alareuna) kuvapisteina. Kahvan muovilevy on ellipsi, jonka kameran puoleinen (oikea) puoli
-    peittyy kiven graniittireunan taakse; nakyva ellipsin reuna on VASEN kaari: riveittain kahvamaskin vasemmanpuoleisin piste
-    (ulokkeet pois). Alareuna: graniitin alfa 0,5 -rajan oikeanpuoleisin piste riveittain. Kummassakin keskimmaiset 60-80 % riveista."""
+    """(kahvan etureuna, kiven alareuna) kuvapisteina.
+    Kahvan etureuna = muovilevyn ellipsin reuna LEVEIMMASTA KOHDASTA (ylin ja alin karki) KOHTI KAMERAA: kahvamaskin komponentin
+    ulkoreunan pisteet, joiden u >= karkien keski-u (koko pystyalue mukana, myos kaaren paat; vasen puoli, varsi ja sormet jaavat pois).
+    Alareuna: graniitin alfa 0,5 -rajan oikeanpuoleisin piste riveittain, keskimmaiset 60 % riveista."""
     m = cv2.morphologyEx(kahva_maski(frame, vari), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     n, lab, st, cen = cv2.connectedComponentsWithStats(m)
     k = min((i for i in range(1, n) if st[i, 4] >= 30), key=lambda i: np.hypot(cen[i][0] - uv0[0], cen[i][1] - uv0[1]))
-    ys, xs = np.where(lab == k)
-    H = np.array([(xs[ys == y].min() - 0.5, y) for y in np.unique(ys)], float)
-    H = _poista_ulokkeet(H)
+    comp = (lab == k).astype(np.uint8)
+    cs, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    c = max(cs, key=len)[:, 0, :].astype(np.float64)
+    top = c[c[:, 1] == c[:, 1].min()]
+    bot = c[c[:, 1] == c[:, 1].max()]
+    u_mid = 0.5 * (top[:, 0].mean() + bot[:, 0].mean())
+    H = c[c[:, 0] >= u_mid] + 0.5
     fg, g, h = cam.maskit(frame)
     al = alfa_kartta(cam, frame, g)
     x0, y0 = int(uv0[0]) - 70, int(uv0[1]) - 70
