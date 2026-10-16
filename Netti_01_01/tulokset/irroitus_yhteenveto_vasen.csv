@@ -1,0 +1,4 @@
+heitto,kierre_deg_s (+ = vastapaivaan),kierre_vali_deg_s,irroituksen_suunta_deg,irroituksen_suunta_virhe_deg,liun_suunta_deg,nopeus_irroituksen_jalkeen_m_s,nopeus_juuri_ennen_irroitusta_m_s,liun_hidastuvuus_m_s2,liun_hidastuvuus_vali_m_s2,vapaan_lennon_hidastuvuus_m_s2,T_viiva_irroitus_cm,T_viiva_liuku_cm
+1,54,47...69,+4.97,0.23,+4.31,1.87,1.87,-0.039,-0.065...-0.012,+0.064,+314,+278
+2,99,86...107,+1.04,0.07,-0.20,2.13,2.07,+0.056,+0.008...+0.198,+0.064,+43,-27
+3,70,54...89,-0.20,0.28,-0.65,2.52,2.44,-0.137,-0.198...-0.092,+0.098,-32,-56

@@ -1,0 +1,976 @@
+# Testi_09_03 – nopeutus: esikäsittely ja HAKU vain tarvittaville alueille (pohja Testi_09_02)
+
+Sama toiminta ja samat tulokset kuin Testi_09_02:lla, mutta raskaimmat toistuvat vaiheet laskevat vain sen osan
+kuvasta, jota todella käytetään. Profiilissa (live 2026-10-07 ja testiajot) suurin kuluttaja oli
+liukuhihnan vaihe B: koko ruudun stabilointi (`warpAffine`), linssikorjaus (`remap`) ja varjosuodatus joka ruudulle,
+~15 ms/ruutu. Lisäksi HAKU (uudet kivet) käsitteli koko ruudun (45 ms/kutsu), vaikka hakualue on kuvassa vain
+~0,2 % ruudusta (reunuksineen 14 %).
+
+**Muutokset**
+
+1. **HAKU vain hakualueelta** (`cpp/haku.hpp`, `haku_roi`): hakualueen (X ±70 cm, kaukohog −100…+300 cm) projektio
+   kuvaan (laajennettuna kiven säteellä ja siirtymävaralla, kiven pohja ja yläpinta) + 150 px reunus rajataan, ja
+   maskit, saturaatio, ristikkohaku, tarkennus ja floodFill tehdään rajauksessa. MAH00014:ssä rajaus on 14 % ruudusta.
+   Tulokset identtiset koko ruudun hakuun.
+2. **Esikäsittely vain pyydetyille alueille** (`esikasittely.LaiskaRuutu`): ruudusta lasketaan korjattu kuva ja
+   taustanvaimennus vain alueille, joita joku lukee:
+   * HAKU-alue (joka `A.HAKU_VALI_RUUTUA`:s ruutu, vaiheessa B),
+   * kivien seuranta-alueet (C++ `track_rois`: samat rajaukset kuin `track_stones_batch` käyttää),
+   * kahvan alue (kierrepiirteet) ja kiven edusta (`edessa_hahmo_osuus`),
+   * koko ruutu kerran sekunnissa valotasapainon estimointiin ja aina debug-videolle.
+
+   Laskettu alue kirjataan 16 px laattoina, joten päällekkäisiä alueita ei lasketa kahdesti; laskemattomat pikselit
+   ovat valkoisia (= tausta), joten virheellinen luku näkyisi kadonneena kivenä eikä vääränä paikkana.
+   `A.ESIKASITTELY_KOKO_RUUTU = True` laskee koko ruudun joka kerta: MAH00014-ajossa sijainnit, hog-analyysit ja
+   ennusteet ovat **bitilleen samat** kummallakin asetuksella. MAH00014:ssä lasketaan keskimäärin 16 % ruudusta
+   (korjattu kuva) ja 12 % (taustanvaimennus).
+3. **Stabilointi ja linssikorjaus yhdellä interpoloinnilla:** stabiloinnin käänteismuunnos yhdistetään linssikorjauksen
+   karttaan (`remap` kerran, aiemmin `warpAffine` + `remap`). Tiedostoajossa tämä on ainoa muutos, joka muuttaa kuvaa
+   (yksi interpolointi kahden sijaan), ks. vertailu alla.
+4. **Kameran pienennys `INTER_LINEAR`** (`A.LIVE_PIENENNYS`): 1080p → 720p ~3 ms (`INTER_AREA` 9–16 ms), ero
+   keskimäärin 0,3 harmaatasoa.
+5. **OpenCV:n säikeet 2** (`A.OPENCV_SAIKEET`): liukuhihna on jo rinnakkainen; kaikkien ytimien käyttö OpenCV:n
+   sisällä kulutti 4–6 % enemmän CPU:ta nopeuttamatta.
+6. **Kahvan kierrepiirre** (`kierre.kierre_piirre`) rajaa kuvan kahvan ympäriltä ennen värimuunnosta (identtinen
+   tulos, 3000 satunnaistapausta).
+7. GPU-vaihe B (OpenCL) poistettiin: kun esikäsittely tehdään vain pienille alueille, koko ruudun GPU-polulle ei ole
+   käyttöä (`A.GPU_VAIHE_B` ja `cpp/gpu.hpp` pois).
+
+Kokeiltiin myös LM-sovituksen pysäytystä askelkoon perusteella (askel < 0,001 cm): residuaalievaluaatiot −20 %, mutta
+koko LM-tarkennus vain −10 % (~1–2 % kokonais-CPU:sta), ja yhden heiton kierrearvio katosi (herkkä raja). Ei otettu
+käyttöön.
+
+**Tulokset (testikone 4 ydintä, Linux, sama koodi ja video kummallakin versiolla)**
+
+| Ajo | Testi_09_02 | Testi_09_03 |
+|---|---|---|
+| Live-simulaatio 720p reaaliajassa (MAH00014_leikattu, 11 min): CPU | 1,79 ydintä | **1,18 ydintä (−34 %)** |
+| — vaiheen B kuormitus | 66 % | 10 % |
+| Live-simulaatio 1080p → 720p reaaliajassa (0001, 5 min, paikallinen täysi resoluutio): CPU | 1,92 ydintä | **1,38 ydintä (−28 %)** |
+| — vaiheen B kuormitus | 65 % | 9 % |
+| Tiedostoajo MAH00014_leikattu 9000 ruutua (`--no-debug`): kesto | 3 min 51 s | **3 min 15 s** |
+| — seurantavaiheen nopeus | 39,5 r/s | **46,7 r/s** |
+| — CPU-aika | 723 s | **530 s (−27 %)** |
+
+Tiedostoajossa pullonkaula on nyt pääsäie (HAKU/SEURANTA, kapasiteetti 52 r/s); aiemmin se oli vaihe B (42 r/s).
+Live-simulaatioissa kaikki vaiheet ehtivät kummallakin versiolla (pääsäikeen kapasiteetti 76–104 r/s, tarvitaan 25 r/s);
+ero näkyy kuormana. 1080p-simulaation kaksi heittoa: nopeus ±0,004 m/s, hog-hog ±0,01 s, kierteet ±0,8 %
+(live-ajo riippuu ajoituksesta, joten pieniä eroja on kahden saman version ajonkin välillä).
+
+**Tarkkuus (MAH00014_leikattu 9000 ruutua, Testi_09_02 vs Testi_09_03):** sijainneista puolet identtisiä, mediaaniero
+0,001 cm, 99 % alle 3,9 cm (erot tulevat yhdestä interpoloinnista kahden sijaan). Kaikki 10 hog-heittoa: nopeus
+kaukohogilla ±0,0013 m/s, hog-hog-aika ±0,002 s, kierteet ±0,6 %, ennustettu pysähdys ±0,7 cm.
+
+**C++ muuttui** (`haku.hpp`, `stone_tracker.cpp`, `yhteiset.hpp`; `gpu.hpp` poistettu): `stone_tracker.pyd` on käännettävä
+uudelleen (ks. *Kääntäminen*). Testi_09_02:n `.pyd` ei käy (uudet funktiot `haku_roi`, `track_rois`). `mode_engine` ei muuttunut.
+
+---
+
+# Pohja: Testi_09_02 – uusi naarmu- ja kitkamalli kulkulinjan ennusteeseen (pohja Testi_09_01)
+
+Sama kuin Testi_09_01, mutta kulkulinjan ennusteen fysiikka (`rata_malli.py`, `asetukset.py` osio 13) on uusittu niin,
+että sama malli sopii yhtä aikaa **kierteen hidastumiseen (IMU-mittaus)**, **kulkureitteihin** ja **pysähdyspaikkoihin**.
+Kun kierteet on saatu, hog-välin datasta sovitetaan malli ja lasketaan kulkulinja kaukohogista pysähdykseen.
+Puhelinnäkymässä se piirretään **oranssina viivana**; ennustettu pysähtymispaikka tulee hog-CSV:hen ja konsoliin.
+
+### Malli (`rata_malli.py`)
+
+Tila: Y, nopeus v, kierre ω, kulkusuunnan kääntymä φ ja sivusiirtymä H.
+
+* **Naarmuvoima (kaarto).** Kiven etureuna tekee naarmuja, takareunan nyppylät ylittävät ne kulmassa 2a.
+  Takapuoliskon pisteessä o (o = 0 takareunan keskellä), etäisyydellä r + d keskipisteestä (d bandin leveyden yli):
+
+  sivuvoima F = k ∫∫ D(x) · g(2a) · p² do dd,  momentti M = k ∫∫ (r + d) cos o · D(x) · g(2a) · p² do dd
+
+  * p = pisteen nopeus / v = √((β′ cos o)² + (1 + β′ sin o)²), a = atan2(β′ cos o, 1 + β′ sin o), β′ = ωr/v · (r+d)/r
+  * g(α) = |sin α|^q, q = 0,1: sivuvoima naarmun ylitystä kohti on lähes riippumaton ylityskulmasta (kunhan kulma
+    ei ole nolla), joten kaarto riippuu vain vähän kierteen määrästä.
+  * D(x) = etureunan **naarmutiheys** sivukohdassa x = (r + d) sin o: bandin (leveys 6 mm) etupuoliskon pinta-ala
+    sivusuunnan yksikköä kohti, keskellä 1. Reunoilla kehää on sivusuunnassa enemmän, joten naarmuja on tiheämmin
+    (enintään ~4,6-kertaisesti). Integraali o:n yli antaa takareunan kehän, D(x) etureunan kehän.
+  * κ (naarmun voimakkuus) sovitetaan heitoittain.
+* **Rengaskitka: tasainen kitkateho.** Jääkitka on sulamiskitkaa: kitkan lämmöntuotto μ·p·U rajoittuu lämmön
+  johtumiseen, ja kiven graniittibandi on yhtenäinen pyörivä rengas, jonka lämpötila on lähes tasainen. Siksi
+  lämmöntuotto pinta-alaa kohti on sama joka kohdassa ja paikallinen kitkakerroin on kääntäen verrannollinen pisteen
+  nopeuteen:
+
+  μ(U) = (A + B ln Ū) · (U / Ū)^NL, NL = −1, Ū = pisteiden keskinopeus, enintään `ENNUSTE_MU_MAX` 0,1
+
+  Tällä lailla rengaskitkan momentti on **täsmälleen nolla, kun v > ωr** (kitka ei hidasta kierrettä liu'un aikana),
+  ja se kytkeytyy, kun v < ωr: kierre romahtaa pysähdyksen lähellä, kuten IMU-mittauksessa. A + B ln Ū on koko kiven
+  kitkataso (A heitoittain, B = −0,002 pysähtymismatkoista). Kitka ei anna sivuvoimaa.
+* **Kierre:** liu'un aikana hidastuminen tulee naarmumomentista (momenttivarsi noin 0,5 r), lopussa rengaskitkasta.
+* **Rata:** dφ/dt = a⊥/v, dH/dt = v φ, X(t) = c₀ + c₁ S(t) + s H(t).
+
+Heittokohtaisesti sovitetaan hog-välin Y(t)- ja X(t)-datasta y₀, v₀, ω₀, A (jään nopeus) ja κ (naarmun voimakkuus);
+mitattu kierrosmäärä hog-hog on pakote. Sovitus: oma Levenberg–Marquardt, jossa Jacobiaani ja vaimennuskokeilut
+lasketaan rinnakkain yhtenä eränä. Naarmuvoimien keskiarvot lasketaan kerran taulukoksi β = ωr/v → naarmu_taulukko.npz
+(~1 s ensimmäisellä kerralla). Vanhaa voimalakia (v_c, p, m, C0) ei enää ole.
+
+**Miksi juuri nämä.** Pelkällä kaavalla g(2a)·p² (ilman D:tä ja tasaista kitkatehoa) sivuvoiman riippuvuus β:sta
+määrää momenttivarren yksikäsitteisesti (Abelin integraaliyhtälö), eikä mikään g sovi sekä IMU-kierteeseen että
+pysähdyksiin. D(x) siirtää voimaa reunoille (momenttivarsi 0,69 r → ~0,5 r) ja tasainen kitkateho poistaa
+rengaskitkan momentin, jolloin IMU:n 2 %/s hidastuminen tulee naarmuista. Kumpikin tarvitaan (ilman D:tä IMU rms
+0,125, ilman kitkalakia 0,204). Paikallisen kitkan eksponentti oli sovituksessa vapaa: paras on täsmälleen −1
+(−0,75: 0,077, −0,9: 0,041, −1,0: 0,025, −1,1: 0,035, −1,25: 0,075 rad/s).
+
+**Testi (sama testijoukko kuin Testi_09_01:n vakioille):** IMU-heitto C11 (Lozowski ym. 2016: v₀ 2,15 m/s, ω₀ 1,6 rad/s,
+matka 26 m, kaarto 1,21 m; A ja κ sovitettu matkaan ja kaartoon), live 2026-10-03/07 14 kiven radat ja 12 kiven
+mitatut pysähdyspaikat (sovitus vain hog-väliltä):
+
+| | IMU ω rms | kierre | radan X rms med | pysähdys \|dY\| ka / bias | \|dX\| med / ka |
+|---|---|---|---|---|---|
+| Testi_09_01 (p = 1, m = 6, v_c = 0,14, μ_w = 1,5) | 0,188 rad/s | 3,2 %/s | 1,73 cm | 48,8 / −24,7 cm | 5,8 / 9,2 cm |
+| **Testi_09_02** | **0,025 rad/s** | **2,1 %/s** | **1,35 cm** | **33,1 / −6,1 cm** | **3,7 / 6,2 cm** |
+
+Malli C11:lle: ω = 1,45 / 1,30 / 1,21 / 1,14 / 1,05 / 0,98 rad/s (IMU 1,42 / 1,35 / 1,22 / 1,15 / 1,05 / 0,97) hetkillä
+5 / 10 / 13 / 15 / 18 / 20 s. κ:n hajonta saman kiven heitoissa: live 4,7 %, MAH00014 2,8 %. Tulos on vakaa:
+q = 0,05–0,2, bandin leveys 4–8 mm, B = −0,0019…−0,0021 ja μ_max 0,05…∞ antavat lähes saman. Pysähdyksen
+pituussuuntainen virhe (~33 cm) tulee kitkatasosta (A, B), ei naarmumallista.
+
+**Yhteiset vakiot (`asetukset.py` osio 13):** B = −0,002, NL = −1, μ_max = 0,1, q = 0,1, μ_w = 0, bandin leveys 6 mm.
+
+Kulkulinjaa ei lasketa, jos kierteitä ei saatu tai hog-analyysi epäonnistui, eikä piirretä, jos sovituksen jäännös
+hog-välillä on suuri (Y rms > `ENNUSTE_MAX_Y_RMS_CM` 5 cm tai X rms > `ENNUSTE_MAX_X_RMS_CM` 1,5 cm; esim. lakaisu tai
+pelaaja seurannassa).
+
+**Laskenta-aika:** numballa 0,06–0,13 s kiveä kohden (testikone, yksi ydin); ensimmäisellä kerralla numba kääntää
+koodin (~3 s, tallentuu `__pycache__`-välimuistiin, seuraavissa ajoissa ei toistu). Ilman numbaa 4–5 s kiveä kohden.
+Live-tilassa ennuste lasketaan taustasäikeessä kierrearvion perässä, joten viiva ilmestyy heti kierrearvion jälkeen.
+
+**Debug-video puhelinnäkymänä** (`--debug`, `DEBUG_KUTEN_PUHELIN = True`): debug-videossa on sama näkymä kuin
+puhelimessa (paneelit, liukusuorat, irroitusristi, laskettu kulkulinja) jokaisesta ruudusta (täysi ruutunopeus).
+Kuten puhelimessa, keskikuva on `DEBUG_VIIVE_S` = 25 s myöhässä (videoaikaa) ja viivat piirretään heitoille, joiden
+kaukohogin ylityksestä on `DEBUG_KOROSTUS_S` = 25…50 s: heitto näkyy kaukohogista alkaen viivoineen, ja viivat
+katoavat 25 s myöhemmin. Videon viimeiset 25 s kirjoitetaan loppuun puskurista (debug-video on 25 s lähdettä pidempi).
+`False` = vanha debug-video (kivien ääriviivat, kapeammat paneelit).
+
+**Kierteet: toinen riippumaton arvio ja varmuusluokka** (`kierre.kierre_leveys`, `kierre.yhdista_kierteet`, asetukset osio 7):
+kahvan siluetti kiven kuvun yläpuolella on leveimmillään, kun kahva on sivuttain, ja kapeimmillaan, kun se osoittaa
+kameraa kohti tai poispäin, joten leveys vaihtelee kerran puolikierroksessa. Leveys mitataan samoista kierrepaloista kuin
+jaksohaku (tausta rivi kerrallaan kahvan sivuilta, hidas trendi pois 3. asteen polynomilla), ja siihen sovitetaan
+hidastuva kierre kauko- ja lähihogin välille (ω_lähi / ω_kauko 0,45–1,05; Huber-painotus häiriöille). Testissä
+(22 kiveä, MAH00014 + 0001) tulos oli 0–6 % nykyisen jaksohaun kanssa kaikilla kivillä, joille jaksohaku antoi tuloksen.
+Yhdistelmä (`kierteet_yhd`, `kierre_varmuus` hog-CSV:ssä ja paneelissa):
+
+| Varmuus | Ehto | Paneelin väri | Ennusteen kierrepakote |
+|---|---|---|---|
+| varma | jaksohaku ja leveys < 12 % toisistaan, leveyden erottuvuus ≥ 2 | vihreä | 0,02 kierrosta |
+| melko varma | jaksohaku ja leveys < 12 % toisistaan | keltainen | 0,02 kierrosta |
+| epävarma | eri mieltä (jaksohaun arvo käytetään) tai vain toinen saatiin (leveys yksin vain erottuvuudella ≥ 2,5) | punainen | 0,5 kierrosta |
+
+Arvo on yhtäpitävissä tapauksissa arvioiden keskiarvo. Koko matkan lakaistuilla kivillä (lakaisijan jalat kahvan takana
+90–100 % ruuduista) kumpikaan arvio ei toimi tällä kuvakulmalla.
+
+**Paneelit video-ajossa ilman paneelitiedostoa:** jos `--paneelit` puuttuu eikä videon vieressä ole tallennettua
+`<video>_panel_corners.txt`:tä, avautuu referenssitiedoston valitsin; **Peruuta** = paneelit klikataan videon
+ensimmäisestä kuvasta (kuten live-tilassa; Enter = valmis, Esc = peruuta). Valinta tallennetaan videon viereen, joten
+seuraavalla kerralla samaa videota ei tarvitse klikata uudelleen.
+
+Hog-CSV:n uudet sarakkeet: `kierteet_leveys`, `kierre_leveys_erott`, `kierteet_yhd`, `kierre_varmuus`, `ennuste_X_cm`, `ennuste_Y_cm` (fyysinen koordinaatisto), `ennuste_liukuaika_s`
+(kaukohogista), `ennuste_A`, `ennuste_kappa`, `ennuste_w_far_rads`, `ennuste_y_rms_cm`, `ennuste_x_rms_cm`,
+`ennuste_laskenta_s`.
+
+---
+
+# Pohja: Testi_08_03 – siivottu versio (pohja Testi_08_02 t16)
+
+Sama toiminta kuin Testi_08_02:ssa (t16: irroitus, vasen-/oikeakätinen, viiveellä näytetty keskikuva, puhelinnäkymän
+tallennus), mutta koodi on siivottu:
+
+* Python jaettu aiheittain omiin moduuleihin (kalibrointi, profiili, seuranta, heitot, näkymä, …), kuollut koodi ja
+  kokeilutilat poistettu.
+* **Kaikki säädettävät arvot yhdessä tiedostossa: `asetukset.py`** (ei enää ympäristömuuttujia).
+* C++ jaettu aiheittain `cpp/`-kansioon, kokeilutilat ja käyttämättömät funktiot poistettu.
+* Rivimäärä: Python 16 405 → 9 662, C++ 8 677 → 5 003.
+
+Tulokset ovat samat kuin Testi_08_02:lla (ks. *Varmistus* alla).
+
+## Käyttö
+
+Komentorivi on sama kuin ennen:
+
+```
+python main.py --video MAH00014.mp4 --debug
+python main.py --video MAH00014.mp4 --debug --full                               # seuranta pysähtymiseen asti
+python main.py --live --paneelit D:\Tikku\Suorita\MAH00014_leikattu_panel_corners.txt --katselu --live-kansio D:\Tikku\Live
+python main.py --live-sim video.mp4 --live-sim-tahti 0 --paneelit paneelit.txt     # testaus ilman kameraa
+python tools/kamera_testi.py                                                       # kameran kartoitus
+```
+
+`python main.py --help` listaa kaikki valitsimet (`--start/--end`, `--max-frame`, `--live-*`, `--katselu [portti]`).
+
+**`--full`:** vahvistettua kiveä seurataan lähihogin jälkeenkin, kunnes se pysähtyy (toimii myös live-tilassa).
+- Debug-ikkunan (debug-video ja puhelinnäkymä) tulospaneeliin tulee rivi `pysahtyi: x; y`: kiven keskikohdan
+  etäisyys keskiviivasta (x) ja lähemmän pesän T-viivasta (y), senttimetreinä. Debug-ikkunassa vasemmalla ja
+  alhaalla luvut ovat negatiivisia, oikealla ja ylhäällä (kohti kaukaista päätä) positiivisia. Ennen pysähtymistä
+  rivillä on `pysahtyi: -`.
+- Nollakohta on `asetukset.py`:ssä: `PYSAHDYS_NOLLA_X_CM` (siirto keskiviivasta, + = fyysinen +X) ja
+  `PYSAHDYS_NOLLA_Y_CM` (siirto T-viivasta, + = kohti kaukaista päätä). Oletus 0 / 0 = keskiviiva ja T-viiva.
+- Hog-CSV:hen tulee sarakkeet `pysahtyi_x_cm`, `pysahtyi_y_cm` (nollakohdasta; x fyysisessä +X-suunnassa, ei
+  debug-ikkunan puolen mukaan) ja `pysahtyi_X_cm`, `pysahtyi_Y_cm` (fyysinen koordinaatisto).
+- Hog-hog-analyysi ja kierrearvio tehdään kuten ennenkin lähihogilla; kierrepiirteitä ei kerätä lähihogin jälkeen.
+- Pysähtyminen: kun kivi on liikkunut alle 20 cm sekunnissa, sitä seurataan vielä, kunnes viimeisen sekunnin 5
+  ensimmäisen ja 5 viimeisen paikan mediaanit ovat alle `A.PYSAHTYNYT_TARKKA_CM` (3 cm) toisistaan (enintään 3 s).
+- Vahvistus: pysähtymispaikka annetaan vain kiville, jotka oikeasti pysähtyvät. Kiven on pysyttävä näkyvissä ja
+  paikallaan (5 viimeisen paikan mediaani alle `A.PYSAHDYS_MAX_SIIRTO_CM` = 10 cm pysähdyspaikasta; yksittäinen huono
+  sovitus ei hylkää) vielä `A.PYSAHDYS_VAHVISTUS_S` (2 s). Jos kivi liikkuu tai katoaa
+  sinä aikana (pelaaja pysäyttää kiven jalalla tai harjalla tai vie sen), pysähtymispaikkaa ei anneta
+  (`pysahtyi: -`). Paikka on vahvistusjakson paikkojen mediaani. Vahvistusjaksolla on oltava vähintään
+  `A.PYSAHDYS_MIN_PAIKAT` (10) havaittua paikkaa; jos kivi on välillä peitossa, vahvistus odottaa lisää paikkoja
+  (aiemmin peitossa ollut kivi kaatoi ajon tyhjään mediaaniin).
+
+## Asetukset (`asetukset.py`)
+
+Kaikki käytön aikana säädettävät arvot (aiemmin hajallaan moduulien vakioina ja ympäristömuuttujina) on koottu
+yhteen tiedostoon, osioittain:
+
+| Osio | Sisältö |
+|---|---|
+| 1. Kalibrointi | moodikuvan näytteet (120 s / 5 s), paneelien seuranta, hoglinjojen toleranssi ±20 cm |
+| 2. Kiviprofiilin opettelu | pelialue, siemen, esitarkistus, profiilin hyväksyntä, alfa-ääriviiva |
+| 3. HAKU ja SEURANTA | hakualue, ristikon askeleet, kynnykset, uuden ehdokkaan suodatin, nopeusrajat, mean-shift ja ehdokkaan valinta, siluettituki |
+| 4. Radan elinkaari | vahvistus, kadotus, pysähtyminen, lopetus, duplikaatit |
+| 5. Heittoportti | mitkä radat kirjoitetaan heitoiksi CSV:hen |
+| 6. Hog-hog, liuku, irroitus | sovitusalue, R-rajat, liuku ja hakki |
+| 7. Kahva ja kierteet | kahvan värikynnykset, kierrearvio |
+| 8. Paikallinen täysi resoluutio | live: SEURANTA kivien alueilla kameran täydellä resoluutiolla |
+| 9. Esikäsittely | taustanvaimennus, varjo, jää, väriportti, valotasapaino, stabilointi |
+| 10. Suorituskyky | säikeet, jonot, OpenCV-säikeet, kameran pienennys, esikäsittely vain käytetyille alueille, laitteistodekoodaus, raportointi |
+| 11. Live-syöte | seurantavaiheen puskurihistoria (muut `--live-*`-valitsimilla) |
+| 12. Puhelinnäkymä ja debug-video | kuvaväli, JPEG-koko, viive, liikemaski, risti, enkooderi, taustaprioriteetti |
+
+Ympäristömuuttujat on poistettu kokonaan (kokeilutilat kiinnitetty testattuihin oletuksiin).
+
+Kalibroinnin ja kuvantunnistuksen sisäiset vakiot (renkaiden värikynnykset, hakuruudukot, LM-parametrit, mallin muoto)
+ovat edelleen omissa moduuleissaan, koska ne ovat algoritmin osia eivätkä käytön aikana säädettäviä.
+
+Mitä kukin osio tekee ja miten asiat lasketaan, on kerrottu luvussa *Toiminta osioittain* alla.
+
+## Toiminta osioittain
+
+Tämä luku kertoo, mitä kukin `asetukset.py`:n osio tekee ja miten asiat lasketaan. Asetusten nimet viittaavat
+`asetukset.py`:hyn (`A.NIMI`); suluissa olevat arvot ovat oletuksia.
+
+### Koordinaatisto ja kokonaiskuva
+
+**Rata (cm):** X = 0 keskiviivalla, Y kasvaa kohti kaukaista päätä eli heittopäätä. Lähemmän pesän (kameran puoli)
+takareuna on Y = 0, sen T-viiva (keskipiste) Y = 182,9 ja kaukaisen pesän T-viiva Y = 3657,6 (T-viivojen väli 34,747 m).
+Hoglinjat ovat nimellisesti 6,40 m omasta T-viivastaan: lähihog Y = 822,9 ja kaukohog Y = 3017,6. Heitetty kivi
+liikkuu siis Y:n **pienenemisen** suuntaan. Top-down-tarkistuskuvassa on 2 px/cm, X −200…200 cm ja Y 0…4000 cm.
+
+**Kamera:** kameramalli on `pose = {K, R, t}`, ja jääpisteen (X, Y, Z) projektio kuvaan on p = K (R·(X, Y, Z) + t).
+Objektiivin säteittäinen vääristymä on yksiparametrinen (k1). Kuva oikaistaan `cv2.remap`-kartoilla ennen seurantaa.
+
+**Ajo etenee kolmessa vaiheessa samalla videon peräkkäisellä luvulla (`seuranta.py`):**
+1. **Kalibrointi**: ensimmäisen 120 s ajalta kerätään moodikuva (tyhjä rata) ja kamera kalibroidaan siitä.
+2. **Kiviprofiili**: liikkuvista kivistä opetellaan kiven 3D-muoto.
+3. **Seuranta**: joka ruudulla haetaan uusia kiviä (HAKU) ja päivitetään liikkuvien kivien paikat (SEURANTA).
+   Radoista lasketaan hog-hog-analyysi, ja lopuksi heittoportti kirjoittaa heitot CSV:hen.
+
+---
+
+### 1. Kalibrointi (`seuranta.py`, `kalibrointi.py`, `kalibrointi_perus.py`, `paneelit.py`, `cpp/mode_engine.cpp`)
+
+**Paneelistabilointi moodikuvan keruun ajan.** Radan reunan mainospaneelit (vaalea suorakaide tummalla pohjalla) ovat
+stabiloinnin ankkureita. Paneelit tunnistetaan ensimmäisestä ruudusta referenssitiedoston (`*_panel_corners.txt`)
+läheltä. Puuttuvat paneelit voi klikata käsin, jos automaattisesti löytyy alle 6 paneelia.
+
+Jokaisessa ruudussa kunkin paneelin keskipiste haetaan edellisen paikan ympäriltä ±100 × ±120 px:n alueelta, rinnakkain
+`A.PANEELI_SAIKEET` (8) säikeessä:
+- Kynnys on keskikohdan harmaasävy (5×5-keskiarvo) + 40. Pikselit kynnyksen alla muodostavat binäärikuvan, jolle tehdään
+  3×3-avaus ja -sulkeminen.
+- Valitaan yhtenäinen alue, johon keskipiste osuu (tai lähin riittävän iso alue, 100–250 000 px). Sen kulmat tarkennetaan
+  alipikselitarkkuudella.
+- Jos paneeli hyppää yli `A.KALIB_PANEELI_MAX_HYPPY_PX` (20 px) edellisestä paikasta, se ohitetaan tässä ruudussa.
+
+Paneelien referenssipaikoista ja nykyisistä paikoista sovitetaan similariteettimuunnos (siirto, kierto, skaala;
+`cv2.estimateAffinePartial2D`, RANSAC 3 px). Stabilointimatriisi on sen käänteismuunnos. Matriisi suodatetaan
+elementeittäin mediaanilla viimeisten `A.KALIB_STAB_MEDIAANI_RUUTUA` (20) ruudun yli: tärinä poistuu, mutta hidas ajautuminen
+seurataan.
+
+**Moodikuva (C++ `ModeEngine`).** `A.KALIB_MOODI_S` (120 s) ajalta otetaan näyte `A.KALIB_NAYTEVALI_S` (5 s) välein,
+eli enintään 25 stabiloitua ruutua.
+- Moodi lasketaan koko pikselille (B, G, R yhdessä), tiileissä (`A.MOODI_TIILI` = 128 px) rinnakkain enintään 8 säikeessä.
+- Kunkin pikselin näytteet ryhmitellään: näyte kuuluu ryhmään, jos jokainen kanava on enintään 10 yksikön päässä ryhmän
+  ensimmäisestä jäsenestä.
+- Tulos on suurimman ryhmän keskiarvo; tasatilanteessa voittaa pienempi edustaja-arvo. Kanavakohtainen moodi voisi
+  tuottaa värin, jota mikään näyte ei sisältänyt.
+- Lopuksi 3×3-mediaanisuodin poistaa yksittäiset poikkeavat pikselit, joita syntyy ohuilla viivoilla.
+
+Moodikuva on "tyhjä rata": pelaajat ja kivet ovat eri kohdissa eri näytteissä, joten suurin ryhmä on tavallisesti tyhjä jää.
+
+**Live-tilassa** samat näytteet otetaan myös kameran täydellä resoluutiolla (1920×1080). Niiden mediaanikuva kalibroidaan,
+ja tulos skaalataan seurannan resoluutiolle (`scale_calibration`). Jos täyden resoluution kalibrointi epäonnistuu,
+kalibroidaan 1280×720-moodikuvasta.
+
+**Lähemmän pesän tunnistus (`kalibrointi_perus.py`):**
+- **Värimaskit HSV:stä:**
+  - sininen: H 90–140, S ≥ 60, V ≥ 40
+  - punainen: H 0–10 tai 170–180, S ≥ 60, V ≥ 40
+  - molemmille 5×5-avaus ja -sulkeminen.
+- **Renkaat:** maskien kontuureihin sovitetaan ellipsit (`cv2.fitEllipse`).
+  - Hyväksyntä: pinta-ala ≥ 1000 px (punainen 50), akselisuhde ≥ 0,20 (punainen 0,15).
+  - Suurin ellipsi on ulkorengas. Sen sisällä oleva, vähintään 30 % (punainen 15 %) kokoinen ellipsi on sisärengas.
+  - Tuloksena neljä ellipsiä: sininen ulko (r 182,9 cm), sininen sisä (121,9), punainen ulko (61,0) ja punainen sisä (15,2).
+- **Viivat:** viivasegmentit haetaan kahdesta lähteestä, joiden segmentit yhdistetään:
+  - harmaasävy-Canny pesän ympäriltä;
+  - jääsuodatus (jäätä on S < 22 ja V > 165; kaikki muu, myös haalea viiva, erottuu binäärikuvana).
+- **T-viiva ja keskiviiva:** pystysuuntainen segmenttipari on T-viiva ja vaakasuuntainen pari keskiviiva. Pari on
+  segmentit pesän keskipisteen molemmin puolin. Jos toista puolta ei näy (pesä kuvan reunassa), käytetään parasta
+  yksittäistä segmenttiä peilattuna. T-viivan ja keskiviivan leikkaus on pesän keskipiste.
+- **17 pistevastaavuutta:** pesän keskipiste sekä kummankin viivan leikkaukset kunkin neljän ellipsin kanssa (4 × 2 × 2).
+  Jokaisen pisteen fyysinen paikka tunnetaan renkaan säteestä.
+
+**Objektiivin vääristymä k1.** k1 haetaan karkeasta hienoon (±0,6, 25 askelta, 3 kierrosta, alue kapenee 6-kertaisesti).
+Jokaisella k1:llä 17 pistettä oikaistaan ja niihin sovitetaan homografia; voittaa pienin jäännösvirhe (RMS).
+- k1 hyväksytään vain, jos se pienentää RMS:ää yli 8 % ja |k1| > 0,01.
+- Jos kaukaista pesää ei löydy k1:n kanssa, yritetään k1 = 0.
+
+**Kaukaisen pesän etsintä:**
+- **Laajennettu kuva:** pelkän lähipesän homografialla tehdään 10 m takarajan yli ulottuva top-down-kuva.
+- **Riviskannaus:** kuva skannataan rivi kerrallaan. Kaukaisen pesän rivillä on sinistä keskiviivan molemmin puolin
+  (yli 5 px keskeltä) ja punaista niiden välissä. Toisin kuin "suurin sininen alue", kuvio ei osu mainospaneeleihin.
+- **Pystysuuntainen venytys:** koko kuvaa venytetään pystysuunnassa (ankkurina lähipesä) niin, että löydetty rivi osuu
+  kaukaisen T-viivan Y:hyn.
+- **Keskipiste:** kaukaisen pesän cropista sovitetaan ympyrät kolmelle renkaalle.
+  - Sinisen ja punaisen S-alaraja säädetään niin, että ROI:sta (sinisen pienin ympäröivä ympyrä) 31 % on sinistä ja
+    11 % punaista.
+  - Rengaspisteet haetaan säteittäin: kunkin suunnan sisä- ja ulkoreuna; peitetyt suunnat jäävät pois.
+- **Alustava homografia:** lähipesän 17 pistettä + kaukaisen pesän keskipiste.
+
+**Geometrinen tarkennus (iteroiden, enintään 15 kierrosta, pysähtyy kun RMS ei parane 3 %:lla kahteen kertaan).**
+Joka kierroksella top-down-kuvasta mitataan uudet havainnot, ja koko homografia (8 vapausastetta) sovitetaan yhdellä
+painotetulla Levenberg–Marquardt-sovituksella. Havainnot:
+- **Lähipesän 17 pistettä:** tavallisia pistevastaavuuksia (fyysinen sijainti tunnetaan).
+- **Kaukaisen pesän rengaspisteet:** ympyrärajoitteita (etäisyys pesän keskipisteestä = renkaan säde). Värimaskit
+  kuten edellä, enintään 30 pistettä/rengas.
+- **Hoglinjat:** viivarajoitteita (Y = hoglinjan Y).
+  - Nimellisen hoglinjan ympäriltä otetaan ±50 cm kaista. Harmaasävykynnystä nostetaan, kunnes 98 %:ssa sarakkeista on
+    tummaa.
+  - Kunkin sarakkeen piste on tummien rivien tummuudella painotettu keskiarvo.
+  - Jos kaukohogin kulma poikkeaa lähihogista yli 5°, kaukohogin pisteet jätetään pois.
+- **Keskiviiva koko radalta:** rajoitteita X = 0.
+  - Joka 20 cm (Y 150–3900) otetaan ±8 cm rivikaistan keskiarvoprofiili X:n suhteen ja haetaan tummin kohta ±15 cm
+    alueelta.
+  - Vaatimukset: tummuus ≥ 4 harmaasävyä taustaa tummempi ja leveys (puolikkaan tummuuden kohdalta) < 16 cm.
+    Vaakaviivat (hog-, T- ja takaviiva) tummentavat koko kaistan, joten niistä ei synny laaksoa.
+  - Poikkeavat pisteet pois: |X − mediaani| > max(3 MAD, 3 cm).
+- **Painot:** kunkin ryhmän painona on 1 / sen oma robusti kohinataso (MAD, vähintään 1 cm), joten mikään ryhmä ei
+  hallitse sovitusta.
+
+**Hoglinjojen todellinen paikka.** Sovitus tehdään kahdesti:
+- hoglinjat nimellisessä paikassa;
+- hoglinjat saavat siirtyä ±`A.KALIB_HOGLINJA_TOLERANSSI_CM` (20 cm).
+
+Molemmat hoglinjat ovat samalla etäisyydellä omasta T-viivastaan, joten niillä on yksi yhteinen siirtymä d. Se on
+mittausten (mediaani-Y − nimellinen) painotettu keskiarvo; kaukohogin paino on `A.KALIB_KAUKOHOG_PAINO` (0), koska 30 m
+päässä paikka määräytyy heikosti.
+
+Vapaampi versio valitaan vain, jos pesien laatu ei huonone. Laatu mitataan molemmista pesistä top-down-kuvassa:
+- pyöreys min(w, h)/max(w, h) ei saa huonontua yli 0,02;
+- koon virhe ei saa kasvaa yli 1,5 %.
+
+Valitut hoglinjat asetetaan `rata.set_hogline_positions()`:lla, ja kaikki myöhempi laskenta käyttää niitä.
+
+**Kameran 3D-asento (K, R, t):**
+- **Alkuarvaus:** homografia muutetaan taso-homografiaksi (fyysinen cm → kuva) ja puretaan Zhangin menetelmällä
+  (H = K [r1 r2 t]; lähin ortonormaali R SVD:llä). Kahdesta peilikuvaratkaisusta valitaan se, jossa kamera on jään
+  yläpuolella.
+- **Polttoväli f:** haetaan karkeasta hienoon lähipesän 17 pisteellä.
+- **Hienosäätö:** asento sovitetaan samoilla painotetuilla rajoitteilla (piste, ympyrä, viiva) kuin homografia.
+
+---
+
+### 2. Kiviprofiilin opettelu (`profiili.py`, `kivimalli.py`, `cpp/profiili.hpp`)
+
+**Kivimalli.** Graniittirunko on pyörähdyskappale. Normalisoitu profiili r(z) (alapuolisko mitattu oikeasta kivestä,
+yläpuolisko peilikuva) skaalataan kiven säteellä R_max ja korkeudella H_total. Väliarvot saadaan Catmull–Rom-splinillä.
+Muotoa voi muuttaa neljällä muotopoikkeamalla (shape_deltas). Kahvan kohdalla kiven yläpinnassa on lovi: ympyrä, jonka
+säde on handle_r_frac × R_max.
+
+Seurannassa käytetään mallin pisteitä kiven omassa koordinaatistossa (28 kulmaa × renkaat). Ne vain siirretään paikkaan
+(X, Y) ja projisoidaan. Kiven ääriviiva kuvassa on projisoitujen pisteiden kupera peite.
+
+**1) Tiheä skannaus (C++ `scan_stone_candidates`)** `A.PROFIILI_SKANNAUS_VALI_S` (0,2 s) välein pelialueelta
+(X ±200 cm, Y 400…2000 cm):
+- **Taustanvaimennus:** pikselit, joiden harmaasävyero moodikuvaan on < 30, valkaistaan.
+- **Graniittimaski:**
+  - Kivi on matalakylläinen ja paikallista taustaa tummempi: S < 60 ja tummuus > 15.
+  - Tummuus = (harmaasävy sumennettuna, σ 25 px) − harmaasävy. Sumennus lasketaan 4× pienennetystä kuvasta.
+  - Lopuksi 5×5-avaus ja 3×3-sulkeminen.
+- **Kandidaatit:** maskin kontuureihin sovitetaan ellipsi.
+  - Ehdot: pinta-ala 80–200 000 px, täyttöaste (pinta-ala / ellipsin ala) ≥ 0,4, akselisuhde ≥ 0,15.
+  - Jääpaikka saadaan ellipsin keskipisteen säteen ja jäätason (Z = 0) leikkauksesta.
+- **Ketjutus:** kandidaatit ketjutetaan lyhyiksi radoiksi (lähimmät parit ensin, raja 30 cm + 12 cm/ruutu).
+- **Siemen:** rata, jolla on vähintään 4 havaintoa ja joka on liikkunut radan suuntaan yli `A.PROFIILI_LIIKE_CM` (15 cm)
+  2 s:ssa (|dY| > |dX|).
+
+**2) Siemenen seuranta ajassa** molempiin suuntiin. Lähin kandidaatti kelpaa, jos hyppy on ≤ 45 cm; 10 perättäistä
+hutia lopettaa.
+- **Esitarkistus:** ensin ±`A.PROFIILI_ESITARKISTUS_S` (3 s). Viidestä havainnosta sovitettu profiili ei saa olla
+  huonompi kuin RMS 8 px, ja R_max on oltava 12–16 cm. Muuten kohde ei ole kivi.
+- **Koko ikkuna:** sitten ±`A.PROFIILI_IKKUNA_S` (30 s). Radalta otetaan tasavälein `A.PROFIILI_HAVAINTOJA_KIVESTA` (40)
+  havaintoa.
+
+**3) Alfa-ääriviiva (C++ `alpha_observation_cpp`).** Kiven reuna lasketaan alipikselitarkasti peittävyydestä
+binäärimaskin sijaan. Lasketaan kiven ympäriltä:
+- **Kiven alue:** valotasapainokorjaus ja varjosietoinen taustanvaimennus (osio 9). Graniittimaski lasketaan tarkalla
+  σ 25 -sumennuksella; valitaan kiveä lähin yhtenäinen alue (≥ 60 px).
+- **Kirkkaussuhde:** k = V / V_moodikuva (V = max(B, G, R)). Graniitin taso k_g on kiven sisäosan (eroosio 3×3)
+  mediaani-k.
+- **Jään taso k_s:** paikallinen, kiven ympäriltä 15…45 px:n renkaasta niistä pikseleistä, joille k > k_g + 0,25.
+  Painotettu σ 5 -sumennus, rajattu välille [k_g + 0,25, 1,05].
+- **Peittävyys:** alfa = (k_s − k) / max(k_s − k_g, 0,15), rajattu välille 0…1.
+- **Ääriviiva:** alfa-kartta ylinäytteistetään 4× (bikuubinen). Tasa-arvokäyrä yhteisellä alfa-tasolla on kiven
+  reuna, rajattuna graniittimaskiin (laajennus 5 px).
+
+Hylkäykset:
+- tumma alue kiven ympärillä (V < 60 yli 100 px 9…31 px:n renkaassa: harja tai kenkä);
+- graniitti/jää-kirkkaussuhde välin 0,2–0,8 ulkopuolella;
+- ääriviivan pinta-ala poikkeaa yli 30 % ±4 lähiruudun mediaanista.
+
+Yhteinen alfa-taso on havaintojen graniitti/jää-suhteen mediaani (oletus 0,434).
+
+**4) Profiilin sovitus (C++ `fit_stone_profile_cpp`).** Levenberg–Marquardt sovittaa samanaikaisesti:
+- profiilin: R_max, H_total 11,43–15 cm, 4 muotopoikkeamaa (regularisointi 60) ja lovi 0,30–0,95;
+- jokaisen havainnon paikan (X0, Y0).
+
+Jäännöksenä on havaitun ääriviivan pisteiden etumerkillinen etäisyys mallin (lovellisen) ääriviivan reunaan. Jakobiaani
+lasketaan harvasti: havainnon paikka vaikuttaa vain sen omaan jäännöslohkoon.
+
+Hyväksyntä:
+- Yksittäinen kivi hyväksytään kokoelmaan, jos sen oma profiili on RMS ≤ `A.PROFIILI_YKSI_MAX_RMS_PX` (3 px). Pelaaja
+  ei näin saastuta kokoelmaa.
+- Koko kokoelman profiili on valmis, kun RMS ≤ 1,5 px, vähintään 15 havaintoa, R_max 12,5–15 cm ja kiviä vähintään
+  `A.PROFIILI_MIN_KIVIA` (2).
+
+---
+
+### 3. HAKU ja SEURANTA (`seuranta.py`, `cpp/haku.hpp`, `cpp/seuranta.hpp`, `cpp/geometria.hpp`, `cpp/sovitus.hpp`, `cpp/meanshift.hpp`, `cpp/siluetti.hpp`)
+
+**Syötekuva.** Seurannan kuva on oikaistu, stabiloitu ja valotasapainotettu ruutu, jonka tausta on valkaistu (osio 9).
+Kivi on siinä "ei-valkoista".
+
+**Maskit kiven paikantamiseen:**
+- **Graniittimaski:** S < 60 ja tummuus > 15 (kuten edellä), 5×5-avaus ja 3×3-sulkeminen.
+- **Etualamaski:** ei-valkaistut pikselit.
+- SEURANTA käyttää näiden yhdistelmää (OR). Pelkkä graniittimaski on kaukana harva, jolloin runkopisteitä on vähän ja
+  paikka hyppii.
+- Saturaatio lasketaan alkuperäisestä kuvasta, koska valkaisu loisi keinotekoisen saturaatiorajan kiven reunalle.
+
+**Peitto-osuus (pistemäärä).** Kiven ennustettu ääriviiva (hulli) piirretään maskin päälle; sen ympärille piirretään
+1,1-kertainen turvavyöhyke.
+- Pistemäärä = (maskipikselit hullin sisällä / hullin ala) − (maskipikselit vyöhykkeellä / vyöhykkeen ala).
+- Pyöreä kivi saa lähes 1, koska tumma alue loppuu mallin reunaan. Pelaaja tai kaksi vierekkäistä kiveä saa
+  rangaistuksen, koska maskia on myös vyöhykkeellä.
+
+**HAKU (uudet kivet, C++ `search_new_stones`, oma säie joka `A.HAKU_VALI_RUUTUA`:s ruutu):**
+- **Hakualue:** X ±70 cm, Y (nimellinen kaukohog − 100) … (kaukohog + 300) cm. Kuvasta käsitellään vain alueen
+  projektio + reunus (`haku_roi`, MAH00014:ssä 14 % ruudusta); maskit, saturaatio ja floodFill lasketaan rajauksessa.
+- **Ristikkohaku:**
+  - Karkea ristikko 10 cm:n askelin, sitten hieno ristikko 2 cm:n askelin parhaan pisteen ympärillä.
+  - Alue on kapea ja kaukana, joten hulli lasketaan kerran alueen keskellä ja siirretään muihin pisteisiin paikallisella
+    Jakobiaanilla (px/cm).
+  - Paras alle `A.HAKU_PISTEKYNNYS` (0,15) lopettaa haun.
+- **Tarkennus (`refinePositionJoint`):**
+  - **Runkokontuuri:** lähin maskikontuuri (painopiste ≤ 40 px, ala ≥ 15 px). Siitä otetaan pisteet, joiden ulkopuolella
+    2,5 px päässä on matalakylläistä jäätä (kahvan kohta jää pois); yli 40 pisteestä joka toinen.
+  - **Rengaspisteet:** 72 suunnassa ensimmäinen kohta, jossa saturaatio laskee alle 70. Vaaditaan ≥ 12 pistettä ja
+    ≥ 180° kattavuus.
+  - **Sovitus:** Levenberg–Marquardt sovittaa (X, Y, renkaan säde) niin, että runkopisteiden etäisyys mallin ääriviivaan
+    ja rengaspisteiden etäisyys projisoituun renkaaseen minimoituvat.
+  - **Poikkeamat:** pisteet, joiden jäännös poikkeaa mediaanista yli 3 × 1,4826 × MAD, pois ja uusi sovitus. Toistetaan
+    uusilla rengaspisteillä, kunnes paikka muuttuu alle 0,5 cm (enintään 5 kertaa).
+  - **Linearisointi:** LM on linearisoitu (projektio on lineaarinen X:n ja Y:n suhteen ennen jakoa). Tulos tarkistetaan
+    tarkalla jäännösfunktiolla ja ajetaan tarvittaessa tarkasti.
+  - **tarkka:** sovitus onnistui eikä siirtynyt yli 25 cm lähtöpisteestä.
+- **Hyväksyntä:**
+  - Tarkennetun paikan peitto-osuus ≥ 0,20.
+  - Spawn-suodatin: rms ≤ `A.HAKU_UUSI_MAX_RMS` (3,5 px), runkopisteitä 14–45, |X| ≤ 65 cm, ristikkopistemäärä ≤ 0,9.
+- **Uudelleenyritykset:** hyväksytyn tai hylätyn kohteen koko yhtenäinen maskialue poistetaan (floodFill) ja haetaan
+  uudelleen. Näin lähempänä oleva isompi pelaaja ei peitä kauempana olevaa kiveä. Tuloksia enintään 4, yrityksiä 8.
+- **Python-tarkistukset ehdokkaalle:**
+  - **Siluettitarkennus:** jos alle 40 % maskista osuu siluetin sisään, ehdokas hylätään.
+  - **Jo seurattu:** alle 20 cm vahvistetusta radasta.
+  - **Sama haku:** alle 30 cm saman haun toisesta ehdokkaasta.
+  - **Heittokiven takana:** 50–800 cm liikkuvan heittokiven takana ja alle 100 cm sivussa (heittäjä tai harjaaja).
+  - **Hahmo edessä:** ehdokkaan edessä (kameran puolella, 5–100 cm kiven reunasta, ±10 cm sivulle) yli 50 %
+    etualaa taustanvaimennetussa seurantakuvassa → hylätään (`EDESSA_*`). Pelaajan pää projisoituu jään tasoon
+    vartalonsa taakse, joten sen edessä on vartalo ja jalat; aidon kiven edessä on lähtöhetkellä tyhjää jäätä
+    (heittäjä on takana). MAH00014: aidot heitot 0–9 %, harjaajan pää 100 %. Ilman tätä harjaajan päästä tuli
+    vahvistettu "heittokivi", jonka takana oikea kivi hylättiin heittäjänä (heitto t ≈ 130,5 s).
+- **Paikkojen täyttyminen:** jos `A.MAX_KIVIA` (8) on täynnä, huonoin rata poistetaan. Ensin vahvistamaton, jolla on
+  huonoin rms-mediaani; sitten vahvistettu, jos rms-mediaani ≥ 8 px. Radan suuntaan liikkuvat radat ovat suojattuja.
+
+**Siluettitarkennus (`cpp/siluetti.hpp`).**
+- Kiven 3D-mallin siluetti (kupera peite miinus kahvan lovi) piirretään 2× ylinäytteistettynä. Sitä siirretään
+  kuvatasossa ±6 px (SEURANTA ±3 px) 0,5 px:n askelin.
+- Siirron pistemäärä:
+  - \+ maskipikseleiden osuus siluetin sisällä;
+  - − ylitulo siluetin ulkopuolelle siluetin ympärillä olevalla 3 px:n kaistalla (paitsi kiven yläpuolella);
+  - \+ 0,1 · exp(−(d / σ)²), missä d on maskin ja siluetin massakeskipisteiden etäisyys ja σ = 0,3 √ala.
+- Maski on oma graniittimaski 3×3-avauksella (5×5 poistaisi kaukaisen, 5–6 px leveän kiven).
+- Paras siirto muutetaan senteiksi Jakobiaanilla.
+
+**SEURANTA (liikkuvat kivet, C++ `track_stones_batch`, kivet rinnan omissa säikeissään):**
+- **Hakualue** kasvaa fysikaalisen nopeusrajan mukaan, kun kivi on ollut kadoksissa:
+  - Y: ±min(400 cm/s × aika, 100 cm), X: ±10 % siitä.
+  - Aika on (hutien määrä + 1) / fps.
+- **Liike-ennuste:** vakionopeus viimeisistä havainnoista (enintään 12 ruutua taaksepäin, vähintään 4 ruudun väli),
+  rajattuna hakualueeseen.
+- **Yhdistelmähaku (kolme hakua rinnan):**
+  1. **Ristikkohaku ennustetusta paikasta:** karkea vaihe 7 cm:n askelin laajenee keskeltä rengas kerrallaan ja
+     pysähtyy, kun pistemäärä ≥ 0,95; sitten mäennousu 8-naapurustossa. Hieno vaihe on mäennousu 1,5 cm:n ruudukossa.
+  2. **Mean-shift viimeisestä paikasta.** Hulli ja 1,1-kertainen kehä jaetaan painopisteen kautta kulkevilla viivoilla.
+     - Maskipikselit painotetaan (sisällä `A.SEURANTA_MS_SISAPAINO` 2, kehällä 1).
+     - Puolikkaiden painotettu ero s = Σ w·g(x − cx) / Σ w kertoo siirtosuunnan (g = pehmeä etumerkki, leveys
+       `A.SEURANTA_MS_TAU` 0,5).
+     - s muunnetaan pikseleiksi: d = kerroin × r × f⁻¹(s), missä f on yksikköympyrän vastefunktio samoilla painoilla
+       ja r hullin puolileveys tai -korkeus.
+     - Toistetaan (enintään 6 kertaa), kunnes askel < 0,3 px.
+     - Lopuksi mäennousu peitto-osuudella 4 cm:n askeleesta puolittaen alle 0,75 cm:iin.
+  3. **Mean-shift ennustetusta paikasta.**
+- **Valinta:**
+  - Ehdokkaista, joiden pistemäärä ≥ `A.SEURANTA_PISTEKYNNYS` (0,35), valitaan suurin:
+    pistemäärä − 0,15 × (taaksepäin yli 2 cm)/10 cm − 0,02 × (etäisyys ennusteesta)/10 cm.
+  - Jos mikään ei ylitä kynnystä, valitaan suurin pistemäärä.
+  - Valittu paikka tarkennetaan LM:llä (kuten HAKUssa). Siirtymä taaksepäin yli 100 cm hylätään.
+- **Siluettitarkennus** tehdään samassa säikeessä.
+- **Python-tarkistukset (`_tarkista_havainto`):**
+  - **Siluettituki:** siluetin sisällä on oltava ≥ `A.SEURANTA_MIN_SISALLA` (0,4) maskista.
+    - Kaukana (Y > 2000 cm), missä kivi on vain 5–6 px leveä, siluetti siirtää paikan aina kun tuki riittää. Ilman tukea
+      vain tarkka havainto kelpaa (alkuperäisessä paikassaan).
+    - Lähellä tarkan havainnon kynnys on `A.SEURANTA_MIN_SISALLA_LAHELLA` (0, eli siluettitarkennuksen pitää vain
+      onnistua), ja ei-tarkka havainto saa siluetin paikan. Jos siluettitarkennus ei onnistu lähellä, havainto
+      hylätään.
+  - **Hakualue:** lopullinen paikka saa olla enintään 5 cm hakualueen (viimeisestä paikasta tai ennusteesta)
+    ulkopuolella.
+  - **Ei taaksepäin:** Y ei saa kasvaa yli 100 cm radan pienimmästä Y:stä.
+  - **Keskiviiva:** |X| ≤ 220 cm (koko radan leveys).
+
+---
+
+### 4. Radan elinkaari (`seuranta.py`)
+
+- **Ehdokas → vahvistettu:**
+  - Uusi rata on ehdokas, ja sen rivit puskuroidaan. Kun se on liikkunut `A.VAHVISTUS_SIIRTYMA_CM` (25 cm) Y-suunnassa
+    ensimmäisestä havainnosta, se vahvistetaan ja puskuroidut rivit kirjoitetaan raaka-CSV:hen.
+  - Hylkäys: vähintään 8 riviä ja tarkka-osuus < 0,4 ja rms-mediaani ≥ 12 px (pelaaja). Kaukaiset aidot heitot saavat
+    huonon sovituksen (rms 8–10 px), joten pelkkä matala tarkka-osuus ei riitä.
+- **Liukuva tarkka-ikkuna:** vahvistettu rata lopetetaan, jos tarkka-osuus viimeisten 650 havainnon ikkunassa putoaa
+  alle 0,5 (seuranta ajautunut pelaajaan).
+- **Lopetussäännöt:**
+  - lähihogin ohitus yli 30 cm (hog-analyysi ei tarvitse enempää), paitsi `--full`-tilassa;
+  - taaksepäin liikkuminen: Y kasvaa yli 30 cm sekunnissa (5 ensimmäisen ja 5 viimeisen mediaanit);
+  - pysähtyminen: liikkunut alle 20 cm viimeisen sekunnin aikana (`--full`: lisäksi tarkka pysähtyminen, ks. yllä);
+  - kadotus: ei havaintoa 1 s:iin (vähintään 5 ruutua).
+- **Duplikaatit:** kaksi rataa alle 30 cm toisistaan 3 ruutua peräkkäin yhdistetään. Huonompi poistetaan tässä
+  järjestyksessä:
+  - pysähtynyt ennen radan suuntaan liikkuvaa (liikkunut ≥ 30 cm 1 s:ssa);
+  - sitten vahvistamaton;
+  - muuten uudempi.
+
+---
+
+### 5. Heittoportti (`heitot.py`)
+
+Ajon lopussa vahvistetuista radoista valitaan heitot lopulliseen CSV:hen:
+- **Radan alun karsinta:** jos alun jälkeen on yli 30 ruudun aukko ja alku on alle 40 riviä, alku pudotetaan (rata
+  lukittui ensin väärään kohteeseen).
+- **Heitto** on rata, jolle hog-hog-analyysi onnistui (aina), tai jolla on:
+  - vähintään 50 riviä ja matka eteenpäin ≥ 1500 cm;
+  - kitkan kaltainen hidastuvuus: Y(t)-paraabelin (10 % huonoiten sopivaa pois) hidastuvuus 0,03–0,20 m/s²
+    (`PORTTI_HIDASTUVUUS_MIN/MAX_MS2`). Aidot heitot 0,035–0,17 m/s² nopeudesta riippumatta; tasaisesti liikkuva
+    pelaaja ~0 tai negatiivinen. Aiemmat ehdot (≥ 300 riviä, loppu-Y ≤ 1100 cm, loppu-/alkunopeus ≤ 0,75) hylkäsivät
+    nopeita lyöntiheittoja ja ennen lähihogia päättyneitä ratoja (live 2026-10-07: 5 kiveä);
+  - sovitus: rms-mediaani ≤ 3 px ja tarkka-osuus ≥ 0,3, tai heikompana luokkana ≤ 12 px ja ≥ 0,1 (lakaisija peittää).
+- **Yksi rata per hog-ylitys:**
+  - Kaukohogin ylitysruutu interpoloidaan. Jos rata alkaa vasta hogin jälkeen, ylitys ekstrapoloidaan radan alun
+    nopeudesta (enintään 60 ruutua).
+  - Ylitykset alle 40 ruudun päässä toisistaan ovat sama heitto.
+  - Säilyy parempi: hog-ok, sitten hyvä sovitus, pienin rms ja pisin rata.
+
+---
+
+### 6. Hog-hog-analyysi, liuku ja irroitus (`hog_analyysi.py`, `heitot.py`)
+
+Analyysi tehdään kerran, kun vahvistettu kivi on lähihog + 50 cm kohdalla.
+
+**Rata katkesi ennen lähihogia** (kadotettu, ajautui lakaisijaan tai lopetettiin): radan lopusta pudotetaan
+sulautuneet rivit (`rms_px` > `A.HOG_LOPPU_MAX_RMS_PX` = 6) ja tehdään osittainen analyysi, jos data kattaa kaukopään ja
+vähintään `A.HOG_OSITTAIN_MIN_MATKA_CM` (10 m). Jos data ulottuu vähintään `A.HOG_OSITTAIN_LAHI_MAX_Y_CM` (12 m)
+asti, hog-hog-aika arvioidaan kitkamallilla lähihogille ekstrapoloiden ja näytetään paneelissa **punaisella**
+(hog-CSV `hog_hog_arvio` = True). Muuten hog-hog-aika, lähihogin nopeus ja kierteet jäävät tyhjiksi (`hog-hog: -`),
+mutta nopeus kaukohogilla, hidastuvuus, suunta, irroitus ja liuku raportoidaan. Hog-CSV `osittainen` = True.
+- Arvion tarkkuus (154 koko matkan kiveä katkaistuna, live 7.10., live 8.10., MAH00014): data 10 m:iin → virhe
+  mediaani 0,02 s (90 % < 0,11 s); 12 m:iin → 0,05 s (90 % < 0,31 s, 5 % yli 0,5 s); 14 m:iin → 0,11 s (13 % yli 0,5 s).
+- X-kurvimalliin otetaan vain pisteet, joissa kitkamallin nopeus ≥ `A.HOG_X_MIN_NOPEUS_MS` (0,3 m/s): ennen
+  lähihogia pysähtyvän kiven lopussa kurvitermi ∫dt/v kasvaa rajatta.
+- Live 2026-10-08 17:58: 66 → 74 / 74 heittoa (8 osittaista, joista 6:lla arvioitu hog-hog-aika).
+
+**Y(t)-sovitus kitkamallilla.** Pisteet väliltä [lähihog + 50 cm, kaukohog − 100 cm]:
+- Vaatimukset: vähintään 40 pistettä, ja datan on katettava välin päät ±150 cm.
+- Malli: kitkakerroin μ(v) = A + B ln v, liikeyhtälö dv/dt = −g μ(v). B on kiinteä `A.HOG_MU_B` (−0,003);
+  y0, v0 ja A sovitetaan LM:llä (Y(t) integroidaan RK4:llä, 0,04 s). Alkuarvaus datan ensimmäisen sekunnin nopeudesta
+  ja tasaisesta hidastuvuudesta; jos mallin kivi pysähtyisi ennen datan loppua, A:ta pienennetään.
+- Sen jälkeen 10 huonoiten sopivaa pistettä pois ja uusi sovitus. Vaaditaan R = √R² > 0,99.
+- Sovitettu malli integroidaan tiheäksi radaksi (`KitkaRata`, 0,01 s) 8 s taaksepäin ja eteenpäin, kunnes kivi
+  pysähtyy; hoglinejen hetket ja nopeudet luetaan siitä (myös datan ulkopuolelta, esim. kaukohog).
+- Aiempi toisen asteen Y(t) (vakiohidastuvuus) poistettiin: kitka kasvaa nopeuden laskiessa, joten paraabeli antoi
+  nopeuden kaukohogilla liian suurena ja hog-hog-ajan liian lyhyenä. MAH00014: nopeus kaukohogilla −0,03 m/s,
+  hog-hog +0,09 s keskimäärin (enintään +0,28 s), Y-sovituksen rms 2,5 → 2,2 cm; live-ajoissa rms ennallaan.
+
+Tulokset:
+- **Nopeus kaukohogilla:** mallin v hetkellä, jolloin Y(t) = kaukohog.
+- **Hog-hog-aika:** t(lähihog) − t(kaukohog).
+- **Hidastuvuus:** g μ(1,5 m/s) samasta mallista; keskimääräinen hidastuvuus sovitusvälillä talteen
+  (`decel_keskim_ms2`). Hog-CSV:n sarakkeet `a`, `b`, `c` (paraabeli) jäävät tyhjiksi.
+
+**X-suunta, kurvimalli.**
+- Sivukiihtyvyys on vakio k kohtisuoraan kulkusuuntaa vastaan, joten kulkusuunnan kulman muutos θ' = k / |v|.
+- X(t) = x0 + θ0 S(t) + k H(t), missä S = kuljettu matka, G = ∫dt / v ja H = ∫v G dt. Nopeus v(t) saadaan kitkamallista.
+- Robusti painotettu pienimmän neliösumman sovitus: pisteen paino 1 / (1 + (rms_px / 2)²) siluettisovituksen
+  laadusta (harjaajan tai harjan kanssa sulautunut havainto saa pienen painon) kertaa Huber-paino jäännöksestä
+  (yli 1,5 × robusti hajonta → pienempi paino), 10 kierrosta. Jäännöksen rms lasketaan pisteistä, joiden paino on
+  yli 0,2 × suurin peruspaino; niitä on oltava ≥ 40, niiden on katettava ≥ 8 m ja ylimmän on oltava enintään 4 m
+  sovitusalueen kaukopäästä (`HOG_X_*`). Kiinteä "10 huonointa pois" ei riittänyt, kun lähihogin puolella kymmenet
+  havainnot ovat sulautuneet (live 2026-10-07: 66 → 72 hog-tulosta; MAH00014 20/20, irroitus muuttui mediaani
+  0,2 cm, enintään 2,7 cm).
+- Tulos: X ja kulkusuunta kaukohogilla.
+- Hyväksyntä: kurvimallin jäännöksen rms (mukana olevat pisteet) < 2 cm (`HOG_X_MAX_RMS_CM`). Muuten mitään ei
+  raportoida. Toisen asteen X(Y)-sovitus (`R_x`, `*_2aste`) lasketaan edelleen vertailuksi, mutta ei hyväksy:
+  R_x hylkäsi vähän taipuvat heitot ja voimakkaasti taipuvat, joihin paraabeli ei sovi (live 2026-10-07:
+  46/70 → 64/70 hyväksyttyä; MAH00014 20/20, kurvimallin rms 0,4–1,0 cm).
+
+**Irroitus:** X, jonka kaukohogin suunta jatkettuna suorana saisi lähemmällä T-viivalla.
+
+**Liuku:** suora X(Y) heiton alusta kohtaan kaukohog + 100 cm (vähintään 8 pistettä), jatkettuna lähemmälle T-viivalle.
+- Hakki lisätään lähtöpisteeksi erikseen kohtiin X = +15 cm ja X = −15 cm. Hakki on 6,40 + 1,83 + 1,83 m kaukohogin
+  takana.
+- Tuloksena kaksi liukusuoraa, vasenkätiselle ja oikeakätiselle.
+
+---
+
+### 7. Kahva ja kierteet (`kierre.py`)
+
+**Kahvan väri.** Joka seurantaruudussa kiven yläpinnan keskipiste (X, Y, H_total) projisoidaan kuvaan.
+- Sen ympärille piirretään ympyrä, jonka säde on 2 × kahvan säde kuvassa.
+- Ympyrän värikkäistä pikseleistä (S ≥ 80, V ≥ 60; jää ja graniitti ovat harmaita) kerätään sävyhistogrammi.
+- Radan lopussa kahvan sävy on se, jonka ±10 välillä on eniten pikseleitä. Nimet: punainen, oranssi, keltainen,
+  vihreä, sininen, violetti, pinkki.
+- Kirjoitetaan `<pohja>_kahva.csv`:hen ruuduittain.
+
+**Kierteet.**
+- **Pala:** kun kivi on alle 23 m päässä, joka ruudusta otetaan 48×48-harmaasävypala kiven akselin suuntaan. Palan
+  "ylös" on kiven akseli kuvassa (maan keskipisteestä (X, Y, 0) yläpinnan keskipisteeseen (X, Y, H_total)). Näin kahvan
+  profiili on palassa aina samassa asennossa kameran kallistuksesta ja kuvan kierrosta riippumatta. Pala kattaa ±3 kahvan
+  sädettä yläpinnan keskipisteen ympäriltä.
+- **Kohdistus kiven runkoon:** sijainnin pienet virheet (esim. lakaisijan peittäessä kiveä) siirtäisivät kahvaa palassa.
+  Siksi kunkin ruudun pala kohdistetaan graniittirungon gradienttiin. Runko näyttää samalta pyörimisestä riippumatta ja
+  on harvoin peitossa. Mallina on rungon mediaani, ja siirto (±4 px) haetaan normalisoidulla korrelaatiolla (kaksi
+  kierrosta). Kohdistetusta palasta leikataan ±2 kahvan säteen pala.
+- **Piirre:** harmaasävyn gradientin suuruus (Sobel) kahvan ikkunasta (rivit 4–18 ja sarakkeet 7–24 32×32-palassa:
+  kahva graniitin yläpuolella, ei taustaa sivuilta), keskitettynä ja normalisoituna. Lisäksi sama piirre palan
+  peilikuvasta (peilaus kiven akselin suhteen).
+- **Peittyneet ruudut pois:** jokaiselle ruudulle lasketaan piirteen mediaanisamankaltaisuus naapuriruutuihin
+  (t ± 1, t ± 2). Ruutu hylätään, jos se on selvästi muita huonompi (< mediaani − 4 × 1,4826 × MAD).
+- **Ruutuparit:** kaikkien ruutuparien samankaltaisuus (pistetulo, kaikki viiveet ≥ 0,08 s; enintään 12 000 satunnaista
+  paria) sekä peilisamankaltaisuus (ruudun i piirre · ruudun j peilikuvan piirre). Ruudun oma taso (peitto, etäisyys,
+  valaistus) ja hidas viiveriippuvuus (3. asteen polynomi) poistetaan; peilisamankaltaisuudesta myös hidas ajallinen
+  muutos (viiveen ja ajan polynomi).
+- **Pyörimisnopeus:** ω(t) = ω_loppu + α (t_loppu − t), α = `A.KIERRE_HIDASTUVUUS` (0,025 rad/s²). ω_loppu haetaan 500 ehdokkaasta, loppukierrosaika 0,6–40 s
+  (`A.KIERRE_P_MIN_S`, `A.KIERRE_P_MAX_S`). Hakuväli on tarkoituksella laaja, koska kierteitä voi olla hog-hog-välillä
+  alle 1 tai yli 10.
+- **Hidastuvuuden haku (valinnainen, oletuksena pois):** live 2026-10-03:lla haku antoi α:t 0–0,065 rad/s² ja vain
+  6/22 heittoa osui mallin alueelle → kahvasignaali liian kohinainen; kiinteä 0,025 (haun mediaani) on varmempi.
+  Päällä (`A.KIERRE_ALPHA_HAKU`) α haetaan heittokohtaisesti: karkea haku 0–0,07 rad/s² askeleella 0,01 ja
+  tarkennus parhaan ympärillä askeleella 0,005. Kriteeri on suurin toistomallin selitysaste; hyväksymisehdot (R²,
+  erottuvuus, peili) tarkistetaan vasta lopulliselle α:lle, koska muuten ne katkaisevat haun parhaan arvon vierestä.
+  MAH00014:llä parhaat α:t ovat 0,020–0,045 rad/s² (tarkkuus noin ±0,005–0,01; kierrokset muuttuvat 0–6 % kiinteään
+  0,02:een verrattuna). Piirteet ja ruutuparit lasketaan kerran. Haun aikana lasketaan vain toistomallin selitysaste
+  numba-käännetyllä, rinnakkaisella ytimellä (`A.KIERRE_NUMBA`); peilimalli ja hyväksyntä vain lopulliselle α:lle.
+  Yksi arvio kestää noin 1,5 s (numpylla noin 4 s, kiinteällä α:lla noin 1 s); ensimmäinen kutsu kääntää ytimen
+  (noin 2 s, välimuistiin). Haku pois → kiinteä `A.KIERRE_HIDASTUVUUS` (0,02). Tulos `kierre_alpha` (ja `_taysi`) hog-CSV:ssä; siitä
+  ω_far / ω_near = `kierrosaika_near_s` / `kierrosaika_far_s`, jolla voidaan myöhemmin arvioida v_c heittokohtaisesti
+  (kierteen hidastuminen kertoo naarmuvoiman momenttivarren, jossa κ supistuu pois).
+- **Malli 1 (toisto):** samankaltaisuus = c1 cos(2Δφ) + c2 cos(4Δφ), Δφ = φ_i − φ_j (kahvan muoto toistuu
+  puolikierroksen välein). Ehdokas kelpaa vain, jos c1 > 0 ja c2 ≤ c1. Muuten kaksinkertainen kierrosaika sopisi
+  yliaallon kautta (puolitetut kierteet).
+- **Malli 2 (peili):** kahva kulmassa φ näyttää kulman −φ peilikuvalta. Peilisamankaltaisuus = a cos(Σφ) + b sin(Σφ) +
+  a2 cos(2Σφ) + b2 sin(2Σφ), Σφ = φ_i + φ_j. Tämä on toinen, riippumaton mittaus samasta pyörimisestä. Lakaisun rytmi
+  (harjat kahvan takana) voi tuottaa toistoa, mutta ei tällaista kahvan absoluuttiseen kulmaan sidottua rakennetta.
+- **Hyväksyntä:**
+  - toiston selitysaste R² ≥ `A.KIERRE_MIN_R2` (0,02; sekoitetuilla ruuduilla ≤ 0,002) ja suodatuksen jälkeen
+    vähintään 60 ruutua;
+  - jos peilin selitysaste ≥ `A.KIERRE_PEILI_MIN_R2` (0,03), peilin kierrosajan on oltava ±15 %
+    (`A.KIERRE_PEILI_TOL`) toiston kierrosajasta. Muuten tulos hylätään ristiriitaisena. Lopullinen kierrosaika on
+    yhteisen spektrin (toisto + peili) huippu tällä välillä;
+  - jos peilisignaali on heikko, toiston erottuvuuden on oltava ≥ `A.KIERRE_MIN_EROTTUVUUS` (2,5): paras R² / paras muu
+    R², kun ±30 % ja kerrannaiset (×2, ×½) on rajattu pois.
+  - Sekoitetuilla ruuduilla (MAH00014 ja 0001, 3 sekoitusta / kivi, 69 ajoa) yhtään tulosta ei hyväksytty.
+- **Kierteet:** ∫ω dt / 2π kaukohogista lähihogiin. Kahva erottuu vasta n. 23 m:stä, joten alkuosa ekstrapoloidaan.
+- **Tulos (koko ohjelma):** MAH00014: 17/20 hog-kiveä, toiston R² 0,13–0,33 (paitsi kivi 6: 0,04); seuranta-CSV:t
+  identtiset aiempaan. 0001: 3/3; kivi 12 silmämääräisesti 2,45 kierrosta, menetelmä 2,43. Toisto ja peili täsmäävät
+  kaikissa kivissä, joissa peilisignaali on riittävä (ero ≤ 0,07 kierrosta).
+- **Hylätyt MAH00014:ssa (kivet 3, 71, 85) ja rajatapaus 6:** lakaisijoiden mustat jalat ja harjat ovat kahvan takana
+  tai päällä lähes koko seurannan ajan (peitto kahvan ikkunassa 30–40 %). Kivessä 3 toisto ja peili antavat eri
+  kierrosajan (11,7 s vs. 5,9 s), kivissä 71 ja 85 kumpikaan signaali ei ole riittävä. Kivessä 85 näkyy lakaisun
+  rytmi (≈ 0,7 s), joka olisi pelkällä toistolla voinut tulla tulkituksi pyörimiseksi (7,9 kierrosta). Kivessä 6 peili
+  on heikko, joten tulos (5,03) perustuu pelkkään toistoon ja on epävarma. 720p-kuvassa kahva on 3–8 px, joten
+  näissä kivissä luotettavaa arviota ei saada; ne jätetään tyhjiksi väärän luvun sijaan. Livenä täysresoluutioinen
+  arvio (osio 8) voi onnistua näissäkin.
+- **Miksi harmaasävy eikä väri:** tallenteiden väri-informaatio on puolitetulla resoluutiolla (4:2:0) ja pakattu.
+  Kahvan väri erottuu jäästä selvästi (Lab-väriero moodikuvaan 10–20, jään kohina ≈ 1), mutta värialue on pehmeä
+  läikkä, joka ei seuraa kahvan muotoa. Väripiirteet (väriero moodikuvaan, S-maski eri kynnyksillä, sävymaski) antoivat
+  kaikki selvästi heikomman tuloksen kuin harmaasävyn gradientti.
+- Live-tilassa sama lasketaan myös täyden resoluution kuvasta (osio 8).
+- Live-tilassa kierrearvio lasketaan taustasäikeessä (noin 1 s / piirre), jotta seuranta ei pysähdy lähihogilla.
+  Tulos ilmestyy paneeliin ja lokiin (`[kierre] kivi N: kierteita hog-hog …`), kun laskenta on valmis. Tulostiedostot
+  kirjoitetaan vasta, kun kaikki arviot ovat valmiita. Tiedostoajossa arvio lasketaan heti, joten tulokset eivät
+  muutu ajosta toiseen. (Live 06.10.2026: ennen tätä jokainen heitto pysäytti käsittelyn noin 2,2 s:ksi, ja viive
+  kasvoi heittosarjan aikana 6–10 s:iin.)
+
+---
+
+### 8. Paikallinen täysi resoluutio (live, `paikallinen.py`)
+
+Putki (stabilointi, taustanvaimennus, HAKU, näkymät) toimii 1280×720:ssa. SEURANTA saa kuitenkin kuvan, jossa jokaisen
+seurattavan kiven hakualue (+ 8 cm reunus) on käsitelty kameran täydellä resoluutiolla:
+- Alueen pikselit haetaan puskurin täyden resoluution raakaruudusta; YUY2-muunnos tehdään vain alueelta.
+- Käsittely: sama stabilointi (siirto skaalattuna), täyden resoluution linssikorjaus ja taustanvaimennus täyden
+  resoluution moodikuvaa vasten. Muu kuva on valkoista eli taustaa.
+- Kameramatriisi, siluettiasetukset ja rms-arvot skaalataan vastaavasti. Tulokset ovat senttimetreinä kuten ennen.
+
+Raakaruutuja pidetään `A.PAIK_RENGAS_S` (10 s) rengaspuskurissa (~1 Gt). Jos käsittely on tätä enemmän jäljessä, ruutu
+seurataan 720p:na.
+
+- Kahvan väri ja kierrepiirteet (720p ja täysi resoluutio) lasketaan taustasäikeessä (yksi säie, järjestys säilyy).
+  Se, kerätäänkö piirteet, päätetään pääsäikeessä. Hog-analyysi odottaa kiven piirteet valmiiksi ennen kierrearviota,
+  ja täyden resoluution ruutu pidetään renkaassa, kunnes taustasäie on käsitellyt sen. Tulokset ovat samat kuin
+  ennen (MAH00014-tiedostoajo identtinen).
+
+---
+
+### 9. Kuvan esikäsittely (`esikasittely.py`, `cpp/esikasittely.hpp`)
+
+**Stabilointi seurannassa.**
+- Jokainen ruutu verrataan suoraan moodikuvaan vaihekorrelaatiolla. Ketjutusta ei ole, joten virhe ei kerry.
+- Kuva pienennetään tarvittaessa `A.STAB_LEVEYS` (1280) leveyteen. Hanning-ikkuna, moodikuvan FFT välimuistissa,
+  huippu 5×5-painopisteellä.
+- Siirto rajataan ±`A.STAB_MAX_SIIRTO_PX` (10 px).
+- Laskenta-aika on noin 20–27 ms CPU-aikaa ruutua kohden. Se lasketaan liukuhihnan vaiheessa A kahdessa
+  työsäikeessä (`A.STAB_SAIKEET`), rinnan pääsäikeen kanssa.
+- **Tallennus** (`A.STAB_TALLENNA`): joka ruudun stabilointi kirjoitetaan tiedostoon `<pohja>_stabilointi.csv`.
+  Sarakkeet: `frame`, `lahde` (`paneelit` kalibroinnin aikana, `vaihekorrelaatio` tai `vaihekorrelaatio (hihna)`),
+  `dx_px`, `dy_px` (ruudun siirto 720p-kuvassa), `kierto_deg`, `skaala` ja `laskenta_ms`.
+- **Mukautuva harvennus (vain live):** vaihekorrelaatio lasketaan vain joka `A.STAB_HARVENNUS_LIVE`. (10.)
+  ruudusta (avainruutu).
+  - Rauhallisena aikana: jos kahden peräkkäisen avainruudun siirrot eroavat alle `A.STAB_HARVENNUS_KYNNYS_PX`
+    (0,15 px), väliruutujen siirto interpoloidaan lineaarisesti.
+  - Tärinän aikana: jos ero on suurempi, kaikki väliruudut lasketaan rinnakkain. Tämän jälkeen lasketaan joka ruutu,
+    kunnes kokonainen 10 ruudun jakso on rauhallinen (ruudusta ruutuun alle kynnyksen). Hystereesi estää
+    värähtelyä jäämästä huomaamatta, vaikka kaksi avainruutua sattuisi samaan vaiheeseen.
+  - Viive vaiheessa A on enintään 10 ruutua (0,4 s).
+  - `_stabilointi.csv`:ssä lähde on `interpoloitu (hihna)` tai `vaihekorrelaatio (hihna)`. Lopuksi tulostetaan
+    laskettujen ruutujen osuus.
+  - Tiedostoajossa lasketaan aina joka ruutu, joten tulokset ovat toistettavat.
+  - Simuloitu, kun live 06.10.2026 14:27 -ajosta ja MAH00014:stä laskettiin 27–29 % ruuduista: virhe rms
+    0,04–0,05 px, p99 0,15–0,16 px, suurin 0,7 px. 0001-live-simulaatiossa laskettiin 10 % ruuduista: ero joka
+    ruudun laskentaan rms 0,014 px, suurin 0,14 px, ja stabiloinnin CPU-aika putosi 9,4 → 1,0 ms/ruutu.
+    MAH00014 live-simulaationa: laskettiin 29 % ruuduista; interpoloitujen ero joka ruudun laskentaan rms 0,05 px,
+    p99 0,20 px, suurin 0,84 px.
+  - Tärinä on todellista kameran liikettä: MAH00014:ssä seinän ja katon staattiset laikut värisevät samalla tavalla
+    kuin koko kuvan mittaus (dy ruudusta ruutuun rms 0,50 vs. 0,52 px).
+
+**Stabilointi + linssikorjaus yhtenä `remap`ina:** stabiloinnin käänteismuunnos yhdistetään linssikorjauksen
+(k1) karttaan, joten kuva interpoloidaan kerran (aiemmin `warpAffine` + `remap`, kaksi interpolointia).
+Laskenta tehdään vain pyydetyille alueille (`LaiskaRuutu`, ks. osio 10).
+
+**Valotasapaino.** Kanavakohtainen gain ja bias moodikuvaan robustilla pienimmällä neliösummalla:
+- 3 kierrosta; jokaisen jälkeen pikselit, joiden jäännös on yli 80. persentiilin (etuala, pelaajat), pudotetaan.
+- Joka 4. pikseli otetaan mukaan.
+- Estimoidaan taustasäikeessä kerran sekunnissa. Otetaan käyttöön tasan `A.VALO_KAYTTOON_VIIVE_RUUTUA` (10) ruudun
+  päästä, joten ajo on toistettava.
+
+**Varjosietoinen taustanvaimennus (C++, valotasapaino samalla läpikäynnillä).** Pikseli on taustaa (valkaistaan), jos
+yksikin seuraavista pätee:
+- harmaasävyero moodikuvaan < `A.GRANIITTI_EROKYNNYS` (10);
+- kirkkaus V on pudonnut moodikuvasta välillä (−3, 50) eli varjo;
+- pikseli on jäätä: S < 22 ja V > 128.
+
+Lisäksi väriportin on hyväksyttävä: joko moodikuvan pikseli on matalakylläinen (S < 60), tai sävyero on ≤ 10 ja ruudun
+pikseli on kylläinen. Näin värikäs mutta eri sävyinen kohde (keltainen kahva sinisellä mainoksella) ei katoa.
+
+**Liukuhihna (seurannassa):**
+- **Vaihe A** (`A.STAB_SAIKEET` = 2 säiettä): luku, harmaasävy ja vaihekorrelaatio.
+- **Vaihe B:** luo ruudulle `LaiskaRuutu`n (stabiloinnin ja linssikorjauksen yhdistetty kartta, valotasapaino) ja
+  laskee HAKU-ruuduilla hakualueen korjatun ja taustanvaimennetun kuvan. Vaihe B käynnistää myös HAKUn heti, kun
+  ruutu on valmis. Koko ruutu lasketaan vain valotasapainon estimointiruuduille (kerran sekunnissa) ja debug-videolle.
+- **Vaihe C** (pääsäie): SEURANTA, radat ja CSV.
+- Jonojen syvyys on `A.JONON_SYVYYS` (50). Ruutujen järjestys ja sisältö ovat samat kuin ilman hihnaa.
+
+---
+
+### 10. Suorituskyky
+
+- `A.STAB_SAIKEET`, `A.JONON_SYVYYS`: liukuhihnan rinnakkaisuus.
+- `A.ESIKASITTELY_KOKO_RUUTU` (False): esikäsittely (korjattu kuva + taustanvaimennus) vain käytetyille alueille:
+  HAKU-alue, kivien seuranta-alueet (samat rajaukset kuin C++:n `track_stones_batch`), kahva-alue ja kiven edusta.
+  Alueet kirjataan 16 px laattoina (`LaiskaRuutu`), joten päällekkäisiä alueita ei lasketa kahdesti. True = koko
+  ruutu joka ruudulla (vertailuun; tulokset ovat samat).
+- `A.LIVE_PIENENNYS` ("linear"): kameran kuvan pienennys käsittelykokoon. `INTER_LINEAR` 1080p → 720p ~3 ms,
+  `INTER_AREA` ("area") 9–16 ms; ero keskimäärin 0,3 harmaatasoa.
+- `A.OPENCV_SAIKEET` (2): OpenCV:n sisäiset säikeet. Liukuhihna on jo rinnakkainen, joten oletus (kaikki ytimet)
+  kuluttaa 4–6 % enemmän CPU:ta nopeuttamatta.
+- `A.VIDEO_LAITTEISTODEKOODAUS`: videotiedoston dekoodaus laitteistolla.
+- C++ ajaa kivet omissa säikeissään, ja kiven sisällä ristikkohaku ja kaksi mean-shiftiä rinnan. OpenCV:n oma
+  rinnakkaistus kytketään pois näiden ajaksi, koska se kilpailisi samoista ytimistä.
+- Ajon lopussa raportoidaan pullonkaula-analyysi (vaiheiden A/B/C palveluaika ja jonojen täyttö) ja vaihekohtaiset ajat
+  (Python ja C++). `A.RAPORTTI_VALI_RUUTUA` (1000) on edistymisrivin väli; `A.MAX_RUUTU` pysäyttää testiajon.
+
+---
+
+### 11. Live-syöte (`live.py`)
+
+- **Kamerasäie:** lukee kameraa jatkuvasti (Windows: DirectShow tai MSMF), muuntaa kuvan BGR:ksi ja pienentää sen
+  käsittelykokoon (oletus 1280×720). Ruudut kirjoitetaan RAM-puskuriin juoksevalla indeksillä. Raaka YUY2 voidaan
+  muuntaa ajurilla, `cv2.cvtColor`:lla tai OpenCL:llä.
+- **Lukijat:** pääsilmukka lukee puskuria järjestyksessä. Hyppivät lukijat (profiilin opettelu, alfa-havainnot) saavat
+  `cv2.VideoCapture`-yhteensopivan olion, joka lukee puskurista taaksepäin tai odottaa uutta ruutua.
+- **Puskurin karsinta:** vanhat ruudut poistetaan, kun ne ovat yli historian verran peräkkäislukijan takana. Profiilin
+  havaintoruudut kiinnitetään, jotta niitä ei poisteta.
+- **Seurannan alku:** seurannan alussa hypätään uusimpaan ruutuun (kalibroinnin aikana kertynyt viive pois). Historia
+  pienenee arvoon `A.LIVE_TAAKSE_SEURANNASSA_S` (2 s).
+- **Aikaleimat:** `<pohja>_live_aikaleimat.csv` kertoo käsitellyn ruudun, kameran ruudun ja seinäkelloajan.
+- **Kameran katko:** jos kamera lakkaa antamasta kuvaa (onnistunutta lukua ei `A.LIVE_KAMERA_KATKO_S` = 3 s:iin tai 50
+  peräkkäistä virhettä; esim. USB-katko, MSMF 0xC00D3EA2 = laite katosi, tai 0x8000000A = E_PENDING, kun Cam Link ei
+  saa kuvaa ja lukukutsu odottaa ~10 s), sama laite avataan uudelleen samoilla asetuksilla
+  `A.LIVE_KAMERA_UUDELLEEN_VALI_S` (1 s) välein enintään `A.LIVE_KAMERA_UUDELLEEN_MAX_S` (600 s). Ajo odottaa sillä
+  aikaa ja jatkuu, kun kamera palaa; katkon ajalta ei ole ruutuja. Katkot listataan LIVE-SYÖTE-yhteenvetoon.
+
+---
+
+### 12. Puhelinnäkymä ja debug-video (`nakyma.py`, `katselu.py`)
+
+**Asettelu.** Kuva käännetään 90° vastapäivään (kivet kulkevat ylhäältä alas) ja skaalataan 1080 px korkeaksi.
+- Vasemmalla paneeli vasemmalle lähteneistä heitoista ja oikealla oikealle lähteneistä (suunta kaukohogilla).
+- Uusin heitto on ylimpänä, ja vanhemmat rullaavat alas.
+- Laatikossa: kiven ID, ikä (s kaukohogin ylityksestä), nopeus, hidastuvuus, hog-hog, liuku (vasen hakki punaisella,
+  oikea vihreällä), irroitus ja kierteet (kahvan värillä).
+
+**Puhelinnäkymä (`--katselu`).**
+- **Palvelin:** näkymä piirretään omassa säikeessään kerran `A.KATSELU_VALI_S`:ssa ja lähetetään JPEG:nä (korkeus 810,
+  laatu 75). Pieni HTTP-palvelin jakaa sivun.
+- **Korostus:** puhelin lähettää Alku- ja Loppu-arvot. Laatikot, joiden ikä on Alku…Loppu s, korostetaan, ja niiden
+  liukusuorat (vasen- ja oikeakätinen valinnan mukaan) sekä irroitusristi piirretään kuvaan.
+  Kuvan ulkopuolelle jäävä osa (esim. irroitus yli 2 m keskiviivasta) piirretään samassa mittakaavassa paneelien
+  päälle kuvan jatkeeksi. Jos risti on koko näkymän ulkopuolella, sen tilalla on oranssi nuoli näkymän reunassa ja
+  lukema (X lähemmällä T-viivalla, cm).
+- **Liikemaski:** lähihogin takana viivat piirretään liikkuvien kohteiden alle. Lähihogin tällä puolen (kohti lähempää
+  pesää) liukusuorat ja irroitusristi ovat päällimmäisinä, jotta ne näkyvät pesässä olevan merkinnäyttäjän läpi.
+  Liikkuva kohde = ero tyhjän radan
+  taustakuvaan > `A.KATSELU_LIIKE_KYNNYS` (40) suurimmassa kanavassa; 3×3-avaus ja 5×5-laajennus.
+- **Viive:** keskikuva näytetään Alku s myöhässä (JPEG-rengaspuskuri kaappausajan mukaan, enintään 180 s). Kun heitto
+  ylittää kaukohogin videolla, laatikko samalla korostuu. Jos käsittely on Alkua enemmän jäljessä, näytetään uusin kuva
+  ja viive punaisella.
+- **Tallennus:** jokainen lähetetty kuva tallennetaan `<nimi>_katselu.avi`:hin yhtenä ruutuna. Video on 30 fps
+  (`A.KATSELU_TALLENNUS_FPS`), joten kun kuva lähetetään kerran sekunnissa, tallenne kulkee 30-kertaisella nopeudella.
+
+**Debug-video (`--debug`):** sama asettelu jokaisesta ruudusta. Kivien ääriviivat ovat vihreitä (tarkka) tai oransseja.
+Koodaus on `A.DEBUG_KOODAUS`; Intel QSV, jos saatavilla.
+
+## Rakenne
+
+### Python
+
+| Tiedosto | Sisältö |
+|---|---|
+| `main.py` | komentorivi, videon leikkaus, paneelien valinta, C++-asetukset, live-tilan käynnistys/lopetus |
+| `asetukset.py` | kaikki säädettävät arvot |
+| `seuranta.py` | pääsilmukka (`Seuranta`): kalibrointi → profiili → HAKU + SEURANTA, radan elinkaari, raportit |
+| `kalibrointi.py` | kalibrointi moodikuvasta: kaukainen pesä, hoglinet, keskiviiva, kameran asento (K, R, t), täyden resoluution skaalaus |
+| `kalibrointi_perus.py` | kalibroinnin perusfunktiot: lähipesän renkaat ja viivat, k1, geometrinen homografia, pesien laatu |
+| `rata.py` | radan mitat, hoglinjat (nimellinen + mitattu), top-down-koordinaatit |
+| `kivimalli.py` | kiven 3D-malli (profiili, kahvan lovi), projektio, ennustettu ääriviiva, linssikorjauskartat |
+| `paneelit.py` | stabilointipaneelien tunnistus ja seuranta |
+| `esikasittely.py` | valotasapaino, varjosietoinen taustanvaimennus, vaihekorrelaatio, `LaiskaRuutu` (esikäsittely vain pyydetyille alueille), liukuhihna (vaiheet A/B) |
+| `profiili.py` | kiviprofiilin opettelu: tiheä skannaus, siemen, seuranta ajassa, alfa-ääriviivat, profiilin sovitus |
+| `siluetti.py` | siluettitarkennus (C++) |
+| `paikallinen.py` | live: SEURANTA kivien alueilla täydellä resoluutiolla |
+| `kierre.py` | kahvan väri ja kierteet |
+| `heitot.py` | CSV-rivit, hog-tarkistus, heittoportti, lopullinen heitto-CSV |
+| `hog_analyysi.py` | hog-hog-analyysi (nopeus, hidastuvuus, suunta, kurvimalli), liuku, irroitus, hakki |
+| `nakyma.py` | debug-video ja puhelinnäkymä: paneelit, laatikot, irroitusviivat, enkooderit |
+| `katselu.py` | puhelinnäkymän HTTP-palvelin (`--katselu`), viive, tallennus `<nimi>_katselu.avi` |
+| `live.py` | kamerasyöte, RAM-puskuri, `BufferedCapture`, live-ModeEngine, tallennus |
+| `yleiset.py` | aikamittaus, pullonkaula-analyysi, taustaprosessien prioriteetti, versiotieto |
+
+### C++ (`cpp/`)
+
+Kaksi pybind11-moduulia: `mode_engine` (videon luku ja moodikuva) ja `stone_tracker`. `stone_tracker.cpp` sisältää
+Python-rajapinnan ja ottaa osat mukaan yhdeksi käännösyksiköksi (järjestys = riippuvuudet):
+
+| Tiedosto | Sisältö |
+|---|---|
+| `yhteiset.hpp` | includet, aikamittaus, OpenCV:n yksisäikeisyysvartija, vakiot, numpy-muunnokset |
+| `geometria.hpp` | projektio, kiven hulli, peitto-osuus, ristikkohaut (HAKU linearisoitu, SEURANTA laajeneva + mäennousu) |
+| `maskit.hpp` | saturaatio, graniittimaski, väriportti, taustanvaimennus, etualamaski, ROI, bilineaarinen näyte |
+| `sovitus.hpp` | runkokontuuri, rengaspisteet, jäännösvirheet, Levenberg-Marquardt (linearisoitu + tarkka varmistus) |
+| `meanshift.hpp` | SEURANNAN mean-shift-paikannus |
+| `siluetti.hpp` | siluettitarkennus |
+| `seuranta.hpp` | `track_stones_batch` (yhdistelmähaku: ristikko + 2 mean-shiftiä rinnan, LM, siluetti) |
+| `haku.hpp` | `search_new_stones` (ristikko, tarkennus, spawn-suodatin, floodFill-poisto), `haku_roi`, `track_rois` |
+| `esikasittely.hpp` | `suppress_shadow_background`, vaihekorrelaation vaiheet |
+| `profiili.hpp` | `scan_stone_candidates`, `fit_stone_profile_cpp`, alfa-ääriviiva |
+
+### Kääntäminen
+
+Windows (vcpkg + Python 3.12, kuten ennen; `CMakeLists.txt` viittaa nyt `cpp/`-kansioon):
+
+```
+cmake -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+```
+
+Valmiit `.pyd`-tiedostot kopioituvat projektikansioon. **Testi_08_02:n `.pyd`-tiedostot eivät käy** (rajapinta muuttui).
+
+Linux (testaus):
+
+```
+S=$(python3 -c "import sysconfig;print(sysconfig.get_config_var('EXT_SUFFIX'))")
+g++ -O2 -std=c++17 -shared -fPIC $(python3 -m pybind11 --includes) $(pkg-config --cflags opencv4) cpp/stone_tracker.cpp -o stone_tracker$S $(pkg-config --libs opencv4) -lpthread -ldl
+g++ -O2 -std=c++17 -shared -fPIC $(python3 -m pybind11 --includes) $(pkg-config --cflags opencv4) cpp/mode_engine.cpp -o mode_engine$S $(pkg-config --libs opencv4) -lpthread
+```
+
+## Mitä poistettiin
+
+Kokeilutilat kiinnitettiin Testi_08_02:n oletuksiin ja vaihtoehtoiset haarat poistettiin:
+
+* **C++:** SEURANNAN hakutilat 0–4 (vain yhdistelmähaku jäi), ristikkohaun ohitus ja sen varjotila, hienon ristikon
+  tyhjentävä haku (mäennousu jäi) ja rinnakkainen ristikko (`set_grid_threads` ei vaikuttanut mäennousun kanssa),
+  GPU-ristikkohaku, vanhat maski- ja peitto-osuusfunktiot (SIMD-versiot jäivät), saturaation rinnakkaissäie,
+  "liian iso kontuuri" -hylkäys (raja oli aina pois), `track_stone_update`, `search_new_stone`, `ms_debug`,
+  `silhouette_refine_batch_cpp`, tilastofunktiot, ympäristömuuttujat (`LM_*`, `GRANITE_*`, `BOUNDARY_*`, `VIDEO_HW` →
+  `asetukset.VIDEO_LAITTEISTODEKOODAUS`), `mode_engine`: perspektiivikorjaus, moodisuodatus ja videon kirjoitus.
+* **Python:** C++-funktioiden Python-varapolut (C++-moduulit ovat pakollisia), `kamera9_*`-kokeiluversiot (vain käytetyt
+  funktiot siirrettiin), käyttämättömät kalibrointifunktiot ja -vakiot, ympäristömuuttujat (`KURVIMALLI`, `KATSELU_*`,
+  `DEBUG_*`, `LIVE_*`, …), värireferenssi (pelkkä diagnostiikka), siluetin varapolku SEURANNASSA.
+* Vanhat työkalut (`tools/`, kokeiluskriptit ja README-historiat) jäivät Testi_08_02:een; mukana vain `tools/kamera_testi.py`.
+
+C++-poistot tarkistettiin gcov-kattavuudella (MAH00014 + debug, 1080p-live-simulaatio, live-simulaatio + katselu):
+jäljelle jääneessä koodissa ajamatta ovat vain virhepolut ja GPU-koodi (ei GPU:ta testikoneella).
+
+## Varmistus (Linux, OpenCV 4.6)
+
+Samat ajot Testi_08_02:lla ja Testi_08_03:lla, CSV:t verrattu riveittäin:
+
+| Ajo | Tulos |
+|---|---|
+| `MAH00014.mp4 --no-debug` (Python-jako, vanhat .so) | sijainti-, raaka-, hog- ja kahva-CSV identtiset |
+| `MAH00014.mp4 --no-debug` (uudet C++-moduulit) | sijainti-, raaka-, hog- ja kahva-CSV identtiset (76 rataa, 20 hog-analyysiä) |
+| live-simulaatio 1080p (`--live-sim`, täysi resoluutio) | samat heitot ja hog-analyysit; pienet erot kuten Testi_08_02:lla itsellään (täyden resoluution rengas riippuu ajoituksesta, kaksi 08_02-ajoa eroavat yhtä paljon) |
+| live-simulaatio + `--katselu` | sijainti-, raaka-, hog- ja kahva-CSV identtiset |
+
+GPU-vaihe B testattiin OpenCL-CPU-toteutuksella (pocl, `GPU_LAITE=cpu`): uusi ydin antaa bitilleen saman tuloksen kuin
+Testi_08_02:n ydin ja CPU-polku.
