@@ -392,13 +392,14 @@ Pyyntö: kuvia ei muunneta top-down-kuviksi vaan ne säilyvät normaalin näköi
 kun kiven piirto alkaa, toisessa päässä näytetään heti liukulinja ja irroituslinja ja heittopäässä kiven keskikohta pisteinä livenä (pistejoukko jää näkyviin 10 s); lähteenä YouTube (oma `yt_dlp` + OpenCV -testikoodi).
 
 ```
-python netti_live.py --youtube [hnTTLqHr5x8]      # YouTube (yt_dlp + OpenCV kuten oma testikoodi), ikkuna, 'q' lopettaa
+python netti_live.py --youtube [hnTTLqHr5x8]      # YouTube (yt_dlp + OpenCV kuten oma testikoodi), live-ikkuna (kuva 5 s viiveellä); 'q' / ESC / ikkunan sulkeminen lopettaa
+python netti_live.py --youtube --ulos             # sama + tallennus tiedostoon kivenseuranta_<päiväys>_<aika>.mp4 (tai --ulos oma.mp4); tiedosto valmistuu lopetettaessa
 python netti_live.py --lahde netti.mp4            # tiedosto reaaliajassa (nopeus kuin live-lähteessä)
 python netti_live.py --url http://.../virta.m3u8  # suora virran osoite (sama OpenCV-polku kuin YouTubessa)
 python netti_live.py --lahde netti.mp4 --nopea --ulos ulos.mp4 --ei-ikkunaa --csv heitot.csv    # simulaatio: niin nopeasti kuin ehtii, tulos tiedostoon
 ```
 Valitsimet: `--viive 5` (tulosteen viive s), `--jalki 10` (pistejoukko näkyvissä näin kauan heiton jälkeen), `--viivat 60` (linjat näkyvissä heiton alusta seuraavaan heittoon tai tähän aikaan asti), `--saikeet 3` (tarkan sovituksen työprosessit; 0 = vain kahvan väri),
-`--alku/--loppu` (tiedoston aikaväli), `--yt-formaatti` (yt_dlp-formaattivalitsin; oletus oma testikoodi), `--fps-lahde` (erillisten ruutujen nimellistaajuus aikaperustaa varten; oletus: päätellään kopioruutujen osuudesta, tässä videossa 26 % kopioita -> 25 r/s, kopiottomassa virrassa ruutunopeus), `--csv`. Tarvitaan: `opencv-python`, `numpy`, `scipy`, `yt-dlp` (+ `deno` JavaScript-ajuriksi). Tuloste tiedostoon kirjoitetaan mp4v-koodekilla (OpenCV);
+`--ulos [tiedosto]` (tallenna tuloste; ilman nimeä aikaleimattu nimi), `--koodekki` (tallenteen fourcc, oletus mp4v = iso mutta toimii kaikkialla; `avc1` = H.264, jos OpenCV tukee), `--ikkuna-leveys` (ikkunan koko), `--ei-ikkunaa`, `--alku/--loppu` (tiedoston aikaväli), `--yt-formaatti` (yt_dlp-formaattivalitsin; oletus oma testikoodi), `--fps-lahde` (erillisten ruutujen nimellistaajuus aikaperustaa varten; oletus: päätellään kopioruutujen osuudesta, tässä videossa 26 % kopioita -> 25 r/s, kopiottomassa virrassa ruutunopeus), `--csv`. Tarvitaan: `opencv-python`, `numpy`, `scipy`, `yt-dlp` (+ `deno` JavaScript-ajuriksi). Tuloste tiedostoon kirjoitetaan mp4v-koodekilla (OpenCV);
 H.264:ksi `ffmpeg -i ulos.mp4 -c:v libx264 -crf 23 valmis.mp4`.
 
 **Aikajana (kaikissa tiloissa sama).** Jokainen saapuva ruutu analysoidaan heti; tulostettava kuva on analyysia 5 s jäljessä (JPEG-puskuri, ~40 MB). Kun kivi alkaa liikkua tulosteessa, analyysi on jo nähnyt seuraavat 5 s: heitto on tunnistettu, kiven rata on tiedossa (liu'un ja

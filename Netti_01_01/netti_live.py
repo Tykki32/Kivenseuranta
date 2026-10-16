@@ -1,6 +1,7 @@
 """Reaaliaikainen kivenseuranta: kuva tulostuu VIIVE_S sekuntia analyysin perassa, ilman top-down-muunnosta.
 
     python netti_live.py --youtube hnTTLqHr5x8                     # YouTube (yt_dlp + OpenCV, kuten oma testikoodi), ikkuna + 'q' lopettaa
+    python netti_live.py --youtube hnTTLqHr5x8 --ulos              # sama + tallennus tiedostoon kivenseuranta_<paivays>_<aika>.mp4 (tai --ulos oma.mp4)
     python netti_live.py --lahde netti.mp4                         # tiedosto reaaliaikana (nopeus kuten live-lahteessa)
     python netti_live.py --lahde netti.mp4 --nopea --ulos ulos.mp4 --ei-ikkunaa     # simulaatio: ajetaan niin nopeasti kuin ehtii, tulos kirjoitetaan tiedostoon
 
@@ -123,26 +124,56 @@ class Lahde:
 # ULOSTULO
 # ---------------------------------------------------------------------------------------------------------------------
 class Ulos:
-    """Ikkuna ja / tai tiedosto. Tiedosto kirjoitetaan mp4v-koodekilla (OpenCV); H.264:ksi: ffmpeg -i ulos.mp4 -c:v libx264 -crf 23 valmis.mp4."""
+    """Ikkuna ja / tai tiedosto. Tiedosto kirjoitetaan oletuksena mp4v-koodekilla (toimii kaikkialla; iso tiedosto); H.264:ksi: ffmpeg -i ulos.mp4 -c:v libx264 -crf 23 valmis.mp4.
+    Ikkuna: 'q' tai ESC lopettaa, myos ikkunan sulkeminen lopettaa; tiedosto viimeistellaan lopetettaessa (kirjoitusta ei pidä katkaista pakolla)."""
 
-    def __init__(self, polku=None, ikkuna=True, fps=30.0, leveys_ikkuna=1280):
+    def __init__(self, polku=None, ikkuna=True, fps=30.0, leveys_ikkuna=1280, koodekki="mp4v"):
         self.ikkuna = ikkuna
         self.nimi = "Kivenseuranta (kuva viiveella)"
-        self.w = None
+        self.polku = polku
+        self.n = 0
+        self._nahty = 0                                  # ikkunaan piirrettyjen kuvien maara (sulkemisen tunnistus vasta kun ikkuna on ehtinyt aueta)
         if ikkuna:
             cv2.namedWindow(self.nimi, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.nimi, leveys_ikkuna, int(leveys_ikkuna * 9 / 16))
-        self.vw = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*"mp4v"), fps, (RUUTU_W, RUUTU_H)) if polku else None
-        self.n = 0
+        self.vw = None
+        if polku:
+            kansio = os.path.dirname(os.path.abspath(polku))
+            os.makedirs(kansio, exist_ok=True)
+            self.vw = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*koodekki), fps, (RUUTU_W, RUUTU_H))
+            if not self.vw.isOpened():
+                raise SystemExit(f"Tiedostoa {polku} ei voitu avata kirjoitettavaksi (koodekki {koodekki}); kokeile --koodekki mp4v tai toista tiedostonimi / kansio")
+
+    def nayta_ilmoitus(self, kuva):
+        """Ikkunaan kuva ilman tiedostoon kirjoitusta (puskurointi-ilmoitus)."""
+        if self.ikkuna:
+            cv2.imshow(self.nimi, kuva)
+            self._nahty += 1
+
+    def lopetus_pyydetty(self, odotus_ms=1):
+        """Nappainpaine ('q' / ESC) tai ikkunan sulkeminen."""
+        if not self.ikkuna:
+            return False
+        avain = cv2.waitKey(odotus_ms) & 0xFF
+        if avain in (ord("q"), 27):
+            return True
+        if self._nahty >= 2:
+            try:
+                return cv2.getWindowProperty(self.nimi, cv2.WND_PROP_VISIBLE) < 1       # suljettu ikkuna: 0 tai -1
+            except cv2.error:
+                return True                                                             # ikkunaa ei ole enaa
+        return False
 
     def nayta(self, kuva):
+        """Kuva ikkunaan ja tiedostoon; palauttaa True, jos lopetus on pyydetty."""
         if self.vw is not None:
             self.vw.write(kuva)
         self.n += 1
         if self.ikkuna:
             cv2.imshow(self.nimi, kuva)
-            return cv2.waitKey(1) & 0xFF
-        return -1
+            self._nahty += 1
+            return self.lopetus_pyydetty(1)
+        return False
 
     def sulje(self):
         if self.vw is not None:
@@ -213,7 +244,7 @@ def aja_sim(a, lahde, an, piirtaja, ulos, kirjaaja):
             if not ok:
                 return False
         out = piirtaja.piirra(kuva, f_out, an.kuvat())
-        return ulos.nayta(out) not in (ord("q"), 27)
+        return not ulos.nayta(out)
 
     for f, fr in lahde.ruudut():
         an.syota(f, fr)
@@ -302,9 +333,9 @@ def aja_reaaliaika(a, lahde, an, piirtaja, ulos, kirjaaja):
                         print("Piirtovirhe, jatketaan ilman piirroksia:", file=sys.stderr)
                         traceback.print_exc()
                         piirtovirhe.append(1)
-                avain = ulos.nayta(out)
+                lopeta = ulos.nayta(out)
                 kirjaaja.paivita(an)
-                if avain in (ord("q"), 27):
+                if lopeta:
                     break
                 continue
             if lopetettu.is_set() and not jono:
@@ -314,9 +345,9 @@ def aja_reaaliaika(a, lahde, an, piirtaja, ulos, kirjaaja):
                     ilm = np.zeros((RUUTU_H, RUUTU_W, 3), np.uint8)
                     cv2.putText(ilm, f"Puskuroidaan {max(0.0, jono[0][1] + a.viive - nyt):.1f} s (kuva tulee {a.viive:.0f} s viiveella)", (120, RUUTU_H // 2),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2, cv2.LINE_AA)
-                    cv2.imshow(ulos.nimi, ilm)
+                    ulos.nayta_ilmoitus(ilm)
                     viim_ilmoitus = nyt
-                if cv2.waitKey(3) & 0xFF in (ord("q"), 27):
+                if ulos.lopetus_pyydetty(3):
                     break
             else:
                 time.sleep(0.003)
@@ -339,7 +370,9 @@ def main():
     ap.add_argument("--viive", type=float, default=5.0, help="tulosteen viive analyysiin nahden (s)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")
     ap.add_argument("--viivat", type=float, default=60.0, help="linjat nakyvissa taman ajan heiton alusta, tai seuraavaan heittoon (s)")
-    ap.add_argument("--ulos", help="kirjoita tuloste tiedostoon (mp4v)")
+    ap.add_argument("--ulos", nargs="?", const="auto", help="tallenna tuloste tiedostoon (mp4); ilman nimea: kivenseuranta_<paivays>_<aika>.mp4 nykyiseen kansioon")
+    ap.add_argument("--koodekki", default="mp4v", help="tallenteen koodekki (OpenCV fourcc; oletus mp4v, kokeile avc1 = H.264 jos OpenCV:si tukee)")
+    ap.add_argument("--ikkuna-leveys", type=int, default=1280, help="ikkunan leveys pikseleina (kuva skaalautuu)")
     ap.add_argument("--csv", help="kirjaa valmistuneet heitot CSV:hen")
     ap.add_argument("--ei-ikkunaa", action="store_true", help="ei ikkunaa (palvelin / testaus)")
     ap.add_argument("--nopea", action="store_true", help="simulaatio: tiedosto ajetaan niin nopeasti kuin ehtii (tulos ei riipu ajoituksesta)")
@@ -354,6 +387,8 @@ def main():
         oma = os.path.join(os.path.dirname(os.path.abspath(__file__)), a.kansio)
         if os.path.isdir(oma):
             a.kansio = oma
+    if a.ulos == "auto":
+        a.ulos = time.strftime("kivenseuranta_%Y%m%d_%H%M%S.mp4")
     if not (a.youtube or a.lahde or a.url):
         ap.error("anna --youtube [TUNNUS], --lahde TIEDOSTO tai --url OSOITE")
     lahde = Lahde(tiedosto=a.lahde, youtube=a.youtube, alku_s=a.alku, loppu_s=a.loppu, yt_formaatti=a.yt_formaatti, url=a.url)
@@ -361,7 +396,10 @@ def main():
     an = ns.Analyysi(a.kansio, fps=lahde.fps, saikeet=a.saikeet, tarkka=a.saikeet > 0, synkroninen=sim, fps_lahde=a.fps_lahde)
     geom = ng.Geometria(a.kansio)
     piirtaja = npi.Piirtaja(geom, fps=lahde.fps, jalki_s=a.jalki, viivat_s=a.viivat, viive_s=a.viive)
-    ulos = Ulos(a.ulos, ikkuna=not a.ei_ikkunaa, fps=lahde.fps)
+    ulos = Ulos(a.ulos, ikkuna=not a.ei_ikkunaa, fps=lahde.fps, leveys_ikkuna=a.ikkuna_leveys, koodekki=a.koodekki)
+    if not a.hiljaa:
+        print(f"Kuva tulee {a.viive:.0f} s viiveella. " + ("Ikkuna: 'q' tai ESC (tai ikkunan sulkeminen) lopettaa. " if not a.ei_ikkunaa else "")
+              + (f"Tallennus: {a.ulos}" if a.ulos else "Ei tallennusta (lisaa --ulos)."), flush=True)
     kirjaaja = Kirjaaja(a.csv, a.hiljaa, lahde.fps)
     try:
         if sim:
@@ -372,7 +410,9 @@ def main():
         an.sulje()
         ulos.sulje()
         if a.ulos and not a.hiljaa:
-            print("kirjoitettu", a.ulos, f"({ulos.n} ruutua)")
+            print(f"kirjoitettu {a.ulos} ({ulos.n} ruutua)")
+            if a.koodekki == "mp4v":
+                print(f"  pienempi H.264-tiedosto: ffmpeg -i {a.ulos} -c:v libx264 -crf 23 -pix_fmt yuv420p pieni_{os.path.basename(a.ulos)}")
 
 
 if __name__ == "__main__":
