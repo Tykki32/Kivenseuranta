@@ -170,6 +170,7 @@
    "t_r": 16.710402389120375,
    "X_cm": 44.72044570849524,
    "Y_cm": 376.85990427026127,
+   "nopeus_virhe_m_s": 0.007012457983448184,
    "suunta_deg": 4.9746807893240135,
    "suunta_virhe_deg": 0.22640402797683573,
    "suunta_virhe_osat_deg": {
@@ -182,6 +183,29 @@
    "kaarevuus_1_cm": -6.346443055259995e-05,
    "kaarto": "vasemmalle",
    "ruutuja": 47
+  },
+  "yhteenveto": {
+   "liun_suunta_deg": 4.3120264820985605,
+   "liun_suora_kulmakerroin": 0.07540146944329235,
+   "liun_suora_X_Y0_cm": 16.453963787977678,
+   "liun_suunta_alku_cm": -295.83,
+   "liun_suunta_loppu_cm": 376.85990427026127,
+   "irroituksen_suunta_deg": 4.9746807893240135,
+   "irroituksen_suunta_virhe_deg": 0.22640402797683573,
+   "nopeus_ennen_m_s": 1.8746838843597688,
+   "nopeus_ennen_virhe_m_s": 0.00504619285428987,
+   "nopeus_jalkeen_m_s": 1.8689757844613777,
+   "nopeus_jalkeen_virhe_m_s": 0.007012457983448184,
+   "liun_hidastuvuus_m_s2": -0.03908045977004574,
+   "liun_hidastuvuus_vali_m_s2": [
+    -0.0652595650736464,
+    -0.011787344951531257
+   ],
+   "liun_ikkuna_s": [
+    14.08,
+    16.560402389120377
+   ],
+   "vapaan_lennon_hidastuvuus_m_s2": 0.06437727603268145
   }
  },
  "1": {
@@ -354,6 +378,7 @@
    "t_r": 62.237625597519894,
    "X_cm": -14.960097632084768,
    "Y_cm": 254.24611259534862,
+   "nopeus_virhe_m_s": 0.006307365785200985,
    "suunta_deg": 1.0363465877021016,
    "suunta_virhe_deg": 0.06842521738665154,
    "suunta_virhe_osat_deg": {
@@ -366,6 +391,29 @@
    "kaarevuus_1_cm": -2.0707844860328995e-05,
    "kaarto": "vasemmalle",
    "ruutuja": 53
+  },
+  "yhteenveto": {
+   "liun_suunta_deg": -0.1994018931362517,
+   "liun_suora_kulmakerroin": -0.0034802336207287944,
+   "liun_suora_X_Y0_cm": -15.397425300738671,
+   "liun_suunta_alku_cm": -285.7550131202976,
+   "liun_suunta_loppu_cm": 254.24611259534862,
+   "irroituksen_suunta_deg": 1.0363465877021016,
+   "irroituksen_suunta_virhe_deg": 0.06842521738665154,
+   "nopeus_ennen_m_s": 2.0681632881423755,
+   "nopeus_ennen_virhe_m_s": 0.010186145588677777,
+   "nopeus_jalkeen_m_s": 2.1271506732575394,
+   "nopeus_jalkeen_virhe_m_s": 0.006307365785200985,
+   "liun_hidastuvuus_m_s2": 0.05560842125230353,
+   "liun_hidastuvuus_vali_m_s2": [
+    0.008329146907668637,
+    0.19805339851859727
+   ],
+   "liun_ikkuna_s": [
+    60.5,
+    62.087625597519896
+   ],
+   "vapaan_lennon_hidastuvuus_m_s2": 0.06413526641995937
   }
  },
  "2": {
@@ -540,6 +588,7 @@
    "t_r": 110.42270275383723,
    "X_cm": -20.665435953920422,
    "Y_cm": 361.2930132826972,
+   "nopeus_virhe_m_s": 0.016628718399188423,
    "suunta_deg": -0.20328891353487813,
    "suunta_virhe_deg": 0.2800013590257,
    "suunta_virhe_osat_deg": {
@@ -552,6 +601,29 @@
    "kaarevuus_1_cm": -2.05583993755639e-06,
    "kaarto": "suora (|kaarevuus| < 0,1e-4 /cm)",
    "ruutuja": 34
+  },
+  "yhteenveto": {
+   "liun_suunta_deg": -0.6518698350739375,
+   "liun_suora_kulmakerroin": -0.011377765842422815,
+   "liun_suora_X_Y0_cm": -16.7124037006876,
+   "liun_suunta_alku_cm": -296.9,
+   "liun_suunta_loppu_cm": 361.2930132826972,
+   "irroituksen_suunta_deg": -0.20328891353487813,
+   "irroituksen_suunta_virhe_deg": 0.2800013590257,
+   "nopeus_ennen_m_s": 2.438734165142549,
+   "nopeus_ennen_virhe_m_s": 0.01963679248958689,
+   "nopeus_jalkeen_m_s": 2.5194134740023997,
+   "nopeus_jalkeen_virhe_m_s": 0.016628718399188423,
+   "liun_hidastuvuus_m_s2": -0.1374654640555273,
+   "liun_hidastuvuus_vali_m_s2": [
+    -0.19822698967041533,
+    -0.09237154575828985
+   ],
+   "liun_ikkuna_s": [
+    108.553,
+    110.27270275383722
+   ],
+   "vapaan_lennon_hidastuvuus_m_s2": 0.09786522092545524
   }
  }
 }

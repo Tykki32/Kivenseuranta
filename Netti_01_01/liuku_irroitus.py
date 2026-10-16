@@ -31,6 +31,9 @@ MIN_JALKEEN_CM = 150.0       # vapaata lentoa vahintaan tama (irroitus ei voi ol
 HUBER_C = 1.5                # Huberin kynnys (sigmaa)
 VIIVE_S = 0.12               # irroitustilan sovitus alkaa tama kauemmin vaihtokohdan jalkeen
 KOHINA_HAL_CM = 300.0        # kohinan arvio: radan viimeiset 300 cm (vapaa lento)
+LIUKU_ALKU_VIIVE_S = 0.6     # liu'un hidastuvuus: ikkuna alkaa tyonnon lopusta + tama (tyonnon jalkeinen tasoittuminen pois)
+LIUKU_LOPPU_VIIVE_S = 0.15   # ... ja paattyy tama ennen irroitusta
+NOPEUS_IKKUNA_S = 0.4        # "juuri ennen irroitusta" -nopeus: viimeiset 0,4 s
 RAJA_DCHI2 = 40.0            # merkitseva vaihtokohta: khi^2-parannus vahintaan tama (nollahypoteesin suurin arvo simuloinnissa 35, vapaan lennon ikkunoissa 33)
 
 
@@ -223,7 +226,7 @@ def irroitustila(t, X, Y, t_r, Y_vali=None):
     ympari (taustaviivojen ja logojen aiheuttama sivuttaishairio) neliosumma."""
     m = t >= t_r + VIIVE_S
     tt, x, y = t[m], X[m], Y[m]
-    Yr, vY, aY, _, _ = _paraabeli_arvo(tt, y, t_r)
+    Yr, vY, aY, _, evY = _paraabeli_arvo(tt, y, t_r)
     Xr, dXdY, cX, _, edXdY = _paraabeli_arvo(y, x, Yr)
     nopeus = vY * np.sqrt(1.0 + dXdY ** 2)
     suunta = float(np.degrees(np.arctan(dXdY)))
@@ -231,7 +234,7 @@ def irroitustila(t, X, Y, t_r, Y_vali=None):
     e_vali = float(np.degrees(abs(cX) * 0.5 * (Y_vali[1] - Y_vali[0]) / (1.0 + dXdY ** 2))) if Y_vali else 0.0
     yc, th = suunta_paikallinen(y, x)
     e_loc = float(np.sqrt(np.mean((th - np.degrees(np.arctan(dXdY + cX * (yc - Yr)))) ** 2))) if len(yc) >= 3 else 0.0
-    return dict(t_r=float(t_r), X_cm=Xr, Y_cm=Yr, suunta_deg=suunta, suunta_virhe_deg=float(np.sqrt(e_stat ** 2 + e_vali ** 2 + e_loc ** 2)),
+    return dict(t_r=float(t_r), X_cm=Xr, Y_cm=Yr, nopeus_virhe_m_s=float(evY * np.sqrt(1.0 + dXdY ** 2) / 100.0), suunta_deg=suunta, suunta_virhe_deg=float(np.sqrt(e_stat ** 2 + e_vali ** 2 + e_loc ** 2)),
                 suunta_virhe_osat_deg=dict(sovitus=e_stat, vaihtokohta=e_vali, paikallinen_hajonta=e_loc), nopeus_m_s=float(nopeus / 100.0),
                 hidastuvuus_m_s2=float(aY / 100.0), kaarevuus_1_cm=float(cX),
                 kaarto=("suora (|kaarevuus| < 0,1e-4 /cm)" if abs(cX) < 1e-5 else ("vasemmalle" if cX < 0 else "oikealle")), ruutuja=int(m.sum()))
@@ -246,6 +249,52 @@ def suunta_paikallinen(Y, X, ikkuna_cm=120.0, askel_cm=20.0):
             ys.append(yc)
             th.append(np.degrees(np.arctan(np.polyfit(Y[m], X[m], 1)[0])))
     return np.array(ys), np.array(th)
+
+
+def theil_sen(x, y):
+    """Robusti suoran kulmakerroin (parittaisten kulmakertoimien mediaani)."""
+    s = [(y[j] - y[i]) / (x[j] - x[i]) for i in range(len(x)) for j in range(i + 1, len(x)) if x[j] - x[i] > 0.2]
+    return float(np.median(s))
+
+
+def liuku_suureet(t, X, Y, la, ir, til):
+    """Liun ja irroituksen suureet kayttajan kysymyksiin (kaikki heittopaan radasta):
+      * liun suunta = X(Y):n pienimman neliosumman suora hackista (lahto) irroituspisteeseen (kulma Y-akseliin, + = oikealle heittajasta katsoen);
+      * irroituksen suunta = vapaan lennon suunta irroitushetkella (irroitustila);
+      * nopeus juuri ennen irroitusta = nopeus viimeisen NOPEUS_IKKUNA_S ajalta ennen irroitusta (Y(t):n suora sovitus);
+      * nopeus irroituksen jalkeen = vapaan lennon sovituksen nopeus irroitushetkella;
+      * liun hidastuvuus = -(kiihtyvyys) liu'un aikana tyonnon jalkeen: paikallisten nopeuksien Theil-Sen-suora (robusti), 90 % vali bootstrapista;
+        negatiivinen hidastuvuus = kivi kiihtyy liu'un aikana (heittaja tyontaa).
+    Irroitus on kinemaattinen: hetki, jonka jalkeen kasi ei enaa vaikuta rataan (ei sormien irtoamishetki)."""
+    t_r, Y_r = ir["t_r"], til["Y_cm"]
+    m = (Y >= la["Y_lahto"]) & (Y <= Y_r)
+    c = np.polyfit(Y[m], X[m], 1)
+    liun_suunta = float(np.degrees(np.arctan(c[0])))
+    # nopeus juuri ennen irroitusta
+    w = (t >= t_r - NOPEUS_IKKUNA_S) & (t <= t_r)
+    cy, covy = np.polyfit(t[w] - t_r, Y[w], 1, cov=True)
+    cx = np.polyfit(Y[w], X[w], 1)
+    kerroin = np.sqrt(1.0 + cx[0] ** 2)
+    v_ennen = float(cy[0] * kerroin / 100.0)
+    e_ennen = float(np.sqrt(covy[0, 0]) * kerroin / 100.0)
+    # liun hidastuvuus
+    v = liukuva(t, Y, h=4, aste=1)[:, 1] / 100.0
+    g = (t >= la["t_90"] + LIUKU_ALKU_VIIVE_S) & (t <= t_r - LIUKU_LOPPU_VIIVE_S)
+    a_liuku = theil_sen(t[g], v[g])
+    rng = np.random.default_rng(0)
+    idx = np.where(g)[0]
+    bs = []
+    for _ in range(200):
+        ii = np.unique(rng.choice(idx, len(idx)))
+        if len(ii) >= 8:
+            bs.append(theil_sen(t[ii], v[ii]))
+    vali = (-float(np.percentile(bs, 95)), -float(np.percentile(bs, 5)))
+    return dict(liun_suunta_deg=liun_suunta, liun_suora_kulmakerroin=float(c[0]), liun_suora_X_Y0_cm=float(c[1]), liun_suunta_alku_cm=float(la["Y_lahto"]), liun_suunta_loppu_cm=float(Y_r),
+                irroituksen_suunta_deg=til["suunta_deg"], irroituksen_suunta_virhe_deg=til["suunta_virhe_deg"],
+                nopeus_ennen_m_s=v_ennen, nopeus_ennen_virhe_m_s=e_ennen, nopeus_jalkeen_m_s=til["nopeus_m_s"],
+                nopeus_jalkeen_virhe_m_s=til["nopeus_virhe_m_s"],
+                liun_hidastuvuus_m_s2=-a_liuku, liun_hidastuvuus_vali_m_s2=list(vali), liun_ikkuna_s=[float(la["t_90"] + LIUKU_ALKU_VIIVE_S), float(t_r - LIUKU_LOPPU_VIIVE_S)],
+                vapaan_lennon_hidastuvuus_m_s2=-til["hidastuvuus_m_s2"])
 
 
 def analysoi(rata):
@@ -265,6 +314,7 @@ def analysoi(rata):
         out["liuku"]["tyonto_matka_cm"] = a["Y_90"] - a["Y_lahto"]
         out["liuku"]["liuku_kesto_s"] = t_r - a["t_lahto"]
         out["liuku"]["liuku_matka_cm"] = out["tila"]["Y_cm"] - a["Y_lahto"]
+        out["yhteenveto"] = liuku_suureet(t, X, Y, a, ir, out["tila"])
     return out
 
 
@@ -425,6 +475,10 @@ if __name__ == "__main__":
         print(f"   tila: X = {ti['X_cm']:.1f} cm, suunta {ti['suunta_deg']:+.2f} +- {ti['suunta_virhe_deg']:.2f} deg, nopeus {ti['nopeus_m_s']:.2f} m/s, "
               f"hidastuvuus {ti['hidastuvuus_m_s2']:+.3f} m/s2, kaarevuus {ti['kaarevuus_1_cm'] * 1e4:+.2f}e-4 /cm ({ti['kaarto']})")
         print(f"   liuku: kesto {la['liuku_kesto_s']:.2f} s, matka {la['liuku_matka_cm']:.0f} cm (tyonto {la['tyonto_kesto_s']:.2f} s / {la['tyonto_matka_cm']:.0f} cm)")
+        ys = r["yhteenveto"]
+        print(f"   liun suunta {ys['liun_suunta_deg']:+.2f} deg (hackista irroitukseen), irroituksen suunta {ys['irroituksen_suunta_deg']:+.2f} +- {ys['irroituksen_suunta_virhe_deg']:.2f} deg; "
+              f"nopeus juuri ennen irroitusta {ys['nopeus_ennen_m_s']:.2f} +- {ys['nopeus_ennen_virhe_m_s']:.2f} m/s, irroituksen jalkeen {ys['nopeus_jalkeen_m_s']:.2f} +- {ys['nopeus_jalkeen_virhe_m_s']:.2f} m/s; "
+              f"liun hidastuvuus {ys['liun_hidastuvuus_m_s2']:+.3f} m/s2 (90 % vali {ys['liun_hidastuvuus_vali_m_s2'][0]:+.3f}...{ys['liun_hidastuvuus_vali_m_s2'][1]:+.3f}), vapaan lennon hidastuvuus {ys['vapaan_lennon_hidastuvuus_m_s2']:+.3f} m/s2")
         if ref and k in ref:
             rf = ref[k]
             print(f"   silmin todettu irtoaminen: Y = {rf['Y_vali'][0]:.0f}...{rf['Y_vali'][1]:.0f} cm (ruudut {rf['ruutu_ote']}...{rf['ruutu_irti']}) -> kinemaattinen "

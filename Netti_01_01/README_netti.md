@@ -328,7 +328,61 @@ Y(t) 369 / 238 / 366 cm, X(Y) 391 / 273 / 327 cm.
   Jos tarvitaan sormien irtoamishetki myös tällaisille liu'ille, se vaatii kuvapohjaisen käden/kahvan erotuksen (aiemmassa kokeessa keltaisella kahvalla +-0,05-0,2 s, punaisella ei toiminut).
 * *Mittausraja:* vapaassa lennossa paikan kohina on Y 0,5-0,9 cm ja X 0,06-0,27 cm (taustaviivat/logot Y ~ 520-660: sivusuunnassa +-0,5 cm häiriöt); ohjatussa vaiheessa heittäjän vartalo aiheuttaa 3-10 cm:n yksittäisiä virheitä ja aukkoja
   (kiihtyvyys ennen irroitusta ei ole luotettava: heitossa 2 hold-vaiheen a1 ei ole fysikaalinen), joten vaihtokohdan tarkkuus on realistisesti +-0,1-0,15 s kun signaali (työntö) on selvä.
-* *Kierron suuntaa ei mitata kuvasta:* kahvan sarven suunta (maatasossa) ei ollut riittävän luotettava (kulma hyppii +-30 astetta). Radan kaarevuuden merkki kertoo kaarron: negatiivinen = rata kaartuu vasemmalle (tavallisen curl-säännön
-  mukaan kierto vastapäivään ylhäältä katsoen); heitoissa 2 ja 3 kaarto on lähes nolla.
+* *Kierre:* kierron nopeus ja suunta mitataan kuvasta erikseen (kahvan palkki, `kierto_netti.py`, ks. seuraava luku); radan kaarevuuden merkki on vain tukitieto (negatiivinen = rata kaartuu vasemmalle, tavallisen curl-säännön mukaan kierto vastapäivään).
 * *Validointi on pieni:* kolme heittoa, silmämääräinen viite. Koe kannattaa toistaa useammalla heitolla (ja oikean puolen kameralla).
+
+**Vastaukset kysymyksiin (liuku, irroitus, kierre).** `python suunnat_pesakuvaan.py tulokset vasen` kirjoittaa taulukon `tulokset/irroitus_yhteenveto_vasen.csv`. Määritelmät: *irroituksen suunta* = vapaan lennon suunta
+irroitushetkellä (kulma Y-akseliin, + = oikealle heittäjästä katsoen), eli mihin kivi lähti viimeisen käden vaikutuksen jälkeen; *liun suunta* = X(Y):n pienimmän neliösumman suora hackista irroituspisteeseen, eli mihin kivi oli keskimäärin menossa
+ennen viimeistä käden vaikutusta; *nopeus irroituksen jälkeen* = vapaan lennon sovituksen nopeus irroitushetkellä; *nopeus juuri ennen irroitusta* = keskinopeus viimeiseltä 0,4 s:lta ennen irroitusta; *liun hidastuvuus* = -(kiihtyvyys) liu'un aikana
+työnnön jälkeen (työnnön loppu + 0,6 s ... irroitus - 0,15 s), paikallisten nopeuksien Theil-Sen-suora, 90 %:n väli bootstrapista; negatiivinen hidastuvuus = kivi kiihtyy liu'un aikana. Kierre: ks. "Kiven kierre".
+
+| | heitto 1 (keltainen) | heitto 2 (punainen) | heitto 3 (keltainen) |
+|---|---|---|---|
+| **kierre** (heittopään kamera, kierron suunta ylhäältä katsoen) | **vastapäivään 54 astetta/s** (47...69) = 1 kierros / 6,7 s | **vastapäivään 99 astetta/s** (86...107) = 1 kierros / 3,7 s | **vastapäivään 70 astetta/s** (54...89) = 1 kierros / 5,2 s |
+| **irroituksen suunta** | **+4,97 +- 0,23 astetta** | **+1,04 +- 0,07** | **-0,20 +- 0,28** |
+| **liun suunta** (hackista irroitukseen) | **+4,31 astetta** | **-0,20** | **-0,65** |
+| **nopeus irroituksen jälkeen** | **1,87 +- 0,01 m/s** | **2,13 +- 0,01** | **2,52 +- 0,02** |
+| **nopeus juuri ennen irroitusta** (viim. 0,4 s) | **1,87 +- 0,01 m/s** | **2,07 +- 0,01** | **2,44 +- 0,02** |
+| **liun hidastuvuus** | **-0,04 m/s2** (-0,07 ... -0,01) = kiihtyy | **+0,06 m/s2** (+0,01 ... +0,20) | **-0,14 m/s2** (-0,20 ... -0,09) = kiihtyy |
+| (kiven hidastuvuus irroituksen jälkeen) | 0,064 m/s2 | 0,064 m/s2 | 0,098 m/s2 |
+| suunnat toisen pään T-viivalla: irroitus / liuku (+ = heittäjän oikealle) | +314 / +278 cm | +43 / -27 cm | -32 / -56 cm |
+
+Nopeus on jatkuva irroituksessa (liikemäärä ei hyppää): heitoissa 2 ja 3 "ennen"-arvo on 0,06-0,08 m/s pienempi, koska se on 0,4 s:n keskiarvo (keskipiste 0,2 s ennen irroitusta) ja kivi kiihtyy työnnön aikana (+0,1 ... +0,4 m/s2 viimeisen 1-1,5 s aikana).
+Liu'un hidastuvuus on käytännössä nolla (+-0,15 m/s2): nopeus pysyy tai kasvaa hieman liu'un aikana; heitossa 2 ohjatun vaiheen mittaus on heikko (heittäjän vartalo, aukot), joten sen väli on leveä. Irroitus on kinemaattinen (käden vaikutus rataan päättyy, ei sormien irtoamishetki).
+
+### Kiven kierre (`kierto_netti.py`)
+
+Pyyntö: millä nopeudella ja suunnalla kivi lähti pyörimään; kierre tunnistetaan HEITTOPÄÄSTÄ (vasen kamera, irroituksen jälkeinen vapaa lento, 1,0-1,3 s:n jakso), ei kaukopäästä.
+`python kierto_netti.py VIDEO tulokset vasen [--valimuisti tiedosto.pkl]` -> `tulokset/kierto_vasen.json` (kaikki luvut), `kierto_vasen.png` (sauvan kulma ajan funktiona ja kustannus omegan funktiona), `kierto_vasen_sovitus.png` (malli vs havainto).
+
+* **Havainto:** kahvan muovilevyn (`kahva_malli.py`, pyöreä levy, z = 15 cm) ulkopuolella näkyy kahvan palkki. Kamera katsoo kiveä loivasti sivusta (17-26 astetta), joten palkki näkyy levyn vasemmalla puolella (korkeus siirtää sen kuvassa vasemmalle,
+  ~2,1 px/cm) ja sen pystysuuntainen laajuus kertoo sivusuuntaisen suuntakomponentin. Havainto on kahva_malli.havainto:n muovin todennäköisyyskartta p (0..1) levyn (laajennetun) ulkopuolella, alueella 2...36 px levyn keskipisteestä vasemmalle, ja iho/hanska/hiha (`ei valia`-pikselit) jää pois;
+  ruutu hylätään, jos kasi peittää yli 60 pikseliä alueesta.
+* **Malli:** vaakasuora, kiven akselin kautta kulkeva palkki (silta) korkeudella h muovilevyn yläpuolella, pituus ell, leveys w; kulma theta (X-akselista Y-akseliin, + = vastapäivään ylhäältä katsoen) kiertyy tasaisesti: theta(t) = theta0 + omega (t - t_keski).
+  Malli piirretään kameralla kuvaan (kuvan sumeus sigma = 2,1 px) ja sovitetaan p-karttaan kaikissa vapaan lennon ruuduissa yhdessä (soft-L1); muoto (h, ell, w) on yhteinen saman väriselle kahvalle (keltaiset heitot 1 ja 3 yhdessä: h = 5,3 cm, ell = 12,5 cm, w = 4,9 cm;
+  punainen heitto 2: h = 4,8, ell = 11,9, w = 6,6 cm), theta0, omega ja kirkkaus heittokohtaisia. Aika on todellinen aika t_kor_s (`aikaperusta.py`). Alkuarvot: ruudukkohaku (theta0 x omega), 3 parasta per heitto, kaikki yhdistelmät optimoidaan.
+* **Kaksi estimaattoria:** (1) yhteissovituksen omega, (2) ruutukohtaiset kulmat (paras theta kullekin ruudulle, muoto kiinteä) ja niiden Theil-Sen-kulmakerroin (bootstrap 90 %-väli). Lopullinen omega = näiden keskiarvo, väli = Theil-Senin bootstrap-väli (laajennettuna kattamaan yhteissovitus).
+* **Suunta:** palkki on symmetrinen, joten kulma on määrätty modulo 180 astetta; kiertosuunta näkyy palkin näkyvän pään kallistuksen muutoksesta (alas/ylös), ja suunta on se, jolla sovitus on selvästi parempi: kustannus vastapäivään / myötäpäivään / ei kiertoa =
+  380 / 409 / 403 (heitto 1), 181 / 242 / 227 (heitto 2), 380 / 397 / 392 (heitto 3).
+
+| | heitto 1 (keltainen) | heitto 2 (punainen) | heitto 3 (keltainen) |
+|---|---|---|---|
+| kierre | **vastapäivään 54 astetta/s** (47...69) | **vastapäivään 99 astetta/s** (86...107) | **vastapäivään 70 astetta/s** (54...89) |
+| yhteissovitus / Theil-Sen | 51 / 57 | 99 / 98 | 73 / 67 |
+| kierrosaika | 6,7 s | 3,7 s | 5,2 s |
+| ruutuja (aika vapaassa lennossa) | 31 (17,2 ... 18,5 s) | 31 (63,1 ... 64,4 s) | 23 (110,8 ... 111,8 s) |
+| puolikkaat (1. / 2. puoli) | 60 / 70 | 60 / 80 | 20 / 130 |
+
+Rajoitukset (rehellisesti): omega on keskiarvo näkyvältä vapaan lennon jaksolta (1,0-1,3 s, keskipiste 0,6-1,5 s irroituksen jälkeen; kierron hidastumista ei mallinneta, joten irroitushetkellä kierre on korkeintaan hieman suurempi); puolikkaiden arvot vaihtelevat paljon (12 ruudun ikkunat), joten väli on
+suuntaa antava (+-15-25 %); malli on yksinkertaistus (suora palkki, ei jalkoja/hakaa) mutta sen ääriviivat seuraavat havaittua kahvaa kaikissa kolmessa heitossa (`kierto_vasen_sovitus.png`); kierron suunta on vastapäivään kaikilla heitoilla, mikä sopii radan vasemmalle kaartuvaan
+kaarevuuteen (heitto 1: -0,63e-4 /cm). Kierto mitataan palkin suunnasta, ei kiven pinnasta, joten tulos riippuu siitä, että palkki on kiinteä kiveen.
+
+### Suunnat toisen päädyn pesäkuvaan (`suunnat_pesakuvaan.py`)
+
+`python suunnat_pesakuvaan.py tulokset vasen [--alkuperainen]` -> `tulokset/suunnat_pesakuva.png` (heittäjän näkökulma: kaukopää ylhäällä, + = heittäjän oikealle) ja `tulokset/suunnat_pesakuva_alkuperainen.png` (toisen pään oma top-down, hog ylhäällä; kuvassa oikea = heittäjän vasen).
+Heittopään radasta lasketut suunnat (liun suunta ja irroituksen suunta, ks. yllä) jatketaan suorina viivoina toiseen päähän (T-viivojen etäisyys 34,747 m, `rata.HOUSE_DISTANCE_CM`) ja piirretään toisen pään pesän top-down-kuvaan (`topdown_oikea.png`, kalibrointi_netti.py; 2 px/cm); viivat
+päättyvät T-viivaan ja niiden osumakohta (cm keskiviivasta) on merkitty. Koordinaatit: toisen pään fyysinen koordinaatisto on heittopään 180 asteen kierto pystyakselin ympäri: X' = -X, Y' = 3474,7 - Y (molemmat koordinaatistot alkavat oman pesän keskipisteestä, Y kohti radan keskikohtaa).
+Tarkistus: kameroiden asennot ovat samassa pisteessä radan keskellä (X = +4 cm vasen / -2 cm oikea omissa koordinaatistoissaan ja Y = 1718 + 1724 = 3442 vs 3474,7 cm), ja kuvissa näkyvä puulattia on molemmissa kameroissa radan samalla puolella (vasemmassa -X, oikeassa +X').
+Viivat ovat suuntia, eivät ennuste: kierre (curl) kaartaa kiveä matkalla (heitto 1: kaarevuus -0,63e-4 /cm eli suunta muuttuu noin -11 astetta 31 metrin matkalla), joten viivat osoittavat tähtäyspisteen. Heiton 1 viivat osuvat T-viivalle radan ulkopuolella (+314 / +278 cm; radan reuna 237,5 cm).
+Suunnan virhe 31 m:n päässä: +-12 cm (heitto 1), +-4 cm (2), +-15 cm (3) irroituksen suunnalle (tilan virhearvio, ks. yllä). Kuvan pesän edessä näkyvä kivi on taustakuvan (moodikuva) kivi.
 
