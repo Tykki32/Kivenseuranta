@@ -81,6 +81,13 @@ class Runko:
         return float(kivimalli.catmull_rom_r_frac(np.array([0.5]), z_fracs=self.F, r_fracs=self.r)[0])
 
     def profiili(self, sR=1.0, H=None):
+        if sR == 1.0 and H is None:                      # tavallinen sovitus: profiili on sama jokaisella kutsulla (puolet malli_kuva-ajasta) -> valimuisti
+            avain = (self.H, self.F.tobytes(), self.r.tobytes())
+            v = getattr(self, "_profiili", None)
+            if v is None or v[0] != avain:
+                v = (avain, kivimalli.catmull_rom_r_frac(ZD, z_fracs=self.F, r_fracs=self.r), ZD * self.H)
+                self._profiili = v
+            return v[1], v[2]
         r = kivimalli.catmull_rom_r_frac(ZD, z_fracs=self.F, r_fracs=self.r * sR)
         return r, ZD * (self.H if H is None else H)
 

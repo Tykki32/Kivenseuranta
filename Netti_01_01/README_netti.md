@@ -386,3 +386,73 @@ Tarkistus: kameroiden asennot ovat samassa pisteessä radan keskellä (X = +4 cm
 Viivat ovat suuntia, eivät ennuste: kierre (curl) kaartaa kiveä matkalla (heitto 1: kaarevuus -0,63e-4 /cm eli suunta muuttuu noin -11 astetta 31 metrin matkalla), joten viivat osoittavat tähtäyspisteen. Heiton 1 viivat osuvat T-viivalle radan ulkopuolella (+314 / +278 cm; radan reuna 237,5 cm).
 Suunnan virhe 31 m:n päässä: +-12 cm (heitto 1), +-4 cm (2), +-15 cm (3) irroituksen suunnalle (tilan virhearvio, ks. yllä). Kuvan pesän edessä näkyvä kivi on taustakuvan (moodikuva) kivi.
 
+### Reaaliaikainen versio: kuva viiveellä ilman top-down-muunnosta (`netti_live.py`, `netti_seuranta.py`, `netti_piirto.py`, `netti_geom.py`, `netti_tausta.py`)
+
+Pyyntö: kuvia ei muunneta top-down-kuviksi vaan ne säilyvät normaalin näköisinä; tulosteen kuva tulee 5 s viiveellä, jolloin analyysi ehtii seurata kiven kulun ennen kuin kivi liikkuu tulosteessa;
+kun kiven piirto alkaa, toisessa päässä näytetään heti liukulinja ja irroituslinja ja heittopäässä kiven keskikohta pisteinä livenä (pistejoukko jää näkyviin 10 s); lähteenä YouTube (oma `yt_dlp` + OpenCV -testikoodi).
+
+```
+python netti_live.py --youtube [hnTTLqHr5x8]      # YouTube (yt_dlp + OpenCV kuten oma testikoodi), ikkuna, 'q' lopettaa
+python netti_live.py --lahde netti.mp4            # tiedosto reaaliajassa (nopeus kuin live-lähteessä)
+python netti_live.py --url http://.../virta.m3u8  # suora virran osoite (sama OpenCV-polku kuin YouTubessa)
+python netti_live.py --lahde netti.mp4 --nopea --ulos ulos.mp4 --ei-ikkunaa --csv heitot.csv    # simulaatio: niin nopeasti kuin ehtii, tulos tiedostoon
+```
+Valitsimet: `--viive 5` (tulosteen viive s), `--jalki 10` (pistejoukko näkyvissä näin kauan heiton jälkeen), `--viivat 60` (linjat näkyvissä heiton alusta seuraavaan heittoon tai tähän aikaan asti), `--saikeet 3` (tarkan sovituksen työprosessit; 0 = vain kahvan väri),
+`--alku/--loppu` (tiedoston aikaväli), `--yt-formaatti` (yt_dlp-formaattivalitsin; oletus oma testikoodi), `--fps-lahde` (erillisten ruutujen nimellistaajuus aikaperustaa varten; oletus: päätellään kopioruutujen osuudesta, tässä videossa 26 % kopioita -> 25 r/s, kopiottomassa virrassa ruutunopeus), `--csv`. Tarvitaan: `opencv-python`, `numpy`, `scipy`, `yt-dlp` (+ `deno` JavaScript-ajuriksi). Tuloste tiedostoon kirjoitetaan mp4v-koodekilla (OpenCV);
+H.264:ksi `ffmpeg -i ulos.mp4 -c:v libx264 -crf 23 valmis.mp4`.
+
+**Aikajana (kaikissa tiloissa sama).** Jokainen saapuva ruutu analysoidaan heti; tulostettava kuva on analyysia 5 s jäljessä (JPEG-puskuri, ~40 MB). Kun kivi alkaa liikkua tulosteessa, analyysi on jo nähnyt seuraavat 5 s: heitto on tunnistettu, kiven rata on tiedossa (liu'un ja
+irroituksen mitta-aineisto) ja viivaestimaatti valmis, joten toisen pään kuvaan piirtyy liukulinja (oranssi) ja irroituslinja (magenta) siinä samassa ruudussa, jossa heittopään pistejono alkaa. Viivat tarkentuvat koko ajan (estimaatti päivitetään kun aineistoa on kertynyt ≥ 10 kelvollista ruutua lisää),
+alustava irroituslinja on katkoviiva ja muuttuu yhtenäiseksi kun irroitus on merkitsevä, vapaata lentoa on ≥ 2,5 m ja irroituspaikka on pysynyt (< 30 cm) edellisestä estimaatista. Heittopäässä jokaisen ruudun kiven keskikohta (kahvan levyn keskipiste, z = 15 cm) piirretään pisteeksi, kun ruutu tulee
+tulosteeseen; nykyinen paikka on rengas; pistejoukko poistuu 10 s heiton (viimeisen seurattavan ruudun) jälkeen. Linjat ovat suoria ja ne jatketaan toisen pään T-viivalle (osumakohta merkitty ympyrällä, nimike `LIUKU/IRROITUS xxx cm oik/vas`, `>>` jos osumakohta on kuvan ulkopuolella;
+oik = heittäjän oikealle = kaukopään kuvassa oikealle); kivi kaartuu (kierre), joten todellinen rata poikkeaa irroituslinjasta sitä enemmän mitä pidemmälle mennään (tähtäyspiste, ei ennuste). Ylhäällä vasemmalla on tietopaneeli (irroituksen paikka ja suunta virherajoineen, liu'un suunta, nopeudet, T-viivan osumat).
+
+**Ruutuja ei muunneta.** `netti_geom.py`: maa (X, Y, z; cm) <-> alkuperäisen 1920 x 1080 -ruudun pikselit (kierros-virhe < 1e-4 cm), `netti_seuranta.Kuvain`: vain kiven ympärillä oleva leike (ROI) oikaistaan suoraan alkuperäisestä ruudusta yhdellä `cv2.remap`-kutsulla (kierto ja linssikorjaus valmiissa
+kartoissa; tulos = `Kamera.muunna` samalle alueelle, ero <= 1 harmaasävy). Piirrokset heijastetaan kamerageometrialla takaisin alkuperäiseen ruutuun; tulosteen kuva on sellaisenaan lähteen kuva.
+
+**Seuranta (`netti_seuranta.py`).** Kaksi tasoa: A) kahvan väri (keltainen / punainen, ROI, 1-2 ms; alkuarvo, liipaisu, ennuste) ja B) kiven tarkka kiinteän kokoinen runkomalli (`kivi_tarkka.py`, sama mittaus kuin offline-ajossa) vain kiven ROI:ssa työprosesseissa (~55 ms/ruutu/prosessi; vain leike
+siirtyy prosessille); pelkkä kahvan väri ei riitä viivoihin (hajonta 5-10 x suurempi ja Y:ssä systemaattisia 2-6 cm:n poikkeamia, tuloksena T-viivalla jopa 30 cm:n virheitä). B-sovitus hyväksytään vain jos graniittia on rungon siluetin sisällä (`peitto` >= 0,35; kivi 0,4-0,95, ei-kivi 0-0,2), tiukka B lisäksi
+kelvollisia pikseleitä >= 0,2 (estimaattiin vain tiukat). Aikaperusta: kopioruudut tunnistetaan kuvaerosta molemmissa puoliskoissa, ja `aikaperusta.Aikajana` ajetaan kertyneelle radalle (sama kuin offline). Heiton tunnistus (kullekin päädylle, kumpi tahansa voi heittää): IDLE (haku hack-alueelta, kahva)
+-> ARMED (kivi hack-alueella >= 0,5 s ja siinä todettu kivi) -> LIIKKUU (kolmen viimeisen havainnon mediaani > 6 cm vanhempien havaintojen mediaanista) -> VAHVISTETTU (Y > -100 cm nopeudella >= 1,2 m/s mitatuista paikoista, >= 8 kivisovitusta) -> VALMIS (kivi poistuu kuva-alalta, Y ~ 735 cm).
+Hylätty yritys palaa ARMED-tilaan: heittäjä käsittelee kiveä hackissa (kuljettaa, siirtelee, vastaliike ennen työntöä); lähtöruutu ajoitetaan taaksepäin (esim. lähtö 12,6 s vahvistuu 14,0 s, tulosteen piirto alkaa 12,6 s kohdalla). Viivaestimaatti: `liuku_irroitus.analysoi` osittaiselle radalle (uudet valinnat
+`min_jalkeen` = 70 cm vapaata lentoa, `Y_r_min` = 200 cm aikaisin irroituspaikka, `kohinakatto` = (0,8; 0,15) cm; oletukset ennallaan, offline-tulokset eivät muutu).
+
+**Taustakuva (`netti_tausta.py`).** Vanha moodikuva (koko videon mediaani) sisältää hackissa haamukiven ja heittäjän jalat (kivi lepää hackissa 0-8, 23-47 ja 83-101 s), jolloin lepäävän kiven alfa-kartta ja tarkka sovitus epäonnistuvat juuri siinä, missä heitto alkaa (peitto 0,09 vs 0,86 puhtaalla taustalla).
+`python netti_tausta.py VIDEO --tyhja-vasen 18.5-22.5,66.5-76` korvaa hackin alueen niiden hetkien mediaanilla, jolloin hack on tyhjä -> `tulokset/moodikuva_vasen_puhdas.png` (live-koodi käyttää sitä jos se on; offline-skriptit käyttävät edelleen `moodikuva_<puoli>.png`:ää). Toinen puolisko (oikea): tässä videossa ihmisiä koko ajan, joten
+korjausta ei ole. Toisella videolla / valaistuksella tausta ja kalibrointi on tehtävä uudelleen.
+
+**Tulokset (netti.mp4, simulaatio `--nopea`, koko video 131 s).**
+
+| | heitto 1 (keltainen) | heitto 2 (punainen) | heitto 3 (keltainen) |
+|---|---|---|---|
+| lähtö = kiven piirto alkaa tulosteessa / heitto vahvistettu (analyysiaika) | 12,6 s / 14,0 s | 57,5 s / 60,5 s (työnnön alku 58,5 s, ennen sitä vastaliike hackissa) | 107,3 s / 108,4 s |
+| irroituksen paikka Y | **375 cm** (offline 377) | **282 cm** (254) | **359 cm** (361) |
+| irroituksen suunta | **+5,04 +- 0,22 astetta** (+4,97 +- 0,23) | **+0,96 +- 0,04** (+1,04 +- 0,07) | **-0,15 +- 0,28** (-0,20 +- 0,28) |
+| liun suunta | **+4,23 astetta** (+4,31) | **+0,15** (-0,20) | **-0,58** (-0,65) |
+| nopeus ennen / jälkeen irroituksen | **1,87 / 1,87 m/s** (1,87 / 1,87) | **2,06 / 2,11** (2,07 / 2,13) | **2,44 / 2,51** (2,44 / 2,52) |
+| liun hidastuvuus | +0,02 m/s2 (-0,04) | +0,04 (+0,06) | -0,09 (-0,14) |
+| kaukopään T-viiva: irroitus / liuku (+ = heittäjän oikealle) | **+318 / +273 cm** (+314 / +278) | **+39 / -7 cm** (+43 / -27) | **-29 / -52 cm** (-32 / -56) |
+
+Suluissa offline-tulos (`liuku_irroitus.py`, siluettiseuranta koko aineistolla): reaaliaikainen versio osuu samoihin lukuihin (irroituksen suunta <= 0,09 astetta, T-viivalla <= 5 cm; liun suunta heitossa 2 poikkeaa 0,35 astetta eli 20 cm T-viivalla: ohjatun vaiheen mittaus on heikko, offline-tuloksen vaihteluväli on tätä luokkaa; liun hidastuvuuden virhe on +-0,15 m/s2).
+Koko videolla (3 heittoa vasemmassa päässä, 131 s) ei tullut yhtään väärää heiton vahvistusta: heittäjän kiven käsittely hackissa (kuljetus, siirtely, vastaliike; useita yrityksiä) hylättiin ja oikean pään kahvakandidaateista (kivi hackissa, ihmisten varusteet) ei syntynyt heittoa. Simulaatio kesti 145 s (28-30 r/s, 4 ydintä; B-työt odotetaan synkronisesti),
+reaaliaika-ajossa (tiedosto tahdistettuna, 28 s) kaikki ruudut ehdittiin analysoida ja tulostua 5 s viiveellä; analyysin ruutukohtainen kustannus on mediaanilta 2,5 ms (95 %: 21 ms, sisältää B-tulosten odotuksen sim-tilassa). Valmis esimerkkituloste: `tulokset/kivenseuranta_demo.mp4` (1280 x 720, H.264, 9 MB; koko video, 3 heittoa) ja `tulokset/live_heitot_vasen.csv`.
+
+Alustavan estimaatin tarkentuminen (T-viivan osumakohta cm, aika heiton lähdöstä analyysissa; tulosteessa estimaatti on sillä hetkellä paras tieto, eli kun kivi lähtee tulosteessa, analyysi on 5 s eteenpäin):
+
+| | irroituslinja T-viivalla | liukulinja T-viivalla |
+|---|---|---|
+| heitto 1 | +237 (+4,0 s) -> +270 (+4,5) -> +273 (+4,9) -> +281 (+5,3) -> **+318** (+5,7 s, vakaa) | +275 ... **+273** |
+| heitto 2 | +25 (+5,1 s) -> +49 (+5,6) -> +41 (+6,1) -> +41 (+6,5, vakaa) -> **+39** (+6,9) | -6 ... **-7** |
+| heitto 3 | -41 (+4,1 s) -> -10 (+4,6, vakaa) -> **-29** (+4,6 s, lopullinen) | **-52** |
+
+Pitkä liuku (heitto 1: 4,4 s) on vaikein: 5 s:n kohdalla vapaata lentoa on alle sekunti ja irroituslinja on T-viivalla 40-80 cm pielessä (katkoviiva, "alustava"), minkä jälkeen se tarkentuu 1 s:ssa; liukulinja on oikein heti (+-7 cm). Heiton 2 ensimmäinen estimaatti valmistuu vasta 5,1 s lähdöstä (tulosteen lähdön jälkeen 0,1 s), koska lähtö on laskettu vastaliikkeen alusta.
+
+
+**Rajoitukset (rehellisesti).**
+* **YouTubea ei voitu testata tässä ympäristössä** (YouTube-yhteys estetty, `Tunnel connection failed: 403`): `yt_dlp`-haku on kopio omasta testikoodista ja virheet raportoidaan selkeästi, mutta virran lukeminen on testattu vain muilla lähteillä: tiedosto reaaliajassa ja saman videon suora http-virta (`--url`, sama `cv2.VideoCapture(..., CAP_FFMPEG)` -polku kuin YouTubessa).
+  Jos YouTube-virta on eri resoluutiota kuin 1920 x 1080, ruudut skaalataan siihen (kalibrointi on tehty sille); `--yt-formaatti 'bestvideo[height<=1080]...'` rajaa korkeuden.
+* Alustavuus: 5 s:n viiveellä irroituslinja on heti käytettävissä, mutta pitkällä liu'ulla (heitto 1: 4,4 s) vapaata lentoa on alussa alle sekunti ja irroituslinja on aluksi T-viivalla jopa ~40 cm pielessä; se on katkoviiva ja tarkentuu 1-2 s:ssa (suurempi `--viive` parantaa). Liukulinja on alusta lähtien oikein (±7 cm 31 m:n päässä).
+* Tunnistus edellyttää keltaisen tai punaisen kahvan (muut värit eivät laukaise), kameraparia samassa paikassa kuin kalibroinnissa (`tulokset/kalibrointi_*.json`), ja että hack-alue on näkyvissä. Aikaperusta olettaa 25 r/s:n lähdevirran (30 r/s:ksi tallennettuna kopioruutuineen; sama kuin offline).
+* Oikean pään heitto (toinen pää heittäjänä) on symmetrinen koodipolku; se on testattu vain kääntämällä puoliskot keskenään (sama video, väärä kalibrointi toiselle puoliskolle), ei oikealla oikean pään heitolla.
+* Kierre (kierron nopeus ja suunta) ei kuulu reaaliaikaiseen versioon (raskas, ks. yllä `kierto_netti.py`, ajetaan offline).
+* Prosessorikuorma: analyysi + puskurointi ~15 ms/ruutu pääsäikeessä; tarkka sovitus 3 työprosessia heiton aikana (nelisydämisellä koneella 0 ohitettua ruutua 28 s:n reaaliaika-ajossa). Jos kone ei jaksa, ruutuja ohitetaan analyysista (tulostetaan silti), `--saikeet 0` jättää tarkan sovituksen pois (epätarkka).

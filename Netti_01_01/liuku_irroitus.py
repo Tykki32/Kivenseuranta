@@ -134,9 +134,14 @@ def kohinat(t, X, Y):
     return max(mad(ry), 0.3), max(mad(rx), 0.06)
 
 
-def irroitus_ikkuna(t, X, Y, Y_a, sY, sX, askel_s=0.02):
+def irroitus_ikkuna(t, X, Y, Y_a, sY, sX, askel_s=0.02, min_ennen=None, min_jalkeen=None, Y_r_min=None):
     """Vaihtokohdan haku alueella Y >= Y_a. Palauttaa dict tai None. Vaihtokohta t_r on yhteinen: Y(t) C1-sovitus antaa paikan Y_r(t_r), johon X(Y):n
-    C1-sovituksen vaihtokohta asetetaan; kustannus = Y- ja X-kanavan khi^2:n summa."""
+    C1-sovituksen vaihtokohta asetetaan; kustannus = Y- ja X-kanavan khi^2:n summa.
+    Reaaliaikaisessa (osittaisessa) aineistossa: min_jalkeen = vapaan lennon vahimmaismatka (oletus MIN_JALKEEN_CM), Y_r_min = irroituksen aikaisin paikka
+    (esitieto: irroitus ei tapahdu aivan hackin vieressa)."""
+    min_ennen = MIN_ENNEN_CM if min_ennen is None else min_ennen
+    min_jalkeen = MIN_JALKEEN_CM if min_jalkeen is None else min_jalkeen
+    Y_alaraja = Y_a + min_ennen if Y_r_min is None else max(Y_a + min_ennen, Y_r_min)
     m = Y >= Y_a
     tt, yy, xx = t[m], Y[m], X[m]
     if len(tt) < 25:
@@ -146,7 +151,7 @@ def irroitus_ikkuna(t, X, Y, Y_a, sY, sX, askel_s=0.02):
     prof = []
     for tr in np.arange(tt[0], tt[-1], askel_s):
         Yr = float(np.interp(tr, tt, yy))
-        if Yr < Y_a + MIN_ENNEN_CM or Yr > yy[-1] - MIN_JALKEEN_CM or (tt < tr).sum() < 8 or (tt >= tr).sum() < 10:
+        if Yr < Y_alaraja or Yr > yy[-1] - min_jalkeen or (tt < tr).sum() < 8 or (tt >= tr).sum() < 10:
             continue
         py, cy = _c1(tt, yy, tr, sY)
         px, cx = _c1(yy, xx, py[0], sX)
@@ -168,26 +173,26 @@ def irroitus_ikkuna(t, X, Y, Y_a, sY, sX, askel_s=0.02):
     return out
 
 
-def _jasenet(t, X, Y, alut, sY, sX):
+def _jasenet(t, X, Y, alut, sY, sX, **asetus):
     out = []
     for Y_a in alut:
-        r = irroitus_ikkuna(t, X, Y, Y_a, sY, sX)
+        r = irroitus_ikkuna(t, X, Y, Y_a, sY, sX, **asetus)
         if r is not None:
             out.append(r)
     return out
 
 
-def irroitus_varmistettu(t, X, Y, Y_90, sY, sX):
+def irroitus_varmistettu(t, X, Y, Y_90, sY, sX, **asetus):
     """Vaihtokohta usealla ohjatun vaiheen ikkunalla. Kierros 0: ikkuna alkaa tyonnon lopusta + marginaali (laaja, karkea). Tarkennuskierrokset: ikkuna
     alkaa L cm ENNEN edellista vaihtokohtaa (ohjattu vaihe ei ole 2. asteen kayra koko matkaa; paikallinen ikkuna on lahempana mallia). Palauttaa dict:
     mediaani, vaihteluvali, jasenet, merkitsevyys (enemmistolla jasenista khi^2-parannus >= RAJA_DCHI2)."""
-    jasenet = _jasenet(t, X, Y, [Y_90 + m for m in MARGINAALIT_CM], sY, sX)
+    jasenet = _jasenet(t, X, Y, [Y_90 + m for m in MARGINAALIT_CM], sY, sX, **asetus)
     if not jasenet:
         return None
     Y_r = float(np.median([r["yht"]["Y_r"] for r in jasenet]))
     historia = [Y_r]
     for _ in range(TARKENNUS_MAX):
-        uudet = _jasenet(t, X, Y, [max(Y_90 + 50.0, Y_r - L) for L in TARKENNUS_L_CM], sY, sX)
+        uudet = _jasenet(t, X, Y, [max(Y_90 + 50.0, Y_r - L) for L in TARKENNUS_L_CM], sY, sX, **asetus)
         if not uudet:
             break
         jasenet = uudet
@@ -297,12 +302,15 @@ def liuku_suureet(t, X, Y, la, ir, til):
                 vapaan_lennon_hidastuvuus_m_s2=-til["hidastuvuus_m_s2"])
 
 
-def analysoi(rata):
-    """Yhden heiton koko tunnistus: dict."""
+def analysoi(rata, kohinakatto=None, **asetus):
+    """Yhden heiton koko tunnistus: dict. Reaaliaikaisessa (osittaisessa) aineistossa: kohinakatto = (sigma_Y, sigma_X) [cm] rajaa kohina-arvion ylhaalta
+    (jos radan loppuosa ei ole vielakaan vapaata lentoa, MAD-arvio paisuu ja vaihtokohdan haku sokeutuu); asetus: irroitus_ikkuna (min_jalkeen, Y_r_min)."""
     t, X, Y = rata["t"], rata["X"], rata["Y"]
     a = liuku_alku(t, Y)
     sY, sX = kohinat(t, X, Y)
-    ir = irroitus_varmistettu(t, X, Y, a["Y_90"], sY, sX)
+    if kohinakatto is not None:
+        sY, sX = min(sY, kohinakatto[0]), min(sX, kohinakatto[1])
+    ir = irroitus_varmistettu(t, X, Y, a["Y_90"], sY, sX, **asetus)
     out = dict(liuku=a, kohina=dict(sigma_Y_cm=sY, sigma_X_cm=sX), irroitus=ir)
     if ir is not None:
         Y_r = ir["Y_r"]
