@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
-# C++-laajennusmoduulit mode_engine ja stone_tracker (lahdekoodi kansiossa cpp/). Valmiit .pyd-tiedostot
-# kopioidaan projektikansioon (main.py:n viereen).
+# C++-laajennusmoduulit mode_engine, stone_tracker ja netti_fit (lahdekoodi kansiossa cpp/). Valmiit .pyd-tiedostot
+# kopioidaan projektikansioon (main.py:n ja netti_live.py:n viereen).
+# netti_fit = nettivideon kivenseurannan tarkka sovitus (B-taso): netti_live.py / netti_seuranta.py kayttavat sita automaattisesti, jos
+# moduuli loytyy (noin 6 x nopeampi kuin Python-toteutus); ilman sita ajetaan Python-toteutus. Vain netti_fit: cmake --build build --config Release --target netti_fit
 #
 # Windows (vcpkg + Python 3.12):
 #   cmake -B build -G "Visual Studio 17 2022" -A x64
@@ -9,7 +11,7 @@ cmake_minimum_required(VERSION 3.20)
 # Linux (testaus):
 #   g++ -O2 -std=c++17 -shared -fPIC $(python3 -m pybind11 --includes) $(pkg-config --cflags opencv4) \
 #       cpp/stone_tracker.cpp -o stone_tracker$(python3-config --extension-suffix) $(pkg-config --libs opencv4) -lpthread -ldl
-#   (mode_engine samoin: cpp/mode_engine.cpp)
+#   (mode_engine ja netti_fit samoin: cpp/mode_engine.cpp, cpp/netti_fit.cpp)
 
 # vcpkg:n toolchain on asetettava ENNEN project()-kutsua (muuten mm. OpenCV:n riippuvuudet eivat loydy)
 set(CMAKE_TOOLCHAIN_FILE
@@ -34,8 +36,9 @@ find_package(OpenCV REQUIRED)
 
 pybind11_add_module(mode_engine cpp/mode_engine.cpp)
 pybind11_add_module(stone_tracker cpp/stone_tracker.cpp)
+pybind11_add_module(netti_fit cpp/netti_fit.cpp)
 
-foreach(TARGET_NAME mode_engine stone_tracker)
+foreach(TARGET_NAME mode_engine stone_tracker netti_fit)
     target_link_libraries(${TARGET_NAME} PRIVATE ${OpenCV_LIBS})
     target_include_directories(${TARGET_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
     if(MSVC)
