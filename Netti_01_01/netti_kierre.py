@@ -24,8 +24,9 @@ import kierto_netti as ko
 
 K_KIERRE = 0.021                # kierteen vaimenemisvakio (1/s): IMU 2,1 % / s (Testi_09_02), vaihteluvali 2-3 % / s
 MIN_RUUTUJA = 8                 # vahintaan taman verran kelvollisia ruutuja sovitukseen
+MIN_RUUTUJA_VARMA = 12          # tulos on "varma" vasta taman verran ruutuja kattavasta ikkunasta (8-10 ruudun mittaus antoi -27 / -105 / -159 deg/s, kun muut heitot 40-110)
 MARGINAALI_VARMA = 0.03         # suunta varma, jos vastakkaisen suunnan paras kustannus on yli taman suhteessa suurempi
-OMEGA_MAX_VARMA = 170.0         # pyorimisnopeus (deg/s), jonka yli tulos on epauskottava (tavallisesti 40-110; 170 deg/s = yli 5 kierrosta hog-hog-valilla): ei "varma"
+OMEGA_MAX_VARMA = 130.0         # pyorimisnopeus (deg/s), jonka yli tulos on epauskottava (tavallisesti 40-110; 130 deg/s = noin 4,5 kierrosta hog-hog-valilla; lyhyella ikkunalla 10 ruutua mitattu 159 / 213 deg/s ei ole luotettava): ei "varma"
 
 
 def lataa_muoto(kansio, puoli):
@@ -182,5 +183,5 @@ def arvioi(cam, ast, vari, havainnot, t_irr, muoto=None):
         marg = float((kc[havio] - kc[voittaja]) / kc[voittaja])
     return dict(omega_deg_s=float(om), omega_sovitus_deg_s=float(om_sov), omega_theilsen_deg_s=float(om_ts), theta0_deg=float(th0), g=float(g),
                 t_keski=float(tm), ruutuja=len(kehykset), hylatty_kasi=int(hylatty), kustannus_ccw=kc[1], kustannus_cw=kc[-1], marginaali=marg,
-                varma=bool(np.isfinite(marg) and marg >= MARGINAALI_VARMA and np.sign(om_sov) == np.sign(om_ts) and abs(om) <= OMEGA_MAX_VARMA), muoto=dict(h_cm=muoto_k[0], ell_cm=muoto_k[1], w_cm=muoto_k[2]),
+                varma=bool(np.isfinite(marg) and marg >= MARGINAALI_VARMA and np.sign(om_sov) == np.sign(om_ts) and abs(om) <= OMEGA_MAX_VARMA and len(kehykset) >= MIN_RUUTUJA_VARMA), muoto=dict(h_cm=muoto_k[0], ell_cm=muoto_k[1], w_cm=muoto_k[2]),
                 f_keski=float(np.mean([d["f"] for d in kehykset])))

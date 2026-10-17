@@ -132,6 +132,20 @@ class Lahde:
 # ---------------------------------------------------------------------------------------------------------------------
 # ULOSTULO: ikkuna (paasaie) ja tallennus (oma saie)
 # ---------------------------------------------------------------------------------------------------------------------
+def versio_teksti():
+    """Ohjelman versio lokiin: git-commit ja -aika (jos kansio on git-repo ja git loytyy), Python ja kayttojarjestelma. Auttaa selvittamaan, mita versiota ajettiin."""
+    kansio = os.path.dirname(os.path.abspath(__file__))
+    git = ""
+    try:
+        r = subprocess.run(["git", "-C", kansio, "log", "-1", "--format=%h %cd", "--date=format:%Y-%m-%d %H:%M"], capture_output=True, text=True, timeout=5,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if r.returncode == 0 and r.stdout.strip():
+            git = f"git {r.stdout.strip()}"
+    except Exception:
+        pass
+    return f"{git or 'ei git-tietoa'}; Python {sys.version.split()[0]} ({sys.platform})"
+
+
 def _nayton_koko():
     """Paanayton koko pikseleina (leveys, korkeus) tai None. Windowsissa fyysiset pikselit (DPI-tietoisena), muualla tkinterilla jos saatavilla."""
     try:
@@ -440,8 +454,10 @@ class Kirjaaja:
                "liuku_T_cm", "heitto_T_cm", "irroitus_delta_cm", "kierre", "kierre_mitattu", "omega_deg_s", "hog_hog_s", "irroitus_ennen_hogia_m",
                "nopeus_ennen_m_s", "nopeus_jalkeen_m_s", "hidastuvuus_m_s2", "liun_hidastuvuus_m_s2", "vakaa"]
 
-    def __init__(self, csv_polku=None, hiljaa=False, fps=30.0):
+    def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False):
         self.csv_polku, self.hiljaa, self.fps = csv_polku, hiljaa, fps
+        self.nayta_tapahtumat = tapahtumat              # tulosta seurannan kaikki tapahtumat (myos hylatyt heittoyritykset)
+        self.tapahtumia = 0
         self.ilmoitettu = set()
         self.valmis = set()
         self.kierre_ilm = set()
@@ -459,6 +475,10 @@ class Kirjaaja:
 
     def paivita(self, an, lopuksi=False):
         """Kutsutaan analyysisaikeesta: ilmoittaa uudet vahvistukset ja valmistuneet tulokset. lopuksi: ajon loppu, ilmoita myos keskenerat."""
+        if self.nayta_tapahtumat:
+            for e in list(an.tapahtumat)[self.tapahtumia:]:
+                self._tulosta(f"  [{e[2] / self.fps:7.1f} s] tapahtuma {e[0]} (yritys {e[1]}) {' '.join(str(x) for x in e[3:])}".rstrip())
+            self.tapahtumia = len(an.tapahtumat)
         for h in list(an.heitot):
             n = list(an.heitot).index(h) + 1
             if h.tunnus not in self.ilmoitettu:
@@ -771,6 +791,7 @@ def main():
     ap.add_argument("--puskuri", choices=("yuv", "jpeg"), default="yuv",
                     help="viivepuskurin muoto: yuv = raaka YUV 4:2:0 (3,1 MB / ruutu, ~470 MB 5 s:n viiveella, kevyt prosessorille) tai jpeg (0,3 MB / ruutu, ~21 ms / ruutu prosessoria)")
     ap.add_argument("--jpeg", type=int, default=92, help="JPEG-laatu (--puskuri jpeg ja yuv-puskurin ylivuoto)")
+    ap.add_argument("--tapahtumat", action="store_true", help="tulosta seurannan kaikki tapahtumat (viritys, lahto, vahvistus, hylkays, ei kivea, valmis): nayttaa myos heittoyritykset, jotka jaavat tunnistamatta")
     ap.add_argument("--hiljaa", action="store_true")
     ap.add_argument("--debug-viive", action="store_true", help="tulosta hitaat analyysiruudut (selvittaa miksi ruutuja ohitetaan)")
     a = ap.parse_args()
@@ -786,13 +807,14 @@ def main():
     # laskentaprosessit kayntiin ENNEN lahteen avaamista: spawn-prosessien kaynnistys kestaa 5-15 s eika virta saa odottaa
     an = ns.Analyysi(a.kansio, fps=30.0, saikeet=a.saikeet, tarkka=a.saikeet > 0, synkroninen=sim, fps_lahde=a.fps_lahde, kierre=not a.ei_kierretta)
     if not a.hiljaa:
+        print(f"netti_live: {versio_teksti()}", flush=True)
         print("Kaynnistetaan laskentaprosessit ...", flush=True)
     t_lampea = time.time()
     n_prosessia = an.lampea()
     if not a.hiljaa:
         sovitin = next(iter(an.M.values())).sovitin
         print(f"  {n_prosessia} tyoprosessia valmiina ({time.time() - t_lampea:.0f} s); tarkka sovitus: {sovitin}"
-              + ("" if "C++" in sovitin else " (nopeampi C++-versio: kaanna netti_fit, ks. README_netti.md)"), flush=True)
+              + ("" if "C++" in sovitin else f" ({ns.netti_fit_selitys()})"), flush=True)
     lahde = Lahde(tiedosto=a.lahde, youtube=a.youtube, alku_s=a.alku, loppu_s=a.loppu, yt_formaatti=a.yt_formaatti, url=a.url)
     an.fps = lahde.fps
     geom = ng.Geometria(a.kansio)
@@ -802,7 +824,7 @@ def main():
     if not a.hiljaa:
         print(f"Kuva tulee {a.viive:.0f} s viiveella. " + ("Ikkuna: 'q' tai ESC (tai ikkunan sulkeminen) lopettaa, 'f' vaihtaa kokoruudun. " if naytto else "")
               + (f"Tallennus: {a.ulos} ({kirjoittaja.nimi})" if kirjoittaja else "Ei tallennusta (lisaa --ulos)."), flush=True)
-    kirjaaja = Kirjaaja(a.csv, a.hiljaa, lahde.fps)
+    kirjaaja = Kirjaaja(a.csv, a.hiljaa, lahde.fps, a.tapahtumat)
     try:
         if sim:
             aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja)
