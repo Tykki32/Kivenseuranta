@@ -23,6 +23,8 @@ Taustakuva: tulokset/moodikuva_<puoli>_puhdas.png jos olemassa (netti_tausta.py;
 import concurrent.futures
 import multiprocessing
 import os
+import sys
+import sysconfig
 import types
 import warnings
 from concurrent.futures import ProcessPoolExecutor
@@ -40,12 +42,33 @@ import netti_kierre as nk
 import netti_tausta
 import rata
 
+_netti_fit_virhe = None
 try:                              # C++-toteutus B-sovitukselle (cpp/netti_fit.cpp, CMake-kohde netti_fit); ilman sita Python-toteutus
     if os.environ.get("NETTI_EI_CPP"):
         raise ImportError("NETTI_EI_CPP")
     import netti_fit as _netti_fit
-except ImportError:
-    _netti_fit = None
+except ImportError as _e:
+    _netti_fit, _netti_fit_virhe = None, _e
+
+
+def netti_fit_selitys():
+    """Miksi C++-sovitin (netti_fit) ei ole kaytossa (tyhja, jos se on). Tavallisin syy: moduuli on kaannetty toiselle Pythonin versiolle kuin milla ohjelmaa ajetaan
+    (netti_fit.cp312-win_amd64.pyd latautuu vain Python 3.12:lla): tiedosto on kansiossa, mutta Python ei tunnista sita (ModuleNotFoundError)."""
+    if _netti_fit is not None:
+        return ""
+    if os.environ.get("NETTI_EI_CPP"):
+        return "pois kaytosta (NETTI_EI_CPP)"
+    try:
+        tiedostot = sorted(f for f in os.listdir(os.path.dirname(os.path.abspath(__file__))) if f.startswith("netti_fit") and f.endswith((".pyd", ".so")))
+    except OSError:
+        tiedostot = []
+    if not tiedostot:
+        return "nopeampi C++-versio: kaanna netti_fit, ks. README_netti.md"
+    if isinstance(_netti_fit_virhe, ModuleNotFoundError):
+        return (f"{tiedostot[0]} on kansiossa mutta ei sovi tahan Pythoniin ({sys.version_info.major}.{sys.version_info.minor}, tiedoston paatteen pitaisi olla "
+                f"{sysconfig.get_config_var('EXT_SUFFIX')}): kaanna talle Pythonille (cmake ... -DPython_EXECUTABLE=<python.exe>) tai aja ohjelma silla Pythonilla, "
+                f"jolle moduuli on kaannetty; ks. README_netti.md")
+    return f"{tiedostot[0]} ei lataudu ({_netti_fit_virhe!r}); puuttuvatko OpenCV:n DLL-tiedostot moduulin vieresta? ks. README_netti.md"
 
 KAHVA_Z = kv.KAHVA_Z_CM          # kahvan levyn korkeus (cm), jonka tasolle sentroidi heijastetaan
 ETAISYYS_CM = rata.HOUSE_DISTANCE_CM    # pesien keskipisteiden etaisyys (T-viivojen valinen matka, cm)

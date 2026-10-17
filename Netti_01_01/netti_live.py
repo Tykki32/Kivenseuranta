@@ -792,7 +792,7 @@ def main():
     if not a.hiljaa:
         sovitin = next(iter(an.M.values())).sovitin
         print(f"  {n_prosessia} tyoprosessia valmiina ({time.time() - t_lampea:.0f} s); tarkka sovitus: {sovitin}"
-              + ("" if "C++" in sovitin else " (nopeampi C++-versio: kaanna netti_fit, ks. README_netti.md)"), flush=True)
+              + ("" if "C++" in sovitin else f" ({ns.netti_fit_selitys()})"), flush=True)
     lahde = Lahde(tiedosto=a.lahde, youtube=a.youtube, alku_s=a.alku, loppu_s=a.loppu, yt_formaatti=a.yt_formaatti, url=a.url)
     an.fps = lahde.fps
     geom = ng.Geometria(a.kansio)
