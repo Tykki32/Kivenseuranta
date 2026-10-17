@@ -9,7 +9,8 @@ Pelissa heitetaan vuorotellen keltainen / punainen, 8 kiveä per väri per pää
   * päät, joissa on alle --per-paa heittoa,
   * kohdat, joissa sama väri heitetään kahdesti peräkkäin (välistä puuttuu toisen värin heitto: väli aikoina),
   * kivinumeroiden epäjatkuvuudet (väreittäin 1, 2, 3 ...; numerointi siirtyy, jos heitto jää tunnistamatta).
-CSV:ssä ovat vain heitot, joille saatiin viivaestimaatti; konsolitulosteessa (lokissa) kaikki vahvistetut heitot. Poistumiskoodi 1, jos jotain puuttuu."""
+CSV:ssä ovat kaikki valmistuneet heitot (myös ne, joille ei saatu viivaestimaattia: viivasarakkeet tyhjiä; sarakkeet ks. tools/yhteenveto.py ja README_netti.md); konsolitulosteessa (lokissa) kaikki
+vahvistetut heitot. Poistumiskoodi 1, jos jotain puuttuu."""
 import argparse
 import csv
 import re

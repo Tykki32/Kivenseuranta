@@ -36,6 +36,7 @@ PANEELI_PAIKKA = (284, 6)                # ylapalkin vapaa alue (x, y): ei logoa
 PANEELI_KORKEUS_MAX = 184
 RIVI_PX = 21                             # paneelin riviväli
 PANEELI_KOKO = 0.56
+KELLO_PAIKKA = (284, 196)                # joukkueiden kellon laatikko: tietopaneelin alla (x, y)
 PANEELI_OTSIKKO_KOKO = 0.62
 
 _KIRJAIN_PERUS = {"ä": "a", "ö": "o", "å": "a", "Ä": "A", "Ö": "O", "Å": "A"}
@@ -143,10 +144,15 @@ def paneelin_rivit(h, s, kierre_paalla=True):
     kierre_lisa = ""
     if s["kierre"] is None and kierre_paalla:
         kierre_lisa = "mitataan" if h.kierto_tila in (None, "kaynnissa") else "ei saatu"
-    elif s["kierre"] is not None and s.get("kierto_varma") is False:
-        kierre_lisa = "epävarma"
-    elif s["kierre"] is not None and not s["kierre_mitattu"]:
-        kierre_lisa = "alustava"
+    elif s["kierre"] is not None:
+        kauko_kesken = h.kauko is None and h.saapuminen in (None, "haku", "loytyi") and h.kauko_kierto_tila != "valmis"            # kaukopaan mittaus tarkentaa viela
+        sg = f"±{_luku(s['kierre_sigma'], 1)}" if s.get("kierre_sigma") is not None else ""                                     # epavarmuus kierroksina (1 sigma)
+        if s.get("kierre_varma"):
+            kierre_lisa = sg                                                                                                  # varma
+        elif kauko_kesken or not s["kierre_mitattu"]:
+            kierre_lisa = "alustava"
+        else:
+            kierre_lisa = (sg + " epävarma").strip()
     rivit += [
         (f"Liuku: {_luku(s['liuku_cm'], 0, True)}cm", VARI_LIUKU, ""),
         (f"Heitto: {_luku(s['heitto_cm'], 0, True)}cm", VARI_IRROITUS, ""),
@@ -159,9 +165,32 @@ def paneelin_rivit(h, s, kierre_paalla=True):
     return rivit
 
 
+def _aika(s):
+    """Aika muodossa m:ss,d (suomalainen desimaalipilkku)."""
+    s = max(float(s), 0.0)
+    m = int(s // 60)
+    return f"{m}:{s - 60 * m:04.1f}".replace(".", ",")
+
+
+def kello_rivit(kt):
+    """Joukkueiden kellon rivit [(teksti, vari, lisateksti)] (netti_seuranta.Analyysi.kello_nyt): miettimisaika joukkueittain yhteensa (kayvalla joukkueella kulunut aika mukana) ja
+    heittokohtainen aika: kayva kello -> kuluva aika, muuten viimeisimman heiton aika. Kello kay, kun edellisen heiton kivet ovat pysahtyneet, ja pysahtyy kun heitto lahtee liikkeelle;
+    paan ensimmaiselle heitolle ei aikaa."""
+    rivit = [("Kello", VARI_VALKOINEN, f"{kt['kay'].capitalize()} käy" if kt["kay"] else "seis")]
+    for vari in ("keltainen", "punainen"):
+        rivit.append((f"{vari.capitalize()}: {_aika(kt['yht'].get(vari, 0.0))}", VARI_NIMI[vari], "käy" if kt["kay"] == vari else ""))
+    if kt["kay"] is not None:
+        rivit.append((f"Heitto: {_aika(kt['juokseva_s'])}", VARI_VALKOINEN, "kuluva aika"))
+    elif kt["viim"] is not None:
+        h = kt["viim"]
+        rivit.append((f"Heitto: {_aika(kt['viim_aika_s']) if kt['viim_aika_s'] is not None else '-'}", VARI_VALKOINEN, f"{h.vari.capitalize()} {h.kivi_nro if h.kivi_nro is not None else ''}".rstrip()))
+    return rivit
+
+
 class Piirtaja:
-    def __init__(self, geom, fps=30.0, jalki_s=10.0, viivat_s=60.0, piste_z=PISTE_Z, paneeli=True, viive_s=5.0):
+    def __init__(self, geom, fps=30.0, jalki_s=10.0, viivat_s=60.0, piste_z=PISTE_Z, paneeli=True, viive_s=5.0, kello=True):
         self.g = geom
+        self.kello = kello
         self.fps = float(fps)
         self.jalki_s = jalki_s
         self.viivat_s = viivat_s
@@ -170,6 +199,7 @@ class Piirtaja:
         self.viive_s = viive_s
         self._pisteet_vlk = {}                      # heiton tunnus -> (avain, F, uv, interp): siloteltu pistejono kuvapisteina (lasketaan kun aineisto muuttuu)
         self._paneeli_vlk = None                    # (avain, kuva, maski): valmiiksi piirretty paneeli
+        self._kello_vlk = None                      # sama kellon laatikolle
         self._viivat_vlk = None                     # (avain, dict): linjojen kuvapisteet
 
     # ---- pisteet heittopaassa ------------------------------------------------------------------------------------
@@ -281,11 +311,12 @@ class Piirtaja:
                 _teksti(img, sana, (x, y), 0.5, vari, 1)
 
     # ---- tietopaneeli -----------------------------------------------------------------------------------------------
-    def _paneeli_kuva(self, rivit):
-        """Paneeli valmiiksi piirrettyna (tausta + teksti) ja tekstin maski: (kuva, maski). Valimuisti: piirretaan uudelleen vain kun rivit muuttuvat."""
+    def _paneeli_kuva(self, rivit, vlk="_paneeli_vlk"):
+        """Paneeli valmiiksi piirrettyna (tausta + teksti) ja tekstin maski: (kuva, maski). Valimuisti (attribuutti vlk): piirretaan uudelleen vain kun rivit muuttuvat."""
         avain = tuple(rivit)
-        if self._paneeli_vlk is not None and self._paneeli_vlk[0] == avain:
-            return self._paneeli_vlk[1], self._paneeli_vlk[2]
+        v = getattr(self, vlk)
+        if v is not None and v[0] == avain:
+            return v[1], v[2]
         leveys = 330
         for i, (txt, vari, lisa) in enumerate(rivit):
             koko = PANEELI_OTSIKKO_KOKO if i == 0 else PANEELI_KOKO
@@ -302,13 +333,12 @@ class Piirtaja:
                 teksti_fi(kuva, lisa, (8 + w + 10, y), 0.42, VARI_HARMAA, 1)
                 teksti_fi(maski, lisa, (8 + w + 10, y), 0.42, 255, 1)
             y += RIVI_PX if i else RIVI_PX + 3
-        self._paneeli_vlk = (avain, kuva, maski > 0)
+        setattr(self, vlk, (avain, kuva, maski > 0))
         return kuva, maski > 0
 
-    def _paneeli(self, img, h, kierre_paalla=True):
-        rivit = paneelin_rivit(h, ns.heiton_suureet(h), kierre_paalla)
-        kuva, maski = self._paneeli_kuva([(t, v, l) for t, v, l in rivit])
-        x0, y0 = PANEELI_PAIKKA
+    @staticmethod
+    def _laatikko(img, kuva, maski, paikka):
+        x0, y0 = paikka
         hh, ww = kuva.shape[:2]
         roi = img[y0:y0 + hh, x0:x0 + ww]
         if roi.shape[:2] != (hh, ww):
@@ -316,12 +346,23 @@ class Piirtaja:
         cv2.addWeighted(kuva, 0.72, roi, 0.28, 0, roi)         # tausta puoliksi lapinakyva
         np.copyto(roi, kuva, where=maski[:, :, None])           # teksti taysin peittavana
 
+    def _paneeli(self, img, h, kierre_paalla=True):
+        rivit = paneelin_rivit(h, ns.heiton_suureet(h), kierre_paalla)
+        kuva, maski = self._paneeli_kuva([(t, v, l) for t, v, l in rivit])
+        self._laatikko(img, kuva, maski, PANEELI_PAIKKA)
+
+    def _kello(self, img, kt):
+        kuva, maski = self._paneeli_kuva(kello_rivit(kt), "_kello_vlk")
+        self._laatikko(img, kuva, maski, KELLO_PAIKKA)
+
     # ---- paasisaankaynti ----------------------------------------------------------------------------------------------
     def piirra(self, ruutu, f_out, an):
         """Piirtaa ruudun paalle (palauttaa saman ruudun). an: netti_seuranta.Analyysi (heitot-lista luetaan suoraan)."""
         jalki = int(self.jalki_s * self.fps)
         viivat_f = int(self.viivat_s * self.fps)
         voimassa = [h for h in list(an.heitot) if h.f_alku is not None and f_out >= h.f_alku]
+        if self.paneeli and self.kello and hasattr(an, "kello_nyt") and any(h.f_alku is not None for h in list(an.heitot)):
+            self._kello(ruutu, an.kello_nyt(f_out))
         if not voimassa:
             return ruutu
         # viivat: viimeisin heitto, jonka alku on ehtinyt (seuraava heitto korvaa edellisen); vanhenevat viivat_s:n kuluttua
