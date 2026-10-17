@@ -126,7 +126,7 @@ def vakiot(rivit, kivet):
 
 
 def kello(rivit):
-    print("JOUKKUEIDEN KELLO (miettimisaika: edellisen kiven pysahtymisesta oman kiven lahtoon; ei kay paiden valilla)")
+    print("JOUKKUEIDEN KELLO (miettimisaika: edellisen kiven pysahtymisesta siihen, kun oma kivi osuu heittopaan T-viivaan; ei kay paiden valilla)")
     aj = {}
     for r in rivit:
         a = _f(r["miettimisaika_s"])

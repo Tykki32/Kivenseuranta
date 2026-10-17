@@ -36,7 +36,8 @@ PANEELI_PAIKKA = (284, 6)                # ylapalkin vapaa alue (x, y): ei logoa
 PANEELI_KORKEUS_MAX = 184
 RIVI_PX = 21                             # paneelin riviväli
 PANEELI_KOKO = 0.56
-KELLO_PAIKKA = (284, 196)                # joukkueiden kellon laatikko: tietopaneelin alla (x, y)
+KELLO_Y = 278                            # joukkueiden kellon laatikko: kuvan oikea reuna, oikean minikartan (270 px) alla (vasen reuna kuvan leveydesta)
+KELLO_LEVEYS = 270                       # laatikon vahimmaisleveys (sama kuin minikartan: reunat samassa linjassa)
 PANEELI_OTSIKKO_KOKO = 0.62
 
 _KIRJAIN_PERUS = {"ä": "a", "ö": "o", "å": "a", "Ä": "A", "Ö": "O", "Å": "A"}
@@ -188,9 +189,10 @@ def kello_rivit(kt):
 
 
 class Piirtaja:
-    def __init__(self, geom, fps=30.0, jalki_s=10.0, viivat_s=60.0, piste_z=PISTE_Z, paneeli=True, viive_s=5.0, kello=True):
+    def __init__(self, geom, fps=30.0, jalki_s=10.0, viivat_s=60.0, piste_z=PISTE_Z, paneeli=True, viive_s=5.0, kello=True, kello_paikka=None):
         self.g = geom
         self.kello = kello
+        self.kello_paikka = kello_paikka            # (x, y) tai None: kuvan oikea reuna oikean minikartan alla
         self.fps = float(fps)
         self.jalki_s = jalki_s
         self.viivat_s = viivat_s
@@ -311,13 +313,13 @@ class Piirtaja:
                 _teksti(img, sana, (x, y), 0.5, vari, 1)
 
     # ---- tietopaneeli -----------------------------------------------------------------------------------------------
-    def _paneeli_kuva(self, rivit, vlk="_paneeli_vlk"):
+    def _paneeli_kuva(self, rivit, vlk="_paneeli_vlk", leveys_min=330):
         """Paneeli valmiiksi piirrettyna (tausta + teksti) ja tekstin maski: (kuva, maski). Valimuisti (attribuutti vlk): piirretaan uudelleen vain kun rivit muuttuvat."""
         avain = tuple(rivit)
         v = getattr(self, vlk)
         if v is not None and v[0] == avain:
             return v[1], v[2]
-        leveys = 330
+        leveys = leveys_min
         for i, (txt, vari, lisa) in enumerate(rivit):
             koko = PANEELI_OTSIKKO_KOKO if i == 0 else PANEELI_KOKO
             leveys = max(leveys, 8 + cv2.getTextSize(txt, FONTTI, koko, 2 if i == 0 else 1)[0][0] + (90 if lisa else 0) + 12)
@@ -352,8 +354,9 @@ class Piirtaja:
         self._laatikko(img, kuva, maski, PANEELI_PAIKKA)
 
     def _kello(self, img, kt):
-        kuva, maski = self._paneeli_kuva(kello_rivit(kt), "_kello_vlk")
-        self._laatikko(img, kuva, maski, KELLO_PAIKKA)
+        kuva, maski = self._paneeli_kuva(kello_rivit(kt), "_kello_vlk", KELLO_LEVEYS)
+        paikka = self.kello_paikka if self.kello_paikka is not None else (img.shape[1] - kuva.shape[1], KELLO_Y)          # oletus: oikea reuna
+        self._laatikko(img, kuva, maski, paikka)
 
     # ---- paasisaankaynti ----------------------------------------------------------------------------------------------
     def piirra(self, ruutu, f_out, an):
