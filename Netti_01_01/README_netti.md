@@ -67,6 +67,34 @@ Vanha asento on tallessa kalibrointitiedostoissa avaimella `vanha_asento`. Seura
 levy, ei soikio) ja nopeudet. Puolisko rajataan y = 190...1080 (hack ja heittäjä mukaan); TV-grafiikka jää rajauksen ulkopuolelle
 paitsi minikartan alareuna.
 
+### Heiluuko kamera? Kuvan siirtymä koko videolla (`tools/kameran_heilunta.py`)
+
+Epäilys: kamera heiluu välillä, jolloin kalibrointi (kiinteä homografia) antaisi sen hetken kuville vinon paikan. Mittaus koko videolla
+(`netti_yt.mp4`, 7625 s, kumpikin puolisko erikseen, 10 näytettä / s = 76 251 ruutua): puoliskon mediaanikuva (96 ruutua tasaisesti videon yli; ihmiset ja kivet
+poistuvat mediaanista) on referenssi, ja jokaisesta ruudusta mitataan 11-12 staattisen piirteen (talon renkaat ja tekstit, LeaseDeal-teksti, alareunan laita; 192 x 192 px)
+siirtymä referenssiin vaihekorrelaatiolla (`cv2.phaseCorrelate`, Hann-ikkuna, alipikselitarkkuus). Puoliskon siirtymä (dx, dy) on ikkunoiden mediaani, joten ikkunaan osuva ihminen
+tai kivi ei vaikuta. Työkalun tarkkuus tarkistettu tunnetuilla siirroilla (`--testi`: 0,3 ... 8 px, suurin virhe 0,12 px, etumerkki oikein).
+
+**Tulos: kamera ei heilu.** Vaste (vaihekorrelaation huippu, 1 = täysin sama kuva) on mediaanilta 1,00 / 0,96 eli ruudut täsmäävät referenssiin koko videon ajan:
+
+| | vasen | oikea |
+|---|---|---|
+| poikkeama referenssistä: tyypillinen (p50) / 99 % / 99,9 % / suurin | 0,11 / 0,36 / 0,48 / **0,61 px** | 0,10 / 0,35 / 0,45 / **0,65 px** |
+| ruutuja, joissa poikkeama > 1 px | **0** | **0** |
+| ruudun x- ja y-suunnan keskihajonta | 0,05 / 0,14 px | 0,05 / 0,12 px |
+| hidas ajelehtiminen (minuuttimediaanit, 2 h) | alle 0,25 px (dy noin +0,12 -> -0,18 px) | alle 0,25 px |
+
+Kuva pysyy siis koko kahden tunnin ajan 0,1 px:n tarkkuudella paikallaan, eikä siirtymiä (askelta, tärähdystä, hidasta kulkua) ole yli 1 px. 30 r/s:n tarkistus pahimmalla jaksolla (6930-6950 s)
+antaa saman: suurin poikkeama 0,5-0,6 px; mukana on pieni y-suuntainen värinä (±0,3 px, 1-6 Hz), jonka syy on joko kameran hienoinen värähtely tai videon pakkaus. Kamera on 5,2 m korkeudessa radan keskellä, joten mittakaava on hackin
+kohdalla 0,67 cm/px (poikittain) ja 2,7 cm/px (radan suuntaan), pesän kohdalla 0,57 / 1,96 cm/px ja hog-viivalla 0,38 / 0,85 cm/px: suurinkin mitattu siirtymä (0,65 px) on enintään noin 1,8 cm
+(radan suunnassa hackin kohdalla), tyypillinen 0,1 px alle 0,3 cm, eli selvästi pienempi kuin kuvakohtainen mittakohina (0,1-0,3 cm) ja radan sovituksen virhe. Siksi **ruutuja ei vakauteta**
+(ei korjausta tarvita). Mittauksen voi toistaa millä tahansa videolla: `python tools/kameran_heilunta.py video.mp4 --ulos heilunta.npz` (koko 2 h video noin 12 min kolmella prosessilla;
+`--alku/--loppu` ja `--vali 1` tarkistavat yksittäisen kohdan joka ruudulta) ja päätelmä (`VAKAA` / `HEILUU`) tulostuu puolisko kerrallaan; jos jokin toinen video heiluisi, siirtymä (dx, dy) pitäisi
+vähentää kuvapisteistä ennen `Puoli.kuva_maahan` ja lisätä `Puoli.maa_kuvaan`:n tulokseen.
+
+Huom. `cv2.phaseCorrelate` kertoo ikkunafunktion syöttökuviin PAIKALLAAN (kun ikkunan koko on DFT:lle optimaalinen, esim. 192): ikkunat on annettava kopioina, muuten referenssikuva
+muuttuu joka kutsulla (vaste putoaa nopeasti ja mittaus näyttäisi ruudun "liikkuvan" jopa 4 px/40 s, vaikka kuva on paikallaan).
+
 ## Kiven tunnistus ja mittaus (`kivi_netti.py`, `aja_kivi.py`, `piirra_radat.py`)
 
 `python aja_kivi.py Recording.mp4 --puoli vasen --ulos tulokset --ikkunat 8-22,56-66,104-114` ->
