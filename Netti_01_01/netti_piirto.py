@@ -36,8 +36,8 @@ PANEELI_PAIKKA = (284, 6)                # ylapalkin vapaa alue (x, y): ei logoa
 PANEELI_KORKEUS_MAX = 184
 RIVI_PX = 21                             # paneelin riviväli
 PANEELI_KOKO = 0.56
-KELLO_Y = 278                            # joukkueiden kellon laatikko: kuvan oikea reuna, oikean minikartan (270 px) alla (vasen reuna kuvan leveydesta)
-KELLO_LEVEYS = 270                       # laatikon vahimmaisleveys (sama kuin minikartan: reunat samassa linjassa)
+KELLO_Y = 200                            # joukkueiden kellon laatikko: kuvan keskella mainosgrafiikan (LeaseDeal / Hyvinkaan Liikenne, alareuna y ~ 193) alla (vaakasuunnassa keskitetty)
+KELLO_LEVEYS = 270                       # laatikon vahimmaisleveys
 PANEELI_OTSIKKO_KOKO = 0.62
 
 _KIRJAIN_PERUS = {"ä": "a", "ö": "o", "å": "a", "Ä": "A", "Ö": "O", "Å": "A"}
@@ -192,7 +192,7 @@ class Piirtaja:
     def __init__(self, geom, fps=30.0, jalki_s=10.0, viivat_s=60.0, piste_z=PISTE_Z, paneeli=True, viive_s=5.0, kello=True, kello_paikka=None):
         self.g = geom
         self.kello = kello
-        self.kello_paikka = kello_paikka            # (x, y) tai None: kuvan oikea reuna oikean minikartan alla
+        self.kello_paikka = kello_paikka            # (x, y) tai None: kuvan keskella mainosgrafiikan alla
         self.fps = float(fps)
         self.jalki_s = jalki_s
         self.viivat_s = viivat_s
@@ -355,7 +355,7 @@ class Piirtaja:
 
     def _kello(self, img, kt):
         kuva, maski = self._paneeli_kuva(kello_rivit(kt), "_kello_vlk", KELLO_LEVEYS)
-        paikka = self.kello_paikka if self.kello_paikka is not None else (img.shape[1] - kuva.shape[1], KELLO_Y)          # oletus: oikea reuna
+        paikka = self.kello_paikka if self.kello_paikka is not None else ((img.shape[1] - kuva.shape[1]) // 2, KELLO_Y)          # oletus: keskella mainosgrafiikan alla
         self._laatikko(img, kuva, maski, paikka)
 
     # ---- paasisaankaynti ----------------------------------------------------------------------------------------------

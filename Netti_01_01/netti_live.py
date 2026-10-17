@@ -954,7 +954,7 @@ def main():
     ap.add_argument("--ei-csv", action="store_true", help="ei CSV-tallennusta")
     ap.add_argument("--radat", help="tallenna heittojen radat ja mittaukset (pickle) jalkianalyysia varten, esim. kiven vakioiden uudelleensovitus ilman koko videon analyysia (kehitys)")
     ap.add_argument("--ei-kelloa", action="store_true", help="ei joukkueiden kelloa (miettimisaika) kuvassa")
-    ap.add_argument("--kello-paikka", help="kellon laatikon vasen ylakulma kuvassa X,Y (pikselia); oletus: kuvan oikea reuna oikean minikartan alla")
+    ap.add_argument("--kello-paikka", help="kellon laatikon vasen ylakulma kuvassa X,Y (pikselia); oletus: kuvan keskella mainosgrafiikan (Hyvinkaan Liikenne) alla")
     ap.add_argument("--ei-ikkunaa", action="store_true", help="ei ikkunaa (palvelin / testaus)")
     ap.add_argument("--ei-kierretta", action="store_true", help="ei kierteen eika hog-hog-ajan mittausta")
     ap.add_argument("--nopea", action="store_true", help="simulaatio: tiedosto ajetaan niin nopeasti kuin ehtii (tulos ei riipu ajoituksesta)")
