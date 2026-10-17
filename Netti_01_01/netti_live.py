@@ -1,23 +1,32 @@
 """Reaaliaikainen kivenseuranta: kuva tulostuu VIIVE_S sekuntia analyysin perassa, ilman top-down-muunnosta.
 
-    python netti_live.py --youtube hnTTLqHr5x8                     # YouTube (yt_dlp + OpenCV, kuten oma testikoodi), ikkuna + 'q' lopettaa
+    python netti_live.py --youtube hnTTLqHr5x8                     # YouTube (yt_dlp + OpenCV, kuten oma testikoodi), ikkuna taydella resoluutiolla, 'q' lopettaa
     python netti_live.py --youtube hnTTLqHr5x8 --ulos              # sama + tallennus tiedostoon kivenseuranta_<paivays>_<aika>.mp4 (tai --ulos oma.mp4)
-    python netti_live.py --lahde netti.mp4                         # tiedosto reaaliaikana (nopeus kuten live-lahteessa)
+    python netti_live.py --lahde netti.mp4                         # tiedosto reaaliajassa (nopeus kuten live-lahteessa)
     python netti_live.py --lahde netti.mp4 --nopea --ulos ulos.mp4 --ei-ikkunaa     # simulaatio: ajetaan niin nopeasti kuin ehtii, tulos kirjoitetaan tiedostoon
 
 Toiminta (kaikissa tiloissa sama):
   * Jokainen saapuva ruutu analysoidaan heti (netti_seuranta.Analyysi): kopioruudut pois, kiven tunnistus hackista, kahvan vari + tarkka siluettisovitus
-    kiven ymparilla, heiton tunnistus ja liun ja irroituksen viivaestimaatti, joka tarkentuu koko ajan.
+    kiven ymparilla, heiton tunnistus ja liun ja irroituksen viivaestimaatti, joka tarkentuu koko ajan; heiton jalkeen kiven kierre (netti_kierre) ja hog-hog-aika
+    videon puoliskoista (kierrosmaara).
   * Tulostettava kuva on analyysia VIIVE_S (oletus 5 s) jäljessa (puskuri). Kun kivi alkaa liikkua tulosteessa, analyysi on jo nahnyt seuraavat
     VIIVE_S sekuntia: toisen paan (kaukopaa) kuvaan piirtyy heti liukulinja ja irroituslinja, ja heittopaassa kiven keskikohta piirtyy pisteina
-    (live: piste tulee kun sen ruutu nayttyy), pistejoukko jaa nakyviin JALKI_S (10 s) heiton jalkeen.
+    (live: piste tulee kun sen ruutu nayttyy), pistejoukko jaa nakyviin JALKI_S (10 s) heiton jalkeen. Tietopaneeli: kivi (vari + numero), liuku, heitto, irroitus,
+    kierre, irroituksen etaisyys hog-viivaan, nopeudet ja hidastuvuus.
   * Ruudut sailyvat alkuperaisen nakoisina (1920 x 1080), piirrokset heijastetaan kamerageometrialla (netti_geom.py).
+  * Saikeistys: lukija + analyysi (saie 1), piirto (saie 2: JPEG-purku rinnakkain, piirrokset), tallennus (saie 3: ffmpeg-putki tai OpenCV) ja ikkuna (paasaie) toimivat
+    toisistaan riippumatta: hidas ikkuna tai levy ei hidasta analyysia eika piirtoa, eika tallenteesta puutu ruutuja; ikkunassa nakyy aina tuorein ruutu.
 """
 import argparse
 import collections
+import concurrent.futures
 import csv
 import os
+import queue
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -121,102 +130,384 @@ class Lahde:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# ULOSTULO
+# ULOSTULO: ikkuna (paasaie) ja tallennus (oma saie)
 # ---------------------------------------------------------------------------------------------------------------------
-class Ulos:
-    """Ikkuna ja / tai tiedosto. Tiedosto kirjoitetaan oletuksena mp4v-koodekilla (toimii kaikkialla; iso tiedosto); H.264:ksi: ffmpeg -i ulos.mp4 -c:v libx264 -crf 23 valmis.mp4.
-    Ikkuna: 'q' tai ESC lopettaa, myos ikkunan sulkeminen lopettaa; tiedosto viimeistellaan lopetettaessa (kirjoitusta ei pidä katkaista pakolla)."""
+def _nayton_koko():
+    """Paanayton koko pikseleina (leveys, korkeus) tai None. Windowsissa fyysiset pikselit (DPI-tietoisena), muualla tkinterilla jos saatavilla."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        return int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1))
+    except Exception:
+        pass
+    try:
+        import tkinter
+        r = tkinter.Tk()
+        r.withdraw()
+        koko = (int(r.winfo_screenwidth()), int(r.winfo_screenheight()))
+        r.destroy()
+        return koko
+    except Exception:
+        return None
 
-    def __init__(self, polku=None, ikkuna=True, fps=30.0, leveys_ikkuna=1280, koodekki="mp4v"):
-        self.ikkuna = ikkuna
-        self.nimi = "Kivenseuranta (kuva viiveella)"
-        self.polku = polku
-        self.n = 0
+
+def _dpi_tietoinen():
+    """Windows: ilman tata skaalattu nayttö (esim. 125 %) pienentaisi ikkunan kuvaa; DPI-tietoisena ikkunan koko on fyysisina pikseleina."""
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+class Naytto:
+    """Ikkuna. OpenCV:n GUI-kutsut (imshow, waitKey) vain siita saikeesta, joka luo ikkunan (paasaie): paasilmukka() nayttaa tuoreimman annetun kuvan (anna() mista tahansa
+    saikeesta; hitaalla koneella ikkuna ohittaa ruutuja, tallenne ei). Nappaimet: 'q' / ESC lopettaa, 'f' vaihtaa kokoruudun; ikkunan sulkeminen lopettaa.
+    tila: 'auto' (kokoruutu jos naytto ei ole ruutua suurempi: kuva 1:1), 'ikkuna' (leveys px; 0 = ruudun koko 1920 x 1080) tai 'kokoruutu'."""
+    NIMI = "Kivenseuranta (kuva viiveella)"
+
+    def __init__(self, tila="auto", leveys=0):
+        _dpi_tietoinen()
+        koko = _nayton_koko()
+        kokoruutu = tila == "kokoruutu" or (tila == "auto" and not leveys and koko is not None and koko[0] <= RUUTU_W and koko[1] <= RUUTU_H)
+        self.kokoruutu = False
+        self.leveys = int(leveys) if leveys else RUUTU_W
+        self.koko = koko
+        self._lukko = threading.Lock()
+        self._kuva = None
+        self._uusi = threading.Event()
         self._nahty = 0                                  # ikkunaan piirrettyjen kuvien maara (sulkemisen tunnistus vasta kun ikkuna on ehtinyt aueta)
-        if ikkuna:
-            cv2.namedWindow(self.nimi, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(self.nimi, leveys_ikkuna, int(leveys_ikkuna * 9 / 16))
-        self.vw = None
-        if polku:
-            kansio = os.path.dirname(os.path.abspath(polku))
-            os.makedirs(kansio, exist_ok=True)
-            self.vw = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*koodekki), fps, (RUUTU_W, RUUTU_H))
-            if not self.vw.isOpened():
-                raise SystemExit(f"Tiedostoa {polku} ei voitu avata kirjoitettavaksi (koodekki {koodekki}); kokeile --koodekki mp4v tai toista tiedostonimi / kansio")
+        self.n_nayt = 0                                  # nayttetyt ruudut (ruutuja voi jaada nayttamatta, jos kone ei ehdi)
+        try:
+            cv2.namedWindow(self.NIMI, cv2.WINDOW_NORMAL)
+        except cv2.error as e:
+            raise SystemExit(f"Ikkunaa ei voitu avata ({e}). Onko OpenCV ilman ikkunatukea (opencv-python-headless)? Asenna 'pip install opencv-python' tai kayta --ei-ikkunaa.")
+        self._ikkuna_koko()
+        if kokoruutu:
+            self._aseta_kokoruutu(True)
 
-    def nayta_ilmoitus(self, kuva):
-        """Ikkunaan kuva ilman tiedostoon kirjoitusta (puskurointi-ilmoitus)."""
-        if self.ikkuna:
-            cv2.imshow(self.nimi, kuva)
-            self._nahty += 1
+    def _ikkuna_koko(self):
+        w = self.leveys
+        if self.koko is not None:                        # ei yli naytön: ikkuna skaalautuu
+            w = min(w, max(320, self.koko[0] - 16))
+        cv2.resizeWindow(self.NIMI, int(w), int(round(w * RUUTU_H / RUUTU_W)))
 
-    def lopetus_pyydetty(self, odotus_ms=1):
-        """Nappainpaine ('q' / ESC) tai ikkunan sulkeminen."""
-        if not self.ikkuna:
+    def _aseta_kokoruutu(self, paalle):
+        try:
+            cv2.setWindowProperty(self.NIMI, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN if paalle else cv2.WINDOW_NORMAL)
+            self.kokoruutu = paalle
+            if not paalle:
+                self._ikkuna_koko()
+        except cv2.error:
+            pass
+
+    def anna(self, kuva):
+        """Seuraava naytettava kuva (mista tahansa saikeesta); edellinen nayttamaton kuva korvautuu."""
+        with self._lukko:
+            self._kuva = kuva
+        self._uusi.set()
+
+    def _ota(self):
+        with self._lukko:
+            k, self._kuva = self._kuva, None
+        return k
+
+    def _sulkeutunut(self):
+        if self._nahty < 2:
             return False
-        avain = cv2.waitKey(odotus_ms) & 0xFF
-        if avain in (ord("q"), 27):
-            return True
-        if self._nahty >= 2:
-            try:
-                return cv2.getWindowProperty(self.nimi, cv2.WND_PROP_VISIBLE) < 1       # suljettu ikkuna: 0 tai -1
-            except cv2.error:
-                return True                                                             # ikkunaa ei ole enaa
-        return False
+        try:
+            return cv2.getWindowProperty(self.NIMI, cv2.WND_PROP_VISIBLE) < 1       # suljettu ikkuna: 0 tai -1
+        except cv2.error:
+            return True                                                             # ikkunaa ei ole enaa
 
-    def nayta(self, kuva):
-        """Kuva ikkunaan ja tiedostoon; palauttaa True, jos lopetus on pyydetty."""
-        if self.vw is not None:
-            self.vw.write(kuva)
-        self.n += 1
-        if self.ikkuna:
-            cv2.imshow(self.nimi, kuva)
-            self._nahty += 1
-            return self.lopetus_pyydetty(1)
-        return False
+    def _nappain(self, odotus_ms=1):
+        """Nappaimen kasittely; palauttaa True jos lopetus on pyydetty."""
+        avain = cv2.waitKey(odotus_ms) & 0xFF
+        if avain in (ord("q"), ord("Q"), 27):
+            return True
+        if avain in (ord("f"), ord("F")):
+            self._aseta_kokoruutu(not self.kokoruutu)
+        return self._sulkeutunut()
+
+    def nayta_heti(self, kuva):
+        """Synkroninen: kuva ikkunaan heti (simulaatio, yksi saie); palauttaa True jos lopetus on pyydetty."""
+        cv2.imshow(self.NIMI, kuva)
+        self._nahty += 1
+        self.n_nayt += 1
+        return self._nappain(1)
+
+    def paasilmukka(self, lopeta, valmis, ilmoitus=None):
+        """Paasaie: nayttaa annetut kuvat ja kuuntelee nappaimia, kunnes lopeta (Event) asetetaan, kayttaja lopettaa tai valmis() on tosi ja kuvat on nahty.
+        ilmoitus(): kuva (tai None), jota nautetaan kunnes ensimmainen oikea kuva tulee (puskurointi-ilmoitus)."""
+        viim_ilm = 0.0
+        while not lopeta.is_set():
+            self._uusi.wait(0.005)
+            self._uusi.clear()
+            kuva = self._ota()
+            if kuva is not None:
+                cv2.imshow(self.NIMI, kuva)
+                self._nahty += 1
+                self.n_nayt += 1
+            elif self.n_nayt == 0 and ilmoitus is not None and time.time() - viim_ilm > 0.25:
+                ilm = ilmoitus()
+                if ilm is not None:
+                    cv2.imshow(self.NIMI, ilm)
+                    self._nahty += 1
+                viim_ilm = time.time()
+            if self._nappain(1):
+                lopeta.set()
+                break
+            if valmis() and self._kuva is None:
+                break
 
     def sulje(self):
-        if self.vw is not None:
-            self.vw.release()
-        if self.ikkuna:
+        try:
             cv2.destroyAllWindows()
+        except cv2.error:
+            pass
+
+
+def _etsi_ffmpeg(polku=None):
+    """ffmpeg-ohjelma: annettu polku, PATH tai imageio-ffmpeg-paketin mukana tuleva (pip install imageio-ffmpeg); None jos ei loydy."""
+    if polku:
+        return polku if shutil.which(polku) or os.path.exists(polku) else None
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def _ffmpeg_koodaimet(exe):
+    try:
+        r = subprocess.run([exe, "-hide_banner", "-encoders"], capture_output=True, timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return r.stdout.decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+# laitteistokooderit (naytonohjain tekee pakkauksen: prosessori lahes vapaa); jokainen kokeillaan ennen kayttoa, koska laitteisto ja ffmpeg-versio vaihtelevat
+LAITTEISTOKOODERIT = [
+    ("h264_nvenc", ["-c:v", "h264_nvenc", "-preset", "p3", "-rc", "vbr", "-cq", "24", "-b:v", "0"]),
+    ("h264_qsv", ["-c:v", "h264_qsv", "-global_quality", "24", "-preset", "veryfast"]),
+    ("h264_amf", ["-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "22", "-qp_p", "24"]),
+    ("h264_videotoolbox", ["-c:v", "h264_videotoolbox", "-q:v", "60"]),
+]
+
+
+def _kokeile_kooderi(exe, args):
+    """Toimiiko kooderi taalla: lyhyt testikoodaus nollaan (ffmpeg paattyy virhekoodilla 0)."""
+    cmd = [exe, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=black:s={RUUTU_W}x{RUUTU_H}:r=30", "-frames:v", "6", *args, "-pix_fmt", "yuv420p", "-f", "null", "-"]
+    try:
+        return subprocess.run(cmd, capture_output=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode == 0
+    except Exception:
+        return False
+
+
+def valitse_kooderi(exe, pyynto="auto", preset="superfast"):
+    """(nimi, ffmpeg-argumentit): pyynto 'auto' = laitteistokooderi jos toimii, muuten libx264 (preset), muuten mpeg4; 'cpu' / 'h264' = libx264; 'gpu' = vain laitteisto."""
+    koodaimet = _ffmpeg_koodaimet(exe)
+    if pyynto in ("auto", "gpu"):
+        for nimi, args in LAITTEISTOKOODERIT:
+            if nimi in koodaimet and _kokeile_kooderi(exe, args):
+                return nimi, args
+        if pyynto == "gpu":
+            print("Huom: laitteistokooderia ei loytynyt tai se ei toimi; kaytetaan prosessorikoodausta.", file=sys.stderr)
+    if "libx264" in koodaimet or not koodaimet:
+        return f"libx264, {preset}", ["-c:v", "libx264", "-preset", preset, "-crf", "20", "-threads", "2"]
+    return "mpeg4", ["-c:v", "mpeg4", "-q:v", "3"]
+
+
+class _FfmpegTiedosto:
+    """Tallennus ffmpeg-putkeen (raaka BGR stdin -> H.264 mp4): koodaus on erillisessa prosessissa, ei kuormita Pythonin saikeita, ja tiedosto valmistuu vaikka Python kaatuisi."""
+
+    def __init__(self, exe, polku, fps, kooderi):
+        nimi, koodaus = kooderi
+        self.loki = tempfile.TemporaryFile()
+        cmd = [exe, "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{RUUTU_W}x{RUUTU_H}", "-r", f"{fps:.4f}", "-i", "-",
+               "-an", *koodaus, "-pix_fmt", "yuv420p", "-movflags", "+faststart", polku]
+        lisa = {}
+        if os.name == "nt":                               # koodaus ei saa viedda prosessoria analyysilta: alempi prioriteetti
+            lisa = dict(creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | 0x00004000)       # BELOW_NORMAL_PRIORITY_CLASS
+        elif shutil.which("nice"):                        # (preexec_fn ei ole turvallinen monisaikeisessa prosessissa)
+            cmd = ["nice", "-n", "5"] + cmd
+        self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=self.loki, **lisa)
+        self.nimi = f"ffmpeg ({nimi})"
+
+    def kirjoita(self, kuva):
+        self.p.stdin.write(kuva.data)
+
+    def sulje(self):
+        try:
+            self.p.stdin.close()
+        except Exception:
+            pass
+        rc = self.p.wait()
+        if rc != 0:
+            self.loki.seek(0)
+            raise RuntimeError(f"ffmpeg paattyi virhekoodiin {rc}: {self.loki.read().decode('utf-8', 'replace')[-500:]}")
+        self.loki.close()
+
+
+class _CvTiedosto:
+    def __init__(self, polku, fps, koodekki):
+        self.vw = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*koodekki), fps, (RUUTU_W, RUUTU_H))
+        if not self.vw.isOpened():
+            raise SystemExit(f"Tiedostoa {polku} ei voitu avata kirjoitettavaksi (koodekki {koodekki}); kokeile --koodekki mp4v tai toista tiedostonimi / kansio")
+        self.nimi = f"OpenCV ({koodekki})"
+
+    def kirjoita(self, kuva):
+        self.vw.write(kuva)
+
+    def sulje(self):
+        self.vw.release()
+
+
+class Kirjoittaja:
+    """Tallennus tiedostoon omassa saikeessa (jono: tallenteesta ei puutu ruutuja, vaikka ikkuna tai analyysi hidastelisi; taynna oleva jono hidastaa piirtoa). koodekki:
+    'auto' = ffmpeg (PATH tai imageio-ffmpeg): laitteistokooderi (NVENC / QSV / AMF, kokeillaan ensin) tai H.264 prosessorilla, muuten OpenCV mp4v; 'cpu' / 'h264' = vain
+    libx264; 'gpu' = laitteistokooderi (muuten libx264); muu = OpenCV:n fourcc (mp4v, avc1, MJPG ...)."""
+
+    def __init__(self, polku, fps=30.0, koodekki="auto", ffmpeg=None, preset="superfast"):
+        self.polku = polku
+        self.n = 0
+        self.virhe = None
+        kansio = os.path.dirname(os.path.abspath(polku))
+        os.makedirs(kansio, exist_ok=True)
+        k = (koodekki or "auto").lower()
+        ffmpeg_tila = k in ("auto", "gpu", "cpu", "h264", "x264", "libx264")
+        exe = _etsi_ffmpeg(ffmpeg) if ffmpeg_tila else None
+        if exe is not None:
+            self.taustaosa = _FfmpegTiedosto(exe, polku, fps, valitse_kooderi(exe, "auto" if k in ("auto",) else ("gpu" if k == "gpu" else "cpu"), preset))
+        else:
+            if ffmpeg_tila:
+                print("Huom: ffmpegia ei loytynyt, tallennus OpenCV:n mp4v-koodekilla (iso tiedosto, hitaampi). Vinkki: pip install imageio-ffmpeg (tai asenna ffmpeg) -> H.264, "
+                      "pieni tiedosto ja laitteistokoodaus.", file=sys.stderr)
+            self.taustaosa = _CvTiedosto(polku, fps, "mp4v" if ffmpeg_tila else koodekki)
+        self.nimi = self.taustaosa.nimi
+        self.q = queue.Queue(maxsize=30)
+        self.t = threading.Thread(target=self._silmukka, name="tallennus", daemon=True)
+        self.t.start()
+
+    def _silmukka(self):
+        while True:
+            kuva = self.q.get()
+            if kuva is None:
+                return
+            if self.virhe is not None:
+                continue                                  # virheen jalkeen jono vain tyhjennetaan (tuottaja ei jaa jumiin)
+            try:
+                self.taustaosa.kirjoita(kuva)
+                self.n += 1
+            except Exception as e:
+                self.virhe = e
+
+    def kirjoita(self, kuva):
+        self.q.put(kuva)
+
+    def jonossa(self):
+        return self.q.qsize()
+
+    def sulje(self):
+        self.q.put(None)
+        self.t.join()
+        try:
+            self.taustaosa.sulje()
+        except Exception as e:
+            if self.virhe is None:
+                self.virhe = e
+        if self.virhe is not None:
+            print(f"Tallennusvirhe ({self.nimi}): {self.virhe}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# KIRJAUS
+# ---------------------------------------------------------------------------------------------------------------------
+def _pilkku(x, des=2, merkki=False):
+    if x is None:
+        return ""
+    s = f"{x:+.{des}f}" if merkki else f"{x:.{des}f}"
+    return s.replace(".", ",")
 
 
 class Kirjaaja:
-    """Tulosten kirjaus konsoliin ja CSV:hen valmistuneista heitoista."""
+    """Tulosten kirjaus konsoliin ja CSV:hen: heiton vahvistus, viivaestimaatti (liuku, heitto, irroitus, nopeudet), kierre (kierrokset hog-hog-valilla)."""
 
-    OTSIKKO = ["heitto", "vari", "puoli", "alku_s", "loppu_s", "irroitus_Y_cm", "irroituksen_suunta_deg", "irroituksen_suunta_virhe_deg", "liun_suunta_deg",
-               "nopeus_ennen_m_s", "nopeus_jalkeen_m_s", "liun_hidastuvuus_m_s2", "T_liuku_cm", "T_irroitus_cm", "vakaa"]
+    OTSIKKO = ["heitto", "vari", "kivi_nro", "puoli", "alku_s", "loppu_s", "irroitus_Y_cm", "irroituksen_suunta_deg", "irroituksen_suunta_virhe_deg", "liun_suunta_deg",
+               "liuku_T_cm", "heitto_T_cm", "irroitus_delta_cm", "kierre", "kierre_mitattu", "omega_deg_s", "hog_hog_s", "irroitus_ennen_hogia_m",
+               "nopeus_ennen_m_s", "nopeus_jalkeen_m_s", "hidastuvuus_m_s2", "liun_hidastuvuus_m_s2", "vakaa"]
 
     def __init__(self, csv_polku=None, hiljaa=False, fps=30.0):
         self.csv_polku, self.hiljaa, self.fps = csv_polku, hiljaa, fps
         self.ilmoitettu = set()
         self.valmis = set()
+        self.kierre_ilm = set()
+        self.muuttunut = False
         if csv_polku:
-            with open(csv_polku, "w", newline="") as f:
-                csv.writer(f).writerow(self.OTSIKKO)
+            self._kirjoita_csv(None)
 
-    def paivita(self, an):
-        for h in an.heitot:
+    @staticmethod
+    def nimi(h):
+        return f"{h.vari.capitalize()} {h.kivi_nro}" if h.kivi_nro is not None else h.vari
+
+    def _tulosta(self, teksti):
+        if not self.hiljaa:
+            print(teksti, flush=True)
+
+    def paivita(self, an, lopuksi=False):
+        """Kutsutaan analyysisaikeesta: ilmoittaa uudet vahvistukset ja valmistuneet tulokset. lopuksi: ajon loppu, ilmoita myos keskenerat."""
+        for h in list(an.heitot):
+            n = list(an.heitot).index(h) + 1
             if h.tunnus not in self.ilmoitettu:
                 self.ilmoitettu.add(h.tunnus)
-                if not self.hiljaa:
-                    print(f"[{h.f_vahvistus / self.fps:7.1f} s] heitto {len(self.ilmoitettu)} ({h.vari}, {h.puoli}) vahvistettu, lahto {h.f_alku / self.fps:.1f} s", flush=True)
-            if h.tila == "valmis" and h.tunnus not in self.valmis and h.viivat is not None and getattr(h, "lopullinen", False) and not an.est_tyot:
+                self._tulosta(f"[{h.f_vahvistus / self.fps:7.1f} s] heitto {n}: {self.nimi(h)} ({h.puoli}) vahvistettu, lahto {h.f_alku / self.fps:.1f} s")
+            if h.tila == "valmis" and h.tunnus not in self.valmis and (h.viivat_lopullinen or (lopuksi and h.lopullinen)):
                 self.valmis.add(h.tunnus)
-                v = h.viivat
-                L = ng.ETAISYYS_CM
-                XT_l, XT_i = v["liuku_a"] + v["liuku_b"] * L, v["irr_X"] + np.tan(np.radians(v["irr_suunta_deg"])) * (L - v["irr_Y"])
-                n = list(an.heitot).index(h) + 1
-                if not self.hiljaa:
-                    print(f"          heitto {n} valmis: irroitus Y={v['irr_Y']:.0f} cm, suunta {v['irr_suunta_deg']:+.2f} +-{v['irr_virhe_deg']:.2f} deg, liuku {v['liuku_suunta_deg']:+.2f} deg, "
-                          f"nopeus {v['nopeus_ennen']:.2f} -> {v['nopeus_jalkeen']:.2f} m/s, liun hidastuvuus {v['liuku_hidastuvuus']:+.3f} m/s2; kaukopaan T-viiva: liuku {XT_l:+.0f}, irroitus {XT_i:+.0f} cm", flush=True)
-                if self.csv_polku:
-                    with open(self.csv_polku, "a", newline="") as f:
-                        csv.writer(f).writerow([n, h.vari, h.puoli, f"{h.f_alku / self.fps:.2f}", f"{h.f_loppu / self.fps:.2f}", f"{v['irr_Y']:.1f}", f"{v['irr_suunta_deg']:.3f}",
-                                                f"{v['irr_virhe_deg']:.3f}", f"{v['liuku_suunta_deg']:.3f}", f"{v['nopeus_ennen']:.3f}", f"{v['nopeus_jalkeen']:.3f}",
-                                                f"{v['liuku_hidastuvuus']:.3f}", f"{XT_l:.1f}", f"{XT_i:.1f}", int(bool(v.get('vakaa')))])
+                self.muuttunut = True
+                s = ns.heiton_suureet(h)
+                if s is None:
+                    self._tulosta(f"          heitto {n} valmis: ei viivaestimaattia (kelvollisia B-mittauksia {len(h.kelvolliset_b())}, rata ei yltanyt irroitukseen tai mittauksia liian vahan)")
+                else:
+                    v = h.viivat
+                    self._tulosta(f"          heitto {n} valmis: irroitus Y={v['irr_Y']:.0f} cm, suunta {v['irr_suunta_deg']:+.2f} +-{v['irr_virhe_deg']:.2f} deg, liuku {v['liuku_suunta_deg']:+.2f} deg, "
+                                  f"nopeus {s['v_ennen']:.2f} -> {s['v_jalkeen']:.2f} m/s, hidastuvuus {s['hidastuvuus']:+.3f} m/s2 (liuku {v['liuku_hidastuvuus']:+.3f}); "
+                                  f"kaukopaan T-viiva: liuku {s['liuku_cm']:+.0f}, irroitus {s['heitto_cm']:+.0f} cm; irroitus ennen hogia {s['irr_hog_m']:.2f} m")
+            if h.tunnus in self.valmis and h.tunnus not in self.kierre_ilm and self._kierre_valmis(an, h, n, lopuksi):
+                self.kierre_ilm.add(h.tunnus)
+                self.muuttunut = True
+        if self.muuttunut and self.csv_polku:
+            self._kirjoita_csv(an)
+            self.muuttunut = False
 
+    def _kierre_valmis(self, an, h, n, lopuksi):
+        """Kierteen tulostus, kun se on lopullinen (hog-hog-aika mitattu tai kaukopaan haku paattynyt); True kun asia on hoidettu."""
+        if not an.laske_kierre or h.viivat is None:
+            return True
+        if h.kierto_tila == "virhe":
+            self._tulosta(f"          heitto {n} kierre: ei saatu ({(h.kierto or {}).get('virhe', '?')})")
+            return True
+        if h.kierto_tila != "valmis":
+            if lopuksi:
+                self._tulosta(f"          heitto {n} kierre: ei mitattu")
+                return True
+            return False
+        paattynyt = h.hog2_f is not None or h.saapuminen in ("ei_loytynyt", None) or h.hog1_f is None
+        if not paattynyt and not lopuksi:
+            return False
+        s = ns.heiton_suureet(h)
+        k = h.kierto
+        suunta = "vastapaivaan" if s["merkki"] > 0 else ("myotapaivaan" if s["merkki"] < 0 else "suunta ?")
+        if s["kierre"] is None:
+            self._tulosta(f"          heitto {n} kierre: omega {k['omega_deg_s']:+.0f} deg/s ({suunta}), hog-hog-aikaa ei saatu")
+        else:
+            lahde = "mitattu videosta" if s["kierre_mitattu"] else "arvioitu mallilla (kaukopaan hog-ylitysta ei loytynyt)"
+            self._tulosta(f"          heitto {n} kierre: omega {k['omega_deg_s']:+.0f} deg/s ({suunta}, ruutuja {k['ruutuja']}, {'varma' if k.get('varma') else 'epavarma'}), "
+                          f"hog-hog {s['T_hh']:.1f} s ({lahde}) -> {_pilkku(s['kierre'], 1, True)} kierrosta (- = vastapaivaan); "
+                          f"irroitus (heitto - liuku) {_pilkku(s['irroitus_cm'], 0, True)} cm")
+        return True
 
     def historia(self, an):
         """Estimaattien kehitys heitoittain (analyysiaika lahdosta, irroitus, suunta, T-viivan osumat): nayttaa miten alustava arvio tarkentuu."""
@@ -227,24 +518,41 @@ class Kirjaaja:
             for f, Y, th, XT_i, XT_l, vakaa in h.viivat_loki[:: max(1, len(h.viivat_loki) // 14)]:
                 print(f"   +{(f - h.f_alku) / self.fps:5.1f} s: Y={Y:5.0f} cm  {th:+6.2f} deg  T-viiva {XT_i:+5.0f} / {XT_l:+5.0f} cm  {'vakaa' if vakaa else 'alustava'}")
 
+    def _kirjoita_csv(self, an):
+        """Koko CSV uusiksi (valmistuneet heitot; kierre taydentyy heiton valmistumisen jalkeen)."""
+        with open(self.csv_polku, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(self.OTSIKKO)
+            for n, h in enumerate(list(an.heitot) if an is not None else [], 1):
+                s = ns.heiton_suureet(h)
+                v = h.viivat
+                if h.tunnus not in self.valmis or s is None or v is None:
+                    continue
+                w.writerow([n, h.vari, h.kivi_nro, h.puoli, f"{h.f_alku / self.fps:.2f}", f"{h.f_loppu / self.fps:.2f}",
+                            f"{v['irr_Y']:.1f}", f"{v['irr_suunta_deg']:.3f}", f"{v['irr_virhe_deg']:.3f}", f"{v['liuku_suunta_deg']:.3f}", f"{s['liuku_cm']:.1f}", f"{s['heitto_cm']:.1f}",
+                            "" if s["irroitus_cm"] is None else f"{s['irroitus_cm']:.1f}", "" if s["kierre"] is None else f"{s['kierre']:.2f}", int(s["kierre_mitattu"]),
+                            "" if s["omega_deg_s"] is None else f"{s['omega_deg_s']:.1f}", "" if s["T_hh"] is None else f"{s['T_hh']:.2f}", f"{s['irr_hog_m']:.2f}",
+                            f"{s['v_ennen']:.3f}", f"{s['v_jalkeen']:.3f}", f"{s['hidastuvuus']:.3f}", f"{v['liuku_hidastuvuus']:.3f}", int(s["vakaa"])])
+
 
 # ---------------------------------------------------------------------------------------------------------------------
 # SIMULAATIO: ajetaan niin nopeasti kuin ehtii, tulos riippumaton ajoituksesta (tyot odotetaan)
 # ---------------------------------------------------------------------------------------------------------------------
-def aja_sim(a, lahde, an, piirtaja, ulos, kirjaaja):
+def aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     D = int(round(a.viive * lahde.fps))
     cap2 = cv2.VideoCapture(lahde.tiedosto)          # toinen kahva: tulostettava kuva luetaan alkuperaisena (ei JPEG-pakkausta), D ruutua analyysin jalkeen
     cap2.set(cv2.CAP_PROP_POS_FRAMES, int(lahde.alku_s * lahde.fps))
     t0 = time.time()
     n = 0
 
-    def tulosta(f_out, kuva=None):
-        if kuva is None:
-            ok, kuva = cap2.read()
-            if not ok:
-                return False
-        out = piirtaja.piirra(kuva, f_out, an.kuvat())
-        return not ulos.nayta(out)
+    def tulosta(f_out):
+        ok, kuva = cap2.read()
+        if not ok:
+            return False
+        piirtaja.piirra(kuva, f_out, an)
+        if kirjoittaja is not None:
+            kirjoittaja.kirjoita(kuva)
+        return not (naytto is not None and naytto.nayta_heti(kuva))
 
     for f, fr in lahde.ruudut():
         an.syota(f, fr)
@@ -257,33 +565,54 @@ def aja_sim(a, lahde, an, piirtaja, ulos, kirjaaja):
         if n % 300 == 0 and not a.hiljaa:
             print(f"  ... {n / lahde.fps:6.1f} s videota, {n / (time.time() - t0):.0f} r/s", flush=True)
     an.viimeistele()
-    kirjaaja.paivita(an)
+    kirjaaja.paivita(an, lopuksi=True)
     kirjaaja.historia(an)
     f_alku_out = int(lahde.alku_s * lahde.fps)
     viim = f_alku_out + n - D
     for f_out in range(max(viim, f_alku_out), f_alku_out + n):         # viimeiset D ruutua
         if not tulosta(f_out):
             break
-    kirjaaja.paivita(an)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REAALIAIKA: lukija + analyysi taustasaikeessa, tuloste paasaikeessa (ikkuna)
+# REAALIAIKA: lukija + analyysi (saie), piirto (saie), tallennus (saie), ikkuna (paasaie)
 # ---------------------------------------------------------------------------------------------------------------------
-def aja_reaaliaika(a, lahde, an, piirtaja, ulos, kirjaaja):
-    jono = collections.deque()                       # (f, saapumisaika, jpeg)
-    lopetettu = threading.Event()
-    pysayta = threading.Event()
+def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     fps = lahde.fps
-    tilasto = dict(analysoitu=0, ohitettu=0, virheita=0)
+    jono = collections.deque()                       # (f, saapumisaika, pakkauksen tulevaisuus (laji, data))
+    lopetettu = threading.Event()                    # lahde loppui
+    pysayta = threading.Event()                      # kayttaja lopettaa tai virhe
+    piirto_valmis = threading.Event()                # piirtosaie on antanut kaikki kuvat
+    tilasto = dict(analysoitu=0, ohitettu=0, virheita=0, piirretty=0, myohassa_max=0.0)
+    piirtoa_tarvitaan = naytto is not None or kirjoittaja is not None
+    pakkaus = concurrent.futures.ThreadPoolExecutor(2, thread_name_prefix="puskuri-pakkaus")     # cv2-kutsut vapauttavat GIL:n: rinnakkain analyysin kanssa
+    purku = concurrent.futures.ThreadPoolExecutor(2, thread_name_prefix="puskuri-purku")
+    laatu = [cv2.IMWRITE_JPEG_QUALITY, a.jpeg]
+    yuv_raja = int((a.viive + 4.0) * fps)            # yuv-puskurin muistin suoja: tamän jonopituuden jalkeen uudet ruudut pakataan JPEG:ksi (kone ei jaksa: jono kasvaa)
 
-    def saie():
+    def pakkaa(fr, jpeg):
+        if jpeg:
+            return "jpeg", cv2.imencode(".jpg", fr, laatu)[1]
+        return "yuv", cv2.cvtColor(fr, cv2.COLOR_BGR2YUV_I420)
+
+    def pura(tulevaisuus):
+        laji, data = tulevaisuus.result()
+        if laji == "jpeg":
+            return cv2.imdecode(data, cv2.IMREAD_COLOR)
+        return cv2.cvtColor(data, cv2.COLOR_YUV2BGR_I420)
+
+    def analyysi_saie():
         t_alku = time.time()
         f_ensin = None
+        t_edell = time.perf_counter()
+        ohitus_kaynnissa = False
         try:
             for f, fr in lahde.ruudut():
                 if pysayta.is_set():
                     break
+                if a.debug_viive and f_ensin is not None and time.perf_counter() - t_edell > 0.2:
+                    print(f"  [debug] ruutujen valissa {1e3 * (time.perf_counter() - t_edell):.0f} ms ennen ruutua {f} ({f / fps:.1f} s)", flush=True)
+                t_edell = time.perf_counter()
                 if f_ensin is None:
                     f_ensin = f
                 if not lahde.live:                                   # tiedosto: tahdistus kuin live-virrassa
@@ -293,15 +622,25 @@ def aja_reaaliaika(a, lahde, an, piirtaja, ulos, kirjaaja):
                     myohassa = -odotus
                 else:
                     myohassa = 0.0
-                ok, buf = cv2.imencode(".jpg", fr, [cv2.IMWRITE_JPEG_QUALITY, a.jpeg])
-                jono.append((f, time.time(), buf))
+                if piirtoa_tarvitaan:
+                    jono.append((f, time.time(), pakkaus.submit(pakkaa, fr, a.puskuri == "jpeg" or len(jono) > yuv_raja)))
                 if myohassa > 0.8:                                  # analyysi myohassa: ruutu nakyy tulosteessa, mutta sita ei analysoida
                     tilasto["ohitettu"] += 1
+                    if a.debug_viive and not ohitus_kaynnissa:
+                        print(f"  [debug] ohitus alkaa: ruutu {f} ({f / fps:.1f} s), myohassa {myohassa:.2f} s", flush=True)
+                    ohitus_kaynnissa = True
                     an.ohita()
                     continue
+                if ohitus_kaynnissa and a.debug_viive:
+                    print(f"  [debug] ohitus loppuu: ruutu {f} ({f / fps:.1f} s), myohassa {myohassa:.2f} s", flush=True)
+                ohitus_kaynnissa = False
                 try:
+                    t_syota = time.perf_counter()
                     an.syota(f, fr)
                     tilasto["analysoitu"] += 1
+                    kirjaaja.paivita(an)
+                    if a.debug_viive and time.perf_counter() - t_syota > 0.12:
+                        print(f"  [debug] hidas analyysi: ruutu {f} ({f / fps:.1f} s) {1e3 * (time.perf_counter() - t_syota):.0f} ms, myohassa {myohassa:.2f} s", flush=True)
                 except Exception:                                   # yksittainen virhe ei saa pysayttaa lahdetta ja tulostetta
                     tilasto["virheita"] += 1
                     if tilasto["virheita"] <= 3:
@@ -312,52 +651,95 @@ def aja_reaaliaika(a, lahde, an, piirtaja, ulos, kirjaaja):
             traceback.print_exc()
         finally:
             lopetettu.set()
-
-    s = threading.Thread(target=saie, daemon=True)
-    s.start()
-    odotus_nayttoa = False                           # True kun ensimmainen ruutu on nayttetty
-    piirtovirhe = []
-    viim_ilmoitus = 0.0
-    try:
-        while True:
-            nyt = time.time()
-            if jono and jono[0][1] + a.viive <= nyt:
-                odotus_nayttoa = True
-                f, _, buf = jono.popleft()
-                kuva = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-                try:
-                    out = piirtaja.piirra(kuva, f, an.kuvat())
-                except Exception:                                   # piirtovirhe: nayta ruutu ilman piirroksia
-                    out = kuva
-                    if not piirtovirhe:
-                        print("Piirtovirhe, jatketaan ilman piirroksia:", file=sys.stderr)
-                        traceback.print_exc()
-                        piirtovirhe.append(1)
-                lopeta = ulos.nayta(out)
+        # lahde loppui: taustatyot (B, estimaatit, kierre, kaukopaa) etenevat kunnes tuloste on piirretty
+        try:
+            raja = time.time() + 120.0
+            while not pysayta.is_set() and not piirto_valmis.is_set() and time.time() < raja:
+                an.odota()
                 kirjaaja.paivita(an)
-                if lopeta:
+                time.sleep(0.05)
+        except Exception:
+            traceback.print_exc()
+
+    def piirto_saie():
+        odottaa = collections.deque()                # (f, erapaiva, purkutehtava)
+        piirtovirhe = []
+        varoitettu = False
+        try:
+            while not pysayta.is_set():
+                nyt = time.time()
+                while jono and len(odottaa) < 6 and jono[0][1] + a.viive - nyt < 0.4:       # purku etukateen (rinnakkain)
+                    f, t_s, tulevaisuus = jono.popleft()
+                    odottaa.append((f, t_s + a.viive, purku.submit(pura, tulevaisuus)))
+                if odottaa and odottaa[0][1] <= nyt:
+                    f, erapaiva, tehtava = odottaa.popleft()
+                    kuva = tehtava.result()
+                    myohassa = nyt - erapaiva
+                    tilasto["myohassa_max"] = max(tilasto["myohassa_max"], myohassa)
+                    if myohassa > 3.0 and not varoitettu:
+                        varoitettu = True
+                        print(f"Huom: piirto / tallennus on {myohassa:.1f} s jaljessa reaaliajasta (kone ei jaksa); ikkuna ohittaa ruutuja, tallenteesta ei puutu ruutuja, "
+                              "mutta kuvan viive kasvaa. Kokeile --saikeet pienemmaksi tai --ulos ilman ikkunaa (--ei-ikkunaa).", file=sys.stderr)
+                    try:
+                        npi_kuva = piirtaja.piirra(kuva, f, an)
+                    except Exception:                               # piirtovirhe: nayta ruutu ilman (loppuun asti piirrettyja) piirroksia
+                        npi_kuva = kuva
+                        if not piirtovirhe:
+                            print("Piirtovirhe, jatketaan ilman piirroksia:", file=sys.stderr)
+                            traceback.print_exc()
+                            piirtovirhe.append(1)
+                    if kirjoittaja is not None:
+                        kirjoittaja.kirjoita(npi_kuva)
+                    if naytto is not None:
+                        naytto.anna(npi_kuva)
+                    tilasto["piirretty"] += 1
+                    continue
+                if lopetettu.is_set() and not jono and not odottaa:
                     break
-                continue
-            if lopetettu.is_set() and not jono:
-                break
-            if ulos.ikkuna:
-                if not odotus_nayttoa and jono and nyt - viim_ilmoitus > 0.25:      # ensimmaista ruutua odotettaessa: puskurointi-ilmoitus
-                    ilm = np.zeros((RUUTU_H, RUUTU_W, 3), np.uint8)
-                    cv2.putText(ilm, f"Puskuroidaan {max(0.0, jono[0][1] + a.viive - nyt):.1f} s (kuva tulee {a.viive:.0f} s viiveella)", (120, RUUTU_H // 2),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2, cv2.LINE_AA)
-                    ulos.nayta_ilmoitus(ilm)
-                    viim_ilmoitus = nyt
-                if ulos.lopetus_pyydetty(3):
-                    break
-            else:
-                time.sleep(0.003)
+                time.sleep(0.002)
+        except Exception:
+            print("Piirtosaie keskeytyi:", file=sys.stderr)
+            traceback.print_exc()
+        finally:
+            piirto_valmis.set()
+
+    def ilmoitus():
+        """Puskurointi-ilmoitus ennen ensimmaista kuvaa."""
+        try:
+            jaljella = max(0.0, jono[0][1] + a.viive - time.time())
+        except IndexError:
+            return None
+        kuva = np.zeros((RUUTU_H, RUUTU_W, 3), np.uint8)
+        cv2.putText(kuva, f"Puskuroidaan {jaljella:.1f} s (kuva tulee {a.viive:.0f} s viiveella)", (120, RUUTU_H // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2, cv2.LINE_AA)
+        return kuva
+
+    s1 = threading.Thread(target=analyysi_saie, name="analyysi", daemon=True)
+    s2 = threading.Thread(target=piirto_saie, name="piirto", daemon=True)
+    if not piirtoa_tarvitaan:
+        piirto_valmis.set()
+    try:
+        s1.start()
+        if piirtoa_tarvitaan:
+            s2.start()
+        if naytto is not None:
+            naytto.paasilmukka(pysayta, lambda: piirto_valmis.is_set() and not s2.is_alive(), ilmoitus)
+        else:
+            while (s2.is_alive() if piirtoa_tarvitaan else s1.is_alive()):
+                time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("Keskeytetty (Ctrl-C), viimeistellaan ...", file=sys.stderr)
     finally:
         pysayta.set()
-        s.join(timeout=5.0)
+        s1.join(timeout=10.0)
+        if piirtoa_tarvitaan:
+            s2.join(timeout=10.0)
+        pakkaus.shutdown(wait=False, cancel_futures=True)
+        purku.shutdown(wait=False, cancel_futures=True)
         an.viimeistele()
-        kirjaaja.paivita(an)
+        kirjaaja.paivita(an, lopuksi=True)
         if not a.hiljaa:
-            print(f"analysoitu {tilasto['analysoitu']} ruutua, ohitettu (myohassa) {tilasto['ohitettu']}, virheita {tilasto['virheita']}", flush=True)
+            print(f"analysoitu {tilasto['analysoitu']} ruutua, ohitettu (myohassa) {tilasto['ohitettu']}, virheita {tilasto['virheita']}; piirretty {tilasto['piirretty']} ruutua"
+                  + (f", ikkunassa {naytto.n_nayt}" if naytto is not None else "") + f", suurin viive piirrossa {tilasto['myohassa_max']:.1f} s", flush=True)
 
 
 def main():
@@ -366,22 +748,31 @@ def main():
     ap.add_argument("--yt-formaatti", default=YT_FORMAATTI, help="yt_dlp-formaattivalitsin (oletus: oma testikoodi)")
     ap.add_argument("--lahde", help="videotiedosto")
     ap.add_argument("--url", help="suora virran osoite (http / https / rtsp / m3u8), luetaan kuten YouTube-virta")
-    ap.add_argument("--kansio", default="tulokset", help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json)")
+    ap.add_argument("--kansio", default="tulokset", help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json)")
     ap.add_argument("--viive", type=float, default=5.0, help="tulosteen viive analyysiin nahden (s)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")
     ap.add_argument("--viivat", type=float, default=60.0, help="linjat nakyvissa taman ajan heiton alusta, tai seuraavaan heittoon (s)")
     ap.add_argument("--ulos", nargs="?", const="auto", help="tallenna tuloste tiedostoon (mp4); ilman nimea: kivenseuranta_<paivays>_<aika>.mp4 nykyiseen kansioon")
-    ap.add_argument("--koodekki", default="mp4v", help="tallenteen koodekki (OpenCV fourcc; oletus mp4v, kokeile avc1 = H.264 jos OpenCV:si tukee)")
-    ap.add_argument("--ikkuna-leveys", type=int, default=1280, help="ikkunan leveys pikseleina (kuva skaalautuu)")
+    ap.add_argument("--koodekki", default="auto", help="tallenteen koodekki: auto (ffmpeg: laitteistokooderi jos toimii, muuten H.264 prosessorilla; ilman ffmpegia OpenCV mp4v), cpu (libx264), gpu "
+                                                       "(laitteistokooderi) tai OpenCV:n fourcc (mp4v, avc1, MJPG)")
+    ap.add_argument("--ffmpeg", default=None, help="ffmpeg-ohjelman polku (oletus: PATH tai imageio-ffmpeg)")
+    ap.add_argument("--x264-preset", default="superfast", help="H.264-koodauksen nopeus (ultrafast = kevein prosessorille, isoin tiedosto; superfast; veryfast)")
+    ap.add_argument("--nayttotila", choices=("auto", "ikkuna", "kokoruutu"), default="auto",
+                    help="ikkuna: kuva taydella 1920 x 1080 resoluutiolla; auto = kokoruutu jos naytto ei ole sita suurempi (1:1); 'f' vaihtaa kokoruudun")
+    ap.add_argument("--ikkuna-leveys", type=int, default=0, help="ikkunan leveys pikseleina (0 = taysi resoluutio 1920; pienempi skaalaa kuvaa)")
     ap.add_argument("--csv", help="kirjaa valmistuneet heitot CSV:hen")
     ap.add_argument("--ei-ikkunaa", action="store_true", help="ei ikkunaa (palvelin / testaus)")
+    ap.add_argument("--ei-kierretta", action="store_true", help="ei kierteen eika hog-hog-ajan mittausta")
     ap.add_argument("--nopea", action="store_true", help="simulaatio: tiedosto ajetaan niin nopeasti kuin ehtii (tulos ei riipu ajoituksesta)")
     ap.add_argument("--alku", type=float, default=0.0, help="aloitus tiedostossa (s)")
     ap.add_argument("--loppu", type=float, default=None, help="lopetus tiedostossa (s)")
     ap.add_argument("--saikeet", type=int, default=max(1, min(3, (os.cpu_count() or 2) - 1)), help="tarkan sovituksen tyoprosessit (0 = vain kahvan vari: epatarkempi)")
     ap.add_argument("--fps-lahde", type=float, default=None, help="erillisten ruutujen nimellistaajuus (25 tassa videossa; oletus: paatellaan kopioruutujen osuudesta)")
-    ap.add_argument("--jpeg", type=int, default=92, help="viivepuskurin JPEG-laatu (reaaliaika)")
+    ap.add_argument("--puskuri", choices=("yuv", "jpeg"), default="yuv",
+                    help="viivepuskurin muoto: yuv = raaka YUV 4:2:0 (3,1 MB / ruutu, ~470 MB 5 s:n viiveella, kevyt prosessorille) tai jpeg (0,3 MB / ruutu, ~21 ms / ruutu prosessoria)")
+    ap.add_argument("--jpeg", type=int, default=92, help="JPEG-laatu (--puskuri jpeg ja yuv-puskurin ylivuoto)")
     ap.add_argument("--hiljaa", action="store_true")
+    ap.add_argument("--debug-viive", action="store_true", help="tulosta hitaat analyysiruudut (selvittaa miksi ruutuja ohitetaan)")
     a = ap.parse_args()
     if not os.path.isdir(a.kansio):                    # ajettu muualta kuin projektin kansiosta
         oma = os.path.join(os.path.dirname(os.path.abspath(__file__)), a.kansio)
@@ -391,28 +782,40 @@ def main():
         a.ulos = time.strftime("kivenseuranta_%Y%m%d_%H%M%S.mp4")
     if not (a.youtube or a.lahde or a.url):
         ap.error("anna --youtube [TUNNUS], --lahde TIEDOSTO tai --url OSOITE")
-    lahde = Lahde(tiedosto=a.lahde, youtube=a.youtube, alku_s=a.alku, loppu_s=a.loppu, yt_formaatti=a.yt_formaatti, url=a.url)
     sim = bool(a.nopea and a.lahde)
-    an = ns.Analyysi(a.kansio, fps=lahde.fps, saikeet=a.saikeet, tarkka=a.saikeet > 0, synkroninen=sim, fps_lahde=a.fps_lahde)
+    # laskentaprosessit kayntiin ENNEN lahteen avaamista: spawn-prosessien kaynnistys kestaa 5-15 s eika virta saa odottaa
+    an = ns.Analyysi(a.kansio, fps=30.0, saikeet=a.saikeet, tarkka=a.saikeet > 0, synkroninen=sim, fps_lahde=a.fps_lahde, kierre=not a.ei_kierretta)
+    if not a.hiljaa:
+        print("Kaynnistetaan laskentaprosessit ...", flush=True)
+    t_lampea = time.time()
+    n_prosessia = an.lampea()
+    if not a.hiljaa:
+        sovitin = next(iter(an.M.values())).sovitin
+        print(f"  {n_prosessia} tyoprosessia valmiina ({time.time() - t_lampea:.0f} s); tarkka sovitus: {sovitin}"
+              + ("" if "C++" in sovitin else " (nopeampi C++-versio: kaanna netti_fit, ks. README_netti.md)"), flush=True)
+    lahde = Lahde(tiedosto=a.lahde, youtube=a.youtube, alku_s=a.alku, loppu_s=a.loppu, yt_formaatti=a.yt_formaatti, url=a.url)
+    an.fps = lahde.fps
     geom = ng.Geometria(a.kansio)
     piirtaja = npi.Piirtaja(geom, fps=lahde.fps, jalki_s=a.jalki, viivat_s=a.viivat, viive_s=a.viive)
-    ulos = Ulos(a.ulos, ikkuna=not a.ei_ikkunaa, fps=lahde.fps, leveys_ikkuna=a.ikkuna_leveys, koodekki=a.koodekki)
+    kirjoittaja = Kirjoittaja(a.ulos, lahde.fps, a.koodekki, a.ffmpeg, a.x264_preset) if a.ulos else None
+    naytto = None if a.ei_ikkunaa else Naytto(a.nayttotila, a.ikkuna_leveys)
     if not a.hiljaa:
-        print(f"Kuva tulee {a.viive:.0f} s viiveella. " + ("Ikkuna: 'q' tai ESC (tai ikkunan sulkeminen) lopettaa. " if not a.ei_ikkunaa else "")
-              + (f"Tallennus: {a.ulos}" if a.ulos else "Ei tallennusta (lisaa --ulos)."), flush=True)
+        print(f"Kuva tulee {a.viive:.0f} s viiveella. " + ("Ikkuna: 'q' tai ESC (tai ikkunan sulkeminen) lopettaa, 'f' vaihtaa kokoruudun. " if naytto else "")
+              + (f"Tallennus: {a.ulos} ({kirjoittaja.nimi})" if kirjoittaja else "Ei tallennusta (lisaa --ulos)."), flush=True)
     kirjaaja = Kirjaaja(a.csv, a.hiljaa, lahde.fps)
     try:
         if sim:
-            aja_sim(a, lahde, an, piirtaja, ulos, kirjaaja)
+            aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja)
         else:
-            aja_reaaliaika(a, lahde, an, piirtaja, ulos, kirjaaja)
+            aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja)
     finally:
         an.sulje()
-        ulos.sulje()
+        if kirjoittaja is not None:
+            kirjoittaja.sulje()
+        if naytto is not None:
+            naytto.sulje()
         if a.ulos and not a.hiljaa:
-            print(f"kirjoitettu {a.ulos} ({ulos.n} ruutua)")
-            if a.koodekki == "mp4v":
-                print(f"  pienempi H.264-tiedosto: ffmpeg -i {a.ulos} -c:v libx264 -crf 23 -pix_fmt yuv420p pieni_{os.path.basename(a.ulos)}")
+            print(f"kirjoitettu {a.ulos} ({kirjoittaja.n} ruutua)")
 
 
 if __name__ == "__main__":

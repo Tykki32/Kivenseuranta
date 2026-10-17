@@ -306,6 +306,11 @@ def analysoi(video, kansio, puoli, ulos, kuvat=True, valimuisti=None):
               f"ruutuja {r['ruutuja']} (t {r['t_alku']:.2f}...{r['t_loppu']:.2f}, kasi-ruutuja hylatty {r['hylatty_kasi']}); puolikkaat {r['puolikkaat_omega']}, "
               f"kustannus vastapaivaan {pos:.1f} / myotapaivaan {neg:.1f} / ei kiertoa {nol:.1f}")
     json.dump({str(k): v for k, v in tulos.items()}, open(ulos + ".json", "w"), indent=1)
+    muodot = {}                                           # palkin muoto varille: netti_kierre.py (reaaliaikainen kierre) kayttaa tata kiinteana
+    for k in sorted(tulos):
+        muodot[tulos[k]["vari"]] = {n: round(float(v), 3) for n, v in tulos[k]["muoto"].items()}
+    muodot["_lahde"] = "kierto_netti.py yhteissovitus (vareittain), " + os.path.basename(ulos) + ".json"
+    json.dump(muodot, open(os.path.join(os.path.dirname(ulos) or ".", f"kierto_muoto_{puoli}.json"), "w"), indent=1)
     if kuvat:
         piirra(tulos, kehykset, mal, ulos)
     return tulos, kehykset, mal
