@@ -31,22 +31,33 @@ def paikallinen_nopeus(f, Y, h=8):
     return v
 
 
-def lahdeindeksit(f, Y):
+def _hila_dj(df, kopiot_ohitettu):
+    """Lahderuutujen lukumaara kahden perakkaisen naytteen valilla, kun ruutunumeroiden ero on df (hidas vaihe: ei siirtymaa, josta lukea). Kun kopioruudut on jo jatetty pois
+    naytteista (kopiot_ohitettu), ero 1 tai 2 on yksi lahderuutu (ero 2 = ohitettu kopioruutu); muuten hila (5 yksilollista ruutua 6 paikkaa kohti)."""
+    if kopiot_ohitettu and df <= 2:
+        return 1
+    return max(1, int(round(df * FPS_LAHDE / FPS_ULOS)))
+
+
+def lahdeindeksit(f, Y, kopiot_ohitettu=False):
     """Lahdevirran ruutuindeksi j kullekin naytteelle (kokonaisluku, ankkurinaytteelle 0), NaN = hylatty kaksoiskappale; palauttaa (j, i_ankkuri).
     f = 30 r/s -ruutunumerot (kasvavat), Y = rataa pitkin mitattu paikka [cm]. Nopeassa vaiheessa (>= V_MIN_SIIRTYMA_CM / ruutu) indeksin kasvu
-    luetaan siirtymasta, hitaassa vaiheessa (lepo, tyonnon alku) 30 r/s -ruutunumeroiden hilasta ankkurista (ensimmainen nopea naytte) laskien."""
+    luetaan siirtymasta, hitaassa vaiheessa (lepo, tyonnon alku) 30 r/s -ruutunumeroiden hilasta ankkurista (ensimmainen nopea naytte) laskien.
+    kopiot_ohitettu: naytteet ovat vain yksilollisia ruutuja (kopioruudut ohitettu jo ennen seurantaa, esim. kaukopaan hidas rata): ruutuero 2 on yksi lahderuutu."""
     f = np.asarray(f, float)
     Y = np.asarray(Y, float)
     n = len(f)
     v = paikallinen_nopeus(f, Y)
     nopea = np.abs(v) / FPS_LAHDE >= V_MIN_SIIRTYMA_CM
     if not nopea.any():
+        if kopiot_ohitettu:
+            return np.concatenate([[0.0], np.cumsum([_hila_dj(d, True) for d in np.diff(f)])]), 0
         return np.round((f - f[0]) * FPS_LAHDE / FPS_ULOS), 0
     ia = int(np.argmax(nopea))
     j = np.full(n, np.nan)
     j[ia] = 0.0
-    for i in range(ia):                           # ennen ankkuria: hila
-        j[i] = -np.round((f[ia] - f[i]) * FPS_LAHDE / FPS_ULOS)
+    for i in range(ia - 1, -1, -1):               # ennen ankkuria: hila
+        j[i] = j[i + 1] - _hila_dj(f[i + 1] - f[i], True) if kopiot_ohitettu else -np.round((f[ia] - f[i]) * FPS_LAHDE / FPS_ULOS)
     viim = ia
     for i in range(ia + 1, n):
         vm = 0.5 * (v[i] + v[viim])
@@ -56,9 +67,9 @@ def lahdeindeksit(f, Y):
                 continue
             dj = int(round(dY / (vm / FPS_LAHDE)))
             if dj < 1:
-                dj = max(1, int(round((f[i] - f[viim]) * FPS_LAHDE / FPS_ULOS)))
+                dj = _hila_dj(f[i] - f[viim], kopiot_ohitettu)
         else:                                      # hidas: hilasta
-            dj = max(1, int(round((f[i] - f[viim]) * FPS_LAHDE / FPS_ULOS)))
+            dj = _hila_dj(f[i] - f[viim], kopiot_ohitettu)
         j[i] = j[viim] + dj
         viim = i
     return j, ia
@@ -82,9 +93,9 @@ class Aikajana:
     """Ruutunumero -> lahdevirran ruutuindeksi ja aika, yhden ikkunan (heiton) rataa pitkin sovitettuna. Sama aikajana kelpaa kaikille
     kohteille (kivi, kahva): aika on ruudun ominaisuus, ei kohteen."""
 
-    def __init__(self, f, Y):
+    def __init__(self, f, Y, kopiot_ohitettu=False):
         f = np.asarray(f, float)
-        j, ia = lahdeindeksit(f, Y)
+        j, ia = lahdeindeksit(f, Y, kopiot_ohitettu)
         ok = np.isfinite(j)
         self.f, self.j = f[ok], j[ok]
         self.c = float(f[ia] / FPS_ULOS - j[ia] / FPS_LAHDE)

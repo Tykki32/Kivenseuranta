@@ -447,21 +447,42 @@ def _pilkku(x, des=2, merkki=False):
     return s.replace(".", ",")
 
 
+def _aika_teksti(s):
+    """Aika muodossa m:ss,d."""
+    s = max(float(s), 0.0)
+    m = int(s // 60)
+    return f"{m}:{s - 60 * m:04.1f}".replace(".", ",")
+
+
 class Kirjaaja:
     """Tulosten kirjaus konsoliin ja CSV:hen: heiton vahvistus, viivaestimaatti (liuku, heitto, irroitus, nopeudet), kierre (kierrokset hog-hog-valilla)."""
 
     OTSIKKO = ["heitto", "vari", "kivi_nro", "puoli", "alku_s", "loppu_s", "irroitus_Y_cm", "irroituksen_suunta_deg", "irroituksen_suunta_virhe_deg", "liun_suunta_deg",
                "liuku_T_cm", "heitto_T_cm", "irroitus_delta_cm", "kierre", "kierre_mitattu", "omega_deg_s", "hog_hog_s", "irroitus_ennen_hogia_m",
-               "nopeus_ennen_m_s", "nopeus_jalkeen_m_s", "hidastuvuus_m_s2", "liun_hidastuvuus_m_s2", "vakaa"]
+               "nopeus_ennen_m_s", "nopeus_jalkeen_m_s", "hidastuvuus_m_s2", "liun_hidastuvuus_m_s2", "vakaa",
+               # paa, hog-ylitykset ja kierre (heittopaan ja kaukopaan mittaus yhdistettyna)
+               "paa", "heitto_paassa", "hog1_s", "hog2_s", "hog2_lahde", "kierre_sigma", "kierre_varma", "kierre_lahde", "kierre_vaimeneminen_1_s", "omega_kauko_deg_s", "kierre_koko_rata", "kierre_koko_sigma",
+               # kaukopaan seuranta: pysahtyminen
+               "kauko_tila", "pysahtyi_s", "ulos_pelista_s", "lepo_X_cm", "lepo_Y_cm", "lepo_napista_cm", "nopeus_hog2_cm_s", "tormays_s",
+               # kiven vakiot (rata_malli.py): kitkataso A ja kaarto kappa kaukopaan radasta
+               "vakio_A", "vakio_A_sd", "vakio_kappa", "vakio_kappa_sd", "vakio_kappa_ok", "vakio_rms_y_cm", "vakio_rms_x_cm", "vakio_omega_lahde",
+               # joukkueen kello: miettimisaika ennen tata heittoa ja joukkueen aika yhteensa taman heiton jalkeen
+               "miettimisaika_s", "joukkue_yht_s"]
+    OTSIKKO_KIVET = ["vari", "kivi_nro", "heittoja", "A_mediaani", "A_hajonta", "kappa_heittoja", "kappa_mediaani", "kappa_hajonta", "heitot"]
 
-    def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False):
+    def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False, radat_polku=None):
         self.csv_polku, self.hiljaa, self.fps = csv_polku, hiljaa, fps
+        self.radat_polku = radat_polku                  # heittojen radat ja mittaukset (pickle) jalkianalyysia varten
         self.nayta_tapahtumat = tapahtumat              # tulosta seurannan kaikki tapahtumat (myos hylatyt heittoyritykset)
         self.tapahtumia = 0
         self.ilmoitettu = set()
         self.valmis = set()
         self.kierre_ilm = set()
         self.muuttunut = False
+        self.kauko_ilm = set()
+        self.kello_ilm = set()
+        self.csv_sig = None
+        self.kivet_polku = (os.path.splitext(csv_polku)[0] + "_kivet.csv") if csv_polku else None
         if csv_polku:
             self._kirjoita_csv(None)
 
@@ -498,9 +519,15 @@ class Kirjaaja:
             if h.tunnus in self.valmis and h.tunnus not in self.kierre_ilm and self._kierre_valmis(an, h, n, lopuksi):
                 self.kierre_ilm.add(h.tunnus)
                 self.muuttunut = True
-        if self.muuttunut and self.csv_polku:
-            self._kirjoita_csv(an)
-            self.muuttunut = False
+            if h.tunnus in self.kierre_ilm and h.tunnus not in self.kauko_ilm and self._kauko_valmis(an, h, n, lopuksi):
+                self.kauko_ilm.add(h.tunnus)
+                self.muuttunut = True
+        self._kello_ilmoita(an, lopuksi)
+        if self.csv_polku:
+            sig = self._allekirjoitus(an)
+            if lopuksi or self.muuttunut or sig != self.csv_sig:
+                self._kirjoita_csv(an)
+                self.csv_sig, self.muuttunut = sig, False
 
     def _kierre_valmis(self, an, h, n, lopuksi):
         """Kierteen tulostus, kun se on lopullinen (hog-hog-aika mitattu tai kaukopaan haku paattynyt); True kun asia on hoidettu."""
@@ -529,6 +556,103 @@ class Kirjaaja:
                           f"irroitus (heitto - liuku) {_pilkku(s['irroitus_cm'], 0, True)} cm")
         return True
 
+    @staticmethod
+    def _allekirjoitus(an):
+        """CSV:n sisaltoon vaikuttava tila: kirjoitetaan uusiksi vasta kun jokin heiton tulos (kierre, kaukopaa, vakiot, kello) on muuttunut."""
+        return tuple((h.tunnus, h.tila, h.viivat_lopullinen, h.kierto_tila, h.kauko_kierto_tila, h.vakiot_tila, h.kauko is not None, h.hog2_f is not None,
+                      None if h.kierre is None else round(h.kierre["N"], 2), h.f_alku) for h in list(an.heitot))
+
+    def _kauko_valmis(self, an, h, n, lopuksi):
+        """Kaukopaan seurannan, kaukopaan kierteen ja kiven vakioiden tulostus, kun ne ovat valmiit; True kun asia on hoidettu."""
+        if not an.laske_kierre or h.viivat is None or h.hog1_f is None:
+            return True
+        k = h.kauko
+        kesken = (k is None and h.saapuminen not in ("ei_loytynyt",) and h.hog2_f is None) or h.kauko_kierto_tila == "kaynnissa" or h.vakiot_tila == "kaynnissa"
+        if kesken and not lopuksi:
+            return False
+        if k is None or "virhe" in k:
+            self._tulosta(f"          heitto {n} kaukopaa: " + (f"seuranta ei onnistunut ({k['virhe']})" if k is not None else "kivea ei seurattu"))
+            return True
+        fps = self.fps
+        osat = [{"pysahtyi": "pysahtyi", "hukassa": "hukassa (piilossa / pois kuvasta)"}.get(k["tila"], k["tila"])]
+        if k["tila"] == "pysahtyi":
+            osat[0] += f" {k['f_pys'] / fps:.1f} s paikkaan X' {k['X_pys']:.0f}, Y' {k['Y_pys']:.0f} cm"
+        if k["f_hog2"] is not None:
+            osat.append(f"hog-viiva {k['f_hog2'] / fps:.2f} s ({k['hog2_lahde']}), nopeus {_pilkku(k['v_hog_cm_s'] / 100.0, 2) if k['v_hog_cm_s'] else '?'} m/s")
+        if k.get("tormays"):
+            osat.append(f"tormays {k['tormays']['f'] / fps:.1f} s")
+        self._tulosta(f"          heitto {n} kaukopaa: " + ", ".join(osat))
+        kk = h.kauko_kierto
+        if kk is not None and "virhe" not in kk:
+            self._tulosta(f"          heitto {n} kaukopaan kierto: omega {kk['omega_deg_s']:+.0f} deg/s ({'varma' if kk.get('varma') else 'epavarma'}, ruutuja {kk['ruutuja']})")
+        r = h.kierre
+        if r is not None and kk is not None and "virhe" not in kk and h.kierto is not None and "virhe" not in h.kierto:
+            self._tulosta(f"          heitto {n} kierrokset hog-hog: {_pilkku(abs(r['N']), 2)} +- {_pilkku(r['N_sigma'], 2)} (omega vaimenee {_pilkku(r['k'] * 100.0, 1)} % / s; "
+                          f"{r['omega_lahde']}{', ristiriita' if r['ristiriita'] else ''}{', varma' if r['varma'] else ''})")
+        v = h.vakiot
+        if v is not None and v.get("ok"):
+            kap = f"kappa {_pilkku(v['kappa'], 2)}" if v.get("kappa_ok") else "kappa ? (kierretta ei mitattu)"
+            self._tulosta(f"          heitto {n} kiven vakiot: A {_pilkku(v['A'], 4)}, {kap} (jaannos Y {v['rms_y_cm']:.1f} cm, X {v['rms_x_cm']:.1f} cm)")
+        elif v is not None:
+            self._tulosta(f"          heitto {n} kiven vakioita ei saatu: {v.get('syy', '?')}")
+        return True
+
+    def _kello_ilmoita(self, an, lopuksi):
+        """Heittokohtainen miettimisaika ja joukkueen aika yhteensa konsoliin, kun edellisen heiton pysahtymishetki on selvilla."""
+        hs = sorted((h for h in list(an.heitot) if h.f_alku is not None), key=lambda x: x.f_alku)
+        if not hs or all(h.tunnus in self.kello_ilm for h in hs):
+            return
+        kt = an.kello()
+        for i, h in enumerate(hs):
+            if h.tunnus in self.kello_ilm:
+                continue
+            k = kt[h.tunnus]
+            edell = hs[i - 1] if i else None
+            if edell is not None and edell.puoli == h.puoli and not lopuksi and not an.kauko_selvilla(edell):
+                break                                       # edellisen heiton pysahtymishetki ei ole viela lopullinen: odotetaan kaukopaan seurantaa
+            self.kello_ilm.add(h.tunnus)
+            self.muuttunut = True
+            n = list(an.heitot).index(h) + 1
+            if edell is None or edell.puoli != h.puoli:
+                self._tulosta(f"          heitto {n}: {self.nimi(h)} - paan ensimmainen heitto (kello ei kay paiden valilla); {h.vari} yht {_aika_teksti(k['joukkue_yht_s'])}")
+            elif k["aika_s"] is None:
+                self._tulosta(f"          heitto {n}: {self.nimi(h)} - miettimisaikaa ei saatu (edellisen kiven pysahtymista ei havaittu)")
+            else:
+                self._tulosta(f"          heitto {n}: {self.nimi(h)} miettimisaika {_aika_teksti(k['aika_s'])} (joukkueen {h.vari} aika yhteensa {_aika_teksti(k['joukkue_yht_s'])})")
+
+    def tallenna_radat(self, an):
+        """Heittojen radat ja mittaukset pickleen (--radat): heittopaan paikat, viivaestimaatti, kierteen mittaukset, kaukopaan rata ja kiven vakiot; kaukopaan radalle voi ajaa vakiosovituksen
+        (netti_vakiot.sovita) uudelleen ilman koko videon analyysia."""
+        import pickle
+        out = []
+        for h in an.heitot:
+            ns_ = [n for n in h.naytteet if n.paikka() is not None and h.f_alku is not None and n.f >= h.f_alku]
+            out.append(dict(tunnus=h.tunnus, vari=h.vari, puoli=h.puoli, kivi_nro=h.kivi_nro, f_alku=h.f_alku, f_loppu=h.f_loppu, hog1_f=h.hog1_f, hog2_f=h.hog2_f,
+                            near=[(n.f, float(n.paikka()[0]), float(n.paikka()[1]), bool(n.kivi())) for n in ns_], viivat=h.viivat, kierto=h.kierto, kauko_kierto=h.kauko_kierto,
+                            kierre=h.kierre, kauko=h.kauko, vakiot=h.vakiot, saapuminen=h.saapuminen))
+        with open(self.radat_polku, "wb") as fh:
+            pickle.dump(out, fh)
+        self._tulosta(f"Radat ja mittaukset tallennettu: {self.radat_polku} ({len(out)} heittoa)")
+
+    def loppuyhteenveto(self, an):
+        """Ajon lopuksi: joukkueiden miettimisaika yhteensa (kello kay, kun edellisen heiton kivi on pysahtynyt, ja pysahtyy heiton lahtiessa; ei kay paiden valilla) ja kaukopaan seurannan tulos."""
+        if self.radat_polku and an.heitot:
+            self.tallenna_radat(an)
+        if self.hiljaa or not an.heitot:
+            return
+        kt = an.kello()
+        yht, n = {}, {}
+        for h in an.heitot:
+            k = kt.get(h.tunnus)
+            if k is not None and k["aika_s"] is not None:
+                yht[h.vari] = yht.get(h.vari, 0.0) + k["aika_s"]
+                n[h.vari] = n.get(h.vari, 0) + 1
+        if yht:
+            print("Joukkueiden kello (miettimisaika yhteensa): " + "; ".join(f"{v.capitalize()} {_aika_teksti(a)} ({n[v]} heittoa, keskimaarin {_aika_teksti(a / n[v])})" for v, a in sorted(yht.items())), flush=True)
+        kv = an.kivien_vakiot()
+        if kv:
+            print(f"Kivikohtaiset vakiot: {len(kv)} kivea (A = kitkataso, kappa = kaarto; tiedosto {self.kivet_polku or '-'})", flush=True)
+
     def historia(self, an):
         """Estimaattien kehitys heitoittain (analyysiaika lahdosta, irroitus, suunta, T-viivan osumat): nayttaa miten alustava arvio tarkentuu."""
         if self.hiljaa:
@@ -538,21 +662,60 @@ class Kirjaaja:
             for f, Y, th, XT_i, XT_l, vakaa in h.viivat_loki[:: max(1, len(h.viivat_loki) // 14)]:
                 print(f"   +{(f - h.f_alku) / self.fps:5.1f} s: Y={Y:5.0f} cm  {th:+6.2f} deg  T-viiva {XT_i:+5.0f} / {XT_l:+5.0f} cm  {'vakaa' if vakaa else 'alustava'}")
 
+    @staticmethod
+    def _n(x, des=2):
+        return "" if x is None else f"{x:.{des}f}"
+
+    def _rivi(self, n, h, kt, paa):
+        """CSV-rivi heitolle h (n = jarjestysnumero); viivaestimaatin sarakkeet tyhjia, ellei estimaattia ole."""
+        N = self._n
+        s = ns.heiton_suureet(h)
+        v = h.viivat
+        fps = self.fps
+        rivi = [n, h.vari, h.kivi_nro, h.puoli, f"{h.f_alku / fps:.2f}", f"{h.f_loppu / fps:.2f}"]
+        if s is not None and v is not None:
+            rivi += [f"{v['irr_Y']:.1f}", f"{v['irr_suunta_deg']:.3f}", f"{v['irr_virhe_deg']:.3f}", f"{v['liuku_suunta_deg']:.3f}", f"{s['liuku_cm']:.1f}", f"{s['heitto_cm']:.1f}",
+                     N(s["irroitus_cm"], 1), N(s["kierre"]), int(s["kierre_mitattu"]), N(s["omega_deg_s"], 1), N(s["T_hh"]), f"{s['irr_hog_m']:.2f}",
+                     f"{s['v_ennen']:.3f}", f"{s['v_jalkeen']:.3f}", f"{s['hidastuvuus']:.3f}", f"{v['liuku_hidastuvuus']:.3f}", int(s["vakaa"])]
+        else:
+            rivi += [""] * 17
+        r = h.kierre
+        k = h.kauko if (h.kauko is not None and "virhe" not in h.kauko) else None
+        rivi += [paa["paa"], paa["heitto_paassa"], N(None if h.hog1_f is None else h.hog1_f / fps), N(None if h.hog2_f is None else h.hog2_f / fps),
+                 "" if k is None or k["hog2_lahde"] is None else k["hog2_lahde"],
+                 N(None if r is None else r["N_sigma"]), "" if r is None else int(bool(r["varma"])), "" if r is None else r["omega_lahde"], N(None if r is None else r["k"], 4),
+                 N(None if s is None else s["omega_kauko_deg_s"], 1), N(None if s is None else s["kierre_koko"]), N(None if s is None or s["kierre_koko"] is None else s["kierre_koko_sigma"])]
+        if k is not None:
+            lepo = k["tila"] == "pysahtyi"                  # lepopaikka heittajan koordinaatistossa: X + = heittajan oikealle (kaukopaan X' on peilikuva), Y = T-viivasta heittajaa kohti (+ = ennen T-viivaa)
+            rivi += [k["tila"], N(k["f_pys"] / fps) if lepo else "", N(None if k.get("f_ulos") is None else k["f_ulos"] / fps), N(-k["X_pys"], 1) if lepo else "", N(k["Y_pys"], 1) if lepo else "",
+                     N(float(np.hypot(k["X_pys"], k["Y_pys"])), 1) if lepo else "", N(k["v_hog_cm_s"], 1), N(k["tormays"]["f"] / fps) if k.get("tormays") else ""]
+        else:
+            rivi += [""] * 8
+        vk = h.vakiot
+        if vk is not None and vk.get("ok"):
+            rivi += [N(vk["A"], 5), N(vk.get("A_sd"), 5), N(vk["kappa"]) if vk.get("kappa_ok") else "", N(vk.get("kappa_sd")) if vk.get("kappa_ok") else "", int(bool(vk.get("kappa_ok"))),
+                     N(vk["rms_y_cm"], 1), N(vk["rms_x_cm"], 1), vk.get("omega_lahde") or ""]
+        else:
+            rivi += [""] * 8
+        rivi += [N(kt["aika_s"], 1), N(kt["joukkue_yht_s"], 1)]
+        return rivi
+
     def _kirjoita_csv(self, an):
-        """Koko CSV uusiksi (valmistuneet heitot; kierre taydentyy heiton valmistumisen jalkeen)."""
+        """Koko CSV uusiksi: kaikki valmistuneet heitot (viivaestimaatin sarakkeet tyhjia, jos estimaattia ei saatu); kaukopaan tulokset, kierre, vakiot ja kello taydentyvat heiton
+        valmistumisen jalkeen. Lisaksi kivikohtaiset vakiot (<csv>_kivet.csv)."""
+        heitot = [h for h in (list(an.heitot) if an is not None else []) if h.tunnus in self.valmis and h.f_alku is not None and h.f_loppu is not None]
+        kt = an.kello() if an is not None and heitot else {}
         with open(self.csv_polku, "w", newline="") as fh:
             w = csv.writer(fh)
             w.writerow(self.OTSIKKO)
-            for n, h in enumerate(list(an.heitot) if an is not None else [], 1):
-                s = ns.heiton_suureet(h)
-                v = h.viivat
-                if h.tunnus not in self.valmis or s is None or v is None:
-                    continue
-                w.writerow([n, h.vari, h.kivi_nro, h.puoli, f"{h.f_alku / self.fps:.2f}", f"{h.f_loppu / self.fps:.2f}",
-                            f"{v['irr_Y']:.1f}", f"{v['irr_suunta_deg']:.3f}", f"{v['irr_virhe_deg']:.3f}", f"{v['liuku_suunta_deg']:.3f}", f"{s['liuku_cm']:.1f}", f"{s['heitto_cm']:.1f}",
-                            "" if s["irroitus_cm"] is None else f"{s['irroitus_cm']:.1f}", "" if s["kierre"] is None else f"{s['kierre']:.2f}", int(s["kierre_mitattu"]),
-                            "" if s["omega_deg_s"] is None else f"{s['omega_deg_s']:.1f}", "" if s["T_hh"] is None else f"{s['T_hh']:.2f}", f"{s['irr_hog_m']:.2f}",
-                            f"{s['v_ennen']:.3f}", f"{s['v_jalkeen']:.3f}", f"{s['hidastuvuus']:.3f}", f"{v['liuku_hidastuvuus']:.3f}", int(s["vakaa"])])
+            for h in heitot:
+                w.writerow(self._rivi(list(an.heitot).index(h) + 1, h, kt[h.tunnus], kt[h.tunnus]))
+        if self.kivet_polku and an is not None:
+            with open(self.kivet_polku, "w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(self.OTSIKKO_KIVET)
+                for (vari, nro), d in an.kivien_vakiot().items():
+                    w.writerow([vari, nro, d["n"], self._n(d["A"], 5), self._n(d["A_sd"], 5), d["n_kappa"], self._n(d["kappa"]), self._n(d["kappa_sd"]), ";".join(str(t) for t in d["heitot"])])
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -587,6 +750,7 @@ def aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     an.viimeistele()
     kirjaaja.paivita(an, lopuksi=True)
     kirjaaja.historia(an)
+    kirjaaja.loppuyhteenveto(an)
     f_alku_out = int(lahde.alku_s * lahde.fps)
     viim = f_alku_out + n - D
     for f_out in range(max(viim, f_alku_out), f_alku_out + n):         # viimeiset D ruutua
@@ -757,6 +921,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         purku.shutdown(wait=False, cancel_futures=True)
         an.viimeistele()
         kirjaaja.paivita(an, lopuksi=True)
+        kirjaaja.loppuyhteenveto(an)
         if not a.hiljaa:
             print(f"analysoitu {tilasto['analysoitu']} ruutua, ohitettu (myohassa) {tilasto['ohitettu']}, virheita {tilasto['virheita']}; piirretty {tilasto['piirretty']} ruutua"
                   + (f", ikkunassa {naytto.n_nayt}" if naytto is not None else "") + f", suurin viive piirrossa {tilasto['myohassa_max']:.1f} s", flush=True)
@@ -780,7 +945,12 @@ def main():
     ap.add_argument("--nayttotila", choices=("auto", "ikkuna", "kokoruutu"), default="auto",
                     help="ikkuna: kuva taydella 1920 x 1080 resoluutiolla; auto = kokoruutu jos naytto ei ole sita suurempi (1:1); 'f' vaihtaa kokoruudun")
     ap.add_argument("--ikkuna-leveys", type=int, default=0, help="ikkunan leveys pikseleina (0 = taysi resoluutio 1920; pienempi skaalaa kuvaa)")
-    ap.add_argument("--csv", help="kirjaa valmistuneet heitot CSV:hen")
+    ap.add_argument("--csv", nargs="?", const="auto", default="auto",
+                    help="heittojen tiedot CSV:hen (oletus: heitot_<paivays>_<aika>.csv nykyiseen kansioon; kivikohtaiset vakiot viereen <nimi>_kivet.csv): heiton viivaestimaatti, kierre, "
+                         "kaukopaan pysahtyminen, kiven vakiot (A, kappa), miettimisaika ja joukkueen aika")
+    ap.add_argument("--ei-csv", action="store_true", help="ei CSV-tallennusta")
+    ap.add_argument("--radat", help="tallenna heittojen radat ja mittaukset (pickle) jalkianalyysia varten, esim. kiven vakioiden uudelleensovitus ilman koko videon analyysia (kehitys)")
+    ap.add_argument("--ei-kelloa", action="store_true", help="ei joukkueiden kelloa (miettimisaika) kuvassa")
     ap.add_argument("--ei-ikkunaa", action="store_true", help="ei ikkunaa (palvelin / testaus)")
     ap.add_argument("--ei-kierretta", action="store_true", help="ei kierteen eika hog-hog-ajan mittausta")
     ap.add_argument("--nopea", action="store_true", help="simulaatio: tiedosto ajetaan niin nopeasti kuin ehtii (tulos ei riipu ajoituksesta)")
@@ -799,8 +969,13 @@ def main():
         oma = os.path.join(os.path.dirname(os.path.abspath(__file__)), a.kansio)
         if os.path.isdir(oma):
             a.kansio = oma
+    leima = time.strftime("%Y%m%d_%H%M%S")
     if a.ulos == "auto":
-        a.ulos = time.strftime("kivenseuranta_%Y%m%d_%H%M%S.mp4")
+        a.ulos = f"kivenseuranta_{leima}.mp4"
+    if a.ei_csv:
+        a.csv = None
+    elif a.csv == "auto":
+        a.csv = f"heitot_{leima}.csv"
     if not (a.youtube or a.lahde or a.url):
         ap.error("anna --youtube [TUNNUS], --lahde TIEDOSTO tai --url OSOITE")
     sim = bool(a.nopea and a.lahde)
@@ -818,13 +993,14 @@ def main():
     lahde = Lahde(tiedosto=a.lahde, youtube=a.youtube, alku_s=a.alku, loppu_s=a.loppu, yt_formaatti=a.yt_formaatti, url=a.url)
     an.fps = lahde.fps
     geom = ng.Geometria(a.kansio)
-    piirtaja = npi.Piirtaja(geom, fps=lahde.fps, jalki_s=a.jalki, viivat_s=a.viivat, viive_s=a.viive)
+    piirtaja = npi.Piirtaja(geom, fps=lahde.fps, jalki_s=a.jalki, viivat_s=a.viivat, viive_s=a.viive, kello=not a.ei_kelloa)
     kirjoittaja = Kirjoittaja(a.ulos, lahde.fps, a.koodekki, a.ffmpeg, a.x264_preset) if a.ulos else None
     naytto = None if a.ei_ikkunaa else Naytto(a.nayttotila, a.ikkuna_leveys)
     if not a.hiljaa:
         print(f"Kuva tulee {a.viive:.0f} s viiveella. " + ("Ikkuna: 'q' tai ESC (tai ikkunan sulkeminen) lopettaa, 'f' vaihtaa kokoruudun. " if naytto else "")
               + (f"Tallennus: {a.ulos} ({kirjoittaja.nimi})" if kirjoittaja else "Ei tallennusta (lisaa --ulos)."), flush=True)
-    kirjaaja = Kirjaaja(a.csv, a.hiljaa, lahde.fps, a.tapahtumat)
+        print(f"Heittojen tiedot: {a.csv} (kivikohtaiset vakiot: {os.path.splitext(a.csv)[0]}_kivet.csv)" if a.csv else "Ei CSV-tallennusta (--ei-csv).", flush=True)
+    kirjaaja = Kirjaaja(a.csv, a.hiljaa, lahde.fps, a.tapahtumat, a.radat)
     try:
         if sim:
             aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja)

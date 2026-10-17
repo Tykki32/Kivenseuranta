@@ -144,16 +144,53 @@ HOG_KESKI_CM = HOG_SISA_CM + 6.35   # hog-viivan keskiviiva: tama ylitys ajoitet
 KIVIA_PAASSA = 8                 # numerointi alkaa alusta taman jalkeen (yhden joukkueen kivet / paa)
 KAARTO_VARMA_1_CM = 4.0e-5       # vapaan lennon kaarevuus (1/cm), jonka yli kaarto ratkaisee kiertosuunnan jos kuvamittaus on epavarma
 KAARTO_VIHJE_1_CM = 2.5e-5       # ... ja jonka yli kaarto kertoo suunnan kun kuvamittausta ei ole
+KAUKO_PYS_HIDASTUVUUS = 0.10          # m/s2: pysahtymisajan arvio hog-ylityksesta, kun kaukopaan seuranta ei onnistunut (tyypillinen hidastuvuus hogilta pysahtymiseen)
+KIERRE_SIGMA_VARMA = 0.25         # kierrosmaara on 'varma', kun sen epavarmuus (netti_kierre.yhdista) on enintaan taman verran kierrosta eika mittaukset ole ristiriidassa
 # kaukopaan hog-viivan ylityksen haku (toisen puoliskon kuvasta)
 SAAP_ALKU_S = 3.0                # haku alkaa taman verran heittopaan poistumisen jalkeen
 SAAP_LOPPU_S = 45.0              # ... ja paattyy taman jalkeen
 SAAP_X_CM = 300.0                # hakuvyohyke kaukopaassa: |X'| <= taman, Y' valilla
 SAAP_Y_CM = (450.0, 800.0)
 SAAP_PISTEITA = 6                # rata vahvistetaan kun vahintaan taman verran pisteita
-SAAP_PEITTO_VARMA = 0.40         # kaukopaan rata kelpaa kiveksi, kun B-sovituksen peitto (graniittia siluetin sisalla) on radan viimeisessa pisteessa vahintaan tama ...
-SAAP_PEITTO_MIN = 0.30           # ... tai kahdessa tarkistuksessa vahintaan tama; hylataan, kun SAAP_TARKISTUKSIA tarkistusta ei riita (kivi 0,34-0,71, ihmisen varusteet 0,06-0,28)
-SAAP_TARKISTUKSIA = 3
-SAAP_TARKISTUS_VALI = 2          # radan tarkistusten vali (ruutua)
+SAAP_PISTEITA_B = 4              # kaukopaan rata hyvaksytaan kiveksi, kun siina on vahintaan taman verran pisteita ...
+SAAP_B_HYVAKSY = 2               # ... joista vahintaan taman monelle B-sovitus toteaa kiven (graniittia siluetin sisalla: kivi 0,34-0,95, ihmisen varusteet, esim. sweeperin punainen kasivarsinauha, 0,06-0,28) ...
+SAAP_B_VALI = 3                  # ... ja B pyydetaan radan uusimmalle pisteelle taman monen ruudun valein (vain kulkevalle radalle)
+# kaukopaan seuranta: kivi tunnistettu -> seuranta (A + B) pysahtymiseen asti
+KAUKO_HUKKA_RUUTUA = 180         # seuranta paattyy, kun B-paikkaa ei ole ollut taman monta ruutua (kivi piilossa harjaajien alla tai poistunut kuvasta); ennuste kantaa piilossaolon yli
+KAUKO_HIDASTUVUUS_CM_S2 = 8.0    # ennusteen hidastuvuus (cm/s2) piilossaolon aikana (0,08 m/s2: tyypillinen vapaa lento; pysahtymisvaiheessa suurempi)
+KAUKO_A_LUOTTO_RUUTUA = 20        # A kelpaa kiven paikaksi vain, jos viimeisesta B-paikasta on enintaan taman monta ruutua ...
+KAUKO_A_POIKK_CM = 12.0          # ... ja A (+ B-A-ero) on enintaan taman verran ennusteesta (muuten A voi olla harjaajan kasivarsinauha)
+KAUKO_PORTTI_KASVU_CM = 2.0      # hakuportti kasvaa taman verran per paikaton ruutu ...
+KAUKO_PORTTI_MAX_CM = 110.0      # ... enintaan tahan
+SAAP_KARTTA_CM = 3.5             # kaukopaan kivikartta (ennen heittoa paikallaan olleet saman varin kahvat): taman sisalla olevia blobeja ei seurata liikkuvana kivena
+SAAP_KARTTA_VALI = 60            # kartan paivitys (ruutua) kunnes liikkuva rata loytyy
+KAUKO_PYS_V_CM_S = 12.0          # hukattu kivi on pysahtynyt piiloon, jos sen nopeus ennen hukkaa oli alle taman
+KAUKO_EKSTRAP_CM = 220.0         # hog-ylitys ekstrapoloidaan radan alusta enintaan taman matkan (kivi tunnistettiin vasta viivan jalkeen)
+KAUKO_PYS_CM = 4.5               # pysahtynyt: kiven B-paikka pysyy taman sisalla (vaihteluvali X ja Y; B-sovituksen kohina levossa on +-3 cm) ...
+KAUKO_PYS_S = 0.8                # ... taman ajan
+KELLO_TORMAYS_LISA_S = 4.0       # kello: tormayksessa liikkeelle lahteneet kivet pysahtyvat arviolta taman ajan kuluessa tormayksesta (heitetyn kiven pysahtymishetki, jos myohemmin)
+KAUKO_KIIHTYY_CM_S = 70.0        # kaukopaan rata katkaistaan, kun hidastunut kivi (nopeus alle KAUKO_KIIHTYY_HIDAS_CM_S) alkaa liikkua: nopeus kasvaa taman verran (ja > 2-kertaiseksi) viimeisen 1,5 s:n
+KAUKO_KIIHTYY_SUHDE = 2.0        # pienimmasta: kivi ei voi kiihtya, joten seurattu kohde on vaihtunut (kivea kuljetetaan kasin / seurataan toista kohdetta)
+KAUKO_KIIHTYY_HIDAS_CM_S = 40.0
+KELLO_ENNEN_S = 3.0              # kello: edellisen kiven pysahtymisen arvio saa olla enintaan taman verran seuraavan heiton lahdon jalkeen (muuten aika = ei saatu)
+KELLO_ARVIO_MAX_S = 12.0         # kello: pysahtymisen arvio hog-ylityksesta (ilman kaukopaan seurantaa) enintaan taman verran hog-ylityksen jalkeen
+KELLO_NOPEA_M_S = 1.3            # ... ja jos nopeus hogilla on yli taman (poisto), enintaan KELLO_NOPEA_MAX_S
+KELLO_NOPEA_MAX_S = 6.0
+PELI_TAKA_Y_CM = -(183.0 + KIVI_R_CM)   # kivi on poissa pelista, kun sen keskipiste on kokonaan taka-viivan (Y' = -183 cm) takana ...
+PELI_SIVU_X_CM = 237.5 + KIVI_R_CM       # ... tai sivuviivan (|X'| = 237,5 cm) ulkopuolella: kello kay (kivi ei enaa vaikuta peliin), vaikka kivi liukuisi viela
+KAUKO_LAUTA_Y_CM = 250.0         # hukattu nopea kivi, joka on jo pesan takana (Y' < 0), osuu taka-aitaan taman Y':n (-Y') kohdalla ja pysahtyy siihen ...
+KAUKO_LAUTA_LISA_S = 1.0         # ... + taman verran
+KELLO_PIILOSSA_MAX_S = 8.0       # kello: hukatun (piiloon / pois kuvasta) kiven pysahtymishetki = viimeinen paikka + nopeus / KAUKO_PYS_HIDASTUVUUS, enintaan taman verran
+KAUKO_PYS_RAJA_CM = 3.0          # pysahtymishetki radasta: kohinataso levossa (raakojen etaisyyksien 95 %:n fraktiili), vahintaan tama (cm) ...
+KAUKO_PYS_LISA_S = 1.0           # ... + taman verran (kivi hiipii viimeiset sentit hitaasti: 4-5 cm lepopaikasta ~1 s ennen pysahtymista)
+KAUKO_LOPPU_S = 80.0             # seurannan enimmaiskesto
+KAUKO_B_LIIKKUU_RUUTUA = 1       # B joka n:s ruutu kun kivi liikkuu (> 30 cm/s) ...
+KAUKO_B_HIDAS_RUUTUA = 4         # ... hitaasti (3-30 cm/s) ...
+KAUKO_B_LEPO_RUUTUA = 10         # ... ja levossa
+KAUKO_KIERTO_Y_MIN_CM = 150.0    # kierteen mittauksen ruudut kaukopaassa (kuten KIERTO_Y_MIN_CM / KIERTO_Y_MAX_CM heittopaassa)
+KAUKO_KIERTO_Y_MAX_CM = 720.0
+KAUKO_KIERTO_MAX_RUUTUJA = 240
+KAUKO_KIERTO_KEHYKSIA = 100        # kaukopaan kierteen sovitukseen otetaan enintaan taman verran (tasaisesti valittuja) ruutuja
 
 
 class Kuvain:
@@ -375,16 +412,51 @@ def alusta_kierto(kansio, puolet):
 
 
 def kierto_laske(m, args):
-    """Kierteen mittaus: args = (puoli, vari, havainnot, t_irr), m = puolen Mittari. Palauttaa netti_kierre.arvioi:n dictin (tai dict(virhe=...))."""
-    puoli, vari, havainnot, t_irr = args
+    """Kierteen mittaus: args = (puoli, vari, havainnot, t_irr[, omega_ennakko]), m = puolen Mittari. omega_ennakko = (omega_deg_s, t_s) toisen paan mittaus (kaukopaassa: heittopaan
+    mittaus; ratkaisee alias-minimien valilla). Palauttaa netti_kierre.arvioi:n dictin (tai dict(virhe=...))."""
+    puoli, vari, havainnot, t_irr = args[:4]
     try:
-        return nk.arvioi(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari))
+        return nk.arvioi(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari), omega_ennakko=(args[4] if len(args) > 4 else None))
     except Exception as e:
         return dict(virhe=repr(e))
 
 
 def tyo_kierto(args):
     return kierto_laske(_MK[args[0]], args)
+
+
+def vakiot_laske(args):
+    """Kiven vakiot kaukopaan radasta (netti_vakiot.sovita); args = sovita-funktion nimetyt argumentit. Palauttaa sen dictin (tai dict(ok=False, syy=...))."""
+    try:
+        import netti_vakiot as nv
+        return nv.sovita(**args)
+    except Exception as e:
+        return dict(ok=False, syy=repr(e))
+
+
+def vakiot_argumentit(kauko, kauko_kierto, kierre, hog2_f, fps):
+    """netti_vakiot.sovita:n argumentit (dict) ja kierteen pakotteen lahde ("kauko" | "kierre" | None) heiton kaukopaan seurannasta (h.kauko), kaukopaan kierron mittauksesta
+    (h.kauko_kierto), yhdistetysta kierteesta (h.kierre) ja hog-ylityksesta (h.hog2_f). Rata: aikaperustan aika; katkaistaan pysahtymiseen (+ 0,5 s), tormayksen alkuun (- 0,2 s) tai
+    hukatulla kivella viimeiseen B-paikkaan (+ 0,3 s). Pakote: varma kaukopaan mittaus, muuten varma yhdistetty kierre (omega hogilla), muuten ei pakotetta."""
+    P = np.asarray(kauko["pisteet"], float)
+    F, t = P[:, 0], np.asarray(kauko["t"], float)
+    t_f = lambda f: float(np.interp(f, F, t))
+    pys = kauko["tila"] == "pysahtyi"
+    t_loppu = t_f(kauko["f_pys"]) + 0.5 if pys and kauko.get("f_pys") is not None else None
+    if not pys and kauko.get("f_viim_b") is not None:                  # hukattu kivi: viimeisen B-paikan jalkeiset A-paikat voivat olla harjaajien nauhoja
+        t_loppu = t_f(kauko["f_viim_b"]) + 0.3
+    if kauko.get("tormays"):                                           # tormayksen jalkeen rata ei noudata mallia
+        t_t = t_f(kauko["tormays"]["f"]) - 0.2
+        t_loppu = t_t if t_loppu is None else min(t_loppu, t_t)
+        pys = False
+    omega, lahde = None, None
+    mf = nk.omega_mitta(kauko_kierto, fps)
+    if mf is not None and mf[3]:                                       # varma mittaus kaukopaasta
+        omega, lahde = (t_f(mf[0] * fps), abs(mf[1]), mf[2]), "kauko"
+    elif kierre is not None and kierre.get("varma") and hog2_f is not None:          # yhdistetty kierre (omega hogilla): mittaus + vaimeneminen
+        om2 = abs(float(np.radians(kierre["omega2_deg"])))
+        omega, lahde = (t_f(hog2_f), om2, max(0.15, 0.15 * om2)), "kierre"
+    return dict(t=t, X=P[:, 1], Y=P[:, 2], vahva=np.asarray(kauko["vahva"], bool), omega=omega, kaarto_merkki=None, t_loppu=t_loppu, pysahtynyt=pys), lahde
 
 
 def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
@@ -480,6 +552,12 @@ class Heitto:
         self.hog1_f = None                     # ruutu (murtoluku), jolla kivi ylitti heittopaan hog-viivan (vasemman puoliskon rata)
         self.hog2_f = None                     # ruutu, jolla kivi ylitti kaukopaan hog-viivan (oikean puoliskon kuva)
         self.saapuminen = None                 # kaukopaan haku: None | "haku" | "loytyi" | "ei_loytynyt"
+        self.kauko = None                      # kaukopaan seuranta (KaukoSeuranta._valmis): dict(tila, paikat, pysahtyminen, hog-ylitys ...) tai None
+        self.vakiot = None                     # kiven vakiot (netti_vakiot.sovita): kitkataso A ja kaarto kappa kaukopaan radasta, tai dict(ok=False, syy=...)
+        self.vakiot_tila = None                # None | "kaynnissa" | "valmis" | "virhe"
+        self.vakiot_omega_lahde = None         # kierteen pakotteen lahde vakioiden sovituksessa: "kauko" | "kierre" | None
+        self.kauko_kierto = None               # kierteen mittaus kaukopaan kuvasta (netti_kierre.arvioi) tai dict(virhe=...)
+        self.kauko_kierto_tila = None          # None | "kaynnissa" | "valmis" | "virhe"
         self.kierre = None                     # kierrosmaara hog-hog-valilla (_paivita_kierre)
         self.ala_med = None                    # kahvan normitettu ala (px / skaala^2): kaukopaan blobien tunnistus
 
@@ -530,38 +608,12 @@ class Heitto:
         return out
 
 
-class Heittopaa:
-    """Yhden pelipaan (vasen / oikea) heittojen tunnistus ja seuranta."""
+class _Seuranta:
+    """Seurannan yhteiset apurit: heittopaa (Heittopaa) ja kaukopaan seuranta (KaukoSeuranta) kayttavat samaa ennustetta, A-valintaa ja konsolidointia. Edellyttaa kentat an, m, vari,
+    heitto (naytteet, lepo, tila), ala_norm ja _ennuste_luotettava."""
 
-    def __init__(self, analyysi, puoli):
-        self.an = analyysi
-        self.puoli = puoli
-        self.m = analyysi.M[puoli]
-        self.tila = "IDLE"
-        self.heitto = None
-        self.kandidaatit = {}                   # IDLE: vari -> lista (f, X, Y, u, v, ala)
-        self.lepo = []                          # ARMED: viimeisimmat A-havainnot (f, X, Y, u, v, ala)
-        self.f_nahty = None                     # viimeisin ruutu, jossa kahva nakyi (ARMED)
-        self.vari = None
-        self.n_ruutu = 0
-        self.hukka = 0
-        self.ala_norm = []                      # hyvaksyttyjen kahvojen ala / skaala^2 (viimeiset 8): odotetun alan mediaani
-        self.f_liike = None
-        self.edellinen_loppu_f = -10 ** 9
-        self.ei_ennen_f = -10 ** 9               # IDLE-haku tauolla tahan ruutuun asti (kivettomat kandidaatit)
-        self._ennuste_luotettava = False         # viimeisin ennuste oli B-pohjainen (_ennuste_b)
-        self._ala_ulkona = []                    # perakkaiset hyvaksytyt blobit, joiden ala oli ALA_VAIHTELU:n ulkopuolella (normitettu)
-        P = np.array([(x, y, z) for x in HACK_X for y in HACK_Y for z in (0.0, 20.0)])
-        u, v = kivimalli.project_3d(self.m.cam.K, self.m.cam.R, self.m.cam.t, P)
-        self.hack_alue = (int(u.min()) - 6, int(v.min()) - 6, int(u.max()) + 6, int(v.max()) + 6)
-
-    # ---- apurit --------------------------------------------------------------------------------------------------
     def _a_maa(self, c):
         return self.m.oikaistu_maahan(c[0], c[1])
-
-    @staticmethod
-    def _hack_sisalla(X, Y):
-        return HACK_X[0] <= X <= HACK_X[1] and HACK_Y[0] <= Y <= HACK_Y[1]
 
     def _konsol(self, n, o):
         """Konsolidoitu paikka seurantaan: B / pehmea B sellaisenaan, A korjattuna B-kehykseen (A - o)."""
@@ -661,9 +713,9 @@ class Heittopaa:
         (fb, qb), (fa, qa) = pts[0], pts[-1]
         return float(np.hypot(qb[0] - qa[0], qb[1] - qa[1])) / max(fb - fa, 1)
 
-    def _vari_a(self, ruutu, ennuste_XY, gate_cm, tarkka_ala=True, ala_raja=(0.4, 2.2)):
-        """A-mittaus: kahva ennusteen ymparilta; hyvaksytaan ennusteeseen lahin alaltaan (ala_raja * odotettu ala) ja sijainniltaan sopiva blobi. Palauttaa (X, Y, ala,
-        skaala) tai None."""
+    def _vari_a(self, ruutu, ennuste_XY, gate_cm, tarkka_ala=True, ala_raja=(0.4, 2.2), ohita=None):
+        """A-mittaus: kahva ennusteen ymparilta; hyvaksytaan ennusteeseen lahin alaltaan (ala_raja * odotettu ala) ja sijainniltaan sopiva blobi. ohita: [(X, Y)] paikallaan olevat
+        kivet / esineet (kartta ennen heittoa): taman SAAP_KARTTA_CM:n sisalla olevat blobit hylataan. Palauttaa (X, Y, ala, skaala) tai None."""
         Xp, Yp = ennuste_XY
         up, vp = self.m.maa_oikaistuun(Xp, Yp)
         s = self.m.skaala(Xp, Yp)
@@ -676,8 +728,49 @@ class Heittopaa:
                 if not (ala_raja[0] * odotus <= ala <= ala_raja[1] * odotus):
                     continue
             X, Y = self._a_maa((u, v))
+            if ohita and any(np.hypot(X - q[0], Y - q[1]) <= SAAP_KARTTA_CM for q in ohita):
+                continue
             return X, Y, ala, s
         return None
+
+    def _kierto_leike(self, h, n, ruutu, X0, Y0):
+        """Leike oikaistusta kuvasta kiven akselin ymparilta kierteen mittausta varten (muovikartat lasketaan heiton jalkeen taustaprosessissa)."""
+        u, v = self.m.maa_oikaistuun(X0, Y0, self.m.ast["z0_cm"])
+        uc, vc = int(round(float(u[0]))), int(round(float(v[0])))
+        roi, cx0, cy0 = self.m.kuvain.leike(ruutu, uc - KIERTO_LEIKE_R, vc - KIERTO_LEIKE_R, uc + KIERTO_LEIKE_R, vc + KIERTO_LEIKE_R)
+        if roi is not None:
+            h.kierto_kehykset.append((n, roi, cx0, cy0))
+
+
+class Heittopaa(_Seuranta):
+    """Yhden pelipaan (vasen / oikea) heittojen tunnistus ja seuranta."""
+
+    def __init__(self, analyysi, puoli):
+        self.an = analyysi
+        self.puoli = puoli
+        self.m = analyysi.M[puoli]
+        self.tila = "IDLE"
+        self.heitto = None
+        self.kandidaatit = {}                   # IDLE: vari -> lista (f, X, Y, u, v, ala)
+        self.lepo = []                          # ARMED: viimeisimmat A-havainnot (f, X, Y, u, v, ala)
+        self.f_nahty = None                     # viimeisin ruutu, jossa kahva nakyi (ARMED)
+        self.vari = None
+        self.n_ruutu = 0
+        self.hukka = 0
+        self.ala_norm = []                      # hyvaksyttyjen kahvojen ala / skaala^2 (viimeiset 8): odotetun alan mediaani
+        self.f_liike = None
+        self.edellinen_loppu_f = -10 ** 9
+        self.ei_ennen_f = -10 ** 9               # IDLE-haku tauolla tahan ruutuun asti (kivettomat kandidaatit)
+        self._ennuste_luotettava = False         # viimeisin ennuste oli B-pohjainen (_ennuste_b)
+        self._ala_ulkona = []                    # perakkaiset hyvaksytyt blobit, joiden ala oli ALA_VAIHTELU:n ulkopuolella (normitettu)
+        P = np.array([(x, y, z) for x in HACK_X for y in HACK_Y for z in (0.0, 20.0)])
+        u, v = kivimalli.project_3d(self.m.cam.K, self.m.cam.R, self.m.cam.t, P)
+        self.hack_alue = (int(u.min()) - 6, int(v.min()) - 6, int(u.max()) + 6, int(v.max()) + 6)
+
+    # ---- apurit --------------------------------------------------------------------------------------------------
+    @staticmethod
+    def _hack_sisalla(X, Y):
+        return HACK_X[0] <= X <= HACK_X[1] and HACK_Y[0] <= Y <= HACK_Y[1]
 
     def _idle_alkuun(self):
         self.tila = "IDLE"
@@ -917,14 +1010,6 @@ class Heittopaa:
             if Yp >= LOPPU_Y_CM or self.hukka > PAIKKA_PUUTE_RUUTUA:
                 self._valmis(f, "matka" if Yp >= LOPPU_Y_CM else "kivi hukassa")
 
-    def _kierto_leike(self, h, n, ruutu, X0, Y0):
-        """Leike oikaistusta kuvasta kiven akselin ymparilta kierteen mittausta varten (muovikartat lasketaan heiton jalkeen taustaprosessissa)."""
-        u, v = self.m.maa_oikaistuun(X0, Y0, self.m.ast["z0_cm"])
-        uc, vc = int(round(float(u[0]))), int(round(float(v[0])))
-        roi, cx0, cy0 = self.m.kuvain.leike(ruutu, uc - KIERTO_LEIKE_R, vc - KIERTO_LEIKE_R, uc + KIERTO_LEIKE_R, vc + KIERTO_LEIKE_R)
-        if roi is not None:
-            h.kierto_kehykset.append((n, roi, cx0, cy0))
-
     def _ei_etene(self, f):
         """Liikkeessa vahintaan EI_ETENE_S, mutta kivi on viimeisen EI_ETENE_S aikana liikkunut alle EI_ETENE_CM (X- tai Y-vaihteluvali): kivea kasitellaan, ei
         heiteta. (Vaihteluvali eika nettoetenema: heiton alkua edeltava vastaliike hackissa kumoaa nettoetenemaan.)"""
@@ -976,14 +1061,30 @@ class Heittopaa:
 # ---------------------------------------------------------------------------------------------------------------------
 # KAUKOPAA: kiven saapuminen toiseen puoliskoon ja hog-viivan ylitys (hog-hog-aika kierrosmaaraa varten)
 # ---------------------------------------------------------------------------------------------------------------------
-class _Rata(list):
-    """Kaukopaan blobirata [(f, X', Y', ala), ...] ja sen kivitarkistukset (Saapuminen._kivi_kelpaa)."""
+class KaukoHeitto:
+    """Kaukopaan kiven seuranta heittona: B-hyvaksynta (Analyysi._liita_b), ennuste (_Seuranta) ja kierron leikkeet kayttavat samaa rajapintaa kuin Heitto (naytteet, tila,
+    b_laskuri, kierto_kehykset)."""
 
-    def __init__(self, *a):
-        super().__init__(*a)
-        self.peitot = []                                  # B-sovituksen peitot tarkistuspisteissa
-        self.f_tark = -10 ** 9                            # viimeisimman tarkistuksen ruutu
-        self.hylatty = False                              # ei kivi (ihmisen varuste): rata seurataan loppuun mutta ei enaa tarkisteta eika hyvaksyta
+    def __init__(self, tunnus, puoli, vari):
+        self.tunnus, self.puoli, self.vari = tunnus, puoli, vari
+        self.tila = "vahvistettu"              # B hyvaksytaan ennusteen / A:n suhteen (ei lahdon jalkeista ulottumaa)
+        self.naytteet = []
+        self.b_laskuri = 0
+        self.lepo = np.zeros(2)                # ennusteen varapaikka: viimeksi tunnettu paikka
+        self.kierto_kehykset = []
+
+
+class _Rata(list):
+    """Kaukopaan blobirata [(f, X', Y', ala), ...] ja sen naytteet (A; B-sovitukset liitetaan myohemmin): rata, jonka kivi todetaan B:lla, muuttuu kaukopaan seurannaksi."""
+
+    def __init__(self, tunnus, puoli, vari):
+        super().__init__()
+        self.heitto = KaukoHeitto(tunnus, puoli, vari)
+        self.f_b = -10 ** 9                               # viimeisimman B-pyynnon ruutu
+
+    def lisaa(self, q):
+        self.append(q)
+        self.heitto.naytteet.append(Naytteet(q[0], (q[1], q[2]), q[3]))
 
 
 class Saapuminen:
@@ -1014,6 +1115,11 @@ class Saapuminen:
         self.my = np.ascontiguousarray(kv_.my[y0:y1:d, x0:x1:d])
         self.tausta = np.ascontiguousarray(self.m.cam.mode[y0:y1:d, x0:x1:d])
         self.ok = self.mx.size > 100
+        P2 = np.array([(x, y, z) for x in (-250.0, 250.0) for y in (-260.0, SAAP_Y_CM[1]) for z in (0.0, 22.0)])
+        u2, v2 = kivimalli.project_3d(self.m.cam.K, self.m.cam.R, self.m.cam.t, P2)
+        self.alue_kartta = (int(u2.min()) - 10, int(v2.min()) - 10, int(u2.max()) + 10, int(v2.max()) + 10)       # pelialue (kivikartta ennen heittoa)
+        self.karttat = []                                 # [(ruutu, [(X', Y')])]: paikallaan olevat saman varin kahvat pelialueella
+        self._kartta_f = -10 ** 9
         heitto.saapuminen = "haku"
 
     def _maski(self, roi):
@@ -1045,14 +1151,46 @@ class Saapuminen:
             out.append((self.x0 + d * float(cen[k][0]), self.y0 + d * float(cen[k][1]), ala, bb))
         return out
 
+    def _kartoita(self, f, ruutu):
+        """Pelialueen saman varin kahvat (A-taso, taustasta poikkeavat): kivet, jotka ovat paikallaan ennen kuin heitetty kivi saapuu (kaukopaan seuranta ei saa tarttua niihin)."""
+        h = self.h
+        out = []
+        try:
+            blobit = self.m.kahva(ruutu, self.alue_kartta, h.vari, None, min_ala=25, taustaero=True)
+        except Exception:
+            blobit = []
+        for u, v, ala, bb in blobit:
+            if not (0.35 <= bb[2] / max(bb[3], 1) <= 2.8):
+                continue
+            X, Y = self.m.oikaistu_maahan(u, v)
+            if abs(X) > 260.0 or Y > SAAP_Y_CM[1] or Y < -270.0:
+                continue
+            if h.ala_med:
+                s = self.m.skaala(X, Y)
+                if not (0.3 * h.ala_med * s * s <= ala <= 3.0 * h.ala_med * s * s):
+                    continue
+            out.append((float(X), float(Y)))
+        self.karttat.append((f, out))
+        self.karttat = self.karttat[-4:]
+
+    def kartta_ennen(self, f_ensimmainen):
+        """Viimeisin kartta, joka on otettu ennen kuin liikkuva rata ilmestyi (>= 20 ruutua ennen radan ensimmaista pistetta); muuten vanhin."""
+        for fs, pos in reversed(self.karttat):
+            if fs <= f_ensimmainen - 20:
+                return list(pos)
+        return list(self.karttat[0][1]) if self.karttat else []
+
     def kasittele(self, f, ruutu):
-        """Yksi (yksilollinen) ruutu; palauttaa False kun haku on paattynyt (loytyi tai aika loppui)."""
+        """Yksi (yksilollinen) ruutu; palauttaa False kun haku on paattynyt (kivi tunnistettu: kaukopaan seuranta alkaa, tai aika loppui)."""
         h = self.h
         if f < self.f_alku:
             return True
         if f > self.f_loppu or not self.ok:
             h.saapuminen = "ei_loytynyt"
             return False
+        if f - self._kartta_f >= SAAP_KARTTA_VALI:
+            self._kartta_f = f
+            self._kartoita(f, ruutu)
         uudet = []
         for u, v, ala, bb in self._blobit(ruutu):
             if not (0.35 <= bb[2] / max(bb[3], 1) <= 2.8):
@@ -1077,38 +1215,47 @@ class Saapuminen:
                 d = float(np.hypot(q[1] - Xl, q[2] - Yl))
                 if d <= min(25.0 + 12.0 * (f - fl), 70.0) and (paras is None or d < d_paras):
                     paras, d_paras = r, d
-            if paras is not None:
-                paras.append(q)
-            else:
-                self.radat.append(_Rata([q]))
+            if paras is None:
+                paras = _Rata(h.tunnus, self.puoli, h.vari)
+                self.radat.append(paras)
+            paras.lisaa(q)
         self.radat = [r for r in self.radat if f - r[-1][0] <= 20]
+        # B (asynkroninen) vain kulkevan radan uusimmalle pisteelle: kivella on graniittirunko (peitto 0,34-0,95), sweeperin kasivarsinauhalla ei (0,06-0,28)
         for r in self.radat:
-            if len(r) >= SAAP_PISTEITA and not r.hylatty:
-                f_yl = self._ylitys(r)
-                if f_yl is not None and self._kivi_kelpaa(r, f, ruutu):
-                    h.hog2_f, h.saapuminen = f_yl, "loytyi"
-                    self.an._paivita_kierre(h)
-                    return False
+            if len(r) >= 3 and r[-1][0] == f and f - r.f_b >= SAAP_B_VALI and self._kulkee(r):
+                r.f_b = f
+                self.an.pyyda_b(self, r.heitto, r.heitto.naytteet[-1], ruutu, r[-1][1], r[-1][2])
+        for r in self.radat:
+            if len(r) >= SAAP_PISTEITA_B and sum(1 for q in r.heitto.naytteet if q.kivi()) >= SAAP_B_HYVAKSY and self._kulkee(r):
+                self._hyvaksy(r)
+                return False
         return True
 
-    def _kivi_kelpaa(self, r, f, ruutu):
-        """Onko radan viimeinen piste kivi eika ihmisen varuste. Kivella on graniittirunko: B-sovituksen peitto (graniittia siluetin sisalla) on kivella 0,34-0,71 ja sweeperin
-        punaisella kasivarsinauhalla 0,06-0,28. Tarkistus tehdaan vain radalle, joka muuten kelpaisi, ja harvoin (SAAP_TARKISTUS_VALI); kelpaa, jos yksi tarkistus >= SAAP_PEITTO_VARMA
-        tai kaksi >= SAAP_PEITTO_MIN, ja rata hylataan, kun SAAP_TARKISTUKSIA tarkistusta ei riita."""
-        if r[-1][0] != f or (r.peitot and f - r.f_tark < SAAP_TARKISTUS_VALI):
+    def _kulkee(self, r):
+        """Radan viimeiset pisteet etenevat tasaisesti kohti pesaa (40-450 cm/s, ei sivuttaisliikettaa): kulkeva kivi (tai sen mukana kulkeva esine), ei paikallaan oleva kahva."""
+        n = min(len(r), 25)
+        if n < 3:
             return False
-        try:
-            s = self.m.tarkka(ruutu, r[-1][1], r[-1][2])
-        except Exception:
-            s = None
-        p = float(s.get("peitto", 0.0)) if s is not None and "virhe" not in s else 0.0
-        r.peitot.append(p)
-        r.f_tark = f
-        if p >= SAAP_PEITTO_VARMA or sum(1 for q in r.peitot if q >= SAAP_PEITTO_MIN) >= 2:
-            return True
-        if len(r.peitot) >= SAAP_TARKISTUKSIA:
-            r.hylatty = True
-        return False
+        F = np.array([p[0] for p in r[-n:]], float)
+        X = np.array([p[1] for p in r[-n:]], float)
+        Y = np.array([p[2] for p in r[-n:]], float)
+        if F[-1] - F[0] < 3:
+            return False
+        c = np.polyfit(F, Y, 1)
+        v = -c[0] * self.an.fps
+        if not (40.0 <= v <= 450.0) or float(np.sqrt(np.mean((Y - np.polyval(c, F)) ** 2))) > 8.0:
+            return False
+        return abs(np.polyfit(F, X, 1)[0]) <= 0.5 * abs(c[0])
+
+    def _hyvaksy(self, r):
+        """Kivi tunnistettu: hog-ylitys A-radasta (jos kivi on jo ylittanyt viivan; tarkentuu seurannassa) ja kaukopaan seuranta kayntiin."""
+        h = self.h
+        h.saapuminen = "loytyi"
+        f_yl = self._ylitys(r)
+        if f_yl is not None:
+            h.hog2_f = f_yl
+            self.an._paivita_kierre(h)
+        self.an.kaukoseurannat.append(KaukoSeuranta(self.an, h, r, self.kartta_ennen(r[0][0])))
 
     def _ylitys(self, r):
         """Radan sovitus Y'(ruutu) = c0 f + c1 hog-viivan ymparilta (+-1,3 m; kiihtyvyys ei vaikuta): ylitysruutu (hog-viivan keskiviiva) tai None, jos rata ei kelpaa tai kivi ei ole
@@ -1134,6 +1281,307 @@ class Saapuminen:
         if f_yl < F[0] - 0.5 * fps:                       # rata alkaa liian kaukaa viivan jalkeen
             return None
         return float(f_yl)
+
+
+def pysahtymishetki(F, P, fps):
+    """Radasta (ruudut F, paikat P (n, 2)) pysahtymisruutu ja lepopaikka: lepopaikka on viimeisten paikkojen mediaani; pysahtymishetki on ensimmainen hetki, josta alkaen silotettu (7 paikan
+    liukuva mediaani) etaisyys lepopaikasta pysyy levon kohinatason sisalla (raakojen etaisyyksien 95 %:n fraktiili viimeisen 1,5 s:n ajalta; vahintaan KAUKO_PYS_RAJA_CM)
+    seuraavat 2 s (tai radan loppuun), + KAUKO_PYS_LISA_S. (Paikat ovat B- ja A-paikkoja; kohina levossa on useita senttimetreja, joten kiinteaa 1,5 cm:n rajaa ei voi kayttaa; pitkan levon
+    kohinahuiput eivat siirra hetkea myohemmaksi.)"""
+    n = len(F)
+    k = min(n, max(8, int(round(1.5 * fps))))
+    lepo = np.median(P[-k:], axis=0)
+    d = np.hypot(*(P - lepo).T)
+    ds = np.array([float(np.median(d[max(0, i - 3):i + 4])) for i in range(n)])      # silotus: liukuva mediaani (7)
+    raja = max(KAUKO_PYS_RAJA_CM, float(np.percentile(d[-k:], 95)))             # levon kohinataso: raakojen etaisyyksien 95 %:n fraktiili viimeisen 1,5 s:n ajalta
+    i0 = n - 1
+    for i in range(n):
+        ikk = ds[(F >= F[i]) & (F <= F[i] + 2.0 * fps)]
+        if float(ikk.max()) <= raja:
+            i0 = i
+            break
+    f_pys = min(float(F[i0]) + KAUKO_PYS_LISA_S * fps, float(F[-1]))
+    return f_pys, float(lepo[0]), float(lepo[1])
+
+
+def kiihtymiskohta(F, P, fps, K=10):
+    """Radan (ruudut F, paikat P (n, 2)) ensimmainen kohta, jossa hidastunut kivi (nopeus < KAUKO_KIIHTYY_HIDAS_CM_S) alkaa selvasti liikkua (nopeus kasvaa KAUKO_KIIHTYY_CM_S ja > KAUKO_KIIHTYY_SUHDE x
+    edellisen 1,5 s:n pienimmasta): kivi ei voi kiihtya (vapaan liu'un aikana), joten sen jalkeinen rata on toista kohdetta (esim. pesan taakse mennytta kivea kuljetetaan kasin pois). Nopeus
+    10 ruudun (0,4 s) erotuksesta (kohina +-3 cm / paikka). Palauttaa naytteen indeksin tai None."""
+    n = len(F)
+    if n < 3 * K:
+        return None
+    v = np.array([float(np.hypot(*(P[i + K] - P[i]))) / max((F[i + K] - F[i]) / fps, 1e-3) for i in range(n - K)])
+    fk = np.array([0.5 * (F[i] + F[i + K]) for i in range(n - K)])
+    for i in range(1, len(v)):
+        m = (fk[:i] >= fk[i] - 1.5 * fps)
+        if not m.any():
+            continue
+        vmin = float(v[:i][m].min())
+        if vmin < KAUKO_KIIHTYY_HIDAS_CM_S and v[i] > vmin + KAUKO_KIIHTYY_CM_S and v[i] > KAUKO_KIIHTYY_SUHDE * max(vmin, 5.0):
+            return int(i)                                   # ikkunan i alku: viimeinen ehja paikka
+    return None
+
+
+def poistumisruutu(F, P, fps):
+    """Ruutu (float), jolla kivi poistui pelista (keskipiste kokonaan taka- tai sivuviivan ulkopuolella, ja pysyy siella >= 3 seuraavaa paikkaa), radan kaantopisteesta interpoloituna;
+    None, jos kivi pysyi pelissa."""
+    n = len(F)
+    ulos = (P[:, 1] < PELI_TAKA_Y_CM) | (np.abs(P[:, 0]) > PELI_SIVU_X_CM)
+    for i in range(n - 3):
+        if ulos[i] and ulos[i + 1:i + 4].all():
+            if i == 0:
+                return float(F[0])
+            y0, y1 = P[i - 1, 1], P[i, 1]                  # lineaarinen interpolointi taka-viivan ylitykseen (sivuviivan ylitys: lahimpaan naytteeseen)
+            if P[i, 1] < PELI_TAKA_Y_CM <= y0 and y0 != y1:
+                return float(F[i - 1] + (F[i] - F[i - 1]) * (y0 - PELI_TAKA_Y_CM) / (y0 - y1))
+            return float(F[i])
+    return None
+
+
+class KaukoSeuranta(_Seuranta):
+    """Kaukopaan kiven seuranta hog-viivalta pysahtymiseen. Saapuminen tunnisti kiven (kahvan variblobi, B toteaa graniittirungon, rata etenee kohti pesaa), minka jalkeen kivea
+    seurataan kuten heittopaassa: B-pohjainen ennuste, A (kahvan vari) ennusteen ymparilta, B joka ruudulle liikkeessa. Harjaajat ovat kiven vieressa (punainen kasivarsinauha on
+    kahvan variaa; kivi voi olla hetken piilossa), joten A hylataan, jos se poikkeaa B-ennusteesta, ja ennuste kantaa piilossaolon yli (KAUKO_HUKKA_RUUTUA). Tulos h.kauko:
+    paikat (B / A), pysahtymisruutu ja -paikka, hog-ylitys B-radasta (tarkentaa Saapuminen:n A-arvion), nopeus hogilla, tormays (nopeus putoaa jyrkasti: kivi osui toiseen kiveen)."""
+
+    def __init__(self, analyysi, heitto, rata, kartta=()):
+        self.an, self.h = analyysi, heitto
+        self.puoli = rata.heitto.puoli
+        self.m = analyysi.M[self.puoli]
+        self.vari = heitto.vari
+        self.heitto = rata.heitto
+        self.heitto.lepo = np.array(rata[-1][1:3], float)
+        self.kartta = list(kartta)                        # paikallaan olevat saman varin kahvat ennen heittoa: ei seurata (loppuu tormayksessa)
+        self.ala_norm = [heitto.ala_med] if heitto.ala_med else []
+        self._ennuste_luotettava = False
+        self._ala_ulkona = []
+        self.f_alku = rata[0][0]
+        self.tila = "SEURAA"                              # SEURAA -> PAATTYI (odottaa B-tuloksia) -> valmis (h.kauko)
+        self.syy = ""
+        self.f_paattyi = None
+        self.n_ruutu = 0
+        self.hukka = 0
+        analyysi.tapahtumat.append(("kauko_alku", heitto.tunnus, rata[-1][0], f"{self.puoli} {heitto.vari}"))
+
+    # ---- ennuste ----------------------------------------------------------------------------------------------------------------
+    def _ennuste(self, f):
+        """Ennuste (X', Y') ruudulle f: viimeisten (<= 10) B-paikkojen suora (nopeus) ja hidastuva liike viimeisesta B-paikasta (piilossaolo: harjaajat peittavat kiven); luotettava
+        (self._ennuste_luotettava), kun >= 4 B-paikkaa ja uusin <= ENNUSTE_B_TUORE ruutua vanha."""
+        kh = self.heitto
+        o = self._offset_b()
+        pts, n_b = [], 0
+        for n in reversed(kh.naytteet):
+            if f - n.f > 240:
+                break
+            q = self._konsol(n, o)
+            if q is not None:
+                pts.append((n.f, q))
+                n_b += bool(n.kivi())
+            if len(pts) >= 10:
+                break
+        self._ennuste_luotettava = False
+        if not pts:
+            return tuple(kh.lepo)
+        pts.reverse()
+        fl, pl = pts[-1]
+        v = np.zeros(2)
+        if len(pts) >= 3:
+            ff = np.array([p[0] for p in pts], float)
+            Q = np.array([p[1] for p in pts])
+            c = np.linalg.lstsq(np.column_stack([np.ones(len(ff)), ff - ff[-1]]), Q, rcond=None)[0]
+            pl, v = c[0], c[1]                                                  # paikka viimeisessa paikkaruudussa (silotettu), nopeus cm / ruutu
+            f_b = max([n.f for n in kh.naytteet[-60:] if n.kivi()] or [-10 ** 9])
+            self._ennuste_luotettava = bool(n_b >= 4 and f - f_b <= ENNUSTE_B_TUORE)
+        kh.lepo = np.array(pl, float)
+        vs = float(np.hypot(*v)) * self.an.fps                                # cm / s
+        dt = (f - fl) / self.an.fps
+        if vs > 1.0 and dt > 0:
+            td = min(dt, vs / KAUKO_HIDASTUVUUS_CM_S2)
+            pred = pl + v / np.hypot(*v) * (vs * td - 0.5 * KAUKO_HIDASTUVUUS_CM_S2 * td * td)
+        else:
+            pred = pl
+        return float(pred[0]), float(pred[1])
+
+    # ---- paasilmukka ------------------------------------------------------------------------------------------------
+    def kasittele(self, f, ruutu):
+        """Yksi (yksilollinen) ruutu; palauttaa False kun seuranta on valmis (tulos h.kauko)."""
+        kh = self.heitto
+        self.n_ruutu += 1
+        if self.tila == "PAATTYI":
+            if f - self.f_paattyi >= self.an.viive_b + 6 and not any(t[2] is kh for t in self.an.tyot):
+                self._valmis()
+                return False
+            return True
+        Xp, Yp = self._ennuste(f)
+        luotettava = self._ennuste_luotettava
+        f_paikka_ed = max([m.f for m in kh.naytteet[-240:] if m.kivi()] or [self.f_alku])
+        portti = min(14.0 + 0.5 * self._nopeus_ruutu() + KAUKO_PORTTI_KASVU_CM * max(f - f_paikka_ed - 2, 0), KAUKO_PORTTI_MAX_CM)      # piilossa oleva kivi: hakuportti kasvaa
+        a = self._vari_a(ruutu, (Xp, Yp), portti, ohita=self.kartta)
+        n = Naytteet(f)
+        a_kelpaa = a is not None
+        if a is not None and (f - f_paikka_ed) > KAUKO_A_LUOTTO_RUUTUA:
+            a_kelpaa = False                                                  # pitka B-aukko: A ei kelpaa paikaksi ennen kuin B toteaa kiven (A voi olla harjaajan kasivarsinauha)
+        elif a is not None and np.hypot(a[0] + self._offset_b()[0] - Xp, a[1] + self._offset_b()[1] - Yp) > KAUKO_A_POIKK_CM:
+            a_kelpaa = False
+        if a is not None:
+            if a_kelpaa:
+                n.A, n.ala = (a[0], a[1]), a[2]
+                a_n = a[2] / (a[3] * a[3])
+                if len(self.ala_norm) < 3 or ALA_VAIHTELU[0] <= a_n / float(np.median(self.ala_norm)) <= ALA_VAIHTELU[1]:
+                    self.ala_norm = (self.ala_norm + [a_n])[-8:]
+                    self._ala_ulkona = []
+                else:
+                    self._ala_ulkona = (self._ala_ulkona + [a_n])[-ALA_ULKONA_MAX:]
+                    if len(self._ala_ulkona) >= ALA_ULKONA_MAX:
+                        self.ala_norm, self._ala_ulkona = list(self._ala_ulkona), []
+            o = self._offset_b()
+            X0, Y0 = a[0] + o[0], a[1] + o[1]
+            if luotettava and np.hypot(X0 - Xp, Y0 - Yp) > A_HARHA_CM:
+                X0, Y0 = Xp, Yp                                # A harhainen (harjaajan kasivarsinauha): B:n alkuarvo on B-ennuste
+        else:
+            X0, Y0 = Xp, Yp
+        kh.naytteet.append(n)
+        v = self._nopeus_ruutu()
+        vali = KAUKO_B_LIIKKUU_RUUTUA if v > 1.0 else (KAUKO_B_HIDAS_RUUTUA if v > 0.1 else KAUKO_B_LEPO_RUUTUA)
+        if self.n_ruutu % vali == 0:
+            self.an.pyyda_b(self, kh, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None)
+        if KAUKO_KIERTO_Y_MIN_CM <= Y0 <= KAUKO_KIERTO_Y_MAX_CM and len(kh.kierto_kehykset) < KAUKO_KIERTO_MAX_RUUTUJA and (a is not None or luotettava):
+            self._kierto_leike(kh, n, ruutu, X0, Y0)
+        f_paikka = max([m.f for m in kh.naytteet[-400:] if m.kivi()] or [self.f_alku])
+        self.hukka = f - f_paikka
+        if self._pysahtynyt(f):
+            self._paata(f, "pysahtyi")
+        elif self.hukka > KAUKO_HUKKA_RUUTUA:
+            self._paata(f, "hukassa")
+        elif (f - self.f_alku) / self.an.fps > KAUKO_LOPPU_S:
+            self._paata(f, "aikaraja")
+        return True
+
+    def _pysahtynyt(self, f):
+        """Kivi on pysahtynyt: viimeiset 4 B-paikkaa (enintaan 3 s vanhoja) ovat KAUKO_PYS_CM:n sisalla ja kattavat vahintaan KAUKO_PYS_S, ja kivi on liikkunut seurannan alusta yli 50 cm.
+        (Hitaalla kivella B tulee harvemmin, joten ikkuna maaraytyy paikkojen lukumaaran mukaan.)"""
+        kh = self.heitto
+        pts = []
+        for m in reversed(kh.naytteet):
+            if f - m.f > 3.0 * self.an.fps:
+                break
+            if m.kivi():
+                pts.append((m.f, np.array(m.paikka(), float)))
+                if len(pts) >= 4:
+                    break
+        if len(pts) < 4 or pts[0][0] - pts[-1][0] < KAUKO_PYS_S * self.an.fps:
+            return False
+        P = np.array([p[1] for p in pts])
+        if float(max(np.ptp(P[:, 0]), np.ptp(P[:, 1]))) > KAUKO_PYS_CM:
+            return False
+        q0 = next((np.array(m.paikka(), float) for m in kh.naytteet if m.kivi()), None)
+        return q0 is not None and float(np.hypot(*(P[0] - q0))) > 50.0
+
+    def _paata(self, f, syy):
+        self.tila, self.f_paattyi, self.syy = "PAATTYI", f, syy
+
+    def paata_kesken(self, f):
+        """Videon loppu kesken seurannan."""
+        if self.tila == "SEURAA":
+            self._paata(f if f is not None else self.f_alku, "ajo loppui")
+
+    def viimeistele(self):
+        if self.tila == "PAATTYI":
+            self._valmis()
+
+    # ---- tulos ---------------------------------------------------------------------------------------------------------
+    def _valmis(self):
+        """Seurannan yhteenveto h.kauko: paikat, pysahtyminen, hog-ylitys B-radasta, tormays."""
+        h, kh = self.h, self.heitto
+        fps = self.an.fps
+        o = self._offset_b()
+        rivit = [(n, self._konsol(n, o)) for n in kh.naytteet]
+        rivit = [(n, np.asarray(q, float)) for n, q in rivit if q is not None]
+        self.tila = "VALMIS"
+        if len(rivit) < 5:
+            h.kauko = dict(tila=self.syy, virhe="liian vahan paikkoja")
+            self.an.tapahtumat.append(("kauko_valmis", h.tunnus, self.f_paattyi, f"{self.syy}, liian vahan paikkoja ({len(rivit)})"))
+            return
+        F = np.array([n.f for n, _ in rivit], float)
+        P = np.array([q for _, q in rivit])
+        vahva = np.array([n.kivi() for n, _ in rivit])
+        peitossa = False
+        poimittu = None
+        i_k = kiihtymiskohta(F, P, fps)
+        if i_k is not None and i_k >= 8:                   # kohde vaihtui kesken radan: rata loppuu viimeiseen ehjaan paikkaan (kivi hidastui, ei kiihtynyt)
+            poimittu = float(F[i_k])
+            F, P, vahva = F[:i_k], P[:i_k], vahva[:i_k]
+            self.syy = "hukassa"                           # (loppunopeus < KAUKO_PYS_V_CM_S: seuraava tarkistus muuttaa sen "pysahtyi (peitossa)")
+        if self.syy == "hukassa":                          # kivi hukattiin, mutta se oli jo hidas: pysahtyi piiloon (harjaajat / pelaajat sen paalla)
+            n_v = min(len(F), 8)
+            dt_v = (F[-1] - F[-n_v]) / fps
+            if n_v >= 4 and dt_v > 0 and float(np.hypot(*(P[-1] - P[-n_v]))) / dt_v < KAUKO_PYS_V_CM_S:
+                self.syy, peitossa = "pysahtyi", True
+        f_pys = X_pys = Y_pys = None
+        if self.syy == "pysahtyi":
+            f_pys, X_pys, Y_pys = pysahtymishetki(F, P, fps)
+        else:                                              # kivi hukattiin (piilossa / poistui kuvasta): pysahtymishetki arvioidaan viimeisesta B-paikasta (A-paikat voivat olla harjaajien nauhoja)
+            f_pys, X_pys, Y_pys = float(F[-1]), float(P[-1][0]), float(P[-1][1])
+            ib = np.nonzero(vahva)[0]
+            if len(ib) >= 4:
+                jb = ib[-min(len(ib), 6):]
+                dt_b = (F[jb[-1]] - F[jb[0]]) / fps
+                v_b = float(np.hypot(*(P[jb[-1]] - P[jb[0]])) / dt_b) if dt_b > 0 else 0.0
+                if v_b > 30.0 and P[jb[-1]][1] < 0.0:      # nopea, pesan takana: taka-aita pysayttaa
+                    lisa = min(max(P[jb[-1]][1] + KAUKO_LAUTA_Y_CM, 0.0) / v_b, 6.0) + KAUKO_LAUTA_LISA_S
+                else:                                      # piilossa: hidastuu tyypillisella hidastuvuudella pysahtymiseen
+                    lisa = min(v_b / (100.0 * KAUKO_PYS_HIDASTUVUUS), KELLO_PIILOSSA_MAX_S)
+                f_pys, X_pys, Y_pys = float(F[jb[-1]]) + lisa * fps, float(P[jb[-1]][0]), float(P[jb[-1]][1])
+        f_ulos = poistumisruutu(F, P, fps)
+        if f_ulos is None and self.syy == "hukassa" and vahva.sum() >= 4:             # hukattu kivi, joka oli matkalla pelista pois: ylitys ekstrapoloidaan viimeisesta B-nopeudesta
+            jb = np.nonzero(vahva)[0][-min(int(vahva.sum()), 6):]
+            dt_b = (F[jb[-1]] - F[jb[0]]) / fps
+            v_b = float(-(P[jb[-1]][1] - P[jb[0]][1]) / dt_b) if dt_b > 0 else 0.0              # cm / s kohti taka-aitaa (Y' pienenee)
+            Yb = float(P[jb[-1]][1])
+            if v_b > 30.0 and Yb < 0.0 and (Yb - PELI_TAKA_Y_CM) / v_b <= 6.0:
+                f_ulos = float(F[jb[-1]]) + max(Yb - PELI_TAKA_Y_CM, 0.0) / v_b * fps
+        # hog-ylitys B-radasta (tarkentaa A-arvion) ja nopeus hogilla
+        f_hog = v_hog = None
+        hog_lahde = None
+        m = vahva & (np.abs(P[:, 1] - HOG_KESKI_CM) <= 130.0)
+        if m.sum() >= 5 and P[m, 1].min() < HOG_KESKI_CM < P[m, 1].max():
+            c = np.polyfit(P[m, 1], F[m], 1)
+            f_hog, hog_lahde = float(np.polyval(c, HOG_KESKI_CM)), "B-rata"
+            v_hog = float(-fps / c[0]) if c[0] != 0 else None
+        else:                                              # kivi tunnistettiin vasta hog-viivan jalkeen: ylitys ekstrapoloidaan radan alusta (<= KAUKO_EKSTRAP_CM)
+            ia = np.nonzero(vahva)[0][:30]
+            if len(ia) >= 8 and 0.0 < HOG_KESKI_CM - float(P[ia, 1].max()) <= KAUKO_EKSTRAP_CM:
+                c = np.polyfit(P[ia, 1], F[ia], 1)
+                f_e = float(np.polyval(c, HOG_KESKI_CM))
+                if c[0] < 0 and F[ia][0] - 1.5 * fps <= f_e <= F[ia][0]:
+                    f_hog, hog_lahde = f_e, "ekstrapolointi"
+                    v_hog = float(-fps / c[0])
+        if f_hog is not None:
+            h.hog2_f = f_hog
+            self.an._paivita_kierre(h)
+        # tormays: nopeus putoaa jyrkasti (luonnollinen hidastuminen on alle 0,2 m/s2)
+        K = 6
+        nop = []
+        for i in range(len(F) - K):
+            dt = (F[i + K] - F[i]) / fps
+            nop.append((0.5 * (F[i] + F[i + K]), float(np.hypot(*(P[i + K] - P[i]))) / dt if dt > 0 else 0.0))
+        torm = None
+        for (f1, v1), (f2, v2) in zip(nop, nop[K:]):
+            if v1 >= 80.0 and v2 <= 0.3 * v1 and f2 - f1 <= 3 * K:
+                torm = dict(f=float(f1), v_ennen=float(v1), v_jalkeen=float(v2))
+                break
+        try:                                               # aikaperusta (lahdevirran ruutuindeksi): todellinen aika paikoille
+            t_korj = [float(x) for x in aikap.Aikajana(F, P[:, 1], kopiot_ohitettu=True).aika(F)]
+        except Exception:
+            t_korj = [float(x) / fps for x in F]
+        f_viim_b = float(F[vahva][-1]) if vahva.any() else None
+        h.kauko = dict(tila=self.syy, peitossa=peitossa, f_alku=float(F[0]), f_loppu=float(F[-1]), f_pys=f_pys, X_pys=X_pys, Y_pys=Y_pys, f_hog2=f_hog, hog2_lahde=hog_lahde, v_hog_cm_s=v_hog, tormays=torm, f_viim_b=f_viim_b, kohde_vaihtui_f=poimittu, f_ulos=f_ulos,
+                       pisteet=[(float(a), float(q[0]), float(q[1])) for a, q in zip(F, P)], t=t_korj, vahva=[bool(x) for x in vahva], n_b=int(vahva.sum()), n=len(F))
+        self.an._kauko_kierto_aloita(h, kh, F, P[:, 1])
+        self.an._vakiot_aloita(h)
+        self.an.tapahtumat.append(("kauko_valmis", h.tunnus, int(round(F[-1])), f"{self.syy}, pysahtyi {f_pys / fps:.1f} s paikkaan ({X_pys:.0f}, {Y_pys:.0f}) cm"
+                                   + (f", tormays {torm['f'] / fps:.1f} s" if torm else "")))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1164,15 +1612,19 @@ def hog_hog_aika_malli(v):
 
 
 def kierron_merkki(h):
-    """Kiertosuunta: +1 vastapaivaan, -1 myotapaivaan, 0 tuntematon. Kuvamittaus (omega), ellei se ole epavarma ja vapaan lennon kaarto (kaarevuus < 0: kaartaa
-    vasemmalle = vastapaivaan) ole selva; ilman kuvamittausta selva kaarto riittaa vihjeeksi."""
-    k, v = h.kierto, h.viivat
+    """Kiertosuunta: +1 vastapaivaan, -1 myotapaivaan, 0 tuntematon. Kuvamittaus (omega; heittopaa ja kaukopaa), ellei se ole epavarma ja vapaan lennon kaarto (kaarevuus < 0: kaartaa
+    vasemmalle = vastapaivaan) ole selva; ilman kuvamittausta selva kaarto riittaa vihjeeksi. Kaksi varmaa mittausta samaan suuntaan ratkaisevat suunnan."""
+    v = h.viivat
     c = v.get("kaarevuus_1_cm") if v else None
-    if k is not None and "virhe" not in k:
-        s = 1 if k["omega_deg_s"] > 0 else -1
-        if not k.get("varma") and c is not None and abs(c) >= KAARTO_VARMA_1_CM:
-            s = 1 if c < 0 else -1
-        return s
+    mitat = [(bool(k.get("varma")), 1 if k["omega_deg_s"] > 0 else -1) for k in (h.kierto, h.kauko_kierto) if k is not None and "virhe" not in k]
+    if mitat:
+        varmat = [s_ for vm, s_ in mitat if vm]
+        if varmat and len(set(varmat)) == 1:
+            return varmat[0]
+        s_ = (varmat or [m[1] for m in mitat])[0]
+        if c is not None and abs(c) >= KAARTO_VARMA_1_CM:
+            s_ = 1 if c < 0 else -1
+        return s_
     if c is not None and abs(c) >= KAARTO_VIHJE_1_CM:
         return 1 if c < 0 else -1
     return 0
@@ -1189,15 +1641,22 @@ def heiton_suureet(h):
     XT_l = v["liuku_a"] + v["liuku_b"] * L
     XT_i = v["irr_X"] + np.tan(np.radians(v["irr_suunta_deg"])) * (L - v["irr_Y"])
     s = kierron_merkki(h)
-    kierre = None
+    kierre = kierre_koko = None
     if h.kierre is not None and s != 0:
         kierre = -s * abs(h.kierre["N"])
+        if h.kierre.get("N_koko") is not None:
+            kierre_koko = -s * abs(h.kierre["N_koko"])
     return dict(liuku_cm=float(XT_l), heitto_cm=float(XT_i), merkki=s, irroitus_cm=(float(XT_i - XT_l) * s if s else None), kierre=kierre,
                 kierre_mitattu=bool(h.kierre is not None and h.kierre["lahde"] == "mitattu"), T_hh=(h.kierre["T"] if h.kierre else None),
                 irr_hog_m=float((HOG_SISA_CM - (v["irr_Y"] + KIVI_R_CM)) / 100.0), v_ennen=float(v["nopeus_ennen"]), v_jalkeen=float(v["nopeus_jalkeen"]),
                 hidastuvuus=float(v["vapaa_hidastuvuus"]), vapaa_matka_cm=float(v["vapaa_matka_cm"]), virhe_cm=float((L - v["irr_Y"]) * np.tan(np.radians(v["irr_virhe_deg"]))), vakaa=bool(v.get("vakaa")),
                 omega_deg_s=(h.kierto["omega_deg_s"] if h.kierto is not None and "virhe" not in h.kierto else None),
-                kierto_varma=(bool(h.kierto.get("varma")) if h.kierto is not None and "virhe" not in h.kierto else None))
+                kierto_varma=(bool(h.kierto.get("varma")) if h.kierto is not None and "virhe" not in h.kierto else None),
+                kierre_varma=(bool(h.kierre.get("varma")) if h.kierre is not None else None), kierre_sigma=(h.kierre.get("N_sigma") if h.kierre is not None else None),
+                kierre_koko=kierre_koko, kierre_koko_sigma=(h.kierre.get("N_koko_sigma") if h.kierre is not None else None),
+                kierre_omega_lahde=(h.kierre.get("omega_lahde") if h.kierre is not None else None), kierre_k=(h.kierre.get("k") if h.kierre is not None else None),
+                omega_kauko_deg_s=(h.kauko_kierto["omega_deg_s"] if h.kauko_kierto is not None and "virhe" not in h.kauko_kierto else None),
+                kauko=(h.kauko if h.kauko is not None and "virhe" not in h.kauko else None), vakiot=(h.vakiot if h.vakiot is not None and h.vakiot.get("ok") else None))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1228,7 +1687,9 @@ class Analyysi:
         self.tyot = []                               # [(future, f, heitto, naytteet, alkuarvo)]
         self.est_tyot = []                           # [(future, heitto, f, n)]
         self.kierto_tyot = []                        # [(future, heitto)]
+        self.vakiot_tyot = []                        # [(future, heitto)]: kiven vakioiden sovitus (kierto_pool)
         self.saapumiset = []                         # kaukopaan hakijat (Saapuminen)
+        self.kaukoseurannat = []                     # tunnistetut kaukopaan kivet seurannassa (KaukoSeuranta)
         self.paat = {p: Heittopaa(self, p) for p in paat}
         self.heitot = []                             # vahvistetut heitot (piirtajalle)
         self.valmiit, self.hylatyt = [], []
@@ -1370,6 +1831,7 @@ class Analyysi:
         self._keraa_estimaatit()
         self._loppujen_tarkistus()
         self._keraa_kierto()
+        self._keraa_vakiot()
 
     # ---- viivaestimaatti ------------------------------------------------------------------------------------------
     def paivita_viivat(self, heitto, f, pakota=False):
@@ -1457,7 +1919,7 @@ class Analyysi:
         h.kierto_tila = "kaynnissa"
         args = (h.puoli, h.vari, havainnot, v["t_irr"])
         if self.kierto_pool is not None:
-            self.kierto_tyot.append((self.kierto_pool.submit(tyo_kierto, args), h))
+            self.kierto_tyot.append((self.kierto_pool.submit(tyo_kierto, args), h, False))
         else:
             self._aseta_kierto(h, kierto_laske(self.M[h.puoli], args))
 
@@ -1467,26 +1929,125 @@ class Analyysi:
         self.tapahtumat.append(("kierto", h.tunnus, h.f_loppu, h.kierto_tila))
         self._paivita_kierre(h)
 
+    def _kauko_kierto_aloita(self, h, kh, F, Y):
+        """Kierteen mittaus kaukopaan kuvasta (kiven seurannan jalkeen): ruudut ja B-paikat kaukopaan seurannasta, aika aikaperustalla (kiven rata F, Y'). Taustaprosessiin tai
+        heti (sim). Sama mittaus kuin heittopaassa (netti_kierre.arvioi): omega kaukopaan puolen kameralla."""
+        if not self.laske_kierre or h.kauko_kierto_tila is not None or not kh.kierto_kehykset:
+            return
+        try:
+            aj = aikap.Aikajana(F, Y, kopiot_ohitettu=True)
+        except Exception:
+            h.kauko_kierto_tila = "virhe"
+            h.kauko_kierto = dict(virhe="aikaperusta epaonnistui")
+            return
+        kehykset = list(kh.kierto_kehykset)
+        if len(kehykset) > KAUKO_KIERTO_KEHYKSIA:                 # tasainen otanta (sovituksen kesto kasvaa ruutumaaran mukana)
+            idx = np.unique(np.round(np.linspace(0, len(kehykset) - 1, KAUKO_KIERTO_KEHYKSIA)).astype(int))
+            kehykset = [kehykset[i] for i in idx]
+        havainnot = []
+        for n, roi, cx0, cy0 in kehykset:
+            p = n.B if n.B is not None else n.Bs
+            if p is not None:
+                havainnot.append((float(aj.aika(n.f)[0]), n.f, float(p[0]), float(p[1]), roi, cx0, cy0))
+        kh.kierto_kehykset = []
+        if len(havainnot) < nk.MIN_RUUTUJA:
+            h.kauko_kierto_tila = "virhe"
+            h.kauko_kierto = dict(virhe=f"liian vahan ruutuja kaukopaassa ({len(havainnot)})", ruutuja=len(havainnot))
+            return
+        h.kauko_kierto_tila = "kaynnissa"
+        mn = nk.omega_mitta(h.kierto, self.fps)
+        ennakko = (float(np.degrees(mn[1])), mn[0]) if mn is not None and mn[3] else None          # varma heittopaan mittaus: ratkaisee kaukopaan alias-minimien valilla
+        args = (kh.puoli, h.vari, havainnot, havainnot[0][0] - 1.0, ennakko)
+        if self.kierto_pool is not None:
+            self.kierto_tyot.append((self.kierto_pool.submit(tyo_kierto, args), h, True))
+        else:
+            self._aseta_kauko_kierto(h, kierto_laske(self.M[kh.puoli], args))
+
+    def _aseta_kauko_kierto(self, h, r):
+        h.kauko_kierto = r
+        h.kauko_kierto_tila = "virhe" if (r is None or "virhe" in r) else "valmis"
+        self.tapahtumat.append(("kauko_kierto", h.tunnus, h.f_loppu, h.kauko_kierto_tila + ("" if h.kauko_kierto_tila == "valmis" else f" {(r or {}).get('virhe', '')}")))
+        self._paivita_kierre(h)
+        self._vakiot_aloita(h)
+
+    # ---- kiven vakiot (A, kappa) kaukopaan radasta -------------------------------------------------------------------------
+    def _vakiot_aloita(self, h):
+        """Kiven vakiot (kitkataso A, kaarto kappa; netti_vakiot.sovita) kaukopaan radasta hog-viivalta pysahtymiseen (tai tormayksen alkuun / viimeiseen B-paikkaan, jos kivi
+        hukattiin): kierteen mittaus kaukopaasta (tai yhdistetyn kierteen omega hogilla) pakotteena. Kaynnistetaan, kun kaukopaan rata ja sen kierteen mittaus ovat valmiit.
+        Taustaprosessiin (kierto_pool) tai heti (sim)."""
+        if not self.laske_kierre or h.vakiot_tila is not None:
+            return
+        k = h.kauko
+        if k is None or "virhe" in k or "pisteet" not in k or h.kauko_kierto_tila == "kaynnissa":
+            return
+        args, lahde = vakiot_argumentit(k, h.kauko_kierto, h.kierre, h.hog2_f, self.fps)
+        h.vakiot_tila = "kaynnissa"
+        h.vakiot_omega_lahde = lahde
+        if self.kierto_pool is not None:
+            self.vakiot_tyot.append((self.kierto_pool.submit(vakiot_laske, args), h))
+        else:
+            self._aseta_vakiot(h, vakiot_laske(args))
+
+    def _aseta_vakiot(self, h, r):
+        r = dict(r or dict(ok=False, syy="ei tulosta"))
+        r["omega_lahde"] = getattr(h, "vakiot_omega_lahde", None)
+        h.vakiot = r
+        h.vakiot_tila = "valmis" if r.get("ok") else "virhe"
+        self.tapahtumat.append(("vakiot", h.tunnus, h.f_loppu, (f"A {r['A']:.4f} kappa {r['kappa']:.2f} (Y rms {r['rms_y_cm']:.1f} cm, X rms {r['rms_x_cm']:.1f} cm)" if r.get("ok") else f"ei saatu: {r.get('syy', '?')}")))
+
+    def _keraa_vakiot(self, odota=False):
+        jaa = []
+        for fut, h in self.vakiot_tyot:
+            if fut.done() or odota:
+                try:
+                    r = fut.result()
+                except Exception as e:
+                    r = dict(ok=False, syy=repr(e))
+                self._aseta_vakiot(h, r)
+            else:
+                jaa.append((fut, h))
+        self.vakiot_tyot = jaa
+
+    def kivien_vakiot(self):
+        """Kivikohtaiset vakiot: {(vari, kivi_nro): dict(n, A, A_sd, n_kappa, kappa, kappa_sd, heitot)}; kiven yksilointi = (vari, numero heittopaassa), kunkin kiven onnistuneiden
+        sovitusten mediaani ja hajonta (1,48 x MAD); kappa vain sovituksista, joissa kierre oli rajattu mittauksella. Huom: vakiot ovat tehollisia (harjaus pienentaa kitkaa ja kaarroa)."""
+        ryhmat = {}
+        for h in self.heitot:
+            if h.vakiot is not None and h.vakiot.get("ok") and h.kivi_nro is not None:
+                ryhmat.setdefault((h.vari, h.kivi_nro), []).append(h)
+        mad = lambda x: float(1.4826 * np.median(np.abs(x - np.median(x)))) if len(x) > 1 else None
+        out = {}
+        for avain, hs in sorted(ryhmat.items()):
+            A_ = np.array([h.vakiot["A"] for h in hs])
+            K_ = np.array([h.vakiot["kappa"] for h in hs if h.vakiot.get("kappa_ok")])
+            out[avain] = dict(n=len(hs), A=float(np.median(A_)), A_sd=mad(A_), n_kappa=len(K_), kappa=(float(np.median(K_)) if len(K_) else None), kappa_sd=mad(K_),
+                              heitot=[h.tunnus for h in hs])
+        return out
+
     def _keraa_kierto(self, odota=False):
         jaa = []
-        for fut, h in self.kierto_tyot:
+        for fut, h, kauko in self.kierto_tyot:
             if fut.done() or odota:
                 try:
                     r = fut.result()
                 except Exception as e:
                     r = dict(virhe=repr(e))
-                self._aseta_kierto(h, r)
+                (self._aseta_kauko_kierto if kauko else self._aseta_kierto)(h, r)
             else:
-                jaa.append((fut, h))
+                jaa.append((fut, h, kauko))
         self.kierto_tyot = jaa
 
     def _paivita_kierre(self, h):
-        """Kierrosmaara hog-hog-valille (h.kierre): omega (kuvamittaus) vaimenee eksponentiaalisesti; hog-hog-aika luetaan videon puoliskoista (vasemman puoliskon radan
-        hog-ylitys ja oikean puoliskon kuvan hog-ylitys), ellei kaukopaan ylitysta ole (viela) loydetty: vakiohidastuvuuden malli (lahde 'malli')."""
-        k, v = h.kierto, h.viivat
-        if k is None or "virhe" in k or h.hog1_f is None or v is None:
+        """Kierrosmaara hog-hog-valille (h.kierre): heittopaan ja kaukopaan kierronmittaukset yhdistetaan (netti_kierre.yhdista: omega vaimenee eksponentiaalisesti, vaimeneminen
+        mitataan kun molemmat mittaukset ovat). Hog-hog-aika luetaan videon puoliskoista (vasemman puoliskon radan hog-ylitys ja oikean puoliskon kuvan hog-ylitys), ellei
+        kaukopaan ylitysta ole (viela) loydetty: vakiohidastuvuuden malli (lahde 'malli')."""
+        v = h.viivat
+        if v is None or h.hog1_f is None:
             return
         fps = self.fps
+        mn, mf = nk.omega_mitta(h.kierto, fps), nk.omega_mitta(h.kauko_kierto, fps)
+        if mn is None and mf is None:
+            return
         t1 = h.hog1_f / fps
         T_malli = hog_hog_aika_malli(v)
         T, lahde = None, None
@@ -1499,8 +2060,93 @@ class Analyysi:
         if T is None:
             h.kierre = None
             return
-        N = nk.kierrokset(k["omega_deg_s"], k["f_keski"] / fps, t1, t1 + T)
-        h.kierre = dict(N=N, T=float(T), lahde=lahde, omega=k["omega_deg_s"])
+        r = nk.yhdista(mn, mf, t1, t1 + T)
+        if r is None:
+            h.kierre = None
+            return
+        om = h.kierto["omega_deg_s"] if mn is not None else h.kauko_kierto["omega_deg_s"]
+        N_koko = N_koko_sigma = None                      # kierrokset koko radalla (irroitus -> pysahtyminen; viimeisten sekuntien spin-down jaa arvioon mukaan eksponentiaalisena)
+        k_ = h.kauko
+        if k_ is not None and "virhe" not in k_ and v.get("t_irr") is not None and k_["tila"] == "pysahtyi":
+            rk = nk.yhdista(mn, mf, float(v["t_irr"]), k_["f_pys"] / fps)
+            if rk is not None:
+                N_koko, N_koko_sigma = rk["N"], rk["N_sigma"]
+        h.kierre = dict(N=r["N"], T=float(T), lahde=lahde, omega=om, omega_lahde=r["lahde"], k=r["k"], N_sigma=r["N_sigma"], ristiriita=r["ristiriita"], N_koko=N_koko, N_koko_sigma=N_koko_sigma,
+                        omega1_deg=float(np.degrees(r["omega1"])), omega2_deg=float(np.degrees(r["omega2"])),
+                        varma=bool(not r["ristiriita"] and r["N_sigma"] <= KIERRE_SIGMA_VARMA and ((mn is not None and mn[3]) or (mf is not None and mf[3]))))
+
+    # ---- joukkueiden kello ------------------------------------------------------------------------------------------
+    def pysahtyi_f(self, h):
+        """Ruutu, jolla heiton kivi (ja sen tormayksessa liikkeelle laittamat kivet) pysahtyi tai poistui pelista (taka- / sivuviivan ulkopuolelle) kaukopaassa: kaukopaan seurannan
+        tulos (hukatulla kivella arvio viimeisesta B-paikasta); tormaysheitolla viimeistaan KELLO_TORMAYS_LISA_S tormayksen jalkeen; ellei seurantaa ole, arvio hog-ylityksesta (nopeus hogilla / tyypillinen hidastuvuus)."""
+        k = h.kauko
+        if k is not None and "virhe" not in k and k.get("f_pys") is not None:
+            f = float(k["f_pys"])
+            if k.get("f_ulos") is not None:                    # peliin enaa vaikuttamaton (taka- / sivuviivan ulkopuolella) kivi: kello kay jo silloin
+                f = min(f, float(k["f_ulos"]))
+            if k.get("tormays"):
+                f = max(f, float(k["tormays"]["f"]) + KELLO_TORMAYS_LISA_S * self.fps)
+            return f
+        v = h.viivat
+        if v is None or h.hog1_f is None or h.kierre is None:
+            return None
+        f_hog2 = h.hog2_f if h.hog2_f is not None else h.hog1_f + h.kierre["T"] * self.fps
+        v_h = max(float(v["nopeus_jalkeen"]) ** 2 - 2.0 * HIDASTUVUUS_TYYPILLINEN * (ETAISYYS_CM - HOG_KESKI_CM - float(v["irr_Y"])) / 100.0, 0.0) ** 0.5
+        t_pys = min(v_h / KAUKO_PYS_HIDASTUVUUS, KELLO_ARVIO_MAX_S)
+        if v_h > KELLO_NOPEA_M_S:                                  # nopea kivi (poisto): tormaa tai osuu taka-aitaan nopeasti
+            t_pys = min(t_pys, KELLO_NOPEA_MAX_S)
+        return float(f_hog2 + self.fps * t_pys)
+
+    def kello(self):
+        """Miettimisaika heittokohtaisesti ja joukkueittain: {tunnus: dict(aika_s, joukkue_yht_s, paa, heitto_paassa, f_pys_edell)}. Joukkueen kello kayntiin kun edellisen heiton kivi (ja muut
+        kivet) on pysahtynyt ja pysahtyy kun joukkueen heitto lahtee liikkeelle (h.f_alku); paiden valilla kello ei kay (paan ensimmaiselle heitolle ei aikaa: aika None). Heittoja
+        jarjestetaan lahtoruudun mukaan; paa vaihtuu kun heittopuoli vaihtuu."""
+        out, yht = {}, {}
+        paa = n_paassa = 0
+        edell = None
+        for h in sorted((x for x in self.heitot if x.f_alku is not None), key=lambda x: x.f_alku):
+            uusi = edell is None or edell.puoli != h.puoli
+            if uusi:
+                paa += 1
+                n_paassa = 0
+            n_paassa += 1
+            aika, f_pys = None, None
+            if not uusi:
+                f_pys = self.pysahtyi_f(edell)
+                if f_pys is not None and f_pys - h.f_alku <= KELLO_ENNEN_S * self.fps:        # pysahtyminen selvasti lahdon jalkeen: arvio on virheellinen
+                    aika = max(0.0, (h.f_alku - f_pys) / self.fps)
+            if aika is not None:
+                yht[h.vari] = yht.get(h.vari, 0.0) + aika
+            out[h.tunnus] = dict(aika_s=aika, joukkue_yht_s=float(yht.get(h.vari, 0.0)), paa=paa, heitto_paassa=n_paassa, f_pys_edell=f_pys)
+            edell = h
+        return out
+
+    def kauko_selvilla(self, h):
+        """True, kun heiton kiven pysahtymishetki on lopullinen: kaukopaan seuranta on valmis (h.kauko) tai sita ei tule (kivea ei loydetty, ei kierretta / hog-ylitysta)."""
+        if h.kauko is not None:
+            return True
+        return (not self.laske_kierre) or h.hog1_f is None or h.saapuminen == "ei_loytynyt" or (h.lopullinen and h.viivat is None)
+
+    def kello_nyt(self, f_out):
+        """Kellon tila videon hetkella f_out (piirtajalle): dict(yht={vari: aika s}, kay=joukkueen vari tai None, juokseva_s, viim=viimeisin alkanut heitto, viim_aika_s). Kayva kello =
+        edellisen heiton kivi on pysahtynyt (pysahtyi_f <= f_out), seuraava heitto ei ole viela lahtenyt ja paa on kesken; kayvalle joukkueelle (edellisen heiton vastavari) lasketaan
+        mukaan kulunut aika."""
+        k = self.kello()
+        alkaneet = sorted((h for h in self.heitot if h.f_alku is not None and h.f_alku <= f_out), key=lambda x: x.f_alku)
+        yht = {}
+        for h in alkaneet:
+            a = k[h.tunnus]["aika_s"]
+            if a is not None:
+                yht[h.vari] = yht.get(h.vari, 0.0) + a
+        viim = alkaneet[-1] if alkaneet else None
+        kay = juokseva = None
+        if viim is not None and k[viim.tunnus]["heitto_paassa"] < 2 * KIVIA_PAASSA:
+            f_pys = self.pysahtyi_f(viim)
+            if f_pys is not None and f_out >= f_pys:
+                kay = "punainen" if viim.vari == "keltainen" else "keltainen"
+                juokseva = float(f_out - f_pys) / self.fps
+                yht[kay] = yht.get(kay, 0.0) + juokseva
+        return dict(yht=yht, kay=kay, juokseva_s=juokseva, viim=viim, viim_aika_s=(k[viim.tunnus]["aika_s"] if viim is not None else None))
 
     def _loppujen_tarkistus(self):
         for h in list(self.valmiit):
@@ -1536,17 +2182,23 @@ class Analyysi:
     def viimeistele(self):
         """Videon loputtua: paata keskenerat heitot, odota kesken olevat tyot (B, estimaatit, kierre)."""
         self.paata_kesken()
+        for ks in self.kaukoseurannat:
+            ks.paata_kesken(self.viim_f)
         self.odota(f_asti=10 ** 12)
+        for ks in self.kaukoseurannat:
+            ks.viimeistele()
+        self.kaukoseurannat = []
         self._loppujen_tarkistus()
         for _ in range(4):                           # kesken olevat ja jonossa odottavat lopulliset estimaatit
             self._keraa_estimaatit(odota=True)
             if not self.est_tyot and not any(h.lopullinen_jonossa for h in self.valmiit):
                 break
         self._keraa_kierto(odota=True)
+        self._keraa_vakiot(odota=True)
 
     def valmista_kaikki(self):
         """True kun mikaan tausta- tai kaukopaan tyo ei ole kesken (reaaliajassa: lopetus voi odottaa tulokset)."""
-        return not (self.tyot or self.est_tyot or self.kierto_tyot or self.saapumiset or any(getattr(h, "odottaa_loppua", False) for h in self.valmiit))
+        return not (self.tyot or self.est_tyot or self.kierto_tyot or self.vakiot_tyot or self.saapumiset or self.kaukoseurannat or any(getattr(h, "odottaa_loppua", False) for h in self.valmiit))
 
     # ---- paasilmukka -----------------------------------------------------------------------------------------------
     def syota(self, f, ruutu):
@@ -1567,6 +2219,9 @@ class Analyysi:
         for s in list(self.saapumiset):
             if not s.kasittele(f, ruutu):
                 self.saapumiset.remove(s)
+        for ks in list(self.kaukoseurannat):
+            if not ks.kasittele(f, ruutu):
+                self.kaukoseurannat.remove(ks)
         self.odota(f - self.viive_b if self.synkroninen else None)
         for hp in self.paat.values():
             if hp.heitto is not None and hp.heitto.tila == "vahvistettu":
