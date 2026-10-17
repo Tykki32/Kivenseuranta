@@ -173,6 +173,9 @@ KAUKO_KIIHTYY_CM_S = 70.0        # kaukopaan rata katkaistaan, kun hidastunut ki
 KAUKO_KIIHTYY_SUHDE = 2.0        # pienimmasta: kivi ei voi kiihtya, joten seurattu kohde on vaihtunut (kivea kuljetetaan kasin / seurataan toista kohdetta)
 KAUKO_KIIHTYY_HIDAS_CM_S = 40.0
 KELLO_ENNEN_S = 3.0              # kello: edellisen kiven pysahtymisen arvio saa olla enintaan taman verran seuraavan heiton lahdon jalkeen (muuten aika = ei saatu)
+KELLO_TVIIVA_Y_CM = -KIVI_R_CM   # kello pysahtyy, kun kiven etureuna osuu heittopaan T-viivaan (Y = 0): kiven keskipiste on silloin Y = -kiven sade
+KELLO_TVIIVA_IKKUNA_CM = 110.0   # T-viivan ylitysruudun sovitus: paikat taman matkan sisalla viivasta
+KELLO_TVIIVA_VIIVE_S = 3.1       # ellei ylitysta voi mitata (rata ei yllä T-viivalle): heiton lahdosta (h.f_alku) tama aika (mitattu mediaani 112 heitolla: 3,1 s, vaihtelu 1,4-8,8 s)
 KELLO_ARVIO_MAX_S = 12.0         # kello: pysahtymisen arvio hog-ylityksesta (ilman kaukopaan seurantaa) enintaan taman verran hog-ylityksen jalkeen
 KELLO_NOPEA_M_S = 1.3            # ... ja jos nopeus hogilla on yli taman (poisto), enintaan KELLO_NOPEA_MAX_S
 KELLO_NOPEA_MAX_S = 6.0
@@ -500,6 +503,34 @@ def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
 # ---------------------------------------------------------------------------------------------------------------------
 # HEITTO JA HEITTOPAA
 # ---------------------------------------------------------------------------------------------------------------------
+def tviiva_ruutu(pts, Y_raja=KELLO_TVIIVA_Y_CM, ikkuna=KELLO_TVIIVA_IKKUNA_CM):
+    """Ruutu (murtoluku), jolla rata ylittaa Y = Y_raja (heittopaan T-viiva: kiven etureuna osuu viivaan, kun keskipiste on Y = -KIVI_R_CM). pts = [(ruutu, Y, kivi todettu)]. Ruutunumero
+    sovitetaan Y:n funktiona (toisen asteen polynomi, koska kivi kiihtyy tyontoliikkeessa; liian vahalla aineistolla suora) viivan ymparilta: ensin vain todetut kivipaikat (B), sitten kaikki
+    paikat, sitten laajempi ikkuna; karkeat pisteet (A:n harhat) karsitaan. Vaatii pisteita viivan molemmin puolin (interpolointi); None, jos niita ei ole."""
+    if len(pts) < 4:
+        return None
+    F = np.array([p[0] for p in pts], float)
+    Y = np.array([p[1] for p in pts], float)
+    K = np.array([bool(p[2]) for p in pts])
+    for vain_b, raja in ((True, ikkuna), (False, ikkuna), (False, 1.4 * ikkuna)):
+        m = (np.abs(Y - Y_raja) <= raja) & (K if vain_b else True)
+        if m.sum() < (8 if raja <= ikkuna else 5) or int((Y[m] < Y_raja - 3.0).sum()) < 2 or int((Y[m] > Y_raja + 3.0).sum()) < 2:
+            continue
+        f, y = F[m], Y[m]
+        deg = 2 if len(f) >= 8 else 1
+        for _ in range(2):
+            c = np.polyfit(y, f, deg)
+            r = f - np.polyval(c, y)
+            hyva = np.abs(r) <= 3.0 * max(1.4826 * float(np.median(np.abs(r - np.median(r)))), 0.5) + 1.0
+            if hyva.all() or hyva.sum() < (8 if deg == 2 else 4):
+                break
+            f, y = f[hyva], y[hyva]
+        f_yl = float(np.polyval(c, Y_raja))
+        if f.min() - 2.0 <= f_yl <= f.max() + 2.0:
+            return f_yl
+    return None
+
+
 class Naytteet:
     """Yksi yksilollinen ruutu: A (kahvan sentroidi) ja B (tarkka sovitus), maakoordinaatit cm."""
     __slots__ = ("f", "A", "ala", "B", "Bs", "rms", "kelv", "peitto", "odottaa", "poik", "lepo")
@@ -560,9 +591,25 @@ class Heitto:
         self.kauko_kierto_tila = None          # None | "kaynnissa" | "valmis" | "virhe"
         self.kierre = None                     # kierrosmaara hog-hog-valilla (_paivita_kierre)
         self.ala_med = None                    # kahvan normitettu ala (px / skaala^2): kaukopaan blobien tunnistus
+        self._tviiva = (None, None)            # T-viivan ylitysruudun valimuisti: (avain, ruutu)
 
     def kelvolliset_b(self):
         return [n for n in self.naytteet if n.B is not None]
+
+    def tviiva_f(self):
+        """Ruutu (murtoluku), jolla kiven etureuna osui heittopaan T-viivaan (tviiva_ruutu), tai None, jos rata ei (viela) ylita viivaa. Valimuisti: lasketaan uudelleen vain, kun naytteet
+        tai B-tulokset muuttuvat."""
+        avain = (len(self.naytteet), self.b_laskuri)
+        if self._tviiva[0] == avain:
+            return self._tviiva[1]
+        pts = []
+        for n in list(self.naytteet):
+            p = n.paikka()
+            if p is not None:
+                pts.append((n.f, p[1], n.kivi()))
+        f = tviiva_ruutu(pts)
+        self._tviiva = (avain, f)
+        return f
 
     def ylitys_f(self, Y_raja, ikkuna_cm=150.0):
         """Ruutu (murtoluku), jolla kiven akseli ylittaa Y = Y_raja: lineaarinen sovitus ruutunumero(Y) rajan ymparilta (B ja pehmea B; jos niita on liian vahan,
@@ -2097,10 +2144,20 @@ class Analyysi:
             t_pys = min(t_pys, KELLO_NOPEA_MAX_S)
         return float(f_hog2 + self.fps * t_pys)
 
+    def kello_ruutu(self, h):
+        """Ruutu, jolla heiton miettimisaika paattyy: kiven etureuna osuu heittopaan T-viivaan (Heitto.tviiva_f); ellei rata ylita viivaa, heiton lahto + KELLO_TVIIVA_VIIVE_S (vain valmistuneelle
+        heitolle). None: ei viela selvilla (heitto kesken)."""
+        f = h.tviiva_f()
+        if f is not None:
+            return float(f)
+        if h.f_alku is not None and (h.tila == "valmis" or h.lopullinen):
+            return float(h.f_alku) + KELLO_TVIIVA_VIIVE_S * self.fps
+        return None
+
     def kello(self):
-        """Miettimisaika heittokohtaisesti ja joukkueittain: {tunnus: dict(aika_s, joukkue_yht_s, paa, heitto_paassa, f_pys_edell)}. Joukkueen kello kayntiin kun edellisen heiton kivi (ja muut
-        kivet) on pysahtynyt ja pysahtyy kun joukkueen heitto lahtee liikkeelle (h.f_alku); paiden valilla kello ei kay (paan ensimmaiselle heitolle ei aikaa: aika None). Heittoja
-        jarjestetaan lahtoruudun mukaan; paa vaihtuu kun heittopuoli vaihtuu."""
+        """Miettimisaika heittokohtaisesti ja joukkueittain: {tunnus: dict(aika_s, joukkue_yht_s, paa, heitto_paassa, f_pys_edell, f_stop)}. Joukkueen kello kayntiin kun edellisen heiton kivi
+        (ja muut kivet) on pysahtynyt tai poistunut pelista ja pysahtyy kun joukkueen heitetty kivi osuu heittopaan T-viivaan (f_stop = kello_ruutu: kiven etureuna, ei kiven lahto hackista);
+        paiden valilla kello ei kay (paan ensimmaiselle heitolle ei aikaa: aika None). Heittoja jarjestetaan lahtoruudun mukaan; paa vaihtuu kun heittopuoli vaihtuu."""
         out, yht = {}, {}
         paa = n_paassa = 0
         edell = None
@@ -2111,13 +2168,14 @@ class Analyysi:
                 n_paassa = 0
             n_paassa += 1
             aika, f_pys = None, None
-            if not uusi:
+            f_stop = self.kello_ruutu(h)
+            if not uusi and f_stop is not None:
                 f_pys = self.pysahtyi_f(edell)
-                if f_pys is not None and f_pys - h.f_alku <= KELLO_ENNEN_S * self.fps:        # pysahtyminen selvasti lahdon jalkeen: arvio on virheellinen
-                    aika = max(0.0, (h.f_alku - f_pys) / self.fps)
+                if f_pys is not None and f_pys - f_stop <= KELLO_ENNEN_S * self.fps:        # pysahtyminen selvasti kellon pysahtymisen jalkeen: arvio on virheellinen
+                    aika = max(0.0, (f_stop - f_pys) / self.fps)
             if aika is not None:
                 yht[h.vari] = yht.get(h.vari, 0.0) + aika
-            out[h.tunnus] = dict(aika_s=aika, joukkue_yht_s=float(yht.get(h.vari, 0.0)), paa=paa, heitto_paassa=n_paassa, f_pys_edell=f_pys)
+            out[h.tunnus] = dict(aika_s=aika, joukkue_yht_s=float(yht.get(h.vari, 0.0)), paa=paa, heitto_paassa=n_paassa, f_pys_edell=f_pys, f_stop=f_stop)
             edell = h
         return out
 
@@ -2128,17 +2186,17 @@ class Analyysi:
         return (not self.laske_kierre) or h.hog1_f is None or h.saapuminen == "ei_loytynyt" or (h.lopullinen and h.viivat is None)
 
     def kello_nyt(self, f_out):
-        """Kellon tila videon hetkella f_out (piirtajalle): dict(yht={vari: aika s}, kay=joukkueen vari tai None, juokseva_s, viim=viimeisin alkanut heitto, viim_aika_s). Kayva kello =
-        edellisen heiton kivi on pysahtynyt (pysahtyi_f <= f_out), seuraava heitto ei ole viela lahtenyt ja paa on kesken; kayvalle joukkueelle (edellisen heiton vastavari) lasketaan
-        mukaan kulunut aika."""
+        """Kellon tila videon hetkella f_out (piirtajalle): dict(yht={vari: aika s}, kay=joukkueen vari tai None, juokseva_s, viim=viimeisin heitto, jonka kello on pysahtynyt, viim_aika_s). Kayva
+        kello = edellisen heiton kivi on pysahtynyt (pysahtyi_f <= f_out), seuraava heitetty kivi ei ole viela osunut T-viivaan (kello kay myos silloin, kun kivi on jo lahtenyt hackista) ja
+        paa on kesken; kayvalle joukkueelle (edellisen heiton vastavari) lasketaan mukaan kulunut aika."""
         k = self.kello()
-        alkaneet = sorted((h for h in self.heitot if h.f_alku is not None and h.f_alku <= f_out), key=lambda x: x.f_alku)
+        pysaytetyt = sorted((h for h in self.heitot if h.f_alku is not None and k[h.tunnus]["f_stop"] is not None and k[h.tunnus]["f_stop"] <= f_out), key=lambda x: x.f_alku)
         yht = {}
-        for h in alkaneet:
+        for h in pysaytetyt:
             a = k[h.tunnus]["aika_s"]
             if a is not None:
                 yht[h.vari] = yht.get(h.vari, 0.0) + a
-        viim = alkaneet[-1] if alkaneet else None
+        viim = pysaytetyt[-1] if pysaytetyt else None
         kay = juokseva = None
         if viim is not None and k[viim.tunnus]["heitto_paassa"] < 2 * KIVIA_PAASSA:
             f_pys = self.pysahtyi_f(viim)
