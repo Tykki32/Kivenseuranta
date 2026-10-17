@@ -1,6 +1,6 @@
 """Piirrokset alkuperaiseen (1920 x 1080) videoruutuun, ei top-down-kuvaa.
 
-Heittopaa (vasen / oikea puolisko): kiven keskikohta pisteina (kahvan levyn keskipiste z = PISTE_Z), live: piste ilmestyy kun sen ruutu nayttyy tulosteessa; koko
+Heittopaa (vasen / oikea puolisko): kiven keskikohta pisteina jaan tasolla (kiven akselin kohta jaalla, z = PISTE_Z = 0), live: piste ilmestyy kun sen ruutu nayttyy tulosteessa; koko
 pistejoukko jaa nakyviin JALKI_S sekuntia heiton loputtua. Toinen paa: liukulinja ja irroituslinja heti heiton alusta (tulosteen kuva on analyysia VIIVE_S jäljessa,
 joten estimaatti ehtii valmistua ennen kuin kivi liikahtaa tulosteessa); linjat jaavat nakyviin seuraavaan heittoon tai VIIVAT_S sekuntiin asti.
 
@@ -18,7 +18,7 @@ import numpy as np
 import netti_geom as ng
 import netti_seuranta as ns
 
-PISTE_Z = 15.0
+PISTE_Z = 0.0                            # pisteet kiven keskikohtaan jaan tasolle (ei kahvan korkeudelle)
 VARI_PISTE = (60, 230, 60)               # BGR: kirkas vihrea
 VARI_PISTE_REUNA = (20, 20, 20)
 VARI_NYKYINEN = (40, 220, 255)           # nykyinen paikka: keltainen rengas
@@ -143,6 +143,8 @@ def paneelin_rivit(h, s, kierre_paalla=True):
     kierre_lisa = ""
     if s["kierre"] is None and kierre_paalla:
         kierre_lisa = "mitataan" if h.kierto_tila in (None, "kaynnissa") else "ei saatu"
+    elif s["kierre"] is not None and s.get("kierto_varma") is False:
+        kierre_lisa = "epävarma"
     elif s["kierre"] is not None and not s["kierre_mitattu"]:
         kierre_lisa = "alustava"
     rivit += [
@@ -152,7 +154,7 @@ def paneelin_rivit(h, s, kierre_paalla=True):
         (f"Kierre: {kierre}", VARI_KIERRE, kierre_lisa),
         (f"Irroitus: {_luku(s['irr_hog_m'], 1)}m", VARI_VALKOINEN, ""),
         (f"Nopeus: Ennen {_luku(s['v_ennen'], 2)} m/s Jälkeen {_luku(s['v_jalkeen'], 2)} m/s", VARI_VALKOINEN, ""),
-        (f"Hidastuvuus: {_luku(s['hidastuvuus'], 2) + ' m/s^2' if (s['vakaa'] or s['vapaa_matka_cm'] >= 250.0) else '?'}", VARI_VALKOINEN, ""),     # lyhyestä vapaasta lennosta ei vielä luotettavaa arvoa
+        (f"Hidastuvuus: {_luku(s['hidastuvuus'], 2) + ' m/s^2' if (s['vakaa'] or s['vapaa_matka_cm'] >= 250.0) and 0.0 <= s['hidastuvuus'] <= 0.25 else '?'}", VARI_VALKOINEN, ""),     # lyhyestä vapaasta lennosta tai kohinaisesta mittauksesta (negatiivinen tai > 0,25) ei luotettavaa arvoa
     ]
     return rivit
 
