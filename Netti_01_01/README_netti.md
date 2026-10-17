@@ -92,6 +92,8 @@ kohdalla 0,67 cm/px (poikittain) ja 2,7 cm/px (radan suuntaan), pesän kohdalla 
 `--alku/--loppu` ja `--vali 1` tarkistavat yksittäisen kohdan joka ruudulta) ja päätelmä (`VAKAA` / `HEILUU`) tulostuu puolisko kerrallaan; jos jokin toinen video heiluisi, siirtymä (dx, dy) pitäisi
 vähentää kuvapisteistä ennen `Puoli.kuva_maahan` ja lisätä `Puoli.maa_kuvaan`:n tulokseen.
 
+Samalla menetelmällä (kertamittaus, ei työkalussa) mitattiin myös ylänurkkien minikarttojen eli talon päältä kuvaavien TV-kameroiden vakaus (270 x 270 px, 4 ikkunaa / kuva, 128 px): poikkeama 99,9 %:ssa ruuduista alle 0,19 / 0,25 px, suurin 0,34 / 0,42 px, yli 0,5 px ei yhtään; nekin ovat siis täysin vakaat (minikarttoja ei käytetä seurannassa, ne maskataan pois).
+
 Huom. `cv2.phaseCorrelate` kertoo ikkunafunktion syöttökuviin PAIKALLAAN (kun ikkunan koko on DFT:lle optimaalinen, esim. 192): ikkunat on annettava kopioina, muuten referenssikuva
 muuttuu joka kutsulla (vaste putoaa nopeasti ja mittaus näyttäisi ruudun "liikkuvan" jopa 4 px/40 s, vaikka kuva on paikallaan).
 
