@@ -392,9 +392,9 @@ def posteriori_omega(k, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lo
     t_ka = float(np.sum(w_t * k["t"]) / np.sum(w_t))                 # tietopaino-keskiaika (omegan vaimenemisen vertailuhetki)
     dt = k["t"] - t_ka
     J = np.empty((len(th_ruudukko), len(om_ruudukko)))
-    ang = th_ruudukko[:, None, None] + om_ruudukko[None, :, None] * dt[None, None, :]
+    lisa = om_ruudukko[:, None] * dt[None, :]                              # (omega, ruutu): kaukopaassa ruudukko voi olla tuhansia pisteita -> yksi theta0 kerrallaan
     for a in range(len(th_ruudukko)):
-        J[a] = _jaksollinen(pen, ang[a]).sum(axis=-1)
+        J[a] = _jaksollinen(pen, th_ruudukko[a] + lisa).sum(axis=-1)
     lp = np.log(np.exp(-(J - J.min())).sum(axis=0) + 1e-300)
     if ennakko is not None:
         lp = lp + ennakko(om_ruudukko)
@@ -402,6 +402,52 @@ def posteriori_omega(k, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lo
     p = np.exp(lp)
     p /= p.sum()
     return dict(om=om_ruudukko, p=p, p_ccw=float(p[om_ruudukko > 0].sum()), sig=sig, puhdas=puhdas, t_ka=t_ka, n_eff=float(np.sum(1.0 / (sig / SIG_HYVA) ** 2)), J=J, th=th_ruudukko)
+
+
+SARANA_T_ALKU = -0.6            # saranamalli: ruudut t >= t_irr + tama (s): plateau-ruudut ennen kierron alkua (kasi pitaa kahvaa, kulma vakio)
+SARANA_TC_ALUE = (-0.6, 1.2)    # kierron alkuhetki t_c (s, suhteessa t_irr), tasainen ennakko; sormet irtoavat usein vasta 0,3-1,0 s irroituksen (reittidatan vapaan lennon alun) jalkeen
+SARANA_TC_ASKEL = 0.05
+
+
+def posteriori_omega_sarana(k, t_irr, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lognormaali, om_ruudukko=OM_RUUDUKKO, th_ruudukko=TH_RUUDUKKO):
+    """Omegan posteriori saranamallille: kahvan kulma on vakio theta_p ennen kierron alkua t_c ja sen jalkeen theta0' + omega t (jatkuva: theta_p = theta0' + omega t_c); theta0' ja t_c marginalisoidaan
+    (t_c tasainen valilla SARANA_TC_ALUE, myos 'ei saranaa' = t_c alussa). Syy: kierto alkaa, kun heittaja antaa kierteen kahvasta (sormet irtoavat), ei valttamatta reittidatan irroitushetkella; ennen sita
+    kahvan kulma on vakio (tasanne), ja lineaarinen malli koko ruutujonon yli aliarvioisi omegan (punaiset heitot, joissa puhtaita ruutuja on vahan). Palauttaa kuten posteriori_omega."""
+    cmin = np.min(k["Cz"], axis=1)
+    sig, puhdas = ruudun_sigma(cmin, k["nkz"])
+    dC = k["Cz"] - cmin[:, None]
+    pen = np.minimum(dC / (2.0 * s2 * (sig / SIG_HYVA) ** 2)[:, None], katkaisu)
+    t = k["t"] - t_irr
+    n = len(t)
+    jalkeen = t >= 0.0
+    w_t = 1.0 / sig ** 2
+    t_ka = float(np.sum((w_t * k["t"])[jalkeen]) / np.sum(w_t[jalkeen])) if jalkeen.any() else float(np.sum(w_t * k["t"]) / np.sum(w_t))
+    tc = np.arange(SARANA_TC_ALUE[0], SARANA_TC_ALUE[1] + 1e-9, SARANA_TC_ASKEL)
+    mc = np.searchsorted(t, tc)                                           # ruudut i >= mc[j] ovat saranan jalkeen
+    pre = np.zeros((len(th_ruudukko), n + 1))                             # pre[a, m] = sum_{i < m} pen_i(theta_p = th_ruudukko[a]): plateau-kustannus
+    for a, th in enumerate(th_ruudukko):
+        pre[a, 1:] = np.cumsum(_jaksollinen(pen, np.full(n, th)))
+    om = om_ruudukko
+    acc = np.full(len(om), -np.inf)
+    nth = len(th_ruudukko)
+    for th0 in th_ruudukko:                                               # theta0' (aika-akselin nollassa t = t_irr)
+        v = _jaksollinen(pen, th0 + om[:, None] * t[None, :])             # (omega, ruutu)
+        suf = np.concatenate([np.cumsum(v[:, ::-1], axis=1)[:, ::-1], np.zeros((len(om), 1))], axis=1)
+        for j in range(len(tc)):
+            thp = (th0 + om * tc[j]) % 180.0
+            x = thp / 3.0
+            i0 = np.floor(x).astype(int) % nth
+            i1 = (i0 + 1) % nth
+            w = x - np.floor(x)
+            Jv = suf[:, mc[j]] + pre[i0, mc[j]] * (1 - w) + pre[i1, mc[j]] * w
+            acc = np.logaddexp(acc, -Jv)
+    lp = acc
+    if ennakko is not None:
+        lp = lp + ennakko(om)
+    lp -= lp.max()
+    p = np.exp(lp)
+    p /= p.sum()
+    return dict(om=om, p=p, p_ccw=float(p[om > 0].sum()), sig=sig, puhdas=puhdas, t_ka=t_ka, n_eff=float(np.sum(1.0 / (sig / SIG_HYVA) ** 2)), J=None, th=th_ruudukko, jalkeen=jalkeen)
 
 
 def tiivista_posteriori(P):
@@ -420,26 +466,93 @@ def arvioi_posteriori(cam, ast, vari, havainnot, t_irr, muoto=None):
     peilausepaselvyys mukana kustannuskayrissa. Palauttaa dict(omega_deg_s [posteriorin keskiarvo valitulla suunnalla], omega_sd_deg_s, omega_ml_deg_s, p_suunta, suunta, p_ccw, t_keski,
     f_keski, ruutuja, ruutuja_puhdas, n_eff, varma [suunta >= SUUNTA_VARMA], ...) tai dict(virhe=...). Kierron suuruudelle ei aseteta rajoja."""
     muoto = tuple(muoto) if muoto is not None else (ko.H_ALKU, ko.ELL_ALKU, ko.W_ALKU)
-    k = kulmakayrat(cam, ast, vari, havainnot, t_irr, muoto)
-    if k is None or len(k["t"]) < MIN_RUUTUJA_UUSI:
-        n = 0 if k is None else len(k["t"])
+    k = kulmakayrat(cam, ast, vari, havainnot, t_irr, muoto, t0=SARANA_T_ALKU)
+    if k is None or int(np.sum(k["t"] >= t_irr)) < MIN_RUUTUJA_UUSI:
+        n = 0 if k is None else int(np.sum(k["t"] >= t_irr))
         return dict(virhe=f"liian vahan kelvollisia ruutuja ({n})", ruutuja=n)
-    P = posteriori_omega(k)
+    P = posteriori_omega_sarana(k, t_irr)
     s, mu, sd, om_ml, p_suunta = tiivista_posteriori(P)
-    ia = int(np.argmin(np.abs(P["om"] - om_ml)))
-    th0 = float(P["th"][int(np.argmin(P["J"][:, ia]))])
+    th0 = float("nan")
     w_t = 1.0 / P["sig"] ** 2
     return dict(omega_deg_s=mu, omega_sd_deg_s=sd, omega_ml_deg_s=om_ml, omega_sovitus_deg_s=om_ml, omega_theilsen_deg_s=mu, theta0_deg=th0, p_suunta=p_suunta, suunta=int(s), p_ccw=P["p_ccw"],
+                t_keski=P["t_ka"], f_keski=float(np.sum((w_t * k["f"])[P["jalkeen"]]) / np.sum(w_t[P["jalkeen"]])), ruutuja=int(P["jalkeen"].sum()), ruutuja_puhdas=int(P["puhdas"].sum()),
+                hylatty_kasi=int((k["nkz"] > 60).sum()), ruutuja_ennen=int((~P["jalkeen"]).sum()), n_eff=P["n_eff"], varma=bool(p_suunta >= SUUNTA_VARMA), marginaali=float("nan"),
+                muoto=dict(h_cm=muoto[0], ell_cm=muoto[1], w_cm=muoto[2]), menetelma="posteriori_sarana")
+
+
+KAUKO_ENNAKKO_SLACK = 0.20      # kaukopaan omegan ennakon (heittopaan mittaus + vaimeneminen) lisaepavarmuus (ln-asteikolla), ettei ennakko mene todistusaineiston edelle
+KAUKO_ENNAKKO_MIN_SIGMA = 0.30  # ... ja ennakon ln-hajonnan alaraja
+KAUKO_STEP_KERROIN = 5.0        # omega-ruudukon askel (deg/s) = kerroin / ikkunan pituus (s): vaihe ei karkaa yli ~2,5 astetta ikkunan yli
+KAUKO_MAX_PISTEITA = 6000       # omega-ruudukon enimmaiskoko
+
+
+def _kauko_ruudukko(T, enn):
+    """Kaukopaan omega-ruudukko (deg/s): askel kerroin / T (pitkalla ikkunalla tihea, koska vaiheen pitaa pysya oikeana ruutujen yli), alue: ennakon mukaan [exp(mu - 4 s), exp(mu + 4 s)] samalle
+    etumerkille (spin ei kaanny eika voimistu; ennakko on heikko) tai ilman ennakkoa +-900 deg/s."""
+    step = float(np.clip(KAUKO_STEP_KERROIN / max(T, 0.5), 0.15, 3.0))
+    if enn is None:
+        top = np.arange(-900.0, 900.0 + 1e-9, step)
+        return top
+    mu, sg, s = enn
+    lo, hi = np.exp(mu - 4.0 * sg), np.exp(mu + 4.0 * sg)
+    om = np.arange(max(lo, 1.0), hi + step, step)
+    if len(om) > KAUKO_MAX_PISTEITA:
+        om = np.linspace(max(lo, 1.0), hi, KAUKO_MAX_PISTEITA)
+    return s * om
+
+
+def arvioi_posteriori_kauko(cam, ast, vari, havainnot, t0, muoto=None, omega_ennakko=None):
+    """Kaukopaan kierre kuten arvioi_posteriori (kaikki ruudut, laatupainotus, ei omegan rajoja), mutta ruudukko tihennetaan ikkunan pituuden mukaan ja heittopaan mittaus antaa heikon
+    ennakon (alias-minimien valinta): omega_ennakko = (omega_deg_s, t_s[, sd_deg_s]) heittopaan varma mittaus; ennakko: ln |omega_kauko| ~ N(ln |omega_lahi| - K_KIERRE (t_kauko - t_lahi),
+    sigma^2), sigma^2 = (sd / omega)^2 + (SIGMA_K dt)^2 + KAUKO_ENNAKKO_SLACK^2 (vahintaan KAUKO_ENNAKKO_MIN_SIGMA), etumerkki sama kuin heittopaassa. Palauttaa kuten arvioi_posteriori."""
+    muoto = tuple(muoto) if muoto is not None else (ko.H_ALKU, ko.ELL_ALKU, ko.W_ALKU)
+    k = kulmakayrat(cam, ast, vari, havainnot, t0, muoto)
+    if k is None or len(k["t"]) < MIN_RUUTUJA_UUSI:
+        n = 0 if k is None else len(k["t"])
+        return dict(virhe=f"liian vahan kelvollisia ruutuja kaukopaassa ({n})", ruutuja=n)
+    cmin = np.min(k["Cz"], axis=1)
+    sig, puhdas = ruudun_sigma(cmin, k["nkz"])
+    w_t = 1.0 / sig ** 2
+    t_ka = float(np.sum(w_t * k["t"]) / np.sum(w_t))
+    T = float(k["t"].max() - k["t"].min())
+    enn = None
+    if omega_ennakko is not None:
+        om_n, t_n = float(omega_ennakko[0]), float(omega_ennakko[1])
+        sd_n = float(omega_ennakko[2]) if len(omega_ennakko) > 2 else 0.15 * abs(om_n)
+        dt = t_ka - t_n
+        mu = np.log(max(abs(om_n), 1.0)) - K_KIERRE * dt
+        sg = max(KAUKO_ENNAKKO_MIN_SIGMA, float(np.sqrt((sd_n / max(abs(om_n), 1.0)) ** 2 + (SIGMA_K * abs(dt)) ** 2 + KAUKO_ENNAKKO_SLACK ** 2)))
+        enn = (mu, sg, 1.0 if om_n > 0 else -1.0)
+    om_r = _kauko_ruudukko(T, enn)
+    if enn is None:
+        ennakko_f = ennakko_lognormaali
+    else:
+        mu, sg, _ = enn
+        ennakko_f = lambda om: -0.5 * ((np.log(np.maximum(np.abs(om), 1.0)) - mu) / sg) ** 2 - np.log(np.maximum(np.abs(om), 1.0))
+    P = posteriori_omega(k, ennakko=ennakko_f, om_ruudukko=om_r)
+    s, mu_om, sd, om_ml, p_suunta = tiivista_posteriori(P)
+    ia = int(np.argmin(np.abs(P["om"] - om_ml)))
+    th0 = float(P["th"][int(np.argmin(P["J"][:, ia]))])
+    # posteriorin keskittyneisyys: paamoodin ymparilla (+-3 sd tai +-3 deg/s) oleva osuus massasta (alias-lohkot hajottavat)
+    m = (P["om"] * s) > 0
+    pp = P["p"][m] / max(P["p"][m].sum(), 1e-300)
+    oo = P["om"][m]
+    kesk = float(pp[np.abs(oo - om_ml) <= max(3.0 * sd, 3.0)].sum()) if len(oo) else 0.0
+    return dict(omega_deg_s=mu_om, omega_sd_deg_s=sd, omega_ml_deg_s=om_ml, omega_sovitus_deg_s=om_ml, omega_theilsen_deg_s=mu_om, theta0_deg=th0, p_suunta=p_suunta, suunta=int(s), p_ccw=P["p_ccw"],
                 t_keski=P["t_ka"], f_keski=float(np.sum(w_t * k["f"]) / np.sum(w_t)), ruutuja=int(len(k["t"])), ruutuja_puhdas=int(P["puhdas"].sum()), hylatty_kasi=int((k["nkz"] > 60).sum()),
-                n_eff=P["n_eff"], varma=bool(p_suunta >= SUUNTA_VARMA), marginaali=float("nan"), muoto=dict(h_cm=muoto[0], ell_cm=muoto[1], w_cm=muoto[2]), menetelma="posteriori")
+                n_eff=P["n_eff"], keskittyneisyys=kesk, ikkuna_s=T, varma=bool(p_suunta >= SUUNTA_VARMA and sd / max(abs(mu_om), 1.0) <= KAUKO_VARMA_SD and kesk >= 0.9), marginaali=float("nan"),
+                muoto=dict(h_cm=muoto[0], ell_cm=muoto[1], w_cm=muoto[2]), menetelma="posteriori_kauko")
+
+
+KAUKO_VARMA_SD = 0.15           # kaukopaan mittaus "varma", kun omegan suhteellinen hajonta <= tama (ja suunta varma, posteriori keskittynyt yhteen lohkoon)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
 # YHDISTELMA: kierron mittaus heittopaasta (alku) ja kaukopaasta (loppu) -> kierrosmaara
 # ---------------------------------------------------------------------------------------------------------------------
-SIGMA_K = 0.008                # vaimenemisvakion ennakkotieto (1/s): k = 0,021 +- 0,008 (IMU 2-3 % / s; koko videolla mitattu heittojen valinen hajonta 0,009 (n = 50, kun molemmat paat mitattu; mittauskohinan osuus 0,005 -> todellinen hajonta ~0,007))
+SIGMA_K = 0.008               # vaimenemisvakion ennakkotieto (1/s): k = 0,021 +- 0,008 (IMU 2-3 % / s; koko videolla mitattu heittojen valinen hajonta 0,009 (n = 50, kun molemmat paat mitattu; mittauskohinan osuus 0,005 -> todellinen hajonta ~0,007))
 OMEGA_SIGMA_MIN_DEG = 4.0       # kierron mittauksen pienin epavarmuus (deg/s)
-K_SALLITTU = (0.0, 0.07)        # mitattu vaimeneminen uskottava, jos kahden mittauksen valinen k on tassa valissa
+CHI2_RAJA = 9.0                 # kahden mittauksen yhteissovituksen khi^2 (1 vapausaste; 3 sigmaa): ylitys = mittaukset ja vaimenemisen ennakkotieto (k = 0,021 +- SIGMA_K) eivat sovi yhteen
 
 
 def omega_mitta(k, fps):
@@ -460,7 +573,8 @@ def yhdista(mn, mf, t1, t2, k0=K_KIERRE):
     """Kierrosmaara [t1, t2] (hog-hog) kierron mittauksista: mn = heittopaa (t, omega, sigma, varma) ja mf = kaukopaa (sama muoto), kumpi tahansa voi puuttua. Malli:
     ln |omega(t)| = a - k (t - t_n) (eksponentiaalinen vaimeneminen); molemmat mittaukset ja ennakkotieto k = k0 +- SIGMA_K sovitetaan yhdessa (painotettu pienin neliösumma, lineaarinen
     a:ssa ja k:ssa), joten mitattu vaimeneminen korjaa kierrosmaaran (ei pelkkaa ekstrapolointia vakiolla). Palauttaa dict(N (+ = vastapaivaan), N_sigma, k, omega1, omega2, lahde,
-    ristiriita) tai None. Etumerkit ristiriidassa -> varmemman mittauksen etumerkki, ristiriita = True."""
+    ristiriita, chi2) tai None. Etumerkit ristiriidassa -> varmemman mittauksen etumerkki, ristiriita = True. Kun yhteissovituksen khi^2 > CHI2_RAJA (esim. omega kasvaa tai vaimenee
+    moninkertaisella nopeudella), tulos on molempien yksittaisten arvioiden keskiarvo ja epavarmuus puolet niiden erosta (lahde 'ristiriita')."""
     mit = [m for m in (mn, mf) if m is not None]
     if not mit:
         return None
@@ -482,8 +596,16 @@ def yhdista(mn, mf, t1, t2, k0=K_KIERRE):
     cov = np.linalg.inv(Aa.T @ W @ Aa)
     a, k = cov @ (Aa.T @ W @ yy)
     lahde = "kaksi mittausta" if len(mit) == 2 else ("heittopaa" if mit[0] is mn else "kaukopaa")
-    if len(mit) == 2 and not (K_SALLITTU[0] <= k <= K_SALLITTU[1]):
-        ristiriita = True                                                          # mitattu vaimeneminen epauskottava: mittaukset eivat sovi yhteen
+    chi2 = None
+    if len(mit) == 2:
+        res = (Aa @ np.array([a, k]) - yy) * ww
+        chi2 = float(res @ res)
+        if chi2 > CHI2_RAJA:                                                       # spin ei voimistu eika vaimene moninkertaisella nopeudella: toinen mittauksista on todennakoisesti pielessa
+            ra, rb = yhdista(mn, None, t1, t2, k0), yhdista(None, mf, t1, t2, k0)
+            N_ka = 0.5 * (ra["N"] + rb["N"])
+            hajonta = 0.5 * abs(ra["N"] - rb["N"])                                 # ei tiedeta kumpi on oikein: keskiarvo ja puolet erosta epavarmuutena
+            return dict(N=float(N_ka), N_sigma=float(np.sqrt(hajonta ** 2 + 0.25 * (ra["N_sigma"] ** 2 + rb["N_sigma"] ** 2))), k=float(k0), omega1=0.5 * (ra["omega1"] + rb["omega1"]),
+                        omega2=0.5 * (ra["omega2"] + rb["omega2"]), lahde="ristiriita", ristiriita=True, t_ref=float(t_ref), chi2=chi2)
 
     def N_(a_, k_):
         k_ = max(k_, 1e-4)
@@ -495,4 +617,4 @@ def yhdista(mn, mf, t1, t2, k0=K_KIERRE):
     J = np.array([ja, jk])
     sg_N = float(np.sqrt(max(J @ cov @ J, 0.0)))
     return dict(N=float(N), N_sigma=sg_N, k=float(k), omega1=float(s * np.exp(a - k * (t1 - t_ref))), omega2=float(s * np.exp(a - k * (t2 - t_ref))), lahde=lahde,
-                ristiriita=bool(ristiriita), t_ref=float(t_ref))
+                ristiriita=bool(ristiriita), t_ref=float(t_ref), chi2=chi2)

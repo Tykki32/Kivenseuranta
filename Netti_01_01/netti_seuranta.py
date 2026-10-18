@@ -205,7 +205,7 @@ KAUKO_B_LEPO_RUUTUA = 10         # ... ja levossa
 KAUKO_KIERTO_Y_MIN_CM = 150.0    # kierteen mittauksen ruudut kaukopaassa (kuten KIERTO_Y_MIN_CM / KIERTO_Y_MAX_CM heittopaassa)
 KAUKO_KIERTO_Y_MAX_CM = 720.0
 KAUKO_KIERTO_MAX_RUUTUJA = 240
-KAUKO_KIERTO_KEHYKSIA = 100        # kaukopaan kierteen sovitukseen otetaan enintaan taman verran (tasaisesti valittuja) ruutuja
+KAUKO_KIERTO_KEHYKSIA = 240        # kaukopaan kierteen sovitukseen otetaan enintaan taman verran (tasaisesti valittuja) ruutuja
 
 
 class Kuvain:
@@ -427,13 +427,14 @@ def alusta_kierto(kansio, puolet):
 
 
 def kierto_laske(m, args):
-    """Kierteen mittaus: args = (puoli, vari, havainnot, t_irr) heittopaassa (netti_kierre.arvioi_posteriori) tai (puoli, vari, havainnot, t_irr, omega_ennakko) kaukopaassa (netti_kierre.arvioi),
-    m = puolen Mittari. omega_ennakko = (omega_deg_s, t_s) heittopaan mittaus (ratkaisee kaukopaan alias-minimien valilla; voi olla None). Palauttaa mittauksen dictin (tai dict(virhe=...))."""
+    """Kierteen mittaus: args = (puoli, vari, havainnot, t_irr) heittopaassa (netti_kierre.arvioi_posteriori) tai (puoli, vari, havainnot, t_alku, omega_ennakko) kaukopaassa
+    (netti_kierre.arvioi_posteriori_kauko), m = puolen Mittari. omega_ennakko = (omega_deg_s, t_s, sd_deg_s) heittopaan varma mittaus (heikko ennakko, ratkaisee kaukopaan alias-minimien valilla; voi olla
+    None). Palauttaa mittauksen dictin (tai dict(virhe=...))."""
     puoli, vari, havainnot, t_irr = args[:4]
     try:
         if len(args) <= 4:                                     # heittopaa: robusti posteriori kaikista ruuduista irroituksesta kuvan reunaan (netti_kierre.arvioi_posteriori)
             return nk.arvioi_posteriori(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari))
-        return nk.arvioi(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari), omega_ennakko=args[4])
+        return nk.arvioi_posteriori_kauko(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari), omega_ennakko=args[4])        # kaukopaa: kuten heittopaa, ruudukko tihea, heikko ennakko heittopaasta
     except Exception as e:
         return dict(virhe=repr(e))
 
@@ -2075,7 +2076,7 @@ class Analyysi:
             return
         h.kauko_kierto_tila = "kaynnissa"
         mn = nk.omega_mitta(h.kierto, self.fps)
-        ennakko = (float(np.degrees(mn[1])), mn[0]) if mn is not None and mn[3] else None          # varma heittopaan mittaus: ratkaisee kaukopaan alias-minimien valilla
+        ennakko = (float(np.degrees(mn[1])), mn[0], float(np.degrees(mn[2]))) if mn is not None and mn[3] else None          # varma heittopaan mittaus (omega, aika, sd): heikko ennakko, ratkaisee kaukopaan alias-minimien valilla
         args = (kh.puoli, h.vari, havainnot, havainnot[0][0] - 1.0, ennakko)
         if self.kierto_pool is not None:
             self.kierto_tyot.append((self.kierto_pool.submit(tyo_kierto, args), h, True))
