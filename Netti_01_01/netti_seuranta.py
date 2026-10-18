@@ -20,11 +20,17 @@ numerointi vareittain per heittosuunta (Analyysi._numeroi) ja paneelin suureet (
 
 Taustakuva: tulokset/moodikuva_<puoli>_puhdas.png jos olemassa (netti_tausta.py; hackin haamukivi pois), muuten moodikuva_<puoli>.png.
 """
+import os as _os
+
+for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):       # tyoprosessit perivat nama: pienet matriisit eivat hyoty BLAS-saikeista, ja niiden ylikuorma hidastaa konetta
+    _os.environ.setdefault(_v, "1")                                                                       # (spawn-prosessit ovat kaynnistyneet vasta tama jalkeen); yksi saie myos toistettavampi
+import collections
 import concurrent.futures
 import multiprocessing
 import os
 import sys
 import sysconfig
+import time
 import types
 import warnings
 from concurrent.futures import ProcessPoolExecutor
@@ -182,6 +188,7 @@ KELLO_ARVIO_MAX_S = 12.0         # kello: pysahtymisen arvio hog-ylityksesta (il
 KELLO_NOPEA_M_S = 1.3            # ... ja jos nopeus hogilla on yli taman (poisto), enintaan KELLO_NOPEA_MAX_S
 KELLO_NOPEA_MAX_S = 6.0
 KELLO_MALLI_ODOTUS_S = 5.0       # kello: kaukopaan seuranta ei ole kertonut pysahtymista -> mallin (nopeus hog-viivalla, tyypillinen hidastuvuus) mukainen pysahtymishetki oletetaan toteutuneeksi, kun siita on kulunut taman verran ...
+KELLO_ALKU_PYS_S = 31.0          # kello: ei viivaestimaattia / hog-ylitysta -> pysahtymisen arvio heiton lahdosta (mediaani 31 s, 10-90 %: 22-35 s, 74 heittoa)
 KELLO_NAHTY_S = 2.0              # ... eika kivea ole nahty liikkeessa: kaukopaan B-paikat eivat ole siirtyneet yli KELLO_NAHTY_CM viimeisen taman ajan sisalla
 KELLO_NAHTY_CM = 10.0
 PELI_TAKA_Y_CM = -(183.0 + KIVI_R_CM)   # kivi on poissa pelista, kun sen keskipiste on kokonaan taka-viivan (Y' = -183 cm) takana ...
@@ -1757,6 +1764,9 @@ class Analyysi:
         self.fps_lahde = 25.0 if fps_lahde is None else float(fps_lahde)      # None: paatellaan kopioruutujen osuudesta (_paata_fps_lahde)
         self._fps_auto = fps_lahde is None
         self.synkroninen = synkroninen
+        self.aika = collections.defaultdict(float)  # analyysin ajankaytto (s) vaiheittain (syota): ks. netti_live.py loppuyhteenveto
+        self._lykatyt = {}                           # toistettava ajo: kaukopaan kierron aloitus odottaa heittopaan kierron valmistumista
+        self.toistettava = False                     # reaaliaikarakenne, mutta tulos ei riipu ajoituksesta: sama kuin sim-ajossa (ks. aseta_toistettava)
         self.viive_b = viive_b_ruutuja
         self.kansio = kansio
         self.tarkka = bool(tarkka)
@@ -1843,12 +1853,18 @@ class Analyysi:
         return kopio
 
     # ---- B-tyot ---------------------------------------------------------------------------------------------------
+    def aseta_toistettava(self, paalla=True):
+        """Toistettava reaaliaika: tulos ei riipu koneen nopeudesta eika tyoprosessien ajoituksesta, vaan on sama kuin sim-ajossa (--nopea). B-tulokset otetaan kayttoon kiintealla viiveella
+        (ruutu f - viive_b odotetaan, B:ta ei pudoteta), estimaatit lasketaan kaikki jarjestyksessa ja heittopaan kierto odotetaan ennen kaukopaan kierron ennakkoa. Ruutuja ei ohiteta
+        (aja_reaaliaika). Ei sovi live-virtaan, jossa kone ei voi odottaa."""
+        self.toistettava = bool(paalla)
+
     def pyyda_b(self, hp, heitto, naytteet, ruutu, X0, Y0, ennuste=None):
         """B-mittaus naytteelle: tyoprosessille (leike) tai suoraan (ei poolia / sim ilman prosesseja). Reaaliajassa ruuhkautuessa B jatetaan pois. ennuste: luotettava
         (B-pohjainen) paikkaennuste (X, Y), jonka suhteen tulos hyvaksytaan myos silloin, kun alkuarvo (A) oli harhainen."""
         if not self.tarkka:
             return
-        if self.pool is not None and not self.synkroninen and len(self.tyot) > 24:
+        if self.pool is not None and not self.synkroninen and not self.toistettava and len(self.tyot) > 24:
             return
         v = hp.m.valmistele(ruutu, X0, Y0)
         if v is None:
@@ -1938,7 +1954,7 @@ class Analyysi:
             heitto.kierto_lisa = list(heitto.kierto_kehykset)
             lisa = [k[0].f for k in heitto.kierto_lisa]
         if self.est_pool is not None:
-            if any(e.heitto is heitto for e in self.est_tyot):
+            if not self.toistettava and any(e.heitto is heitto for e in self.est_tyot):      # toistettavassa ajossa kaikki estimaatit lasketaan (yksi prosessi, jarjestyksessa): historia (vakaa) sama kuin sim-ajossa
                 if pakota:                           # analyysisaie ei jumitu odottamaan: lopullinen kaynnistyy kun kesken oleva on valmis (_keraa_estimaatit)
                     heitto.lopullinen_jonossa = True
                 return                               # edellinen laskenta kesken
@@ -1972,6 +1988,8 @@ class Analyysi:
             heitto.kierto_kehykset, heitto.kierto_lisa = [], None            # leikkeet (~10 MB / heitto) eivat enaa tarpeen
         if ok:
             self._paivita_kierre(heitto)
+        if lopullinen and self.toistettava:
+            self._vakiot_aloita(heitto)
 
     def _keraa_estimaatit(self, odota=False):
         jaa = []
@@ -1982,6 +2000,8 @@ class Analyysi:
                 except Exception:
                     if e.lopullinen:
                         e.heitto.viivat_lopullinen = True
+                        if self.toistettava:
+                            self._vakiot_aloita(e.heitto)
             else:
                 jaa.append(e)
         self.est_tyot = jaa
@@ -2014,11 +2034,17 @@ class Analyysi:
         h.kierto_tila = "virhe" if (r is None or "virhe" in r) else "valmis"
         self.tapahtumat.append(("kierto", h.tunnus, h.f_loppu, h.kierto_tila))
         self._paivita_kierre(h)
+        lykatty = self._lykatyt.pop(h.tunnus, None)
+        if lykatty is not None:
+            self._kauko_kierto_aloita(*lykatty)
 
     def _kauko_kierto_aloita(self, h, kh, F, Y):
         """Kierteen mittaus kaukopaan kuvasta (kiven seurannan jalkeen): ruudut ja B-paikat kaukopaan seurannasta, aika aikaperustalla (kiven rata F, Y'). Taustaprosessiin tai
         heti (sim). Sama mittaus kuin heittopaassa (netti_kierre.arvioi): omega kaukopaan puolen kameralla."""
         if not self.laske_kierre or h.kauko_kierto_tila is not None or not kh.kierto_kehykset:
+            return
+        if self.toistettava and h.kierto_tila == "kaynnissa":
+            self._lykatyt[h.tunnus] = (h, kh, F, Y)                # kaukopaan alias-ratkaisu kayttaa heittopaan mittausta ennakkona: odotetaan sen valmistumista (ei jumiteta analyysia), kuten sim-ajossa
             return
         try:
             aj = aikap.Aikajana(F, Y, kopiot_ohitettu=True)
@@ -2063,6 +2089,8 @@ class Analyysi:
         Taustaprosessiin (kierto_pool) tai heti (sim)."""
         if not self.laske_kierre or h.vakiot_tila is not None:
             return
+        if self.toistettava and not h.viivat_lopullinen:
+            return                                                 # kaynnistyy, kun lopullinen estimaatti on valmis (_liita_viivat)
         k = h.kauko
         if k is None or "virhe" in k or "pisteet" not in k or h.kauko_kierto_tila == "kaynnissa":
             return
@@ -2182,12 +2210,13 @@ class Analyysi:
         """Mallipohjainen arvio ruudulle, jolla heiton kivi pysahtyy (ei vaadi kaukopaan seurantaa eika kierteen mittausta): nopeus lahipaan hog-viivalla (laske_viivat: nopeus_hog1,
         muuten irroituksen nopeudesta tyypillisella hidastuvuudella) -> hog-viivalta hog-viivalle vakiohidastuvuus (mitattu hog-ylitys / h.kierre['T'] jos on, muuten malli), kaukopaan hog-viivalta
         pysahtymiseen nopeus / KAUKO_PYS_HIDASTUVUUS (enintaan KELLO_ARVIO_MAX_S, nopealla kivella KELLO_NOPEA_MAX_S). Kivi, joka ei yllä kaukopaan hog-viivalle, pysahtyy vakiohidastuvuudella.
-        Virhe (112 heiton aineisto, kaukopaan seuranta pysahtyi): mediaani -0,3 s, hajonta 3,8 s. None, jos viivaestimaattia tai heittopaan hog-ylitysta ei ole."""
+        Virhe (112 heiton aineisto, kaukopaan seuranta pysahtyi): mediaani -0,3 s, hajonta 3,8 s. Ilman viivaestimaattia tai hog-ylitysta: heiton lahto + KELLO_ALKU_PYS_S."""
         v = h.viivat
         hog1_f = getattr(h, "hog1_f", None)
-        if v is None or hog1_f is None:
-            return None
         fps = self.fps
+        if v is None or hog1_f is None:                                    # rata katkesi ennen hog-viivaa tms.: viimeinen keino, tyypillinen aika lahdosta
+            f_alku = getattr(h, "f_alku", None)
+            return None if f_alku is None else float(f_alku + fps * KELLO_ALKU_PYS_S)
         a1 = HIDASTUVUUS_TYYPILLINEN
         v1 = v.get("nopeus_hog1")
         if v1 is None:
@@ -2317,7 +2346,7 @@ class Analyysi:
         heitto.hog1_f = heitto.ylitys_f(HOG_KESKI_CM)
         if self.laske_kierre and heitto.hog1_f is not None:
             self.saapumiset.append(Saapuminen(self, heitto))
-        if self.synkroninen:
+        if self.synkroninen or self.toistettava:
             self.odota(f_asti=10 ** 12)
             self._lopullinen(heitto)
         else:
@@ -2360,7 +2389,12 @@ class Analyysi:
     # ---- paasilmukka -----------------------------------------------------------------------------------------------
     def syota(self, f, ruutu):
         """Yksi ruutu (BGR, 1920 x 1080). Kopioruudut ohitetaan."""
-        if self._kopio(ruutu):
+        pc = time.perf_counter
+        t0 = pc()
+        kopio = self._kopio(ruutu)
+        t1 = pc()
+        self.aika["kopio"] += t1 - t0
+        if kopio:
             self.kopioita += 1
             return
         self.yksilollisia += 1
@@ -2373,16 +2407,23 @@ class Analyysi:
             if h is not None and h.tila == "vahvistettu" and h not in self.heitot:
                 self._numeroi(h)
                 self.heitot.append(h)
+        t2 = pc()
+        self.aika["heittopaat"] += t2 - t1
         for s in list(self.saapumiset):
             if not s.kasittele(f, ruutu):
                 self.saapumiset.remove(s)
         for ks in list(self.kaukoseurannat):
             if not ks.kasittele(f, ruutu):
                 self.kaukoseurannat.remove(ks)
-        self.odota(f - self.viive_b if self.synkroninen else None)
+        t3 = pc()
+        self.aika["kaukopaa"] += t3 - t2
+        self.odota(f - self.viive_b if (self.synkroninen or self.toistettava) else None)
+        t4 = pc()
+        self.aika["odota (B, taustatyot)"] += t4 - t3
         for hp in self.paat.values():
             if hp.heitto is not None and hp.heitto.tila == "vahvistettu":
                 self.paivita_viivat(hp.heitto, f)
+        self.aika["viivaestimaatit"] += pc() - t4
 
     def ohita(self):
         """Ruutu nakyy tulosteessa mutta sita ei analysoida (analyysi myohassa): kopioruututesti ei saa verrata kahta eri ruutua."""
