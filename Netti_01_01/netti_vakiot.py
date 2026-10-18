@@ -29,7 +29,7 @@ V0_MAX_MS = 1.6                  # mallin kelvollisuus: hog-viivan nopeus eninta
 OMEGA_OLETUS = (0.95, 0.45)      # kierre (rad/s, sigma) kaukopaan radan alussa, kun mittausta ei ole (tyypillinen mitattu 50-60 astetta/s): vain A:n sovitusta varten; kappa ei silloin ole luotettava
 MAX_A_SUHT_VIRHE = 0.2           # A:n keskivirhe suhteessa A:han enintaan tama (muuten A ei maaraydy radasta)
 MAX_LNK_VIRHE = 0.4              # ln kappan keskivirhe enintaan tama (kappa +-40 %)
-A_RAJA = (0.0015, 0.025)         # uskottava kitkataso: rajojen ulkopuolella (tai aivan parametrirajalla) sovitus ei ole luotettava
+A_RAJA = (0.0015, 0.010)         # uskottava kitkataso: rajojen ulkopuolella (tai aivan parametrirajalla) sovitus ei ole luotettava. Ylaraja: puhtaat sovitukset 0,0041-0,0082 (mediaani 0,0064), harjaus vain pienentaa A:ta; lyhyt tormayksen katkaisema rata antoi A = 0,012 (heitto 72)
 KAPPA_ALKU = (0.3, 0.6, 1.0, 1.8, 3.0, 5.0, 8.0)
 # irroituksen uskottavuus (tarkista_irroitus): irroituksen nopeudesta ja suunnasta ennustettu rata vs. kaukopaassa havaittu pysahtyminen
 A_REF = 0.00761                  # kitkataso koko matkalle irroituksesta pysahtymiseen, kun irroituksen nopeus on 2,0 m/s (A_matka 35 pysahtyneella heitolla); suurempi kuin kaukopaan A (0,0064): nopea alkuosa
@@ -167,7 +167,7 @@ def sovita(t, X, Y, vahva=None, omega=None, kaarto_merkki=None, t_loppu=None, py
     ok = bool(rms_y <= MAX_RMS_Y_CM and rms_x <= MAX_RMS_X_CM and a_ok and v_ok)
     # kappa on tunnistettavissa vain, kun kierre on rajattu mittauksella (muuten kappa ja w0 korvaavat toisensa)
     kappa_ok = bool(ok and omega is not None and np.exp(YLA[4]) * 0.9 > p[4] > np.exp(ALA[4]) * 1.1 and lnk_sd <= MAX_LNK_VIRHE)
-    syy = None if ok else (f"A ei maaraydy (A {p[3]:.4f} +- {A_sd:.4f})" if not a_ok else (f"nopeus {p[1]:.2f} m/s yli {V0_MAX_MS} m/s (poisto / tormays)" if not v_ok else f"sovitus huono (Y rms {rms_y:.1f} cm, X rms {rms_x:.1f} cm)"))
+    syy = None if ok else ((f"A epauskottava (A {p[3]:.4f}, sallittu {A_RAJA[0]:.4f} ... {A_RAJA[1]:.4f})" if not A_RAJA[0] <= p[3] <= A_RAJA[1] else f"A ei maaraydy (A {p[3]:.4f} +- {A_sd:.4f})") if not a_ok else (f"nopeus {p[1]:.2f} m/s yli {V0_MAX_MS} m/s (poisto / tormays)" if not v_ok else f"sovitus huono (Y rms {rms_y:.1f} cm, X rms {rms_x:.1f} cm)"))
     return dict(ok=ok, syy=syy, A=float(p[3]), A_sd=A_sd, kappa=float(p[4]), kappa_sd=float(p[4] * lnk_sd), kappa_ok=kappa_ok, y0=float(p[0]), v0=float(p[1]), w0=float(p[2]), kaarto_merkki=int(s),
                 rms_y_cm=rms_y, rms_x_cm=rms_x, n=int(len(t)), kesto_s=float(t[-1] - t[0]), kustannus=float(c), ennuste=ennuste, t_alku=t0)
 
