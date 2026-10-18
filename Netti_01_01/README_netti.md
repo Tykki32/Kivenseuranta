@@ -418,7 +418,7 @@ Suunnan virhe 31 m:n päässä: +-12 cm (heitto 1), +-4 cm (2), +-15 cm (3) irro
 
 ### Reaaliaikainen versio: kuva viiveellä ilman top-down-muunnosta (`netti_live.py`, `netti_seuranta.py`, `netti_piirto.py`, `netti_geom.py`, `netti_tausta.py`)
 
-Pyyntö: kuvia ei muunneta top-down-kuviksi vaan ne säilyvät normaalin näköisinä; tulosteen kuva tulee 5 s viiveellä, jolloin analyysi ehtii seurata kiven kulun ennen kuin kivi liikkuu tulosteessa;
+Pyyntö: kuvia ei muunneta top-down-kuviksi vaan ne säilyvät normaalin näköisinä; tulosteen kuva tulee 10 s viiveellä (oletus; ennen 5 s), jolloin analyysi ehtii seurata kiven kulun ennen kuin kivi liikkuu tulosteessa;
 kun kiven piirto alkaa, toisessa päässä näytetään heti liukulinja ja irroituslinja ja heittopäässä kiven keskikohta pisteinä livenä (pistejoukko jää näkyviin 10 s); lähteenä YouTube (oma `yt_dlp` + OpenCV -testikoodi).
 
 ```
@@ -428,7 +428,7 @@ python netti_live.py --lahde netti.mp4            # tiedosto reaaliajassa (nopeu
 python netti_live.py --url http://.../virta.m3u8  # suora virran osoite (sama OpenCV-polku kuin YouTubessa)
 python netti_live.py --lahde netti.mp4 --nopea --ulos ulos.mp4 --ei-ikkunaa --csv heitot.csv    # simulaatio: niin nopeasti kuin ehtii, tulos tiedostoon
 ```
-Valitsimet: `--viive 5` (tulosteen viive s), `--jalki 10` (pistejoukko näkyvissä näin kauan heiton jälkeen), `--viivat 60` (linjat ja paneeli näkyvissä heiton alusta seuraavaan heittoon tai tähän aikaan asti), `--saikeet 3` (tarkan sovituksen työprosessit; 0 = vain kahvan väri),
+Valitsimet: `--viive 10` (tulosteen viive s, oletus 10: 97 %:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm T-viivalla), kun viiva ilmestyy; 5 s riittää vain 12 %:lle (50 cm:n toleranssilla 31 %:lle), 8 s 87 %:lle, 9 s 96 %:lle; mitattu koko videolla: lopullinen estimaatti mediaanissa 6,8 s, p95 9,2 s heiton lähdöstä; viivepuskuri ~940 MB yuv-muodossa), `--jalki 10` (pistejoukko näkyvissä näin kauan heiton jälkeen), `--viivat 60` (linjat ja paneeli näkyvissä heiton alusta seuraavaan heittoon tai tähän aikaan asti), `--saikeet 3` (tarkan sovituksen työprosessit; 0 = vain kahvan väri),
 `--ulos [tiedosto]` (tallenna tuloste; ilman nimeä aikaleimattu nimi), `--koodekki auto|cpu|gpu|mp4v|<fourcc>` (ks. alla), `--x264-preset superfast` (H.264-koodauksen nopeus; `ultrafast` = kevein prosessorille), `--ffmpeg POLKU`, `--nayttotila auto|ikkuna|kokoruutu` ja `--ikkuna-leveys` (ks. alla),
 `--puskuri yuv|jpeg` (viivepuskurin muoto), `--ei-kierretta` (ei kierteen eikä hog-hog-ajan mittausta), `--tapahtumat` (tulostaa seurannan kaikki tapahtumat: viritys, lähtö, vahvistus, hylkäys, "ei kiveä", valmis; näyttää myös heittoyritykset, jotka jäävät tunnistamatta; käynnistyksessä tulostuu aina `netti_live: git <commit> <aika>; Python <versio>`, josta näkee mitä versiota ajettiin), `--ei-ikkunaa`, `--alku/--loppu` (tiedoston aikaväli), `--yt-formaatti` (yt_dlp-formaattivalitsin; oletus oma testikoodi), `--fps-lahde` (erillisten ruutujen nimellistaajuus aikaperustaa varten; oletus: päätellään kopioruutujen osuudesta,
 tässä videossa 26 % kopioita -> 25 r/s, kopiottomassa virrassa ruutunopeus), `--csv`. Tarvitaan: `opencv-python`, `numpy`, `scipy`, `yt-dlp` (+ `deno` JavaScript-ajuriksi); suositus: `ffmpeg` (tai `pip install imageio-ffmpeg`) nopeaan tallennukseen ja valinnaisesti käännetty `netti_fit` (C++, ks. alla).
