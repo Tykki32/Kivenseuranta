@@ -747,6 +747,9 @@ def aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     cap2.set(cv2.CAP_PROP_POS_FRAMES, int(lahde.alku_s * lahde.fps))
     t0 = time.time()
     n = 0
+    kello_loki = open(a.kello_loki, "w", encoding="utf-8") if getattr(a, "kello_loki", None) else None       # (testaus) kuvassa nakyvan kellon tila kerran sekunnissa
+    if kello_loki is not None:
+        kello_loki.write("aika_s,kay,juokseva_s,viim_heitto\n")
 
     def tulosta(f_out):
         ok, kuva = cap2.read()
@@ -763,6 +766,9 @@ def aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         kirjaaja.paivita(an)
         f_out = f - D
         if f_out >= int(lahde.alku_s * lahde.fps):
+            if kello_loki is not None and an.heitot and f_out % int(round(lahde.fps)) == 0:
+                kn = an.kello_nyt(f_out)
+                kello_loki.write(f"{f_out / lahde.fps:.1f},{kn['kay'] or ''},{'' if kn['juokseva_s'] is None else round(kn['juokseva_s'], 1)},{'' if kn['viim'] is None else kn['viim'].tunnus}\n")
             if not tulosta(f_out):
                 break
         if n % 300 == 0 and not a.hiljaa:
@@ -985,6 +991,7 @@ def main():
     ap.add_argument("--tapahtumat", action="store_true", help="tulosta seurannan kaikki tapahtumat (viritys, lahto, vahvistus, hylkays, ei kivea, valmis): nayttaa myos heittoyritykset, jotka jaavat tunnistamatta")
     ap.add_argument("--hiljaa", action="store_true")
     ap.add_argument("--debug-viive", action="store_true", help="tulosta hitaat analyysiruudut (selvittaa miksi ruutuja ohitetaan)")
+    ap.add_argument("--kello-loki", help="(testaus, vain --nopea) kirjoita kuvassa nakyvan kellon tila kerran sekunnissa CSV:hen: aika, kayva joukkue, kuluva aika, viimeisin heitto")
     a = ap.parse_args()
     if not os.path.isdir(a.kansio):                    # ajettu muualta kuin projektin kansiosta
         oma = os.path.join(os.path.dirname(os.path.abspath(__file__)), a.kansio)
