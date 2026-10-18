@@ -73,6 +73,51 @@ def youtube_virta(ref, formaatti=YT_FORMAATTI):
                          "Tarkista verkko, paivita yt-dlp (pip install -U yt-dlp) ja etta JavaScript-ajuri (deno) on asennettu.")
 
 
+YT_AANI_FORMAATTI = "bestaudio[ext=m4a]/bestaudio"
+
+
+def youtube_aani(ref):
+    """YouTube-tunnus tai -osoite -> (aanivirran URL, HTTP-otsakkeet) (tai None, jos haku epaonnistuu: tallenne tehdaan ilman aanta). Kuvavirta on vain kuvaa (bestvideo), aani haetaan erikseen."""
+    try:
+        import yt_dlp
+        url = ref if ("youtube.com" in ref or "youtu.be" in ref) else f"https://www.youtube.com/watch?v={ref}"
+        with yt_dlp.YoutubeDL({"format": YT_AANI_FORMAATTI, "quiet": True, "noplaylist": True, "js_runtimes": {"deno": {}}}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info["url"], dict(info.get("http_headers") or {})
+    except Exception as e:
+        print(f"Huom: aanivirran haku epaonnistui ({str(e)[:160]}); tallenne tehdaan ilman aanta.", file=sys.stderr)
+        return None
+
+
+def tiedostolla_aanta(exe, polku):
+    """True, jos videotiedostossa on aaniraita (ffmpeg -i tulostaa raidat)."""
+    try:
+        r = subprocess.run([exe, "-hide_banner", "-i", polku], capture_output=True, text=True, timeout=30)
+        return "Audio:" in r.stderr
+    except Exception:
+        return False
+
+
+def valitse_aani(a, lahde):
+    """Tallenteen aanilahde: (osoite, alkuaika s, HTTP-otsakkeet tai None) tai None. Aani liitetaan tallenteeseen lahdevideon aikajanalla (ruutu f <-> aani f / fps), joten se on aina samassa kohdassa kuin kuva
+    (tulosteen viive vaikuttaa vain ikkunan nayttohetkeen, ei tiedoston aikajanaan). --aani ei = ei aanta; --aani POLKU / URL = oma aanilahde (sama aikajana kuin video)."""
+    if a.aani == "ei":
+        return None
+    if lahde.live:
+        print("Huom: live-virran aanta ei liiteta tallenteeseen (aani ja viivastetty kuva eivat pysyisi samassa kohdassa).", file=sys.stderr)
+        return None
+    alku = lahde.alku_s if lahde.tiedosto else 0.0
+    if a.aani != "auto":
+        return a.aani, alku, None
+    if a.youtube:
+        va = youtube_aani(a.youtube)
+        return (va[0], 0.0, va[1]) if va else None
+    if lahde.tiedosto:
+        exe = _etsi_ffmpeg(a.ffmpeg)
+        return (lahde.tiedosto, alku, None) if exe is not None and tiedostolla_aanta(exe, lahde.tiedosto) else None
+    return (a.url, 0.0, None) if a.url else None
+
+
 class Lahde:
     """Ruutujen lahde (tiedosto / YouTube) yhtena iteraattorina (ruutunumero, BGR-ruutu 1920 x 1080). Live-virrassa katkon jalkeen yritetaan avata uudelleen."""
 
@@ -426,7 +471,7 @@ class Kirjoittaja:
     'auto' = ffmpeg (PATH tai imageio-ffmpeg): laitteistokooderi (NVENC / QSV / AMF, kokeillaan ensin) tai H.264 prosessorilla, muuten OpenCV mp4v; 'cpu' / 'h264' = vain
     libx264; 'gpu' = laitteistokooderi (muuten libx264); muu = OpenCV:n fourcc (mp4v, avc1, MJPG ...)."""
 
-    def __init__(self, polku, fps=30.0, koodekki="auto", ffmpeg=None, preset="superfast"):
+    def __init__(self, polku, fps=30.0, koodekki="auto", ffmpeg=None, preset="superfast", aani=None):
         self.polku = polku
         self.n = 0
         self.virhe = None
@@ -441,8 +486,12 @@ class Kirjoittaja:
             if ffmpeg_tila:
                 print("Huom: ffmpegia ei loytynyt, tallennus OpenCV:n mp4v-koodekilla (iso tiedosto, hitaampi). Vinkki: pip install imageio-ffmpeg (tai asenna ffmpeg) -> H.264, "
                       "pieni tiedosto ja laitteistokoodaus.", file=sys.stderr)
+            if aani is not None:
+                print("Huom: aani vaatii ffmpegin; tallenne tehdaan ilman aanta.", file=sys.stderr)
             self.taustaosa = _CvTiedosto(polku, fps, "mp4v" if ffmpeg_tila else koodekki)
         self.nimi = self.taustaosa.nimi
+        self.aani = aani if exe is not None else None
+        self.exe = exe
         self.q = queue.Queue(maxsize=30)
         self.t = threading.Thread(target=self._silmukka, name="tallennus", daemon=True)
         self.t.start()
@@ -476,6 +525,36 @@ class Kirjoittaja:
                 self.virhe = e
         if self.virhe is not None:
             print(f"Tallennusvirhe ({self.nimi}): {self.virhe}", file=sys.stderr)
+        elif self.aani is not None:
+            self._liita_aani()
+
+    def _liita_aani(self):
+        """Aani liitetaan valmiiseen kuvatiedostoon vasta lopuksi (kuva kopioidaan sellaisenaan, aani koodataan AAC:ksi): kuvatallenne pysyy ehjana, vaikka aanilahde ei toimisi. Aani on lahteen
+        aikajanalla (-ss = kuvan ensimmaisen ruudun aika) eli samassa kohdassa kuin kuva; -shortest: loppuu kuvan mukana."""
+        osoite, alku, otsakkeet = self.aani
+        tmp = self.polku + ".aani.mp4"
+        cmd = [self.exe, "-hide_banner", "-loglevel", "error", "-y", "-i", self.polku]
+        if str(osoite).startswith(("http://", "https://")):                        # verkkosyote: yt_dlp:n otsakkeet ja uudelleenyhdistys katkoissa (vain http-syotteille)
+            if otsakkeet:
+                cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in otsakkeet.items())]
+            cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
+        cmd += (["-ss", f"{alku:.3f}"] if alku else []) + ["-i", osoite, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", tmp]
+        print(f"Liitetaan aani tallenteeseen ({os.path.basename(self.polku)}) ...", flush=True)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            ok = r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1000
+            virhe = r.stderr[-300:]
+        except Exception as e:
+            ok, virhe = False, repr(e)
+        if ok:
+            os.replace(tmp, self.polku)
+            print("Aani liitetty.", flush=True)
+        else:
+            print(f"Huom: aanta ei saatu liitettya ({virhe.strip()}); kuvatallenne on aaneton ja ehja.", file=sys.stderr)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1056,6 +1135,8 @@ def main():
     ap.add_argument("--debug-viive", action="store_true", help="tulosta hitaat analyysiruudut (selvittaa miksi ruutuja ohitetaan)")
     ap.add_argument("--ohita-myohassa", action="store_true", help="reaaliaika: ohita analyysista ruutuja, kun kone ei jaksa (vanha tapa; tulokset riippuvat koneen nopeudesta). Oletus tiedostolla ja YouTube-toistolla: "
                     "kaikki ruudut analysoidaan ja tulos on toistettava (sama kuin --nopea), kuva odottaa analyysia")
+    ap.add_argument("--aani", default="auto", help="aani tallenteeseen (--ulos): auto = YouTube: oma aanivirta (yt_dlp bestaudio), tiedosto: tiedoston oma aani jos on, --url: sama osoite; ei = ei aanta; POLKU / URL = oma aanilahde "
+                    "(sama aikajana kuin video). Aani on lahdevideon aikajanalla, joten se pysyy samassa kohdassa kuin viivastetty kuva; ikkuna on aaneton; live-virralla ei aanta")
     ap.add_argument("--esilataus", type=int, default=24, help="reaaliaika: ruutuja luetaan erillisessa saikeessa enintaan taman verran analyysin edella (0 = pois; yksi ruutu on 6 Mt)")
     ap.add_argument("--ei-tahdistusta", action="store_true", help="(testaus) reaaliaikarakenne mutta tiedostoa luetaan niin nopeasti kuin analyysi ehtii (ei reaaliaikatahdistusta)")
     ap.add_argument("--kello-loki", help="(testaus, vain --nopea) kirjoita kuvassa nakyvan kellon tila kerran sekunnissa CSV:hen: aika, kayva joukkue, kuluva aika, viimeisin heitto")
@@ -1092,7 +1173,7 @@ def main():
     geom = ng.Geometria(a.kansio)
     kello_paikka = tuple(int(x) for x in a.kello_paikka.split(",")) if a.kello_paikka else None
     piirtaja = npi.Piirtaja(geom, fps=lahde.fps, jalki_s=a.jalki, viivat_s=a.viivat, viive_s=a.viive, kello=not a.ei_kelloa, kello_paikka=kello_paikka)
-    kirjoittaja = Kirjoittaja(a.ulos, lahde.fps, a.koodekki, a.ffmpeg, a.x264_preset) if a.ulos else None
+    kirjoittaja = Kirjoittaja(a.ulos, lahde.fps, a.koodekki, a.ffmpeg, a.x264_preset, valitse_aani(a, lahde) if a.ulos else None) if a.ulos else None
     naytto = None if a.ei_ikkunaa else Naytto(a.nayttotila, a.ikkuna_leveys)
     if not a.hiljaa:
         print(f"Kuva tulee {a.viive:.0f} s viiveella. " + ("Ikkuna: 'q' tai ESC (tai ikkunan sulkeminen) lopettaa, 'f' vaihtaa kokoruudun. " if naytto else "")
