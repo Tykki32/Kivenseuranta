@@ -1671,6 +1671,7 @@ class KaukoSeuranta(_Seuranta):
         f_viim_b = float(F[vahva][-1]) if vahva.any() else None
         h.kauko = dict(tila=self.syy, peitossa=peitossa, f_alku=float(F[0]), f_loppu=float(F[-1]), f_pys=f_pys, X_pys=X_pys, Y_pys=Y_pys, f_hog2=f_hog, hog2_lahde=hog_lahde, v_hog_cm_s=v_hog, tormays=torm, f_viim_b=f_viim_b, kohde_vaihtui_f=poimittu, f_ulos=f_ulos,
                        pisteet=[(float(a), float(q[0]), float(q[1])) for a, q in zip(F, P)], t=t_korj, vahva=[bool(x) for x in vahva], n_b=int(vahva.sum()), n=len(F))
+        self.an._paivita_kierre(h)                         # kierrokset irroituksesta pysahtymiseen (N_koko) tarvitsevat kaukopaan tuloksen: sama tulos riippumatta siita, kumpi (heittopaan kierto / kaukopaa) valmistui ensin
         self.an._kauko_kierto_aloita(h, kh, F, P[:, 1])
         self.an._vakiot_aloita(h)
         self.an.tapahtumat.append(("kauko_valmis", h.tunnus, int(round(F[-1])), f"{self.syy}, pysahtyi {f_pys / fps:.1f} s paikkaan ({X_pys:.0f}, {Y_pys:.0f}) cm"
@@ -2037,6 +2038,8 @@ class Analyysi:
         lykatty = self._lykatyt.pop(h.tunnus, None)
         if lykatty is not None:
             self._kauko_kierto_aloita(*lykatty)
+        if self.toistettava:
+            self._vakiot_aloita(h)
 
     def _kauko_kierto_aloita(self, h, kh, F, Y):
         """Kierteen mittaus kaukopaan kuvasta (kiven seurannan jalkeen): ruudut ja B-paikat kaukopaan seurannasta, aika aikaperustalla (kiven rata F, Y'). Taustaprosessiin tai
@@ -2089,8 +2092,8 @@ class Analyysi:
         Taustaprosessiin (kierto_pool) tai heti (sim)."""
         if not self.laske_kierre or h.vakiot_tila is not None:
             return
-        if self.toistettava and not h.viivat_lopullinen:
-            return                                                 # kaynnistyy, kun lopullinen estimaatti on valmis (_liita_viivat)
+        if self.toistettava and (not h.viivat_lopullinen or h.kierto_tila == "kaynnissa" or h.tunnus in self._lykatyt):
+            return                                                 # kaynnistyy, kun lopullinen estimaatti, heittopaan kierto ja kaukopaan kierto ovat valmiit (_liita_viivat, _aseta_kierto, _aseta_kauko_kierto): sim-ajossa ne ovat aina valmiina
         k = h.kauko
         if k is None or "virhe" in k or "pisteet" not in k or h.kauko_kierto_tila == "kaynnissa":
             return
@@ -2380,6 +2383,8 @@ class Analyysi:
             if not self.est_tyot and not any(h.lopullinen_jonossa for h in self.valmiit):
                 break
         self._keraa_kierto(odota=True)
+        for h in self.heitot:
+            self._paivita_kierre(h)                          # lopullinen tila kaikesta aineistosta (ei riipu valmistumisjarjestyksesta)
         self._keraa_vakiot(odota=True)
 
     def valmista_kaikki(self):

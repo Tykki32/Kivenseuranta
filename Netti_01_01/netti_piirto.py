@@ -189,7 +189,7 @@ def kello_rivit(kt):
 
 
 class Piirtaja:
-    def __init__(self, geom, fps=30.0, jalki_s=10.0, viivat_s=60.0, piste_z=PISTE_Z, paneeli=True, viive_s=5.0, kello=True, kello_paikka=None):
+    def __init__(self, geom, fps=30.0, jalki_s=10.0, viivat_s=60.0, piste_z=PISTE_Z, paneeli=True, viive_s=10.0, kello=True, kello_paikka=None):
         self.g = geom
         self.kello = kello
         self.kello_paikka = kello_paikka            # (x, y) tai None: kuvan keskella mainosgrafiikan alla

@@ -1023,7 +1023,7 @@ def main():
     ap.add_argument("--lahde", help="videotiedosto")
     ap.add_argument("--url", help="suora virran osoite (http / https / rtsp / m3u8), luetaan kuten YouTube-virta")
     ap.add_argument("--kansio", default="tulokset", help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json)")
-    ap.add_argument("--viive", type=float, default=5.0, help="tulosteen viive analyysiin nahden (s)")
+    ap.add_argument("--viive", type=float, default=10.0, help="tulosteen viive analyysiin nahden (s); oletus 10: 97 %:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm) kun viiva ilmestyy (5 s: 12 %)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")
     ap.add_argument("--viivat", type=float, default=60.0, help="linjat nakyvissa taman ajan heiton alusta, tai seuraavaan heittoon (s)")
     ap.add_argument("--ulos", nargs="?", const="auto", help="tallenna tuloste tiedostoon (mp4); ilman nimea: kivenseuranta_<paivays>_<aika>.mp4 nykyiseen kansioon")
@@ -1049,7 +1049,7 @@ def main():
     ap.add_argument("--saikeet", type=int, default=max(1, min(3, (os.cpu_count() or 2) - 1)), help="tarkan sovituksen tyoprosessit (0 = vain kahvan vari: epatarkempi)")
     ap.add_argument("--fps-lahde", type=float, default=None, help="erillisten ruutujen nimellistaajuus (25 tassa videossa; oletus: paatellaan kopioruutujen osuudesta)")
     ap.add_argument("--puskuri", choices=("yuv", "jpeg"), default="yuv",
-                    help="viivepuskurin muoto: yuv = raaka YUV 4:2:0 (3,1 MB / ruutu, ~470 MB 5 s:n viiveella, kevyt prosessorille) tai jpeg (0,3 MB / ruutu, ~21 ms / ruutu prosessoria)")
+                    help="viivepuskurin muoto: yuv = raaka YUV 4:2:0 (3,1 MB / ruutu, ~940 MB 10 s:n viiveella, kevyt prosessorille) tai jpeg (0,3 MB / ruutu, ~21 ms / ruutu prosessoria)")
     ap.add_argument("--jpeg", type=int, default=92, help="JPEG-laatu (--puskuri jpeg ja yuv-puskurin ylivuoto)")
     ap.add_argument("--tapahtumat", action="store_true", help="tulosta seurannan kaikki tapahtumat (viritys, lahto, vahvistus, hylkays, ei kivea, valmis): nayttaa myos heittoyritykset, jotka jaavat tunnistamatta")
     ap.add_argument("--hiljaa", action="store_true")
