@@ -130,7 +130,7 @@ HUKASSA_PORTTI_RUUTUA = 15
 IDLE_VALI = 3                    # IDLE: kandidaattihaku joka n:s yksilollinen ruutu
 ESTIMAATTI_VALI = 10             # viivaestimaatti paivitetaan kun vahintaan n uutta kelvollista B-naytetta
 ESTIMAATTI_MIN_Y_CM = 330.0      # vasta kun rata yltaa tahan (muuten ei irroitusta)
-ESTIMAATTI = dict(min_jalkeen=70.0, Y_r_min=200.0, kohinakatto=(0.8, 0.15))   # osittaisen aineiston asetukset (liuku_irroitus.analysoi)
+ESTIMAATTI = dict(min_jalkeen=70.0, Y_r_min=200.0, kohinakatto=(0.8, 0.15), esitieto=True)   # osittaisen aineiston asetukset (liuku_irroitus.analysoi); esitieto: vapaan lennon fysiikka (hidastuvuus, kaarevuus) pehmeana esitietona
 KOPIO_KYNNYS = 15.0              # kopioruutu: harmaasavyero (suurin 0,1 % pikseleista) alle taman (aja_kivi.KOPIO_KYNNYS)
 
 # kierre, hog-viivat, numerointi
@@ -141,6 +141,8 @@ KIERTO_MAX_RUUTUJA = 160
 KIVI_R_CM = 14.55                # kiven sade (suurin halkaisija 29,1 cm): etureunan etaisyys akselista
 HOG_SISA_CM = 640.0              # hog-viivan sisareuna T-viivasta (kalibrointi_netti.HOG_Y_CM); viiva on n. 12,7 cm leveä
 HOG_KESKI_CM = HOG_SISA_CM + 6.35   # hog-viivan keskiviiva: tama ylitys ajoitetaan molemmissa paissa (hog-hog-matka = ETAISYYS_CM - 2 * HOG_KESKI_CM = 21,8 m)
+ESTIMAATTI["Y_r_max"] = HOG_KESKI_CM - KIVI_R_CM    # saanto: irroitus ennen hog-viivaa (kiven etureuna ei ylita viivaa): kiven keskipiste Y <= 631,8 cm; sen jalkeinen rata on varmasti vapaata lentoa
+HOG_IKKUNA_CM = 120.0            # hog-viivan kohdan paikallinen nopeus / suunta (laske_viivat: nopeus_hog1, suunta_hog1_deg): paikat taman matkan sisalla viivasta
 KIVIA_PAASSA = 8                 # numerointi alkaa alusta taman jalkeen (yhden joukkueen kivet / paa)
 KAARTO_VARMA_1_CM = 4.0e-5       # vapaan lennon kaarevuus (1/cm), jonka yli kaarto ratkaisee kiertosuunnan jos kuvamittaus on epavarma
 KAARTO_VIHJE_1_CM = 2.5e-5       # ... ja jonka yli kaarto kertoo suunnan kun kuvamittausta ei ole
@@ -179,6 +181,9 @@ KELLO_TVIIVA_VIIVE_S = 3.1       # ellei ylitysta voi mitata (rata ei yllä T-vi
 KELLO_ARVIO_MAX_S = 12.0         # kello: pysahtymisen arvio hog-ylityksesta (ilman kaukopaan seurantaa) enintaan taman verran hog-ylityksen jalkeen
 KELLO_NOPEA_M_S = 1.3            # ... ja jos nopeus hogilla on yli taman (poisto), enintaan KELLO_NOPEA_MAX_S
 KELLO_NOPEA_MAX_S = 6.0
+KELLO_MALLI_ODOTUS_S = 5.0       # kello: kaukopaan seuranta ei ole kertonut pysahtymista -> mallin (nopeus hog-viivalla, tyypillinen hidastuvuus) mukainen pysahtymishetki oletetaan toteutuneeksi, kun siita on kulunut taman verran ...
+KELLO_NAHTY_S = 2.0              # ... eika kivea ole nahty liikkeessa: kaukopaan B-paikat eivat ole siirtyneet yli KELLO_NAHTY_CM viimeisen taman ajan sisalla
+KELLO_NAHTY_CM = 10.0
 PELI_TAKA_Y_CM = -(183.0 + KIVI_R_CM)   # kivi on poissa pelista, kun sen keskipiste on kokonaan taka-viivan (Y' = -183 cm) takana ...
 PELI_SIVU_X_CM = 237.5 + KIVI_R_CM       # ... tai sivuviivan (|X'| = 237,5 cm) ulkopuolella: kello kay (kivi ei enaa vaikuta peliin), vaikka kivi liukuisi viela
 KAUKO_LAUTA_Y_CM = 250.0         # hukattu nopea kivi, joka on jo pesan takana (Y' < 0), osuu taka-aitaan taman Y':n (-Y') kohdalla ja pysahtyy siihen ...
@@ -429,12 +434,30 @@ def tyo_kierto(args):
 
 
 def vakiot_laske(args):
-    """Kiven vakiot kaukopaan radasta (netti_vakiot.sovita); args = sovita-funktion nimetyt argumentit. Palauttaa sen dictin (tai dict(ok=False, syy=...))."""
+    """Kiven vakiot kaukopaan radasta (netti_vakiot.sovita); args = sovita-funktion nimetyt argumentit + valinnainen irr = netti_vakiot.tarkista_irroitus:n argumentit (irroituksen uskottavuus,
+    tulos avaimella irr_tarkistus; kayttaa sovitetun kiven kappaa, jos se on luotettava). Palauttaa sovita-dictin (tai dict(ok=False, syy=...))."""
+    args = dict(args)
+    irr = args.pop("irr", None)
     try:
         import netti_vakiot as nv
-        return nv.sovita(**args)
     except Exception as e:
         return dict(ok=False, syy=repr(e))
+    try:
+        r = nv.sovita(**args)
+    except Exception as e:
+        r = dict(ok=False, syy=repr(e))
+    if irr is not None:
+        try:
+            r["irr_tarkistus"] = nv.tarkista_irroitus(**irr, kappa=(r.get("kappa") if r.get("kappa_ok") else None))
+        except Exception as e:
+            r["irr_tarkistus"] = dict(virhe=repr(e))
+    return r
+
+
+def nv_omega_oletus():
+    """Kierre (rad/s) irroituksessa, kun mittausta ei ole: netti_vakiot.OMEGA_OLETUS."""
+    import netti_vakiot as nv
+    return nv.OMEGA_OLETUS[0]
 
 
 def vakiot_argumentit(kauko, kauko_kierto, kierre, hog2_f, fps):
@@ -460,6 +483,20 @@ def vakiot_argumentit(kauko, kauko_kierto, kierre, hog2_f, fps):
         om2 = abs(float(np.radians(kierre["omega2_deg"])))
         omega, lahde = (t_f(hog2_f), om2, max(0.15, 0.15 * om2)), "kierre"
     return dict(t=t, X=P[:, 1], Y=P[:, 2], vahva=np.asarray(kauko["vahva"], bool), omega=omega, kaarto_merkki=None, t_loppu=t_loppu, pysahtynyt=pys), lahde
+
+
+def hog_ikkuna(t, X, Y, y0=None, ikkuna=None):
+    """Kiven nopeus (m/s) ja suunta (astetta, kulma Y-akseliin) hog-viivan kohdalla suoraan radasta: Y(t) ja X(Y) suorat paikoista |Y - y0| <= ikkuna. Hog-viivan jalkeen kivi on
+    varmasti vapaassa lennossa (irroitus tapahtuu ennen viivaa), joten tama on irroituksen tunnistuksesta riippumaton mittaus (vertailu: nopeus_jalkeen >= nopeus_hog1,
+    suunta_jalkeen ~ suunta_hog1). Palauttaa dict(v_m_s, suunta_deg, n, Y_keski) tai None (alle 8 paikkaa tai alle 100 cm:n matka)."""
+    y0 = HOG_KESKI_CM if y0 is None else y0
+    ikkuna = HOG_IKKUNA_CM if ikkuna is None else ikkuna
+    m = np.abs(Y - y0) <= ikkuna
+    if m.sum() < 8 or float(np.ptp(Y[m])) < 100.0:
+        return None
+    cy = np.polyfit(t[m], Y[m], 1)
+    cx = np.polyfit(Y[m], X[m], 1)
+    return dict(v_m_s=float(cy[0] * np.sqrt(1.0 + cx[0] ** 2) / 100.0), suunta_deg=float(np.degrees(np.arctan(cx[0]))), n=int(m.sum()), Y_keski=float(np.mean(Y[m])))
 
 
 def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
@@ -489,6 +526,7 @@ def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
         return None
     ti, ys, la, ir = r["tila"], r["yhteenveto"], r["liuku"], r["irroitus"]
     vapaa_Y = float(Y.max() - ti["Y_cm"])
+    hg = hog_ikkuna(t, X, Y)
     return dict(
         liuku_a=ys["liun_suora_X_Y0_cm"], liuku_b=ys["liun_suora_kulmakerroin"], liuku_suunta_deg=ys["liun_suunta_deg"],
         liuku_Y0=ys["liun_suunta_alku_cm"], liuku_Y1=ys["liun_suunta_loppu_cm"],
@@ -497,7 +535,8 @@ def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
         vapaa_matka_cm=vapaa_Y, vapaa_ruutuja=int(ti["ruutuja"]), Y_max=float(Y.max()), t_lahto=float(la["t_lahto"]),
         nopeus_ennen=ys["nopeus_ennen_m_s"], nopeus_jalkeen=ys["nopeus_jalkeen_m_s"],
         liuku_hidastuvuus=ys["liun_hidastuvuus_m_s2"], vapaa_hidastuvuus=ys["vapaan_lennon_hidastuvuus_m_s2"],
-        kaarto=ti["kaarto"], kaarevuus_1_cm=float(ti["kaarevuus_1_cm"]), t_irr=float(ti["t_r"]), t_lisa=t_lisa, n=int(len(f)))
+        kaarto=ti["kaarto"], kaarevuus_1_cm=float(ti["kaarevuus_1_cm"]), t_irr=float(ti["t_r"]), t_lisa=t_lisa, n=int(len(f)),
+        nopeus_hog1=(hg["v_m_s"] if hg else None), suunta_hog1_deg=(hg["suunta_deg"] if hg else None), hog1_Y_keski=(hg["Y_keski"] if hg else None))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -2028,12 +2067,28 @@ class Analyysi:
         if k is None or "virhe" in k or "pisteet" not in k or h.kauko_kierto_tila == "kaynnissa":
             return
         args, lahde = vakiot_argumentit(k, h.kauko_kierto, h.kierre, h.hog2_f, self.fps)
+        args["irr"] = self._irr_tarkistus_argumentit(h)
         h.vakiot_tila = "kaynnissa"
         h.vakiot_omega_lahde = lahde
         if self.kierto_pool is not None:
             self.vakiot_tyot.append((self.kierto_pool.submit(vakiot_laske, args), h))
         else:
             self._aseta_vakiot(h, vakiot_laske(args))
+
+    def _irr_tarkistus_argumentit(self, h):
+        """netti_vakiot.tarkista_irroitus:n argumentit heitolle (None, jos tarkistus ei ole mahdollinen: ei viivaestimaattia, kivi ei pysahtynyt tai tormasi): irroituksen nopeus, suunta ja paikka,
+        kierre irroitushetkella (mitattu omega hog-viivalla + vaimeneminen takaisin irroitukseen; muuten tyypillinen), kaarron suunta (kierron merkki) ja kaukopaan pysahtymispaikka."""
+        v, k = h.viivat, h.kauko
+        if v is None or k is None or "virhe" in k or k.get("tila") != "pysahtyi" or k.get("tormays") or k.get("Y_pys") is None:
+            return None
+        omega0 = nv_omega_oletus()
+        kr = h.kierre
+        if kr is not None and kr.get("omega1_deg") is not None:
+            v_r = max(float(v["nopeus_jalkeen"]), 0.3)
+            dt = max(HOG_KESKI_CM - float(v["irr_Y"]), 0.0) / (100.0 * v_r)                 # irroituksesta hog-viivalle
+            omega0 = abs(float(np.radians(kr["omega1_deg"]))) * float(np.exp(float(kr.get("k") or 0.0) * dt))
+        return dict(y0_cm=float(ETAISYYS_CM - v["irr_Y"]), v_r=float(v["nopeus_jalkeen"]), omega0=float(omega0), kaarto_merkki=int(kierron_merkki(h)), X_rel=float(-v["irr_X"]),
+                    suunta_deg=float(v["irr_suunta_deg"]), Y_pys=float(k["Y_pys"]), X_pys=float(k["X_pys"]))
 
     def _aseta_vakiot(self, h, r):
         r = dict(r or dict(ok=False, syy="ei tulosta"))
@@ -2123,9 +2178,55 @@ class Analyysi:
                         varma=bool(not r["ristiriita"] and r["N_sigma"] <= KIERRE_SIGMA_VARMA and ((mn is not None and mn[3]) or (mf is not None and mf[3]))))
 
     # ---- joukkueiden kello ------------------------------------------------------------------------------------------
+    def malli_pysahtyi_f(self, h):
+        """Mallipohjainen arvio ruudulle, jolla heiton kivi pysahtyy (ei vaadi kaukopaan seurantaa eika kierteen mittausta): nopeus lahipaan hog-viivalla (laske_viivat: nopeus_hog1,
+        muuten irroituksen nopeudesta tyypillisella hidastuvuudella) -> hog-viivalta hog-viivalle vakiohidastuvuus (mitattu hog-ylitys / h.kierre['T'] jos on, muuten malli), kaukopaan hog-viivalta
+        pysahtymiseen nopeus / KAUKO_PYS_HIDASTUVUUS (enintaan KELLO_ARVIO_MAX_S, nopealla kivella KELLO_NOPEA_MAX_S). Kivi, joka ei yllä kaukopaan hog-viivalle, pysahtyy vakiohidastuvuudella.
+        Virhe (112 heiton aineisto, kaukopaan seuranta pysahtyi): mediaani -0,3 s, hajonta 3,8 s. None, jos viivaestimaattia tai heittopaan hog-ylitysta ei ole."""
+        v = h.viivat
+        hog1_f = getattr(h, "hog1_f", None)
+        if v is None or hog1_f is None:
+            return None
+        fps = self.fps
+        a1 = HIDASTUVUUS_TYYPILLINEN
+        v1 = v.get("nopeus_hog1")
+        if v1 is None:
+            v1 = max(float(v["nopeus_jalkeen"]) ** 2 - 2.0 * a1 * max(HOG_KESKI_CM - float(v["irr_Y"]), 0.0) / 100.0, 0.0) ** 0.5
+        v1 = max(float(v1), 0.3)
+        D = (ETAISYYS_CM - 2.0 * HOG_KESKI_CM) / 100.0
+        v2sq = v1 * v1 - 2.0 * a1 * D
+        if v2sq <= 0.0:                                                    # ei yllä kaukopaan hog-viivalle: pysahtyy matkalla
+            return float(hog1_f + fps * v1 / a1)
+        v2 = v2sq ** 0.5
+        kierre = getattr(h, "kierre", None)
+        T = (float(kierre["T"]) if kierre is not None else (v1 - v2) / a1)
+        f_hog2 = h.hog2_f if getattr(h, "hog2_f", None) is not None else hog1_f + fps * T
+        t_pys = min(v2 / KAUKO_PYS_HIDASTUVUUS, KELLO_ARVIO_MAX_S)
+        if v2 > KELLO_NOPEA_M_S:                                           # nopea kivi (poisto): tormaa tai osuu taka-aitaan nopeasti
+            t_pys = min(t_pys, KELLO_NOPEA_MAX_S)
+        return float(f_hog2 + fps * t_pys)
+
+    def kivi_liikkeessa(self, h, f_nyt):
+        """True, kun kaukopaan seuranta on nahnyt heiton kiven liikkeessa viimeisen KELLO_NAHTY_S ajan sisalla (B-paikkojen vaihteluvali yli KELLO_NAHTY_CM)."""
+        ks = next((k for k in getattr(self, "kaukoseurannat", []) if k.h is h), None)
+        if ks is None:
+            return False
+        P = []
+        for m in reversed(ks.heitto.naytteet):
+            if f_nyt - m.f > KELLO_NAHTY_S * self.fps:
+                break
+            if m.kivi():
+                P.append(m.paikka())
+        if len(P) < 2:
+            return False
+        P = np.asarray(P, float)
+        return bool(float(np.hypot(*(P.max(axis=0) - P.min(axis=0)))) > KELLO_NAHTY_CM)
+
     def pysahtyi_f(self, h):
         """Ruutu, jolla heiton kivi (ja sen tormayksessa liikkeelle laittamat kivet) pysahtyi tai poistui pelista (taka- / sivuviivan ulkopuolelle) kaukopaassa: kaukopaan seurannan
-        tulos (hukatulla kivella arvio viimeisesta B-paikasta); tormaysheitolla viimeistaan KELLO_TORMAYS_LISA_S tormayksen jalkeen; ellei seurantaa ole, arvio hog-ylityksesta (nopeus hogilla / tyypillinen hidastuvuus)."""
+        tulos (hukatulla kivella arvio viimeisesta B-paikasta); tormaysheitolla viimeistaan KELLO_TORMAYS_LISA_S tormayksen jalkeen. Ellei seurannan tulosta ole, malli
+        (malli_pysahtyi_f): mallin mukainen pysahtymishetki oletetaan toteutuneeksi, kun siita on kulunut KELLO_MALLI_ODOTUS_S analyysiajassa eika kivea ole nahty liikkeessa
+        (seuranta ei ole paattynyt tai kivea ei loytynyt; muuten kello ei lahtisi kayntiin). None, kun pysahtymista ei voi arvioida (ei viivaestimaattia) tai mallin mukaan se ei ole viela tapahtunut."""
         k = h.kauko
         if k is not None and "virhe" not in k and k.get("f_pys") is not None:
             f = float(k["f_pys"])
@@ -2134,15 +2235,13 @@ class Analyysi:
             if k.get("tormays"):
                 f = max(f, float(k["tormays"]["f"]) + KELLO_TORMAYS_LISA_S * self.fps)
             return f
-        v = h.viivat
-        if v is None or h.hog1_f is None or h.kierre is None:
+        f_m = self.malli_pysahtyi_f(h)
+        if f_m is None:
             return None
-        f_hog2 = h.hog2_f if h.hog2_f is not None else h.hog1_f + h.kierre["T"] * self.fps
-        v_h = max(float(v["nopeus_jalkeen"]) ** 2 - 2.0 * HIDASTUVUUS_TYYPILLINEN * (ETAISYYS_CM - HOG_KESKI_CM - float(v["irr_Y"])) / 100.0, 0.0) ** 0.5
-        t_pys = min(v_h / KAUKO_PYS_HIDASTUVUUS, KELLO_ARVIO_MAX_S)
-        if v_h > KELLO_NOPEA_M_S:                                  # nopea kivi (poisto): tormaa tai osuu taka-aitaan nopeasti
-            t_pys = min(t_pys, KELLO_NOPEA_MAX_S)
-        return float(f_hog2 + self.fps * t_pys)
+        f_nyt = getattr(self, "viim_f", None)
+        if f_nyt is not None and (f_nyt < f_m + KELLO_MALLI_ODOTUS_S * self.fps or self.kivi_liikkeessa(h, f_nyt)):
+            return None
+        return f_m
 
     def kello_ruutu(self, h):
         """Ruutu, jolla heiton miettimisaika paattyy: kiven etureuna osuu heittopaan T-viivaan (Heitto.tviiva_f); ellei rata ylita viivaa, heiton lahto + KELLO_TVIIVA_VIIVE_S (vain valmistuneelle

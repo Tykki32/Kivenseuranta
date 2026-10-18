@@ -31,6 +31,12 @@ MAX_A_SUHT_VIRHE = 0.2           # A:n keskivirhe suhteessa A:han enintaan tama 
 MAX_LNK_VIRHE = 0.4              # ln kappan keskivirhe enintaan tama (kappa +-40 %)
 A_RAJA = (0.0015, 0.025)         # uskottava kitkataso: rajojen ulkopuolella (tai aivan parametrirajalla) sovitus ei ole luotettava
 KAPPA_ALKU = (0.3, 0.6, 1.0, 1.8, 3.0, 5.0, 8.0)
+# irroituksen uskottavuus (tarkista_irroitus): irroituksen nopeudesta ja suunnasta ennustettu rata vs. kaukopaassa havaittu pysahtyminen
+A_REF = 0.00761                  # kitkataso koko matkalle irroituksesta pysahtymiseen, kun irroituksen nopeus on 2,0 m/s (A_matka 35 pysahtyneella heitolla); suurempi kuin kaukopaan A (0,0064): nopea alkuosa
+A_REF_NOPEUS = 0.00474           # ... ja kasvaa irroituksen nopeuden mukana (per m/s): raskaampi heitto pysahtyy lyhyemmalle (harjataan vahemman) kuin vakiokitka ennustaisi; A_matka:n hajonta suoran ymparilla 3,4 %
+KAPPA_REF = 3.0                  # kaarto (kappa): mediaani 3,0
+MATKA_RAJA_M = 2.0               # harjaus muuttaa matkaa enintaan tama (kayttajan oletus): suurempi ero pysahtymismatkassa -> irroituksen nopeus todennakoisesti vaarin
+SIVU_RAJA_CM = 40.0              # ... ja sivusuunnassa enintaan tama (vain tiedoksi: oman kappan kanssa jaannosten hajonta on itsekin ~35 cm)
 
 
 def _rob(r, f=2.0):
@@ -181,3 +187,44 @@ def ennusta(A, kappa, y0_cm, v0_ms, w0_rads, kaarto_merkki, x0_cm=0.0, vali_cm=2
     if idx[-1] != len(Y) - 1:
         idx.append(len(Y) - 1)
     return dict(polku=[(float(X[k]), float(Y[k, 0])) for k in idx], pysahtyy_X_cm=float(X[-1]), pysahtyy_Y_cm=float(Y[-1, 0]), kesto_s=float(t[-1]), matka_cm=float(Y[-1, 3]))
+
+
+def a_ref(v_r):
+    """Vertailukitkataso koko matkalle irroituksesta pysahtymiseen irroituksen nopeudella v_r (m/s): A_REF + A_REF_NOPEUS (v_r - 2)."""
+    return A_REF + A_REF_NOPEUS * (float(v_r) - 2.0)
+
+
+def _simuloi(y0_cm, v0_ms, w0_rads, A, kappa):
+    """(kuljettu matka cm, sivusiirtyma cm) pysahtymiseen: rata_malli.simuloi."""
+    t, Y = rm.simuloi(np.array([[float(y0_cm), float(v0_ms), float(max(w0_rads, 0.0)), float(A), float(kappa)]]), 0.0, 0.0, pysahdykseen=True)
+    return float(Y[-1, 3, 0]), float(Y[-1, 4, 0])
+
+
+def tarkista_irroitus(y0_cm, v_r, omega0, kaarto_merkki, X_rel, suunta_deg, Y_pys, X_pys, kappa=None, A_ref=None, kappa_ref=None, matka_raja_m=None):
+    """Irroituksen uskottavuus mallilla: kivi lahtee irroituspisteesta (kaukopaan koordinaatistossa y0 = ETAISYYS - irroituksen Y, sivu X_rel = -irroituksen X; nopeus v_r m/s, kierre omega0 rad/s,
+    suunta suunta_deg astetta Y-akseliin) ja rata_malli ennustaa pysahtymismatkan vakioilla A_ref, kappa_ref. Harjaus muuttaa matkaa enintaan ~2 m (MATKA_RAJA_M) ja sivusuunnassa ~40 cm
+    (SIVU_RAJA_CM): jos havaittu pysahtyminen (Y_pys, X_pys, kaukopaan seuranta) poikkeaa ennusteesta tata enemman, irroituksen nopeus / suunta (tai kivi) on todennakoisesti vaarin. Palauttaa
+    dict: matka_ero_m (havaittu - ennuste; + = kulki kauemmas kuin irroituksen nopeus ennustaa), A_matka (kitkataso, jolla malli osuu havaittuun pysahtymiseen: lahes vakio, jos nopeus on oikea),
+    A_ero_pros (A_matka vs a_ref(v_r)), sivu_ero_cm (havaittu - ennuste omalla kappalla (muuten kappa_ref), kaarto_merkki = +1 vastapaivaan / -1 myotapaivaan / 0 tuntematon: ei sivuvertailua),
+    epailyttava (matka_ero_m yli MATKA_RAJA_M)."""
+    A_ref = a_ref(v_r) if A_ref is None else A_ref
+    kappa_ref = KAPPA_REF if kappa_ref is None else kappa_ref
+    matka_raja_m = MATKA_RAJA_M if matka_raja_m is None else matka_raja_m
+    S_obs = float(y0_cm) - float(Y_pys)
+    S_ref, _ = _simuloi(y0_cm, v_r, omega0, A_ref, kappa_ref)
+    lo, hi = 0.002, 0.03                                           # A_matka: kitkataso, jolla malli osuu havaittuun matkaan (matka pienenee A:n kasvaessa)
+    for _ in range(12):
+        mid = 0.5 * (lo + hi)
+        if _simuloi(y0_cm, v_r, omega0, mid, kappa_ref)[0] > S_obs:
+            lo = mid
+        else:
+            hi = mid
+    A_matka = 0.5 * (lo + hi)
+    sivu = None
+    if kaarto_merkki:
+        _, H = _simuloi(y0_cm, v_r, omega0, A_matka, kappa if kappa else kappa_ref)
+        X_ennuste = float(X_rel) + np.tan(np.radians(suunta_deg)) * (float(Y_pys) - float(y0_cm)) + float(kaarto_merkki) * H
+        sivu = float(float(X_pys) - X_ennuste)
+    ero = (S_obs - S_ref) / 100.0
+    return dict(matka_ero_m=float(ero), A_matka=float(A_matka), A_ero_pros=float(100.0 * (A_matka / A_ref - 1.0)), sivu_ero_cm=sivu, S_havaittu_m=S_obs / 100.0, S_malli_m=S_ref / 100.0,
+                kappa_oma=bool(kappa), epailyttava=bool(abs(ero) > matka_raja_m))

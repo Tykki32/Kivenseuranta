@@ -125,6 +125,30 @@ def vakiot(rivit, kivet):
               + ("  -> kiven vakiot eroavat toisistaan (kivi on yksilollinen)" if p < 0.05 else "  -> kivien valista eroa ei voi osoittaa tasta aineistosta"))
 
 
+def irroitus(rivit):
+    print("IROITUKSEN USKOTTAVUUS (nopeus ja suunta irroituksessa vs. hog-viivalla suoraan radasta mitattu; kaukopaan pysahtymismatka vs. rata_malli)")
+    n = len(rivit)
+    dv = np.array([_f(r["nopeus_jalkeen_m_s"]) - _f(r["nopeus_hog1_m_s"]) for r in rivit if _f(r.get("nopeus_jalkeen_m_s")) is not None and _f(r.get("nopeus_hog1_m_s")) is not None])
+    ds = np.array([_f(r["irroituksen_suunta_deg"]) - _f(r["suunta_hog1_deg"]) for r in rivit if _f(r.get("irroituksen_suunta_deg")) is not None and _f(r.get("suunta_hog1_deg")) is not None])
+    hid = np.array([_f(r["hidastuvuus_m_s2"]) for r in rivit if _f(r.get("hidastuvuus_m_s2")) is not None])
+    if len(dv):
+        print(f"  nopeus irroituksen jalkeen - nopeus hog-viivalla: mediaani {np.median(dv):+.3f} m/s (odotus +0,05 ... +0,15: kivi vain hidastuu), 1,48 MAD {1.4826 * np.median(np.abs(dv - np.median(dv))):.3f};"
+              f" alle -0,05 m/s (irroitus tunnistettu liian aikaisin): {_osuus(int((dv < -0.05).sum()), len(dv))}")
+    if len(ds):
+        print(f"  suunta irroituksessa - suunta hog-viivalla: mediaani {np.median(ds):+.2f} astetta, 1,48 MAD {1.4826 * np.median(np.abs(ds - np.median(ds))):.2f}; yli 0,5 asteen ero: {_osuus(int((np.abs(ds) > 0.5).sum()), len(ds))}")
+    if len(hid):
+        print(f"  vapaan lennon hidastuvuus < 0 (kivi kiihtyisi irroituksen jalkeen, mahdotonta): {_osuus(int((hid < 0).sum()), len(hid))}")
+    tk = [r for r in rivit if r.get("irr_tarkistus")]
+    if tk:
+        ep = [r for r in tk if r["irr_tarkistus"] == "epailyttava"]
+        e = np.array([_f(r["irr_matka_ero_m"]) for r in tk])
+        A = np.array([_f(r["irr_A_matka"]) for r in tk])
+        print(f"  pysahtymismatka vs. malli (kaukopaan seuranta pysahtyi, ei tormaysta): {len(tk)} heittoa; ero (havaittu - ennuste) mediaani {np.median(e):+.1f} m, 1,48 MAD {1.4826 * np.median(np.abs(e - np.median(e))):.1f} m;"
+              f" kitkataso koko matkalle mediaani {np.median(A):.4f}, hajonta {100 * 1.4826 * np.median(np.abs(A - np.median(A))) / np.median(A):.0f} %; epailyttavia (ero yli 2 m): {_osuus(len(ep), len(tk))}")
+        for r in ep:
+            print(f"    heitto {r['heitto']:>3} {r['vari']:9s} {r['kivi_nro']}: ero {_f(r['irr_matka_ero_m']):+.1f} m, nopeus irroituksessa {_f(r['nopeus_jalkeen_m_s']):.2f} m/s (hog-viivalla {_f(r['nopeus_hog1_m_s']) if _f(r['nopeus_hog1_m_s']) is not None else float('nan'):.2f}), irroitus Y {_f(r['irroitus_Y_cm']):.0f} cm")
+
+
 def kello(rivit):
     print("JOUKKUEIDEN KELLO (miettimisaika: edellisen kiven pysahtymisesta siihen, kun oma kivi osuu heittopaan T-viivaan; ei kay paiden valilla)")
     aj = {}
@@ -159,6 +183,8 @@ def main():
         f_(rivit)
         print()
     vakiot(rivit, a.kivet)
+    print()
+    irroitus(rivit)
     print()
     kello(rivit)
     return 0

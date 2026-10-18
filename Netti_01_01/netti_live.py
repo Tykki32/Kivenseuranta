@@ -467,7 +467,10 @@ class Kirjaaja:
                # kiven vakiot (rata_malli.py): kitkataso A ja kaarto kappa kaukopaan radasta
                "vakio_A", "vakio_A_sd", "vakio_kappa", "vakio_kappa_sd", "vakio_kappa_ok", "vakio_rms_y_cm", "vakio_rms_x_cm", "vakio_omega_lahde",
                # joukkueen kello: kello pysahtyy, kun heitetyn kiven etureuna osuu heittopaan T-viivaan (tviiva_s); miettimisaika ennen tata heittoa ja joukkueen aika yhteensa taman heiton jalkeen
-               "tviiva_s", "miettimisaika_s", "joukkue_yht_s"]
+               "tviiva_s", "miettimisaika_s", "joukkue_yht_s",
+               # irroituksen uskottavuus: nopeus ja suunta hog-viivalla suoraan radasta (vertailu irroituksen arvoihin), ja kaukopaan pysahtymisen perusteella (rata_malli, harjaus <= 2 m): havaittu - ennustettu
+               # pysahtymismatka (irr_matka_ero_m), kitkataso jolla malli osuu havaittuun matkaan (irr_A_matka; lahes vakio, jos nopeus on oikea), sivuero omalla kappalla (irr_sivu_ero_cm) ja johtopaatos
+               "nopeus_hog1_m_s", "suunta_hog1_deg", "irr_matka_ero_m", "irr_A_matka", "irr_sivu_ero_cm", "irr_tarkistus"]
     OTSIKKO_KIVET = ["vari", "kivi_nro", "heittoja", "A_mediaani", "A_hajonta", "kappa_heittoja", "kappa_mediaani", "kappa_hajonta", "heitot"]
 
     def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False, radat_polku=None):
@@ -595,6 +598,12 @@ class Kirjaaja:
             self._tulosta(f"          heitto {n} kiven vakiot: A {_pilkku(v['A'], 4)}, {kap} (jaannos Y {v['rms_y_cm']:.1f} cm, X {v['rms_x_cm']:.1f} cm)")
         elif v is not None:
             self._tulosta(f"          heitto {n} kiven vakioita ei saatu: {v.get('syy', '?')}")
+        tk = (v or {}).get("irr_tarkistus") if v is not None else None
+        if tk is not None and "virhe" not in tk:
+            import netti_vakiot as nvk
+            sivu = f", sivusuunnassa {_pilkku(tk['sivu_ero_cm'], 0, True)} cm" if tk.get("sivu_ero_cm") is not None else ""
+            self._tulosta(f"          heitto {n} irroituksen uskottavuus: pysahtymismatka irroituksesta {tk['S_havaittu_m']:.1f} m, mallin mukaan {tk['S_malli_m']:.1f} m (ero {_pilkku(tk['matka_ero_m'], 1, True)} m{sivu}; "
+                          f"kitkataso {_pilkku(tk['A_matka'], 4)})" + (f" -> EPAILYTTAVA: ero yli {nvk.MATKA_RAJA_M:.0f} m, irroituksen nopeus todennakoisesti vaarin" if tk["epailyttava"] else ""))
         return True
 
     def _kello_ilmoita(self, an, lopuksi):
@@ -632,7 +641,9 @@ class Kirjaaja:
             ns_ = [n for n in h.naytteet if n.paikka() is not None and h.f_alku is not None and n.f >= h.f_alku]
             out.append(dict(tunnus=h.tunnus, vari=h.vari, puoli=h.puoli, kivi_nro=h.kivi_nro, f_alku=h.f_alku, f_loppu=h.f_loppu, hog1_f=h.hog1_f, hog2_f=h.hog2_f,
                             near=[(n.f, float(n.paikka()[0]), float(n.paikka()[1]), bool(n.kivi())) for n in ns_], viivat=h.viivat, kierto=h.kierto, kauko_kierto=h.kauko_kierto,
-                            kierre=h.kierre, kauko=h.kauko, vakiot=h.vakiot, saapuminen=h.saapuminen))
+                            kierre=h.kierre, kauko=h.kauko, vakiot=h.vakiot, saapuminen=h.saapuminen,
+                            viivat_syote=[(n.f, float(n.B[0]), float(n.B[1])) for n in h.kelvolliset_b()],            # laske_viivat:n tarkka syote: irroituksen tunnistuksen voi ajaa uudelleen (tools/sovita_irroitus.py)
+                            kahva_ala=[(n.f, float(n.ala), float(n.A[0]), float(n.A[1])) for n in h.naytteet if n.A is not None and n.ala]))
         with open(self.radat_polku, "wb") as fh:
             pickle.dump(out, fh)
         self._tulosta(f"Radat ja mittaukset tallennettu: {self.radat_polku} ({len(out)} heittoa)")
@@ -701,6 +712,12 @@ class Kirjaaja:
         else:
             rivi += [""] * 8
         rivi += [N(None if kt["f_stop"] is None else kt["f_stop"] / fps), N(kt["aika_s"], 1), N(kt["joukkue_yht_s"], 1)]
+        tk = (vk or {}).get("irr_tarkistus") if vk is not None else None
+        if tk is not None and "virhe" not in tk:
+            teksti = "epailyttava" if tk["epailyttava"] else "ok"
+            rivi += [N(None if v is None else v.get("nopeus_hog1"), 3), N(None if v is None else v.get("suunta_hog1_deg"), 3), N(tk["matka_ero_m"], 2), N(tk["A_matka"], 5), N(tk.get("sivu_ero_cm"), 0), teksti]
+        else:
+            rivi += [N(None if v is None else v.get("nopeus_hog1"), 3), N(None if v is None else v.get("suunta_hog1_deg"), 3), "", "", "", ""]
         return rivi
 
     def _kirjoita_csv(self, an):
@@ -954,7 +971,7 @@ def main():
     ap.add_argument("--ei-csv", action="store_true", help="ei CSV-tallennusta")
     ap.add_argument("--radat", help="tallenna heittojen radat ja mittaukset (pickle) jalkianalyysia varten, esim. kiven vakioiden uudelleensovitus ilman koko videon analyysia (kehitys)")
     ap.add_argument("--ei-kelloa", action="store_true", help="ei joukkueiden kelloa (miettimisaika) kuvassa")
-    ap.add_argument("--kello-paikka", help="kellon laatikon vasen ylakulma kuvassa X,Y (pikselia); oletus: kuvan oikea reuna oikean minikartan alla")
+    ap.add_argument("--kello-paikka", help="kellon laatikon vasen ylakulma kuvassa X,Y (pikselia); oletus: kuvan keskella mainosgrafiikan (Hyvinkaan Liikenne) alla")
     ap.add_argument("--ei-ikkunaa", action="store_true", help="ei ikkunaa (palvelin / testaus)")
     ap.add_argument("--ei-kierretta", action="store_true", help="ei kierteen eika hog-hog-ajan mittausta")
     ap.add_argument("--nopea", action="store_true", help="simulaatio: tiedosto ajetaan niin nopeasti kuin ehtii (tulos ei riipu ajoituksesta)")

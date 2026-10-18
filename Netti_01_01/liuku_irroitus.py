@@ -35,6 +35,15 @@ LIUKU_ALKU_VIIVE_S = 0.6     # liu'un hidastuvuus: ikkuna alkaa tyonnon lopusta 
 LIUKU_LOPPU_VIIVE_S = 0.15   # ... ja paattyy tama ennen irroitusta
 NOPEUS_IKKUNA_S = 0.4        # "juuri ennen irroitusta" -nopeus: viimeiset 0,4 s
 RAJA_DCHI2 = 40.0            # merkitseva vaihtokohta: khi^2-parannus vahintaan tama (nollahypoteesin suurin arvo simuloinnissa 35, vapaan lennon ikkunoissa 33)
+# Vapaan lennon fysiikka pehmeana esitietona (MAP): irroituksen jalkeen kivi on vapaa kappale, joka vain hidastuu (puhtailla heitoilla 0,06-0,07 m/s2) ja kaartaa vahan. Ilman esitietoa
+# vapaan lennon paraabeli saa kiihtya (ohjatun vaiheen tyonto mukaan) tai kaartua mielivaltaisesti: irroitus tunnistuttiin liian aikaisin (nopeus irroituksen jalkeen 0,2-0,3 m/s liian pieni,
+# suunta jopa 1 aste pielessa; kts. README "Irroituksen tunnistuksen fysiikka"). Esitieto vaikuttaa vain, kun data ei rajaa parametria (lyhyt vapaa lento) tai rata ei ole vapaan lennon mukainen.
+A_VAPAA_M_S2 = 0.065         # vapaan lennon hidastuvuus (m/s2)
+SIGMA_A_VAPAA_M_S2 = 0.03    # ... ja sen hajonta
+SIGMA_KAAREVUUS_1_CM = 5e-5  # vapaan lennon X(Y)-kaarevuus: 0 +- tama (mitattu hajonta 4-5e-5 1/cm, sis. mittakohinan): kinkkihaun ja hannan ikkunan ennustetesti
+SIGMA_KAAREVUUS_TILA_1_CM = 5e-5   # ... ja irroitustilan (suunta irroituksessa) sovituksessa: tiukempi esitieto vakauttaa suunnan (irroituksen suunta = hog-viivan suunta - kaarto matkalla)
+Y_IRROITUS_MAX_CM = None     # irroitus ei voi olla taman jalkeen (saanto: ennen hog-viivaa; reaaliaikaisessa asetuksessa ESTIMAATTI.Y_r_max)
+MENETELMA = "hanta"            # irroituksen tunnistus: "hanta" (vapaan lennon hanta, takaperin kasvava ikkuna; kts. irroitus_hanta) tai "kinkki" (kahden paraabelin C1-sovitus, irroitus_varmistettu)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -103,14 +112,21 @@ def _kustannus(r, s):
     return float(np.sum(2.0 * np.where(a <= HUBER_C, 0.5 * a * a, HUBER_C * a - 0.5 * HUBER_C ** 2)))
 
 
-def _irls(A, y, s, kierroksia=6):
+def _irls(A, y, s, kierroksia=6, esi=None):
+    """Huber-IRLS. esi = (rivi, tavoite, sigma): pehmea esitieto yhdelle parametrille (rivi @ p ~ N(tavoite, sigma^2); ei Huber-painotusta). Palauttaa (p, kustannus_yht, kustannus_data):
+    yht = data + esitiedon sakko ((rivi @ p - tavoite) / sigma)^2 (vaihtokohdan valinta), data = pelkka Huber-kustannus (merkitsevyys)."""
     w = np.ones(len(y))
     for _ in range(kierroksia):
         sw = np.sqrt(w)
-        p = np.linalg.lstsq(A * sw[:, None], y * sw, rcond=None)[0]
+        A2, y2 = A * sw[:, None], y * sw
+        if esi is not None:
+            k = s / esi[2]
+            A2, y2 = np.vstack([A2, np.asarray(esi[0], float) * k]), np.append(y2, esi[1] * k)
+        p = np.linalg.lstsq(A2, y2, rcond=None)[0]
         a = np.abs(y - A @ p) / (HUBER_C * s)
         w = np.where(a <= 1.0, 1.0, 1.0 / np.maximum(a, 1e-9))
-    return p, _kustannus(y - A @ p, s)
+    c = _kustannus(y - A @ p, s)
+    return p, c + (0.0 if esi is None else float(((np.asarray(esi[0], float) @ p - esi[1]) / esi[2]) ** 2)), c
 
 
 def _c0(u, y, s):
@@ -118,10 +134,14 @@ def _c0(u, y, s):
     return _irls(np.column_stack([np.ones_like(d), d, 0.5 * d ** 2]), y, s)
 
 
-def _c1(u, y, ur, s):
-    """y = y_r + v_r (u - ur) + 0,5 c1 (u - ur)^2 (u < ur) / c2 (u >= ur): arvo ja 1. derivaatta jatkuvia, 2. derivaatta hyppaa."""
+def _c1(u, y, ur, s, esi=None):
+    """y = y_r + v_r (u - ur) + 0,5 c1 (u - ur)^2 (u < ur) / c2 (u >= ur): arvo ja 1. derivaatta jatkuvia, 2. derivaatta hyppaa. esi: esitieto vapaan lennon 2. derivaatalle c2."""
     d = u - ur
-    return _irls(np.column_stack([np.ones_like(d), d, 0.5 * d ** 2 * (d < 0), 0.5 * d ** 2 * (d >= 0)]), y, s)
+    return _irls(np.column_stack([np.ones_like(d), d, 0.5 * d ** 2 * (d < 0), 0.5 * d ** 2 * (d >= 0)]), y, s, esi=esi)
+
+
+ESI_Y = ((0.0, 0.0, 0.0, 1.0), -100.0 * A_VAPAA_M_S2, 100.0 * SIGMA_A_VAPAA_M_S2)     # Y(t): vapaan lennon 2. derivaatta (cm/s2) ~ hidastuvuus
+ESI_X = ((0.0, 0.0, 0.0, 1.0), 0.0, SIGMA_KAAREVUUS_1_CM)                              # X(Y): vapaan lennon kaarevuus (1/cm)
 
 
 def kohinat(t, X, Y):
@@ -134,13 +154,15 @@ def kohinat(t, X, Y):
     return max(mad(ry), 0.3), max(mad(rx), 0.06)
 
 
-def irroitus_ikkuna(t, X, Y, Y_a, sY, sX, askel_s=0.02, min_ennen=None, min_jalkeen=None, Y_r_min=None):
+def irroitus_ikkuna(t, X, Y, Y_a, sY, sX, askel_s=0.02, min_ennen=None, min_jalkeen=None, Y_r_min=None, Y_r_max=None, esitieto=False):
     """Vaihtokohdan haku alueella Y >= Y_a. Palauttaa dict tai None. Vaihtokohta t_r on yhteinen: Y(t) C1-sovitus antaa paikan Y_r(t_r), johon X(Y):n
-    C1-sovituksen vaihtokohta asetetaan; kustannus = Y- ja X-kanavan khi^2:n summa.
+    C1-sovituksen vaihtokohta asetetaan; kustannus = Y- ja X-kanavan khi^2:n summa (esitieto: + vapaan lennon fysiikan sakko, ks. ESI_Y / ESI_X; vaihtokohta valitaan taman
+    kokonaiskustannuksen minimista, merkitsevyys lasketaan pelkasta datakustannuksesta).
     Reaaliaikaisessa (osittaisessa) aineistossa: min_jalkeen = vapaan lennon vahimmaismatka (oletus MIN_JALKEEN_CM), Y_r_min = irroituksen aikaisin paikka
-    (esitieto: irroitus ei tapahdu aivan hackin vieressa)."""
+    (esitieto: irroitus ei tapahdu aivan hackin vieressa), Y_r_max = myohaisin paikka (saanto: irroitus ennen hog-viivaa; oletus Y_IRROITUS_MAX_CM)."""
     min_ennen = MIN_ENNEN_CM if min_ennen is None else min_ennen
     min_jalkeen = MIN_JALKEEN_CM if min_jalkeen is None else min_jalkeen
+    Y_r_max = Y_IRROITUS_MAX_CM if Y_r_max is None else Y_r_max
     Y_alaraja = Y_a + min_ennen if Y_r_min is None else max(Y_a + min_ennen, Y_r_min)
     m = Y >= Y_a
     tt, yy, xx = t[m], Y[m], X[m]
@@ -148,23 +170,25 @@ def irroitus_ikkuna(t, X, Y, Y_a, sY, sX, askel_s=0.02, min_ennen=None, min_jalk
         return None
     k0y = _c0(tt, yy, sY)[1]
     k0x = _c0(yy, xx, sX)[1]
+    esy, esx = (ESI_Y, ESI_X) if esitieto else (None, None)
     prof = []
     for tr in np.arange(tt[0], tt[-1], askel_s):
         Yr = float(np.interp(tr, tt, yy))
-        if Yr < Y_alaraja or Yr > yy[-1] - min_jalkeen or (tt < tr).sum() < 8 or (tt >= tr).sum() < 10:
+        if Yr < Y_alaraja or Yr > yy[-1] - min_jalkeen or (Y_r_max is not None and Yr > Y_r_max) or (tt < tr).sum() < 8 or (tt >= tr).sum() < 10:
             continue
-        py, cy = _c1(tt, yy, tr, sY)
-        px, cx = _c1(yy, xx, py[0], sX)
-        prof.append((tr, float(py[0]), cy, cx, py, px))
+        py, cy, dy = _c1(tt, yy, tr, sY, esy)
+        px, cx, dx = _c1(yy, xx, py[0], sX, esx)
+        prof.append((tr, float(py[0]), cy, cx, py, px, dy, dx))
     if not prof:
         return None
-    P = np.array([[a, b, c, d] for a, b, c, d, _, _ in prof])
+    P = np.array([[a, b, c, d, e, f] for a, b, c, d, _, _, e, f in prof])        # t_r, Y_r, khi2_Y, khi2_X (kokonais), datakustannukset Y, X
     out = dict(Y_a=float(Y_a), n=int(len(tt)), k0y=k0y, k0x=k0x)
-    for nimi, kol, k0 in (("yht", None, k0y + k0x), ("y", 2, k0y), ("x", 3, k0x)):
+    for nimi, kol, kold, k0 in (("yht", None, None, k0y + k0x), ("y", 2, 4, k0y), ("x", 3, 5, k0x)):
         s = P[:, 2] + P[:, 3] if kol is None else P[:, kol]
+        sd = P[:, 4] + P[:, 5] if kol is None else P[:, kold]
         i = int(np.argmin(s))
         ok = P[s <= s[i] + 4.0, 1]
-        out[nimi] = dict(t_r=float(P[i, 0]), Y_r=float(P[i, 1]), Y_lo=float(ok.min()), Y_hi=float(ok.max()), dchi2=float(k0 - s[i]))
+        out[nimi] = dict(t_r=float(P[i, 0]), Y_r=float(P[i, 1]), Y_lo=float(ok.min()), Y_hi=float(ok.max()), dchi2=float(k0 - sd[i]))
     i = int(np.argmin(P[:, 2] + P[:, 3]))
     py, px = prof[i][4], prof[i][5]
     out["a1_m_s2"], out["a2_m_s2"] = float(py[2] / 100.0), float(py[3] / 100.0)
@@ -211,28 +235,121 @@ def irroitus_varmistettu(t, X, Y, Y_90, sY, sX, **asetus):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# IRROITUS: VAPAAN LENNON HANTA (takaperin kasvava ikkuna)
+# ---------------------------------------------------------------------------------------------------------------------
+HANTA_Y_ANKKURI_CM = 631.8   # ankkuri: hog-viivan jalkeinen rata on varmasti vapaata lentoa (irroitus ennen viivaa: kiven keskipiste Y <= 631,8 cm); reaaliaikaisessa asetuksessa ESTIMAATTI
+HANTA_MIN_N = 12             # ankkuri-ikkunassa vahintaan nain monta paikkaa
+HANTA_M = 6                  # ennustejaannoksia tarkistetaan tama monta ikkunaa edeltavaa paikkaa kerrallaan
+HANTA_Z = 3.0                # ... ja irroitus on siina, missa niiden |z|-mediaani ylittaa taman
+HANTA_SIGMA_Y = (0.3, 0.8)   # mittakohinan (cm) rajat, kun kohinaa ei anneta: robusti arvio ankkuri-ikkunasta (lyhyt ikkuna aliarvioi: kayta analysoi-funktion kohinat-arviota)
+HANTA_SIGMA_X = (0.07, 0.15)
+HANTA_SIGMA_Y_MIN = 0.5      # analysoi: kohinat()-arvion alaraja (cm); alle tama ennustejaannokset eivat ole luotettavia (korreloitu virhe: B-sovituksen harha hog-viivan kohdalla, mallin vaje)
+HANTA_SIGMA_X_MIN = 0.10
+HANTA_PERSISTENSSI = 3       # irroitus on vasta, kun |z|-mediaani ylittaa HANTA_Z:n taman monessa perakkaisessa ikkunassa (yksittainen ylitys on kohinaa)
+
+
+def _paraabeli_posteriori(u, y, s, esi=None, kierroksia=5):
+    """Paraabeli y = p0 + p1 d + p2 d^2 / 2 (d = u - u[0]); Huber-IRLS, esitieto p2 ~ N(esi[0], esi[1]). Palauttaa (p, Q, u0), Q = (A^T W A + esitieto)^-1 (kovarianssi = s^2 Q)."""
+    u0 = float(u[0])
+    d = u - u0
+    A = np.column_stack([np.ones_like(d), d, 0.5 * d * d])
+    w = np.ones(len(y))
+    for _ in range(kierroksia):
+        sw = np.sqrt(w)
+        A2, y2 = A * sw[:, None], y * sw
+        if esi is not None:
+            k = s / esi[1]
+            A2, y2 = np.vstack([A2, [0.0, 0.0, k]]), np.append(y2, esi[0] * k)
+        p = np.linalg.lstsq(A2, y2, rcond=None)[0]
+        a = np.abs(y - A @ p) / (HUBER_C * s)
+        w = np.where(a <= 1.0, 1.0, 1.0 / np.maximum(a, 1e-9))
+    info = A.T @ (A * w[:, None])
+    if esi is not None:
+        info = info + np.diag([0.0, 0.0, (s / esi[1]) ** 2])
+    return p, np.linalg.inv(info), u0, A @ p - y
+
+
+def _ennuste_z(p, Q, u0, s, u, y):
+    """Ikkunan sovituksen ennuste ikkunan ulkopuolisille naytteille: standardoidut jaannokset (ennusteen epavarmuus mukana)."""
+    d = u - u0
+    Hh = np.column_stack([np.ones_like(d), d, 0.5 * d * d])
+    return (y - Hh @ p) / (s * np.sqrt(1.0 + np.einsum("ij,jk,ik->i", Hh, Q, Hh)))
+
+
+def irroitus_hanta(t, X, Y, sY=None, sX=None, Y_ankkuri=None, Y_r_min=None, m=None, z_raja=None, esitieto=True, **_):
+    """Irroitus = varhaisin kohta, josta alkaen rata on vapaan lennon mukainen: ikkuna alkaa ankkurista (hog-viivan jalkeen, varmasti vapaata lentoa) ja kasvaa takaperin; kutakin
+    ikkunaa vasten sovitetaan vapaan lennon malli (Y(t): vakiohidastuvuus, X(Y): vahan kaartuva suora, fysikaaliset esitiedot) ja sita edeltavien m naytteen standardoitujen
+    ennustejaannosten |z|-mediaani (Y- ja X-kanavan suurempi) tarkistetaan; irroitus on ensimmaisessa ikkunassa, jonka edella jaannokset ylittavat HANTA_Z:n (tai aikaisimmassa
+    sallitussa kohdassa Y_r_min, jolloin merkitseva = False). Ohjatun vaiheen (tyonto, kasin johdettu liuku) mallia ei tarvita, eika tulos riipu monesta paikallisesta vaihtokohdasta:
+    myohainen tyonto (kasi kiihdyttaa viela irroituksen alla) tai sivuttaisliike katkaisevat ikkunan. Palauttaa dict (kuten irroitus_varmistettu) tai None (ankkuri puuttuu)."""
+    Y_ankkuri = HANTA_Y_ANKKURI_CM if Y_ankkuri is None else Y_ankkuri
+    m = HANTA_M if m is None else m
+    z_raja = HANTA_Z if z_raja is None else z_raja
+    n = len(t)
+    if not (Y >= Y_ankkuri).any():
+        return None
+    i_a = min(int(np.argmax(Y >= Y_ankkuri)), n - HANTA_MIN_N)
+    if i_a < m + 1:
+        return None
+    esy = (-100.0 * A_VAPAA_M_S2, 100.0 * SIGMA_A_VAPAA_M_S2) if esitieto else None
+    esx = (0.0, SIGMA_KAAREVUUS_1_CM) if esitieto else None
+    if sY is None or sX is None:                                     # kohina ankkuri-ikkunasta (robusti MAD)
+        py, _, _, ry = _paraabeli_posteriori(t[i_a:], Y[i_a:], 0.5, esy)
+        px, _, _, rx = _paraabeli_posteriori(Y[i_a:], X[i_a:], 0.1, esx)
+        mad = lambda r: 1.4826 * float(np.median(np.abs(r - np.median(r))))
+        sY = float(np.clip(mad(ry), *HANTA_SIGMA_Y)) if sY is None else sY
+        sX = float(np.clip(mad(rx), *HANTA_SIGMA_X)) if sX is None else sX
+    Y_raja = -np.inf if Y_r_min is None else Y_r_min
+    i0, z_rikki, rajattu, ylit = i_a, None, False, 0
+    while True:
+        if i0 - m < 0 or Y[i0 - 1] < Y_raja:
+            rajattu = True
+            break
+        py, Qy, ty, _ = _paraabeli_posteriori(t[i0:], Y[i0:], sY, esy)
+        px, Qx, uy, _ = _paraabeli_posteriori(Y[i0:], X[i0:], sX, esx)
+        zy = _ennuste_z(py, Qy, ty, sY, t[i0 - m:i0], Y[i0 - m:i0])
+        zx = _ennuste_z(px, Qx, uy, sX, Y[i0 - m:i0], X[i0 - m:i0])
+        z = max(float(np.median(np.abs(zy))), float(np.median(np.abs(zx))))
+        ylit = ylit + 1 if z > z_raja else 0
+        if ylit >= HANTA_PERSISTENSSI:
+            z_rikki = z
+            i0 += ylit - 1                                            # irroitus = viimeinen johdonmukainen ikkuna (ennen ensimmaista ylitysta)
+            break
+        i0 -= 1
+    Y_r, t_r = float(Y[i0]), float(t[i0])
+    Y_lo, Y_hi = float(Y[max(i0 - m, 0)]), Y_r
+    return dict(jasenet=[], profiilit=[], historia=[Y_r], Y_r=Y_r, Y_min=Y_lo, Y_max=Y_hi, Y_r_Y_kanava=Y_r, Y_r_X_kanava=Y_r, dchi2_med=float((z_rikki or 0.0) ** 2 * m), merkitsevia=int(not rajattu),
+                jasenia=1, merkitseva=bool(not rajattu), t_r=t_r, menetelma="hanta", sigma_Y_cm=float(sY), sigma_X_cm=float(sX), ikkuna_n=int(n - i0))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # IRROITUSTILA
 # ---------------------------------------------------------------------------------------------------------------------
-def _paraabeli_arvo(u, y, u0):
-    """Paraabelisovitus (Huber) -> (arvo, 1. derivaatta, 2. derivaatta, virhe arvo, virhe derivaatta) kohdassa u0; virheet LS-kovarianssista."""
+def _paraabeli_arvo(u, y, u0, esi=None):
+    """Paraabelisovitus (Huber) -> (arvo, 1. derivaatta, 2. derivaatta, virhe arvo, virhe derivaatta) kohdassa u0; virheet LS-kovarianssista (esitiedon kanssa a posteriori -kovarianssi).
+    esi = (tavoite, sigma): pehmea esitieto 2. derivaatalle."""
     d = u - u0
     A = np.column_stack([np.ones_like(d), d, 0.5 * d ** 2])
     r0 = y - A @ np.linalg.lstsq(A, y, rcond=None)[0]
     s = max(1.4826 * float(np.median(np.abs(r0 - np.median(r0)))), 1e-3)
-    p, _ = _irls(A, y, s)
+    p, _, _ = _irls(A, y, s, esi=None if esi is None else ((0.0, 0.0, 1.0), esi[0], esi[1]))
     r = y - A @ p
-    cov = np.linalg.inv(A.T @ A) * max(float(np.sum(r ** 2)) / max(len(y) - 3, 1), 1e-12)
+    s2 = max(float(np.sum(r ** 2)) / max(len(y) - 3, 1), 1e-12)
+    info = A.T @ A
+    if esi is not None:
+        info = info + np.diag([0.0, 0.0, s2 / esi[1] ** 2])
+    cov = np.linalg.inv(info) * s2
     return float(p[0]), float(p[1]), float(p[2]), float(np.sqrt(cov[0, 0])), float(np.sqrt(cov[1, 1]))
 
 
-def irroitustila(t, X, Y, t_r, Y_vali=None):
-    """Vapaan lennon sovitus (t >= t_r + VIIVE_S): X(Y) ja Y(t) paraabelit. Tila hetkella t_r: paikka, suunta, nopeus, hidastuvuus, kaarevuus.
-    Suunnan virhe = LS-virhe, vaihtokohdan epavarmuudesta (kaarevuus * puoli Y-valia) ja radan paikallisen suunnan (ikkuna 120 cm) hajonta paraabelin
+def irroitustila(t, X, Y, t_r, Y_vali=None, esitieto=False):
+    """Vapaan lennon sovitus (t >= t_r + VIIVE_S): X(Y) ja Y(t) paraabelit (esitieto: hidastuvuus ja kaarevuus fysikaalisissa rajoissa). Tila hetkella t_r: paikka, suunta, nopeus,
+    hidastuvuus, kaarevuus. Suunnan virhe = LS-virhe, vaihtokohdan epavarmuudesta (kaarevuus * puoli Y-valia) ja radan paikallisen suunnan (ikkuna 120 cm) hajonta paraabelin
     ympari (taustaviivojen ja logojen aiheuttama sivuttaishairio) neliosumma."""
     m = t >= t_r + VIIVE_S
     tt, x, y = t[m], X[m], Y[m]
-    Yr, vY, aY, _, evY = _paraabeli_arvo(tt, y, t_r)
-    Xr, dXdY, cX, _, edXdY = _paraabeli_arvo(y, x, Yr)
+    Yr, vY, aY, _, evY = _paraabeli_arvo(tt, y, t_r, (-100.0 * A_VAPAA_M_S2, 100.0 * SIGMA_A_VAPAA_M_S2) if esitieto else None)
+    Xr, dXdY, cX, _, edXdY = _paraabeli_arvo(y, x, Yr, (0.0, SIGMA_KAAREVUUS_TILA_1_CM) if esitieto else None)
     nopeus = vY * np.sqrt(1.0 + dXdY ** 2)
     suunta = float(np.degrees(np.arctan(dXdY)))
     e_stat = float(np.degrees(edXdY / (1.0 + dXdY ** 2)))
@@ -285,15 +402,18 @@ def liuku_suureet(t, X, Y, la, ir, til):
     # liun hidastuvuus
     v = liukuva(t, Y, h=4, aste=1)[:, 1] / 100.0
     g = (t >= la["t_90"] + LIUKU_ALKU_VIIVE_S) & (t <= t_r - LIUKU_LOPPU_VIIVE_S)
-    a_liuku = theil_sen(t[g], v[g])
-    rng = np.random.default_rng(0)
     idx = np.where(g)[0]
+    if len(idx) >= 4:
+        a_liuku = theil_sen(t[g], v[g])
+    else:                                                              # irroitus heti tyonnon jalkeen: liukuvaihetta ei ole mitattavaksi
+        a_liuku = float("nan")
+    rng = np.random.default_rng(0)
     bs = []
-    for _ in range(200):
+    for _ in range(200 if len(idx) >= 8 else 0):
         ii = np.unique(rng.choice(idx, len(idx)))
         if len(ii) >= 8:
             bs.append(theil_sen(t[ii], v[ii]))
-    vali = (-float(np.percentile(bs, 95)), -float(np.percentile(bs, 5)))
+    vali = (-float(np.percentile(bs, 95)), -float(np.percentile(bs, 5))) if bs else (float("nan"), float("nan"))
     return dict(liun_suunta_deg=liun_suunta, liun_suora_kulmakerroin=float(c[0]), liun_suora_X_Y0_cm=float(c[1]), liun_suunta_alku_cm=float(la["Y_lahto"]), liun_suunta_loppu_cm=float(Y_r),
                 irroituksen_suunta_deg=til["suunta_deg"], irroituksen_suunta_virhe_deg=til["suunta_virhe_deg"],
                 nopeus_ennen_m_s=v_ennen, nopeus_ennen_virhe_m_s=e_ennen, nopeus_jalkeen_m_s=til["nopeus_m_s"],
@@ -310,14 +430,20 @@ def analysoi(rata, kohinakatto=None, **asetus):
     sY, sX = kohinat(t, X, Y)
     if kohinakatto is not None:
         sY, sX = min(sY, kohinakatto[0]), min(sX, kohinakatto[1])
-    ir = irroitus_varmistettu(t, X, Y, a["Y_90"], sY, sX, **asetus)
+    ir = None
+    if asetus.get("menetelma", MENETELMA) == "hanta":                            # vapaan lennon hanta, kun rata yltaa hog-viivan taakse (muuten kinkkihaku: osittainen aineisto)
+        ya = asetus.get("Y_r_max")
+        ir = (irroitus_hanta(t, X, Y, sY=max(sY, HANTA_SIGMA_Y_MIN), sX=max(sX, HANTA_SIGMA_X_MIN), Y_ankkuri=ya, Y_r_min=asetus.get("Y_r_min"), esitieto=asetus.get("esitieto", False))
+              if ya is not None or Y_IRROITUS_MAX_CM is not None else None)
+    if ir is None:
+        ir = irroitus_varmistettu(t, X, Y, a["Y_90"], sY, sX, **{k: v for k, v in asetus.items() if k != "menetelma"})
     out = dict(liuku=a, kohina=dict(sigma_Y_cm=sY, sigma_X_cm=sX), irroitus=ir)
     if ir is not None:
         Y_r = ir["Y_r"]
         t_r = float(np.interp(Y_r, Y, t))
         ir["t_r"] = t_r
         ir["t_vali"] = [float(np.interp(ir["Y_min"], Y, t)), float(np.interp(ir["Y_max"], Y, t))]
-        out["tila"] = irroitustila(t, X, Y, t_r, (ir["Y_min"], ir["Y_max"]))
+        out["tila"] = irroitustila(t, X, Y, t_r, (ir["Y_min"], ir["Y_max"]), esitieto=asetus.get("esitieto", False))
         out["liuku"]["tyonto_kesto_s"] = a["t_90"] - a["t_lahto"]
         out["liuku"]["tyonto_matka_cm"] = a["Y_90"] - a["Y_lahto"]
         out["liuku"]["liuku_kesto_s"] = t_r - a["t_lahto"]
