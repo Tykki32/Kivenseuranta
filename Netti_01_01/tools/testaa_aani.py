@@ -35,10 +35,11 @@ def ffmpeg(*args):
 
 def tee_aineisto(kansio):
     """Synteettiset tiedostot: kuva 12 s (ei aanta), aani 30 s ja 5 s (sini), aanettoman videon 'aani'."""
-    p = {k: os.path.join(kansio, k) for k in ("kuva.mp4", "aani30.m4a", "aani5.m4a", "roska.m4a")}
+    p = {k: os.path.join(kansio, k) for k in ("kuva.mp4", "aani30.m4a", "aani5.m4a", "roska.m4a", "mykka.m4a")}
     ffmpeg("-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-t", "12", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", p["kuva.mp4"])
     ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "30", "-c:a", "aac", "-b:a", "128k", p["aani30.m4a"])
     ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "5", "-c:a", "aac", "-b:a", "128k", p["aani5.m4a"])
+    ffmpeg("-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "12", "-c:a", "aac", p["mykka.m4a"])
     with open(p["roska.m4a"], "wb") as f:
         f.write(os.urandom(5000))
     return p
@@ -64,7 +65,7 @@ def testaa_liitos(kansio, p):
     k = kopio(p["kuva.mp4"], kansio, "pitka.mp4")
     ok, huom = na.liita(EXE, k, p["aani30.m4a"])
     kesto, aanta, kuvaa = na.tiedot(EXE, k)
-    tarkista("pitka aani: liitetty, kesto sailyy (12 s), kuva- ja aaniraita", ok and abs(kesto - 12.0) < 0.15 and aanta and kuvaa and huom == "", f"{ok} {kesto} {huom!r}")
+    tarkista("pitka aani: liitetty, kesto sailyy (12 s), kuva- ja aaniraita, ei varoituksia, aanen tiedot mukana", ok and abs(kesto - 12.0) < 0.15 and aanta and kuvaa and "huom:" not in huom and "keskivoimakkuus" in huom, f"{ok} {kesto} {huom!r}")
     tarkista("pitka aani: ei valitiedostoa", not os.path.exists(k + ".aani.mp4"))
     k = kopio(p["kuva.mp4"], kansio, "lyhyt.mp4")
     ok, huom = na.liita(EXE, k, p["aani5.m4a"])
@@ -76,6 +77,14 @@ def testaa_liitos(kansio, p):
     ok, huom = na.liita(EXE, k, p["aani30.m4a"], alku_s=25.0)
     kesto, _, _ = na.tiedot(EXE, k)
     tarkista("aanen alku 25 s (aanta jaljella 5 s): kesto sailyy, huomautus", ok and abs(kesto - 12.0) < 0.15 and "mykka" in huom, f"{kesto} {huom!r}")
+    k = kopio(p["kuva.mp4"], kansio, "mykka.mp4")
+    ok, huom = na.liita(EXE, k, p["mykka.m4a"])
+    tarkista("mykka aani: liitetaan, mutta varoitus (ladattu aani on mykka)", ok and "mykka: tarkista aanilahde" in huom, huom[:110])
+    tila = na.aanen_tila(EXE, p["aani30.m4a"], 0.0, 12.0)
+    tarkista("aanen_tila: sini 440 Hz: kesto 12 s (dekoodattu valilta), keskivoimakkuus -35...-10 dB, mono AAC", tila is not None and abs(tila["kesto"] - 12.0) < 0.1 and -35.0 < tila["keski_db"] < -10.0 and tila["koodekki"] == "aac", str(tila))
+    tarkista("aanen_tila: rikkinainen tiedosto -> None", na.aanen_tila(EXE, p["roska.m4a"]) is None)
+    rivit = na.virrat(EXE, k)
+    tarkista("virrat: kesto-, kuva- ja aanirivi", any("Duration" in x for x in rivit) and any("Video:" in x for x in rivit) and any("Audio:" in x for x in rivit), f"{len(rivit)} riviä")
     # huono lahde: tallenne jaa tavu tavulta ennalleen
     for nimi, lahde in (("aaniraidaton tiedosto", p["kuva.mp4"]), ("roskatiedosto", p["roska.m4a"]), ("puuttuva tiedosto", os.path.join(kansio, "ei_ole.m4a"))):
         k = kopio(p["kuva.mp4"], kansio, "ennalleen.mp4")

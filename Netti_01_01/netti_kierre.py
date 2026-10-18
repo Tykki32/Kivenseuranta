@@ -72,6 +72,9 @@ SUUNTA_VARMA = 0.99                                     # suunta "varma", kun va
 MIN_RUUTUJA_UUSI = 6
 Y_MAX_UUSI = 820.0                                      # kiven keskipiste: kuvan reuna ~ 750 cm; seuranta paattyy itse
 MIN_JALANJALKI_PX = 100                                 # ruutuun vaaditaan vahintaan nain monta kelvollista pikselia palkin jalanjalkialueella
+ENNUSTE_KAYTOSSA = True                                 # kahvamallin akselihaun ruudukko ensin edellisten ruutujen siirtyman ymparilta (kahva_malli.sovita: ennuste): ~2 x nopeampi, sama tulos
+ENNUSTE_HISTORIA = 5                                    # ennuste = edellisten naiden ruutujen akselisiirtyman (dX, dY) mediaani ...
+ENNUSTE_MIN = 3                                         # ... vahintaan taman monesta ruudusta (ennen sita koko ruudukko)
 
 
 def _ikkuna_taytetty(crop, cx0, cy0, uc, vc, mode):
@@ -103,6 +106,7 @@ def kulmakayrat(cam, ast, vari, havainnot, t_irr, muoto, t0=0.0, y_max=Y_MAX_UUS
     mal = ko.Malli(cam, z0, ast["sigma_px"])
     h_, ell_, w_ = muoto
     t_l, f_l, Y_l, Cz_l, nkz_l, nvz_l = [], [], [], [], [], []
+    siirrot = []                                                           # akselin siirtyma (dX, dY) B:sta saatavasta paikasta ruuduittain: seuraavan ruudun ruudukkohaun ennuste
     for t, f, Xb, Yb, crop, cx0, cy0 in havainnot:
         if t < t_irr + t0 or Yb > y_max:
             continue
@@ -110,9 +114,11 @@ def kulmakayrat(cam, ast, vari, havainnot, t_irr, muoto, t0=0.0, y_max=Y_MAX_UUS
         w = _ikkuna_taytetty(crop, cx0, cy0, ub[0], vb[0], cam.mode)
         if w is None:
             continue
-        s = km.sovita_asetuksilla(kev, w[0], w[1], w[2], w[3], vari, (float(ub[0]), float(vb[0])), ast)
+        ennuste = tuple(np.median(np.array(siirrot[-ENNUSTE_HISTORIA:]), axis=0)) if (ENNUSTE_KAYTOSSA and len(siirrot) >= ENNUSTE_MIN) else None
+        s = km.sovita_asetuksilla(kev, w[0], w[1], w[2], w[3], vari, (float(ub[0]), float(vb[0])), ast, ennuste=ennuste)
         if s is None:
             continue
+        siirrot.append((s["X"] - s["X0"], s["Y"] - s["Y0"]))
         Xd, Yd = float(s["X"]), float(s["Y"])
         u, v = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[Xd, Yd, z0]]))
         w = _ikkuna_taytetty(crop, cx0, cy0, u[0], v[0], cam.mode)

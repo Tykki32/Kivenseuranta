@@ -112,11 +112,19 @@ def _lin(cv, po, wv):
     return g, o, (g * cv + o - po) * wv
 
 
-def sovita(cam, crop, mode, x0, y0, vari, uv0, A=None, B=None, z0=None, sigma=None, w_yli=None, siirto=None):
+RUUDUKKO_DX = np.arange(-5.0, 5.01, 1.0)         # vaiheen (1) ruudukko uv0:sta saatavan paikan ymparilla (cm)
+RUUDUKKO_DY = np.arange(-10.0, 10.01, 2.0)
+RUUDUKKO_LOHKO = 2                                # ennusteen ymparilla ensin tutkittava lohko: +-LOHKO ruudukkopistetta kummassakin suunnassa
+
+
+def sovita(cam, crop, mode, x0, y0, vari, uv0, A=None, B=None, z0=None, sigma=None, w_yli=None, siirto=None, ennuste=None):
     """Akselin (X, Y) sovitus ruutuun kiintean kokoisella soikiolla. uv0 = karkea kuvapiste (kahvan vari-seuranta).
     Vaiheet: (1) ruudukkohaku etupuolen peittovirheella, (2) tarkennus pienimmalla neliosumma etureunan kaistalla (soft-L1).
     siirto = kromahavainnon vakiosiirtyma geometriaan nahden (px; havainto piirretaan polygoni + siirto); palautettu poly on geometrinen.
-    Palauttaa dict (X, Y, poly, rms, n, vahvistus, siirto, kontrasti) tai None."""
+    ennuste = (dX, dY) cm: odotettu akselin siirtyma uv0:sta saatavasta paikasta (edellisten ruutujen tulos; B:n ja kahvamallin akselien ero on ruudusta toiseen lahes vakio). Ruudukosta
+    haetaan silloin ensin vain ennusteen ymparilla oleva lohko (25 pistetta 121:n sijaan); jos lohkon paras piste on sen reunalla (minimi voi olla ulkopuolella), haku laajennetaan koko
+    ruudukkoon, joten tulos on sama kuin ilman ennustetta aina kun minimi on ennusteen lahella (ruudukko on yhteinen ja jarjestys sama).
+    Palauttaa dict (X, Y, poly, rms, n, vahvistus, siirto, kontrasti, X0, Y0) tai None; X0, Y0 = uv0:sta saatu paikka."""
     A = A_CM if A is None else A
     B = B_CM if B is None else B
     z0 = Z0_CM if z0 is None else z0
@@ -136,21 +144,47 @@ def sovita(cam, crop, mode, x0, y0, vari, uv0, A=None, B=None, z0=None, sigma=No
         return poly, peitto(poly + sh, x0, y0, sigma)
 
     # (1) ruudukko: etupuolen (u >= keskipiste - 2) pikselit soikion korkeusvalilla, vahvistus ja siirto vapaat
-    best = None
-    for dX in np.arange(-5.0, 5.01, 1.0):
-        for dY in np.arange(-10.0, 10.01, 2.0):
-            poly, c = kuva(X0 + dX, Y0 + dY)
+    arvot = {}
+
+    def virhe(i, j):
+        if (i, j) not in arvot:
+            poly, c = kuva(X0 + RUUDUKKO_DX[i], Y0 + RUUDUKKO_DY[j])
             uc, vmin, vmax = poly[:, 0].mean() - x0, poly[:, 1].min() - y0, poly[:, 1].max() - y0
             sel = (cols >= uc - 2.0) & (rows >= vmin - 6.0) & (rows <= vmax + 6.0) & (w0 > 0) & (c < 0.99)
             if sel.sum() < 40:
-                continue
-            g, o, r = _lin(c[sel], p[sel], np.ones(int(sel.sum()), np.float32))
-            e = float(np.mean(r ** 2))
-            if best is None or e < best[0]:
-                best = (e, X0 + dX, Y0 + dY)
+                arvot[(i, j)] = None
+            else:
+                g, o, r = _lin(c[sel], p[sel], np.ones(int(sel.sum()), np.float32))
+                arvot[(i, j)] = float(np.mean(r ** 2))
+        return arvot[(i, j)]
+
+    def paras(iv, jv):
+        """Ruudukon paras piste (e, i, j) annetuilla indekseilla (jarjestys kuten alkuperaisessa silmukassa: dX ulompi, dY sisempi; tasatilanteessa ensimmainen) tai None."""
+        b_ = None
+        for i in iv:
+            for j in jv:
+                e = virhe(i, j)
+                if e is not None and (b_ is None or e < b_[0]):
+                    b_ = (e, i, j)
+        return b_
+
+    ni, nj = len(RUUDUKKO_DX), len(RUUDUKKO_DY)
+    best = None
+    if ennuste is not None:
+        ci = int(np.clip(round((ennuste[0] - RUUDUKKO_DX[0]) / (RUUDUKKO_DX[1] - RUUDUKKO_DX[0])), 0, ni - 1))
+        cj = int(np.clip(round((ennuste[1] - RUUDUKKO_DY[0]) / (RUUDUKKO_DY[1] - RUUDUKKO_DY[0])), 0, nj - 1))
+        i0, i1, j0, j1 = max(ci - RUUDUKKO_LOHKO, 0), min(ci + RUUDUKKO_LOHKO, ni - 1), max(cj - RUUDUKKO_LOHKO, 0), min(cj + RUUDUKKO_LOHKO, nj - 1)
+        best = paras(range(i0, i1 + 1), range(j0, j1 + 1))
+        if best is not None:
+            _, bi, bj = best
+            sisalla = (i0 < bi < i1 or (bi in (i0, i1) and bi in (0, ni - 1))) and (j0 < bj < j1 or (bj in (j0, j1) and bj in (0, nj - 1)))
+            if not sisalla:
+                best = None                                   # minimi lohkon reunalla: voi olla lohkon ulkopuolella
+    if best is None:
+        best = paras(range(ni), range(nj))                    # koko ruudukko (lohkon pisteet valimuistista)
     if best is None:
         return None
-    _, Xg, Yg = best
+    Xg, Yg = X0 + RUUDUKKO_DX[best[1]], Y0 + RUUDUKKO_DY[best[2]]
     # (2) tarkennus: etureunan kaista (siirtymavyohyke +- 3 px), kiinteat pikselit
     poly0, c0 = kuva(Xg, Yg)
     uc0 = poly0[:, 0].mean() - x0
@@ -175,10 +209,10 @@ def sovita(cam, crop, mode, x0, y0, vari, uv0, A=None, B=None, z0=None, sigma=No
     cfin = peitto(poly + sh, x0, y0, sigma)
     g, o, _ = _lin(cfin[idx], po, wv)
     return dict(X=float(sol.x[0]), Y=float(sol.x[1]), poly=poly, rms=float(np.sqrt(np.mean(r ** 2))), n=int(len(idx[0])),
-                cost=float(np.sum(r ** 2)), vahvistus=g, siirto=o, kontrasti=kontrasti)
+                cost=float(np.sum(r ** 2)), vahvistus=g, siirto=o, kontrasti=kontrasti, X0=float(X0), Y0=float(Y0))
 
 
-def sovita_asetuksilla(cam, crop, mode, x0, y0, vari, uv0, ast):
-    """sovita() asetuksilla ast (lataa_asetukset)."""
+def sovita_asetuksilla(cam, crop, mode, x0, y0, vari, uv0, ast, ennuste=None):
+    """sovita() asetuksilla ast (lataa_asetukset); ennuste = (dX, dY): ks. sovita."""
     return sovita(cam, crop, mode, x0, y0, vari, uv0, A=ast["A_cm"], B=ast["B_cm"], z0=ast["z0_cm"], sigma=ast["sigma_px"], w_yli=ast["w_yli"],
-                  siirto=ast["siirto_px"].get(vari))
+                  siirto=ast["siirto_px"].get(vari), ennuste=ennuste)

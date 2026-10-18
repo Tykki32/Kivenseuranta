@@ -51,6 +51,44 @@ def tiedot(exe, polku, aikaraja_s=120):
     return kesto, "Audio:" in s, "Video:" in s
 
 
+def virrat(exe, polku, aikaraja_s=120):
+    """Tiedoston kesto- ja virtarivit ffmpeg -i:n tulosteesta (diagnostiikka): [rivi, ...]."""
+    try:
+        r = subprocess.run([exe, "-hide_banner", "-i", str(polku)], capture_output=True, text=True, errors="replace", timeout=aikaraja_s, creationflags=_EI_IKKUNAA)
+    except Exception:
+        return []
+    return [x.strip() for x in r.stderr.splitlines() if "Duration:" in x or "Stream #" in x]
+
+
+_KESTO_AJO = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_AANI_RIVI = re.compile(r"Audio:\s*(\w+)[^,]*,\s*(\d+) Hz,\s*([^,]+)")
+
+
+def aanen_tila(exe, polku, alku_s=0.0, kesto_s=None, aikaraja_s=1800):
+    """Aanen todellinen tila dekoodaamalla (ei metatietojen varaan: HLS / katkenneen latauksen tiedoston kesto voi olla N/A tai vaara): dict(koodekki, taajuus, kanavat, kesto [s, dekoodattu valilta
+    [alku, alku + kesto_s]], keski_db, huippu_db) tai None, jos aanta ei voitu dekoodata. keski_db <= -60 = (lahes) mykka."""
+    cmd = [exe, "-hide_banner", "-nostdin"] + (["-ss", f"{alku_s:.3f}"] if alku_s else []) + (["-t", f"{kesto_s:.3f}"] if kesto_s else []) + ["-i", str(polku), "-vn", "-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=aikaraja_s, creationflags=_EI_IKKUNAA)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    t = _KESTO_AJO.findall(r.stderr)
+    m_ka, m_hu, m_a = re.search(r"mean_volume:\s*(-?[\d.]+|-inf) dB", r.stderr), re.search(r"max_volume:\s*(-?[\d.]+|-inf) dB", r.stderr), _AANI_RIVI.search(r.stderr)
+    if not t or m_ka is None:
+        return None
+    h, m, sek = t[-1]
+    db = lambda x: None if x is None else (-120.0 if x.group(1) == "-inf" else float(x.group(1)))
+    return dict(koodekki=m_a.group(1) if m_a else "?", taajuus=int(m_a.group(2)) if m_a else None, kanavat=m_a.group(3).strip() if m_a else "?",
+                kesto=3600.0 * int(h) + 60.0 * int(m) + float(sek), keski_db=db(m_ka), huippu_db=db(m_hu))
+
+
+def aani_teksti(t):
+    """aanen_tila-tuloksen yhden rivin kuvaus."""
+    return f"{t['koodekki']} {t['taajuus']} Hz {t['kanavat']}, kesto {t['kesto']:.0f} s, keskivoimakkuus {t['keski_db']:.1f} dB, huippu {t['huippu_db']:.1f} dB".replace(".", ",")
+
+
 def _poista(polku):
     try:
         os.remove(polku)
@@ -71,11 +109,18 @@ def liita(exe, kuva, osoite, alku_s=0.0, otsakkeet=None, aikaraja_s=3600, ulos=N
     if not verkko:
         if not os.path.exists(osoite):
             return False, f"aanitiedostoa ei loydy ({osoite})"
-        a_kesto, aanta, _ = tiedot(exe, osoite)
+        _, aanta, _ = tiedot(exe, osoite)
         if not aanta:
             return False, f"aanilahteessa ei ole aaniraitaa ({osoite})"
-        if kuva_kesto and a_kesto is not None and a_kesto - alku_s < kuva_kesto - 2.0:
-            huom = f" (huom: aani loppuu {kuva_kesto - (a_kesto - alku_s):.0f} s ennen kuvaa, loppu on mykka)"
+        tila = aanen_tila(exe, osoite, alku_s, kuva_kesto)                                 # dekoodataan: todellinen kesto ja voimakkuus (metatiedot voivat puuttua tai olla vaarin)
+        if tila is None:
+            return False, f"aanta ei voitu dekoodata ({osoite})"
+        varoitukset = []
+        if kuva_kesto and tila["kesto"] < kuva_kesto - 2.0:
+            varoitukset.append(f"aani loppuu {kuva_kesto - tila['kesto']:.0f} s ennen kuvaa, loppu on mykka")
+        if tila["keski_db"] is None or tila["keski_db"] <= -60.0:
+            varoitukset.append("liitetty aani on mykka: tarkista aanilahde")
+        huom = f" ({aani_teksti(tila)}" + "".join(f"; huom: {v}" for v in varoitukset) + ")"
     kohde = str(ulos or kuva)
     tmp = kohde + ".aani.mp4"
     cmd = [exe, "-hide_banner", "-loglevel", "error", "-y", "-i", str(kuva)]
