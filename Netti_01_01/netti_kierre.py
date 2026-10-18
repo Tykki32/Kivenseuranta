@@ -242,21 +242,217 @@ def arvioi(cam, ast, vari, havainnot, t_irr, muoto=None, omega_ennakko=None, kas
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# HEITTOPAAN KIERRE: robusti Bayes-estimaattori ruutukohtaisista kulmakustannuksista (arvioi_posteriori)
+# ---------------------------------------------------------------------------------------------------------------------
+# Miksi: palkin kulma on havaittavissa vain sitkeasti (kuvassa ~10 x 20 px:n sumea tahra): (1) kasi pitaa kahvasta kiinni vielä ~0,3-1,0 s irroituksen (ratadatasta paatellyn vapaan lennon alun)
+# jalkeen, joten puhtaita ruutuja on vain ~0,5 s kuvan reunaan (Y ~ 750 cm) asti, kun irroitus on myohainen (keltaiset heittajat: Y ~ 540 cm) ja (2) kulma on havaittavissa vain
+# modulo 180 astetta ja peilausepaselvyydella: palkki kulmassa theta nayttaa melkein samalta kuin kulmassa 2 a - theta (a ~ 90 astetta = palkki kameran katselusuunnassa; kallistusvihje on vain
+# ~2-3 px), kun kasi peittaa. Ruutukohtainen paras kulma (argmin) loikkaa silloin peilikuvaan, ja suoran sovitus nayttaa "latauksena" (kulma kiertyy ensin vastakkaiseen suuntaan ja kaantyy
+# V:n karjessa; todellisuudessa kierto on vakio koko ajan). Siksi ei kayteta ruutujen ennalta valittua parasta kulmaa eika kovaa kasirajausta, vaan jokaisen ruudun KOKO kustannuskayra
+# (60 kulmaa), joka sisaltaa molemmat minimit; ruutujen yhteinen malli on vakiokierto theta(t) = theta0 + omega t, ja omegan posteriori lasketaan ruudukossa (theta0 x omega).
+# Ruutujen painot kalibroitu videon omista pitkista heitoista (puhtaiden ruutujen suorat): ruudun kulmakohina sigma_i riippuu sovituksen jaannoksesta ja kasipikseleista palkin alueella.
+# Ei omegan kovia rajoja (video: ~26 deg/s ... ~480 deg/s): ruudukko +-900 deg/s ja heikko lognormaali ennakko (mediaani 110, sigma_log 0,75: ~26 ja ~480 ovat +-2 sigmaa).
+OM_RUUDUKKO = np.arange(-900.0, 900.1, 3.0)
+TH_RUUDUKKO = np.arange(0.0, 180.0, 3.0)
+KULMAT = np.arange(0.0, 180.0, 3.0)                     # ruutukohtaisen kustannuskayran kulmaruudukko (aste, jakso 180)
+ZONE_KYNNYS = 0.03                                      # palkin jalanjalkialue: kaikkien kulmien mallien yhdiste > kynnys, laajennettu 2 px
+SIG_HYVA = 4.5                                          # puhtaan ruudun kulmakohina (aste; MAD puhtaiden ruutujen suorista 4,3-5,1)
+CZ_PISTEET = np.array([0.0, 6.0, 8.0, 12.0, 20.0, 40.0, 80.0])       # jalanjalkialueen paras kustannus Cz,min ...
+CZ_SIGMA = np.array([4.4, 4.8, 6.5, 12.0, 16.0, 20.0, 60.0])         # ... -> kulmakohina (aste): puhtaat < 8: 4-5, 8-12: 10, > 12: 16+, > 40: umpimahkaan
+KASI_PISTEET = np.array([0.0, 1.0, 6.0, 20.0, 60.0, 200.0])          # kasipikseleita jalanjalkialueella ...
+KASI_SIGMA = np.array([4.4, 8.5, 12.6, 19.7, 25.6, 40.0])            # ... -> kulmakohina (aste)
+HANTA_PAINO = 0.5                                       # ei-puhtaiden ruutujen (kasi alueella tai Cz,min >= 8) paino: sigma / sqrt(paino); ruudut ovat osin yhteisesti harhaisia (tasanne / peilaus)
+PUHDAS_CZ = 8.0
+S2_KAYRA = 0.3                                          # kustannuskayran lampotila: pen = min((C - C_min) / (2 s2 (sigma_i / SIG_HYVA)^2), KAYRA_KATKAISU); kalibroitu (z-hajonta ~ 1)
+KAYRA_KATKAISU = 6.0
+ENNAKKO_MEDIAANI = 110.0                                # |omega| ennakko (deg/s): lognormaali; video: 1 kierros / 14 s ... 20 kierrosta / 15 s (~26 ... ~480 deg/s) = +-2 sigmaa
+ENNAKKO_SIGMA_LOG = 0.75
+SUUNTA_VARMA = 0.99                                     # suunta "varma", kun valitun suunnan posteriori >= tama
+MIN_RUUTUJA_UUSI = 6
+Y_MAX_UUSI = 820.0                                      # kiven keskipiste: kuvan reuna ~ 750 cm; seuranta paattyy itse
+MIN_JALANJALKI_PX = 100                                 # ruutuun vaaditaan vahintaan nain monta kelvollista pikselia palkin jalanjalkialueella
+
+
+def _ikkuna_taytetty(crop, cx0, cy0, uc, vc, mode):
+    """N x N -ikkuna pisteen (uc, vc) ymparilta talletetun leikkeen (vasen ylakulma (cx0, cy0)) sisalta; kuvan (leikkeen) ulkopuolinen osa taytetaan mustalla (kelvoton pikseli), taustakuva
+    toistetaan reunoilta. Kuten _ikkuna, mutta ei hylkaa ruutua kiven ollessa kuvan reunalla (sovitusalue on kiven vasemmalla puolella)."""
+    N, H = km.N, km.H
+    hm, wm = mode.shape[:2]
+    x0, y0 = int(round(uc)) - H, int(round(vc)) - H
+    xs = np.clip(np.arange(x0, x0 + N), 0, wm - 1)
+    ys = np.clip(np.arange(y0, y0 + N), 0, hm - 1)
+    m = mode[np.ix_(ys, xs)]
+    c = np.zeros((N, N, 3), np.uint8)
+    ch, cw = crop.shape[:2]
+    ix0, ix1 = max(x0, cx0), min(x0 + N, cx0 + cw)
+    iy0, iy1 = max(y0, cy0), min(y0 + N, cy0 + ch)
+    if ix1 - ix0 < 20 or iy1 - iy0 < 20:
+        return None
+    c[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = crop[iy0 - cy0:iy1 - cy0, ix0 - cx0:ix1 - cx0]
+    return c, m, x0, y0
+
+
+def kulmakayrat(cam, ast, vari, havainnot, t_irr, muoto, t0=0.0, y_max=Y_MAX_UUSI):
+    """Ruutukohtaiset kulmakustannuskayrat. havainnot: [(t, f, Xb, Yb, crop, cx0, cy0)] (kuten rakenna_kehykset). Palauttaa dict(t, f, Y, Cz [n x 60], nkz, nvz) tai None.
+    Jokaiselle ruudulle (t >= t_irr + t0): kahvan akseli (km.sovita_asetuksilla), muovikartta p ja kelvolliset pikselit (km.havainto), palkin jalanjalkialue (kaikkien kulmien mallien yhdiste),
+    ja Cz[k] = sum (p - g m(theta_k))^2 jalanjalkialueen kelvollisissa pikseleissa (g = paras kirkkaus per kulma); nkz = kasipikselit, nvz = kelvolliset pikselit alueella."""
+    N, W = km.N, ko.W
+    z0 = ast["z0_cm"]
+    kev = km.Kevyt(cam)
+    mal = ko.Malli(cam, z0, ast["sigma_px"])
+    h_, ell_, w_ = muoto
+    t_l, f_l, Y_l, Cz_l, nkz_l, nvz_l = [], [], [], [], [], []
+    for t, f, Xb, Yb, crop, cx0, cy0 in havainnot:
+        if t < t_irr + t0 or Yb > y_max:
+            continue
+        ub, vb = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[Xb, Yb, z0]]))
+        w = _ikkuna_taytetty(crop, cx0, cy0, ub[0], vb[0], cam.mode)
+        if w is None:
+            continue
+        s = km.sovita_asetuksilla(kev, w[0], w[1], w[2], w[3], vari, (float(ub[0]), float(vb[0])), ast)
+        if s is None:
+            continue
+        Xd, Yd = float(s["X"]), float(s["Y"])
+        u, v = kv.kivimalli.project_3d(cam.K, cam.R, cam.t, np.array([[Xd, Yd, z0]]))
+        w = _ikkuna_taytetty(crop, cx0, cy0, u[0], v[0], cam.mode)
+        if w is None:
+            continue
+        c, mode, x0, y0 = w
+        hh = km.havainto(c, mode, vari)
+        if hh is None:
+            continue
+        p, w0 = hh[0], hh[1] > 0.5
+        poly = km.soikio_kuvaan(cam, Xd, Yd, z0, ast["A_cm"], ast["B_cm"])
+        disc = np.zeros((N, N), np.uint8)
+        cv2.fillConvexPoly(disc, np.round((poly - np.array([x0, y0]) + 0.5) * 16).astype(np.int32), 1, cv2.LINE_8, 4)
+        disc = cv2.dilate(disc, np.ones((3, 3), np.uint8)) > 0
+        iu, iv = int(round(float(u[0]) - x0)), int(round(float(v[0]) - y0))
+        if iu - 56 < 0 or iv - W < 0 or iu + 4 > N or iv + W > N:
+            continue
+        iu0, iv0 = iu - W, iv - W
+        roi = np.zeros((2 * W, 2 * W), bool)
+        roi[W - ko.DY_MAX:W + ko.DY_MAX, W + ko.DX_MIN:W + ko.DX_MAX] = True
+        roi &= ~disc[iv0:iv0 + 2 * W, iu0:iu0 + 2 * W]
+        kelvoton = roi & ~w0[iv0:iv0 + 2 * W, iu0:iu0 + 2 * W]
+        pp_kartta = p[iv0:iv0 + 2 * W, iu0:iu0 + 2 * W].astype(np.float32)
+        d = dict(Xd=Xd, Yd=Yd, ox=x0 + iu0, oy=y0 + iv0)
+        rend = [mal.piirra(d, np.radians(th), h_, ell_, w_) for th in KULMAT]
+        zone = np.max(rend, axis=0) > ZONE_KYNNYS
+        zone = (cv2.dilate(zone.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0) & roi
+        zv = zone & ~kelvoton
+        nvz = int(zv.sum())
+        if nvz < 30:
+            continue
+        pz = pp_kartta[zv]
+        cz = np.empty(len(KULMAT))
+        for k, m in enumerate(rend):
+            mz = m[zv]
+            g = float(np.clip(mz @ pz / max(mz @ mz, 1e-9), 0.2, 2.5))
+            cz[k] = float(np.sum((pz - g * mz) ** 2))
+        t_l.append(float(t)); f_l.append(float(f)); Y_l.append(Yd); Cz_l.append(cz); nkz_l.append(int((zone & kelvoton).sum())); nvz_l.append(nvz)
+    if not t_l:
+        return None
+    o = np.argsort(t_l)
+    return dict(t=np.array(t_l)[o], f=np.array(f_l)[o], Y=np.array(Y_l)[o], Cz=np.array(Cz_l)[o], nkz=np.array(nkz_l)[o], nvz=np.array(nvz_l)[o])
+
+
+def ruudun_sigma(cz_min, nkz):
+    """Ruutukohtainen kulmakohinan arvio (aste): jalanjalkialueen paras kustannus ja kasipikselit alueella (empiirinen, videon pitkista heitoista); ei-puhtaat ruudut painotetaan HANTA_PAINO:lla."""
+    sc = np.interp(cz_min, CZ_PISTEET, CZ_SIGMA)
+    sn = np.interp(nkz, KASI_PISTEET, KASI_SIGMA)
+    sg = np.sqrt(np.maximum(sc ** 2 + sn ** 2 - SIG_HYVA ** 2, 1.0))
+    puhdas = (nkz == 0) & (cz_min < PUHDAS_CZ)
+    return np.where(puhdas, sg, sg / np.sqrt(HANTA_PAINO)), puhdas
+
+
+def _jaksollinen(C, ang):
+    """C: (n, 60) kayrat 3 asteen ruudukossa (jakso 180); ang (..., n) kulmat (aste) -> lineaarisesti interpoloidut arvot."""
+    x = (ang % 180.0) / 3.0
+    i0 = np.floor(x).astype(int) % len(KULMAT)
+    i1 = (i0 + 1) % len(KULMAT)
+    w = x - np.floor(x)
+    j = np.arange(C.shape[0])
+    return C[j, i0] * (1 - w) + C[j, i1] * w
+
+
+def ennakko_lognormaali(om):
+    """Log-ennakko omegalle (asteikkoinvariantti lognormaali |omega|:lle, tasainen etumerkille); ei kovia rajoja."""
+    a = np.maximum(np.abs(om), 1.0)
+    return -0.5 * ((np.log(a) - np.log(ENNAKKO_MEDIAANI)) / ENNAKKO_SIGMA_LOG) ** 2 - np.log(a)
+
+
+def posteriori_omega(k, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lognormaali, om_ruudukko=OM_RUUDUKKO, th_ruudukko=TH_RUUDUKKO):
+    """Omegan posteriori vakiokiertomallille theta(t) = theta0 + omega (t - t_ka) ruutujen kulmakustannuskayrista k (kulmakayrat); theta0 marginalisoidaan (tasainen).
+    Palauttaa dict(om, p, p_ccw, sig [ruutujen kohina], puhdas, t_ka, n_eff, J)."""
+    cmin = np.min(k["Cz"], axis=1)
+    sig, puhdas = ruudun_sigma(cmin, k["nkz"])
+    dC = k["Cz"] - cmin[:, None]
+    pen = np.minimum(dC / (2.0 * s2 * (sig / SIG_HYVA) ** 2)[:, None], katkaisu)
+    w_t = 1.0 / sig ** 2
+    t_ka = float(np.sum(w_t * k["t"]) / np.sum(w_t))                 # tietopaino-keskiaika (omegan vaimenemisen vertailuhetki)
+    dt = k["t"] - t_ka
+    J = np.empty((len(th_ruudukko), len(om_ruudukko)))
+    ang = th_ruudukko[:, None, None] + om_ruudukko[None, :, None] * dt[None, None, :]
+    for a in range(len(th_ruudukko)):
+        J[a] = _jaksollinen(pen, ang[a]).sum(axis=-1)
+    lp = np.log(np.exp(-(J - J.min())).sum(axis=0) + 1e-300)
+    if ennakko is not None:
+        lp = lp + ennakko(om_ruudukko)
+    lp -= lp.max()
+    p = np.exp(lp)
+    p /= p.sum()
+    return dict(om=om_ruudukko, p=p, p_ccw=float(p[om_ruudukko > 0].sum()), sig=sig, puhdas=puhdas, t_ka=t_ka, n_eff=float(np.sum(1.0 / (sig / SIG_HYVA) ** 2)), J=J, th=th_ruudukko)
+
+
+def tiivista_posteriori(P):
+    """Posteriorin yhteenveto: (suunta +-1 [+ = vastapaivaan], omegan keskiarvo valitulla suunnalla, hajonta, moodi, suunnan todennakoisyys)."""
+    om, p = P["om"], P["p"]
+    s = 1 if P["p_ccw"] >= 0.5 else -1
+    m = (om * s) > 0
+    pp = p[m] / max(p[m].sum(), 1e-300)
+    mu = float((pp * om[m]).sum())
+    sd = float(np.sqrt((pp * (om[m] - mu) ** 2).sum()))
+    return s, mu, sd, float(om[m][int(np.argmax(pp))]), float(max(P["p_ccw"], 1.0 - P["p_ccw"]))
+
+
+def arvioi_posteriori(cam, ast, vari, havainnot, t_irr, muoto=None):
+    """Heittopaan kierre: omega (+ = vastapaivaan) ja sen epavarmuus posteriorista; kaikki ruudut irroituksesta kuvan reunaan (ei kovaa kasirajausta, laatupainotus), vakiokiertomalli,
+    peilausepaselvyys mukana kustannuskayrissa. Palauttaa dict(omega_deg_s [posteriorin keskiarvo valitulla suunnalla], omega_sd_deg_s, omega_ml_deg_s, p_suunta, suunta, p_ccw, t_keski,
+    f_keski, ruutuja, ruutuja_puhdas, n_eff, varma [suunta >= SUUNTA_VARMA], ...) tai dict(virhe=...). Kierron suuruudelle ei aseteta rajoja."""
+    muoto = tuple(muoto) if muoto is not None else (ko.H_ALKU, ko.ELL_ALKU, ko.W_ALKU)
+    k = kulmakayrat(cam, ast, vari, havainnot, t_irr, muoto)
+    if k is None or len(k["t"]) < MIN_RUUTUJA_UUSI:
+        n = 0 if k is None else len(k["t"])
+        return dict(virhe=f"liian vahan kelvollisia ruutuja ({n})", ruutuja=n)
+    P = posteriori_omega(k)
+    s, mu, sd, om_ml, p_suunta = tiivista_posteriori(P)
+    ia = int(np.argmin(np.abs(P["om"] - om_ml)))
+    th0 = float(P["th"][int(np.argmin(P["J"][:, ia]))])
+    w_t = 1.0 / P["sig"] ** 2
+    return dict(omega_deg_s=mu, omega_sd_deg_s=sd, omega_ml_deg_s=om_ml, omega_sovitus_deg_s=om_ml, omega_theilsen_deg_s=mu, theta0_deg=th0, p_suunta=p_suunta, suunta=int(s), p_ccw=P["p_ccw"],
+                t_keski=P["t_ka"], f_keski=float(np.sum(w_t * k["f"]) / np.sum(w_t)), ruutuja=int(len(k["t"])), ruutuja_puhdas=int(P["puhdas"].sum()), hylatty_kasi=int((k["nkz"] > 60).sum()),
+                n_eff=P["n_eff"], varma=bool(p_suunta >= SUUNTA_VARMA), marginaali=float("nan"), muoto=dict(h_cm=muoto[0], ell_cm=muoto[1], w_cm=muoto[2]), menetelma="posteriori")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # YHDISTELMA: kierron mittaus heittopaasta (alku) ja kaukopaasta (loppu) -> kierrosmaara
 # ---------------------------------------------------------------------------------------------------------------------
-SIGMA_K = 0.008                 # vaimenemisvakion ennakkotieto (1/s): k = 0,021 +- 0,008 (IMU 2-3 % / s; koko videolla mitattu heittojen valinen hajonta 0,009 (n = 50, kun molemmat paat mitattu; mittauskohinan osuus 0,005 -> todellinen hajonta ~0,007))
+SIGMA_K = 0.008                # vaimenemisvakion ennakkotieto (1/s): k = 0,021 +- 0,008 (IMU 2-3 % / s; koko videolla mitattu heittojen valinen hajonta 0,009 (n = 50, kun molemmat paat mitattu; mittauskohinan osuus 0,005 -> todellinen hajonta ~0,007))
 OMEGA_SIGMA_MIN_DEG = 4.0       # kierron mittauksen pienin epavarmuus (deg/s)
 K_SALLITTU = (0.0, 0.07)        # mitattu vaimeneminen uskottava, jos kahden mittauksen valinen k on tassa valissa
 
 
 def omega_mitta(k, fps):
-    """Kierron mittauksesta (arvioi) (t s, omega rad/s (+ = vastapaivaan), sigma rad/s, varma) tai None. Epavarmuus: sovituksen ja Theil-Senin ero, vahintaan OMEGA_SIGMA_MIN_DEG;
-    ei-varma mittaus kaksinkertainen."""
+    """Kierron mittauksesta (arvioi / arvioi_posteriori) (t s, omega rad/s (+ = vastapaivaan), sigma rad/s, varma) tai None. Epavarmuus: posteriorin hajonta (arvioi_posteriori) tai
+    sovituksen ja Theil-Senin ero (arvioi; ei-varma mittaus kaksinkertainen), vahintaan OMEGA_SIGMA_MIN_DEG."""
     if k is None or "virhe" in k:
         return None
     om = float(k["omega_deg_s"])
-    ero = abs(float(k.get("omega_sovitus_deg_s", om)) - float(k.get("omega_theilsen_deg_s", om)))
-    sg = max(OMEGA_SIGMA_MIN_DEG, ero) * (1.0 if k.get("varma") else 2.0)
+    if "omega_sd_deg_s" in k:                      # posteriori (arvioi_posteriori): epavarmuus suoraan posteriorin hajonnasta (ei kaksinkertaistusta)
+        sg = max(OMEGA_SIGMA_MIN_DEG, float(k["omega_sd_deg_s"]))
+    else:
+        ero = abs(float(k.get("omega_sovitus_deg_s", om)) - float(k.get("omega_theilsen_deg_s", om)))
+        sg = max(OMEGA_SIGMA_MIN_DEG, ero) * (1.0 if k.get("varma") else 2.0)
     return (float(k["f_keski"]) / fps, float(np.radians(om)), float(np.radians(sg)), bool(k.get("varma")))
 
 

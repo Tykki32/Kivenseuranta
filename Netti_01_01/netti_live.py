@@ -590,7 +590,9 @@ class Kirjaaja:
                "tviiva_s", "miettimisaika_s", "joukkue_yht_s",
                # irroituksen uskottavuus: nopeus ja suunta hog-viivalla suoraan radasta (vertailu irroituksen arvoihin), ja kaukopaan pysahtymisen perusteella (rata_malli, harjaus <= 2 m): havaittu - ennustettu
                # pysahtymismatka (irr_matka_ero_m), kitkataso jolla malli osuu havaittuun matkaan (irr_A_matka; lahes vakio, jos nopeus on oikea), sivuero omalla kappalla (irr_sivu_ero_cm) ja johtopaatos
-               "nopeus_hog1_m_s", "suunta_hog1_deg", "irr_matka_ero_m", "irr_A_matka", "irr_sivu_ero_cm", "irr_tarkistus"]
+               "nopeus_hog1_m_s", "suunta_hog1_deg", "irr_matka_ero_m", "irr_A_matka", "irr_sivu_ero_cm", "irr_tarkistus",
+               # heittopaan kierron mittauksen epavarmuus (posteriori): omegan hajonta (deg/s) ja valitun kiertosuunnan todennakoisyys
+               "omega_sd_deg_s", "suunta_p"]
     OTSIKKO_KIVET = ["vari", "kivi_nro", "heittoja", "A_mediaani", "A_hajonta", "kappa_heittoja", "kappa_mediaani", "kappa_hajonta", "heitot"]
 
     def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False, radat_polku=None):
@@ -674,7 +676,9 @@ class Kirjaaja:
             self._tulosta(f"          heitto {n} kierre: omega {k['omega_deg_s']:+.0f} deg/s ({suunta}), hog-hog-aikaa ei saatu")
         else:
             lahde = "mitattu videosta" if s["kierre_mitattu"] else "arvioitu mallilla (kaukopaan hog-ylitysta ei loytynyt)"
-            self._tulosta(f"          heitto {n} kierre: omega {k['omega_deg_s']:+.0f} deg/s ({suunta}, ruutuja {k['ruutuja']}, {'varma' if k.get('varma') else 'epavarma'}), "
+            sd = f" +-{k['omega_sd_deg_s']:.0f}" if k.get("omega_sd_deg_s") is not None else ""
+            pv = f", suunta {100.0 * k['p_suunta']:.0f} %" if k.get("p_suunta") is not None else ""
+            self._tulosta(f"          heitto {n} kierre: omega {k['omega_deg_s']:+.0f}{sd} deg/s ({suunta}{pv}, ruutuja {k['ruutuja']}, {'varma' if k.get('varma') else 'epavarma'}), "
                           f"hog-hog {s['T_hh']:.1f} s ({lahde}) -> {_pilkku(s['kierre'], 1, True)} kierrosta (- = vastapaivaan); "
                           f"irroitus (heitto - liuku) {_pilkku(s['irroitus_cm'], 0, True)} cm")
         return True
@@ -838,6 +842,7 @@ class Kirjaaja:
             rivi += [N(None if v is None else v.get("nopeus_hog1"), 3), N(None if v is None else v.get("suunta_hog1_deg"), 3), N(tk["matka_ero_m"], 2), N(tk["A_matka"], 5), N(tk.get("sivu_ero_cm"), 0), teksti]
         else:
             rivi += [N(None if v is None else v.get("nopeus_hog1"), 3), N(None if v is None else v.get("suunta_hog1_deg"), 3), "", "", "", ""]
+        rivi += [N(None if s is None else s["omega_sd_deg_s"], 1), N(None if s is None else s["suunta_p"], 4)]
         return rivi
 
     def _kirjoita_csv(self, an):

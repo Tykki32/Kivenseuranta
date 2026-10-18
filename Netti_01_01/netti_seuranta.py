@@ -141,9 +141,9 @@ KOPIO_KYNNYS = 15.0              # kopioruutu: harmaasavyero (suurin 0,1 % pikse
 
 # kierre, hog-viivat, numerointi
 KIERTO_Y_MIN_CM = 200.0          # kierteen mittauksen ruudut (leikkeet) kerataan kun kiven Y on taman ja KIERTO_Y_MAX_CM:n valilla (irroitus on tavallisesti Y = 250-400)
-KIERTO_Y_MAX_CM = 720.0
+KIERTO_Y_MAX_CM = 800.0          # kuvan reuna ~ 750 cm: kiven keskipiste on kuvassa (ja kierre mitataan) siihen asti (aiemmin 720: ikkuna katkesi ennen kuvan reunaa)
 KIERTO_LEIKE_R = 72              # talteen otettavan leikkeen puolikas (px): kierre tarvitsee 56 px + varaa (paikka tarkentuu B:lla jalkikateen)
-KIERTO_MAX_RUUTUJA = 160
+KIERTO_MAX_RUUTUJA = 240
 KIVI_R_CM = 14.55                # kiven sade (suurin halkaisija 29,1 cm): etureunan etaisyys akselista
 HOG_SISA_CM = 640.0              # hog-viivan sisareuna T-viivasta (kalibrointi_netti.HOG_Y_CM); viiva on n. 12,7 cm leveä
 HOG_KESKI_CM = HOG_SISA_CM + 6.35   # hog-viivan keskiviiva: tama ylitys ajoitetaan molemmissa paissa (hog-hog-matka = ETAISYYS_CM - 2 * HOG_KESKI_CM = 21,8 m)
@@ -427,11 +427,13 @@ def alusta_kierto(kansio, puolet):
 
 
 def kierto_laske(m, args):
-    """Kierteen mittaus: args = (puoli, vari, havainnot, t_irr[, omega_ennakko]), m = puolen Mittari. omega_ennakko = (omega_deg_s, t_s) toisen paan mittaus (kaukopaassa: heittopaan
-    mittaus; ratkaisee alias-minimien valilla). Palauttaa netti_kierre.arvioi:n dictin (tai dict(virhe=...))."""
+    """Kierteen mittaus: args = (puoli, vari, havainnot, t_irr) heittopaassa (netti_kierre.arvioi_posteriori) tai (puoli, vari, havainnot, t_irr, omega_ennakko) kaukopaassa (netti_kierre.arvioi),
+    m = puolen Mittari. omega_ennakko = (omega_deg_s, t_s) heittopaan mittaus (ratkaisee kaukopaan alias-minimien valilla; voi olla None). Palauttaa mittauksen dictin (tai dict(virhe=...))."""
     puoli, vari, havainnot, t_irr = args[:4]
     try:
-        return nk.arvioi(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari), omega_ennakko=(args[4] if len(args) > 4 else None))
+        if len(args) <= 4:                                     # heittopaa: robusti posteriori kaikista ruuduista irroituksesta kuvan reunaan (netti_kierre.arvioi_posteriori)
+            return nk.arvioi_posteriori(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari))
+        return nk.arvioi(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari), omega_ennakko=args[4])
     except Exception as e:
         return dict(virhe=repr(e))
 
@@ -1746,6 +1748,8 @@ def heiton_suureet(h):
                 hidastuvuus=float(v["vapaa_hidastuvuus"]), vapaa_matka_cm=float(v["vapaa_matka_cm"]), virhe_cm=float((L - v["irr_Y"]) * np.tan(np.radians(v["irr_virhe_deg"]))), vakaa=bool(v.get("vakaa")),
                 omega_deg_s=(h.kierto["omega_deg_s"] if h.kierto is not None and "virhe" not in h.kierto else None),
                 kierto_varma=(bool(h.kierto.get("varma")) if h.kierto is not None and "virhe" not in h.kierto else None),
+                omega_sd_deg_s=(h.kierto.get("omega_sd_deg_s") if h.kierto is not None and "virhe" not in h.kierto else None),
+                suunta_p=(h.kierto.get("p_suunta") if h.kierto is not None and "virhe" not in h.kierto else None),
                 kierre_varma=(bool(h.kierre.get("varma")) if h.kierre is not None else None), kierre_sigma=(h.kierre.get("N_sigma") if h.kierre is not None else None),
                 kierre_koko=kierre_koko, kierre_koko_sigma=(h.kierre.get("N_koko_sigma") if h.kierre is not None else None),
                 kierre_omega_lahde=(h.kierre.get("omega_lahde") if h.kierre is not None else None), kierre_k=(h.kierre.get("k") if h.kierre is not None else None),
