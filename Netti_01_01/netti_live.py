@@ -34,6 +34,7 @@ import traceback
 import cv2
 import numpy as np
 
+import netti_aani as na
 import netti_geom as ng
 import netti_piirto as npi
 import netti_seuranta as ns
@@ -73,34 +74,10 @@ def youtube_virta(ref, formaatti=YT_FORMAATTI):
                          "Tarkista verkko, paivita yt-dlp (pip install -U yt-dlp) ja etta JavaScript-ajuri (deno) on asennettu.")
 
 
-YT_AANI_FORMAATTI = "bestaudio[ext=m4a]/bestaudio"
-
-
-def youtube_aani(ref):
-    """YouTube-tunnus tai -osoite -> (aanivirran URL, HTTP-otsakkeet) (tai None, jos haku epaonnistuu: tallenne tehdaan ilman aanta). Kuvavirta on vain kuvaa (bestvideo), aani haetaan erikseen."""
-    try:
-        import yt_dlp
-        url = ref if ("youtube.com" in ref or "youtu.be" in ref) else f"https://www.youtube.com/watch?v={ref}"
-        with yt_dlp.YoutubeDL({"format": YT_AANI_FORMAATTI, "quiet": True, "noplaylist": True, "js_runtimes": {"deno": {}}}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return info["url"], dict(info.get("http_headers") or {})
-    except Exception as e:
-        print(f"Huom: aanivirran haku epaonnistui ({str(e)[:160]}); tallenne tehdaan ilman aanta.", file=sys.stderr)
-        return None
-
-
-def tiedostolla_aanta(exe, polku):
-    """True, jos videotiedostossa on aaniraita (ffmpeg -i tulostaa raidat)."""
-    try:
-        r = subprocess.run([exe, "-hide_banner", "-i", polku], capture_output=True, text=True, timeout=30)
-        return "Audio:" in r.stderr
-    except Exception:
-        return False
-
-
 def valitse_aani(a, lahde):
-    """Tallenteen aanilahde: (osoite, alkuaika s, HTTP-otsakkeet tai None) tai None. Aani liitetaan tallenteeseen lahdevideon aikajanalla (ruutu f <-> aani f / fps), joten se on aina samassa kohdassa kuin kuva
-    (tulosteen viive vaikuttaa vain ikkunan nayttohetkeen, ei tiedoston aikajanaan). --aani ei = ei aanta; --aani POLKU / URL = oma aanilahde (sama aikajana kuin video)."""
+    """Tallenteen aanilahde (netti_aani.Aanilahde) tai None. Aani liitetaan tallenteeseen lahdevideon aikajanalla (ruutu f <-> aani f / fps), joten se on aina samassa kohdassa kuin kuva
+    (tulosteen viive vaikuttaa vain ikkunan nayttohetkeen, ei tiedoston aikajanaan). --aani ei = ei aanta; --aani POLKU / URL = oma aanilahde (sama aikajana kuin video). YouTube:
+    aani ladataan taustasaikeessa heti tallenteen avautuessa (Kirjoittaja kaynnistaa latauksen), joten YouTuben hidas lataus ei viivasta lopetusta."""
     if a.aani == "ei":
         return None
     if lahde.live:
@@ -108,14 +85,15 @@ def valitse_aani(a, lahde):
         return None
     alku = lahde.alku_s if lahde.tiedosto else 0.0
     if a.aani != "auto":
-        return a.aani, alku, None
+        if na.onko_youtube(a.aani):
+            return na.Aanilahde("youtube", a.aani)
+        return na.Aanilahde("verkko" if str(a.aani).startswith(("http://", "https://")) else "tiedosto", a.aani, alku)
     if a.youtube:
-        va = youtube_aani(a.youtube)
-        return (va[0], 0.0, va[1]) if va else None
+        return na.Aanilahde("youtube", a.youtube)
     if lahde.tiedosto:
         exe = _etsi_ffmpeg(a.ffmpeg)
-        return (lahde.tiedosto, alku, None) if exe is not None and tiedostolla_aanta(exe, lahde.tiedosto) else None
-    return (a.url, 0.0, None) if a.url else None
+        return na.Aanilahde("tiedosto", lahde.tiedosto, alku) if exe is not None and na.tiedot(exe, lahde.tiedosto)[1] else None
+    return na.Aanilahde("verkko", a.url) if a.url else None
 
 
 class Lahde:
@@ -369,16 +347,7 @@ class Naytto:
 
 def _etsi_ffmpeg(polku=None):
     """ffmpeg-ohjelma: annettu polku, PATH tai imageio-ffmpeg-paketin mukana tuleva (pip install imageio-ffmpeg); None jos ei loydy."""
-    if polku:
-        return polku if shutil.which(polku) or os.path.exists(polku) else None
-    exe = shutil.which("ffmpeg")
-    if exe:
-        return exe
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        return None
+    return na.etsi_ffmpeg(polku)
 
 
 def _ffmpeg_koodaimet(exe):
@@ -492,6 +461,8 @@ class Kirjoittaja:
         self.nimi = self.taustaosa.nimi
         self.aani = aani if exe is not None else None
         self.exe = exe
+        if self.aani is not None:
+            self.aani.kaynnista(os.path.splitext(os.path.abspath(polku))[0] + ".aani", exe)       # YouTube: lataus taustalle heti (analyysin aikana)
         self.q = queue.Queue(maxsize=30)
         self.t = threading.Thread(target=self._silmukka, name="tallennus", daemon=True)
         self.t.start()
@@ -529,32 +500,8 @@ class Kirjoittaja:
             self._liita_aani()
 
     def _liita_aani(self):
-        """Aani liitetaan valmiiseen kuvatiedostoon vasta lopuksi (kuva kopioidaan sellaisenaan, aani koodataan AAC:ksi): kuvatallenne pysyy ehjana, vaikka aanilahde ei toimisi. Aani on lahteen
-        aikajanalla (-ss = kuvan ensimmaisen ruudun aika) eli samassa kohdassa kuin kuva; -shortest: loppuu kuvan mukana."""
-        osoite, alku, otsakkeet = self.aani
-        tmp = self.polku + ".aani.mp4"
-        cmd = [self.exe, "-hide_banner", "-loglevel", "error", "-y", "-i", self.polku]
-        if str(osoite).startswith(("http://", "https://")):                        # verkkosyote: yt_dlp:n otsakkeet ja uudelleenyhdistys katkoissa (vain http-syotteille)
-            if otsakkeet:
-                cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in otsakkeet.items())]
-            cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
-        cmd += (["-ss", f"{alku:.3f}"] if alku else []) + ["-i", osoite, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", tmp]
-        print(f"Liitetaan aani tallenteeseen ({os.path.basename(self.polku)}) ...", flush=True)
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-            ok = r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1000
-            virhe = r.stderr[-300:]
-        except Exception as e:
-            ok, virhe = False, repr(e)
-        if ok:
-            os.replace(tmp, self.polku)
-            print("Aani liitetty.", flush=True)
-        else:
-            print(f"Huom: aanta ei saatu liitettya ({virhe.strip()}); kuvatallenne on aaneton ja ehja.", file=sys.stderr)
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+        """Aani liitetaan valmiiseen kuvatiedostoon vasta lopuksi (netti_aani.liita_tallenteeseen): kuvatallenne pysyy ehjana, vaikka aanilahde ei toimisi, eika sita koskaan lyhenneta."""
+        na.liita_tallenteeseen(self.exe, self.polku, self.aani, loki=lambda x: print(x, flush=True))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -590,7 +537,9 @@ class Kirjaaja:
                "tviiva_s", "miettimisaika_s", "joukkue_yht_s",
                # irroituksen uskottavuus: nopeus ja suunta hog-viivalla suoraan radasta (vertailu irroituksen arvoihin), ja kaukopaan pysahtymisen perusteella (rata_malli, harjaus <= 2 m): havaittu - ennustettu
                # pysahtymismatka (irr_matka_ero_m), kitkataso jolla malli osuu havaittuun matkaan (irr_A_matka; lahes vakio, jos nopeus on oikea), sivuero omalla kappalla (irr_sivu_ero_cm) ja johtopaatos
-               "nopeus_hog1_m_s", "suunta_hog1_deg", "irr_matka_ero_m", "irr_A_matka", "irr_sivu_ero_cm", "irr_tarkistus"]
+               "nopeus_hog1_m_s", "suunta_hog1_deg", "irr_matka_ero_m", "irr_A_matka", "irr_sivu_ero_cm", "irr_tarkistus",
+               # heittopaan kierron mittauksen epavarmuus (posteriori): omegan hajonta (deg/s) ja valitun kiertosuunnan todennakoisyys
+               "omega_sd_deg_s", "suunta_p"]
     OTSIKKO_KIVET = ["vari", "kivi_nro", "heittoja", "A_mediaani", "A_hajonta", "kappa_heittoja", "kappa_mediaani", "kappa_hajonta", "heitot"]
 
     def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False, radat_polku=None):
@@ -674,7 +623,9 @@ class Kirjaaja:
             self._tulosta(f"          heitto {n} kierre: omega {k['omega_deg_s']:+.0f} deg/s ({suunta}), hog-hog-aikaa ei saatu")
         else:
             lahde = "mitattu videosta" if s["kierre_mitattu"] else "arvioitu mallilla (kaukopaan hog-ylitysta ei loytynyt)"
-            self._tulosta(f"          heitto {n} kierre: omega {k['omega_deg_s']:+.0f} deg/s ({suunta}, ruutuja {k['ruutuja']}, {'varma' if k.get('varma') else 'epavarma'}), "
+            sd = f" +-{k['omega_sd_deg_s']:.0f}" if k.get("omega_sd_deg_s") is not None else ""
+            pv = f", suunta {100.0 * k['p_suunta']:.0f} %" if k.get("p_suunta") is not None else ""
+            self._tulosta(f"          heitto {n} kierre: omega {k['omega_deg_s']:+.0f}{sd} deg/s ({suunta}{pv}, ruutuja {k['ruutuja']}, {'varma' if k.get('varma') else 'epavarma'}), "
                           f"hog-hog {s['T_hh']:.1f} s ({lahde}) -> {_pilkku(s['kierre'], 1, True)} kierrosta (- = vastapaivaan); "
                           f"irroitus (heitto - liuku) {_pilkku(s['irroitus_cm'], 0, True)} cm")
         return True
@@ -838,6 +789,7 @@ class Kirjaaja:
             rivi += [N(None if v is None else v.get("nopeus_hog1"), 3), N(None if v is None else v.get("suunta_hog1_deg"), 3), N(tk["matka_ero_m"], 2), N(tk["A_matka"], 5), N(tk.get("sivu_ero_cm"), 0), teksti]
         else:
             rivi += [N(None if v is None else v.get("nopeus_hog1"), 3), N(None if v is None else v.get("suunta_hog1_deg"), 3), "", "", "", ""]
+        rivi += [N(None if s is None else s["omega_sd_deg_s"], 1), N(None if s is None else s["suunta_p"], 4)]
         return rivi
 
     def _kirjoita_csv(self, an):
@@ -1135,7 +1087,7 @@ def main():
     ap.add_argument("--debug-viive", action="store_true", help="tulosta hitaat analyysiruudut (selvittaa miksi ruutuja ohitetaan)")
     ap.add_argument("--ohita-myohassa", action="store_true", help="reaaliaika: ohita analyysista ruutuja, kun kone ei jaksa (vanha tapa; tulokset riippuvat koneen nopeudesta). Oletus tiedostolla ja YouTube-toistolla: "
                     "kaikki ruudut analysoidaan ja tulos on toistettava (sama kuin --nopea), kuva odottaa analyysia")
-    ap.add_argument("--aani", default="auto", help="aani tallenteeseen (--ulos): auto = YouTube: oma aanivirta (yt_dlp bestaudio), tiedosto: tiedoston oma aani jos on, --url: sama osoite; ei = ei aanta; POLKU / URL = oma aanilahde "
+    ap.add_argument("--aani", default="auto", help="aani tallenteeseen (--ulos): auto = YouTube: oma aanivirta (yt_dlp bestaudio), ladataan taustalla ajon aikana ja liitetaan lopuksi, tiedosto: tiedoston oma aani jos on, --url: sama osoite; ei = ei aanta; POLKU / URL = oma aanilahde "
                     "(sama aikajana kuin video). Aani on lahdevideon aikajanalla, joten se pysyy samassa kohdassa kuin viivastetty kuva; ikkuna on aaneton; live-virralla ei aanta")
     ap.add_argument("--esilataus", type=int, default=24, help="reaaliaika: ruutuja luetaan erillisessa saikeessa enintaan taman verran analyysin edella (0 = pois; yksi ruutu on 6 Mt)")
     ap.add_argument("--ei-tahdistusta", action="store_true", help="(testaus) reaaliaikarakenne mutta tiedostoa luetaan niin nopeasti kuin analyysi ehtii (ei reaaliaikatahdistusta)")
