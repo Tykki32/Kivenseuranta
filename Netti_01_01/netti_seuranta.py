@@ -182,6 +182,7 @@ KELLO_ARVIO_MAX_S = 12.0         # kello: pysahtymisen arvio hog-ylityksesta (il
 KELLO_NOPEA_M_S = 1.3            # ... ja jos nopeus hogilla on yli taman (poisto), enintaan KELLO_NOPEA_MAX_S
 KELLO_NOPEA_MAX_S = 6.0
 KELLO_MALLI_ODOTUS_S = 5.0       # kello: kaukopaan seuranta ei ole kertonut pysahtymista -> mallin (nopeus hog-viivalla, tyypillinen hidastuvuus) mukainen pysahtymishetki oletetaan toteutuneeksi, kun siita on kulunut taman verran ...
+KELLO_ALKU_PYS_S = 31.0          # kello: ei viivaestimaattia / hog-ylitysta -> pysahtymisen arvio heiton lahdosta (mediaani 31 s, 10-90 %: 22-35 s, 74 heittoa)
 KELLO_NAHTY_S = 2.0              # ... eika kivea ole nahty liikkeessa: kaukopaan B-paikat eivat ole siirtyneet yli KELLO_NAHTY_CM viimeisen taman ajan sisalla
 KELLO_NAHTY_CM = 10.0
 PELI_TAKA_Y_CM = -(183.0 + KIVI_R_CM)   # kivi on poissa pelista, kun sen keskipiste on kokonaan taka-viivan (Y' = -183 cm) takana ...
@@ -2182,12 +2183,13 @@ class Analyysi:
         """Mallipohjainen arvio ruudulle, jolla heiton kivi pysahtyy (ei vaadi kaukopaan seurantaa eika kierteen mittausta): nopeus lahipaan hog-viivalla (laske_viivat: nopeus_hog1,
         muuten irroituksen nopeudesta tyypillisella hidastuvuudella) -> hog-viivalta hog-viivalle vakiohidastuvuus (mitattu hog-ylitys / h.kierre['T'] jos on, muuten malli), kaukopaan hog-viivalta
         pysahtymiseen nopeus / KAUKO_PYS_HIDASTUVUUS (enintaan KELLO_ARVIO_MAX_S, nopealla kivella KELLO_NOPEA_MAX_S). Kivi, joka ei yllä kaukopaan hog-viivalle, pysahtyy vakiohidastuvuudella.
-        Virhe (112 heiton aineisto, kaukopaan seuranta pysahtyi): mediaani -0,3 s, hajonta 3,8 s. None, jos viivaestimaattia tai heittopaan hog-ylitysta ei ole."""
+        Virhe (112 heiton aineisto, kaukopaan seuranta pysahtyi): mediaani -0,3 s, hajonta 3,8 s. Ilman viivaestimaattia tai hog-ylitysta: heiton lahto + KELLO_ALKU_PYS_S."""
         v = h.viivat
         hog1_f = getattr(h, "hog1_f", None)
-        if v is None or hog1_f is None:
-            return None
         fps = self.fps
+        if v is None or hog1_f is None:                                    # rata katkesi ennen hog-viivaa tms.: viimeinen keino, tyypillinen aika lahdosta
+            f_alku = getattr(h, "f_alku", None)
+            return None if f_alku is None else float(f_alku + fps * KELLO_ALKU_PYS_S)
         a1 = HIDASTUVUUS_TYYPILLINEN
         v1 = v.get("nopeus_hog1")
         if v1 is None:
