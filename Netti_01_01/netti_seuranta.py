@@ -524,9 +524,10 @@ def korjaa_hog_harha(Y):
     return Y - np.interp(Y, ys, e, left=0.0, right=0.0)
 
 
-def valmistele_rata(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None, korjaa=True):
+def valmistele_rata(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None, korjaa=True, tiedot=None):
     """Kelvollisten (ruutu, X, Y) -naytteiden esikasittely viivaestimaattia varten: jarjestys, aikaperusta (aikaperusta.Aikajana: lahdevirran kopioruudut pois, todellinen aika) ja (korjaa)
-    B-sovituksen hog-viivan harhan korjaus (korjaa_hog_harha). Palauttaa (t, X, Y, t_lisa); t_lisa = lisa_f:n ruutujen ajat (kierteen mittauksen ruudut) tai None."""
+    B-sovituksen hog-viivan harhan korjaus (korjaa_hog_harha). Palauttaa (t, X, Y, t_lisa); t_lisa = lisa_f:n ruutujen ajat (kierteen mittauksen ruudut) tai None.
+    tiedot (dict): saa radan lahderuutujen taajuuden R (aikaperusta.arvioi_lahdetaajuus: 25 tai 30 r/s radan omasta liikkeesta)."""
     aikap.FPS_LAHDE, aikap.FPS_ULOS = float(fps_lahde), float(fps_ulos)
     f = np.asarray(f, float)
     X = np.asarray(X, float)
@@ -536,6 +537,8 @@ def valmistele_rata(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None, korjaa=
     with warnings.catch_warnings(), np.errstate(all="ignore"):
         warnings.simplefilter("ignore")
         aj = aikap.Aikajana(f, Y)
+        if tiedot is not None:
+            tiedot["R"] = float(aj.R)
         mk = np.array([int(fi) not in aj.kopio for fi in f])
         f, X, Y = f[mk], X[mk], Y[mk]
         t = aj.aika(f)
@@ -552,7 +555,8 @@ def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
     try:
         with warnings.catch_warnings(), np.errstate(all="ignore"):
             warnings.simplefilter("ignore")
-            t, X, Y, t_lisa = valmistele_rata(f, X, Y, fps_lahde, fps_ulos, lisa_f)
+            tiedot = {}
+            t, X, Y, t_lisa = valmistele_rata(f, X, Y, fps_lahde, fps_ulos, lisa_f, tiedot=tiedot)
             r = li.analysoi(dict(t=t, X=X, Y=Y), **ESTIMAATTI)
     except Exception as e:                              # liian vahva / outo aineisto: ei estimaattia
         return dict(virhe=repr(e))
@@ -570,7 +574,7 @@ def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
         nopeus_ennen=ys["nopeus_ennen_m_s"], nopeus_jalkeen=ys["nopeus_jalkeen_m_s"],
         liuku_hidastuvuus=ys["liun_hidastuvuus_m_s2"], vapaa_hidastuvuus=ys["vapaan_lennon_hidastuvuus_m_s2"],
         kaarto=ti["kaarto"], kaarevuus_1_cm=float(ti["kaarevuus_1_cm"]), t_irr=float(ti["t_r"]), t_lisa=t_lisa, n=int(len(t)),
-        nopeus_hog1=(hg["v_m_s"] if hg else None), suunta_hog1_deg=(hg["suunta_deg"] if hg else None), hog1_Y_keski=(hg["Y_keski"] if hg else None))
+        nopeus_hog1=(hg["v_m_s"] if hg else None), suunta_hog1_deg=(hg["suunta_deg"] if hg else None), hog1_Y_keski=(hg["Y_keski"] if hg else None), lahdetaajuus=tiedot.get("R"))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1692,7 +1696,7 @@ class KaukoSeuranta(_Seuranta):
                 torm = dict(f=float(f1), v_ennen=float(v1), v_jalkeen=float(v2))
                 break
         try:                                               # aikaperusta (lahdevirran ruutuindeksi): todellinen aika paikoille
-            t_korj = [float(x) for x in aikap.Aikajana(F, P[:, 1], kopiot_ohitettu=True).aika(F)]
+            t_korj = [float(x) for x in aikap.Aikajana(F, P[:, 1], kopiot_ohitettu=True, R=(h.viivat or {}).get("lahdetaajuus")).aika(F)]
         except Exception:
             t_korj = [float(x) / fps for x in F]
         f_viim_b = float(F[vahva][-1]) if vahva.any() else None
@@ -2096,7 +2100,7 @@ class Analyysi:
             self._lykatyt[h.tunnus] = (h, kh, F, Y)                # kaukopaan alias-ratkaisu kayttaa heittopaan mittausta ennakkona: odotetaan sen valmistumista (ei jumiteta analyysia), kuten sim-ajossa; myos silloin, kun lopullinen estimaatti (josta heittopaan kierto kaynnistyy) on viela kesken (kuormitettu kone)
             return
         try:
-            aj = aikap.Aikajana(F, Y, kopiot_ohitettu=True)
+            aj = aikap.Aikajana(F, Y, kopiot_ohitettu=True, R=(h.viivat or {}).get("lahdetaajuus"))
         except Exception:
             h.kauko_kierto_tila = "virhe"
             h.kauko_kierto = dict(virhe="aikaperusta epaonnistui")

@@ -138,7 +138,7 @@ def main():
                       f"|ero| > {nv.MATKA_RAJA_M:.0f} m: {int((np.abs(e) > nv.MATKA_RAJA_M).sum())} / {len(e)}; kitkataso A_matka mediaani {np.median(Ak):.4f}, hajonta {100 * 1.4826 * np.median(np.abs(Ak - np.median(Ak))) / np.median(Ak):.1f} %")
     if a.csv:
         with open(a.csv, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(rivit[0].keys()))
+            w = csv.DictWriter(fh, fieldnames=list(dict.fromkeys(k for r in rivit for k in r)), restval="")
             w.writeheader()
             w.writerows(rivit)
         print("kirjoitettu", a.csv)

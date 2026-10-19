@@ -403,8 +403,45 @@ def testaa_vakaa():
     tarkista("lopullinen estimaatti: vakaa, kun merkitseva (rata keskeytyi ennen hakualueen kattamista)", estimaatit(kattava_y - 60.0, lopullinen=True) == [True, True, True])
 
 
+def _aikaperusta_rata(R, rng, kesto=5.0, v0=2.2, a=-0.07, aukot=((12, 15), (45, 52))):
+    """Synteettinen heittopaan rata (Y cm, ruutunumero 30 r/s -videossa) tunnetulla liikkeella Y(tau) = -330 + 100 (v0 tau + a tau^2 / 2) (tau = todellinen aika, s), kun kuvan lahderuudut tulevat
+    R = 25 r/s (kopioruutu joka kuudes: ruudun sisalto = lahderuudun viimeisin) tai R = 30 r/s (kivi liikkuu 30 askelta / s, joka kuudes ruutu vanha). B-aukkoja (kivea ei loydy) kohdissa aukot."""
+    f, Y, tau = [], [], []
+    for m in range(int(kesto * 30)):
+        if m % 6 == 5:                                   # kopioruutu: sisalto = edellinen, tracker ohittaa
+            continue
+        t_lahde = (m * 25 // 30) / 25.0 if R == 25 else m / 30.0
+        f.append(5000 + m); tau.append(t_lahde); Y.append(-330 + 100 * (v0 * t_lahde + 0.5 * a * t_lahde ** 2) + rng.normal(0, 0.4))
+    f, Y, tau = np.array(f, float), np.array(Y), np.array(tau)
+    keep = Y > 0
+    f, Y, tau = f[keep], Y[keep], tau[keep]
+    ok = np.ones(len(f), bool)
+    for a_, b_ in aukot:
+        ok[a_:b_] = False
+    return f[ok], Y[ok], tau[ok]
+
+
+def testaa_aikaperusta():
+    print("aikaperusta: lahderuutujen taajuus R radan omasta liikkeesta (25 r/s ja 30 r/s -kadenssi), aukot radassa")
+    import aikaperusta as ap
+    rng = np.random.default_rng(11)
+    for R in (25, 30):
+        f, Y, tau = _aikaperusta_rata(R, rng)
+        aj = ap.Aikajana(f, Y)
+        t = aj.aika(f)
+        c = np.polyfit(t - t.mean(), Y, 2)
+        v = (c[1] - (-0.07 * 100) * 0) / 100.0                       # nopeus keskella (m/s)
+        v_tosi = (2.2 - 0.07 * (t.mean() - t[0] + (tau[0] if False else 0))) if False else None
+        c_tosi = np.polyfit(tau - tau.mean(), Y, 2)
+        tarkista(f"R = {R}: taajuus tunnistetaan", aj.R == R, f"arvio {aj.R}")
+        tarkista(f"R = {R}: nopeus (Y(t):n sovituksesta) +-2 % oikeasta", abs(c[1] / c_tosi[1] - 1.0) < 0.02, f"{c[1] / 100:.3f} vs {c_tosi[1] / 100:.3f} m/s")
+        tarkista(f"R = {R}: hidastuvuus +-0,01 m/s2", abs(2 * c[2] - 2 * c_tosi[2]) / 100.0 < 0.01, f"{-2 * c[2] / 100:.3f} vs {-2 * c_tosi[2] / 100:.3f} m/s2")
+        d = aj.j - aj.R * aj.f / 30.0
+        tarkista(f"R = {R}: lahdeindeksin ajautuma seinakelloon nahden rajoissa (vaihtelu <= 4)", float(np.ptp(d - np.median(d))) <= 4.0, f"{np.ptp(d - np.median(d)):.1f}")
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta):
         t()
     print()
     if VIRHEITA:
