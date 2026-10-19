@@ -440,8 +440,40 @@ def testaa_aikaperusta():
         tarkista(f"R = {R}: lahdeindeksin ajautuma seinakelloon nahden rajoissa (vaihtelu <= 4)", float(np.ptp(d - np.median(d))) <= 4.0, f"{np.ptp(d - np.median(d)):.1f}")
 
 
+def testaa_kalibroinnin_tarkistus():
+    print("tarkista_kalibrointi: kuvan siirtyma kansion moodikuvaan nahden (synteettinen video, tunnetut siirrot)")
+    import shutil
+    import tempfile
+    import cv2
+    import tarkista_kalibrointi as tk
+    rng = np.random.default_rng(5)
+    kuva = cv2.GaussianBlur(rng.normal(128, 60, (1080, 1920)).astype(np.float32), (0, 0), 3.0)         # staattinen tekstuuri: kaikissa ikkunoissa gradienttia
+    kuva = np.clip(kuva + 40 * np.sin(np.arange(1920) / 37.0)[None, :], 0, 255).astype(np.uint8)
+    tmp = tempfile.mkdtemp()
+    try:
+        for puoli in ("vasen", "oikea"):
+            x, y, w, h = tk.kn.PUOLET[puoli]
+            cv2.imwrite(os.path.join(tmp, f"moodikuva_{puoli}.png"), cv2.rotate(cv2.cvtColor(kuva[y:y + h, x:x + w], cv2.COLOR_GRAY2BGR), cv2.ROTATE_90_COUNTERCLOCKWISE))
+        for nimi, (sx, sy) in (("sama", (0.0, 0.0)), ("siirretty", (6.0, -4.0))):
+            siirretty = cv2.warpAffine(kuva, np.float32([[1, 0, sx], [0, 1, sy]]), (1920, 1080), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            polku = os.path.join(tmp, f"{nimi}.avi")
+            kirj = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (1920, 1080))
+            for _ in range(30):
+                kirj.write(cv2.cvtColor(siirretty, cv2.COLOR_GRAY2BGR))
+            kirj.release()
+            t = tk.siirtymat(polku, tmp, n=8, alku_s=0.0)
+            for puoli in ("vasen", "oikea"):
+                sopii, _ = tk.arvioi(t[puoli])
+                if nimi == "sama":
+                    tarkista(f"{puoli}: sama kuva sopii", sopii is True and abs(t[puoli]["dx"]) < 0.3 and abs(t[puoli]["dy"]) < 0.3, f"dx {t[puoli].get('dx')}")
+                else:
+                    tarkista(f"{puoli}: siirto (6, -4) px mitataan ja kalibrointi hylataan", sopii is False and abs(t[puoli]["dx"] - sx) < 0.5 and abs(t[puoli]["dy"] - sy) < 0.5, f"dx {t[puoli].get('dx'):.2f} dy {t[puoli].get('dy'):.2f}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus):
         t()
     print()
     if VIRHEITA:
