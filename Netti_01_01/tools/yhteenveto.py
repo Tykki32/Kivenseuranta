@@ -128,12 +128,18 @@ def vakiot(rivit, kivet):
 def irroitus(rivit):
     print("IROITUKSEN USKOTTAVUUS (nopeus ja suunta irroituksessa vs. hog-viivalla suoraan radasta mitattu; kaukopaan pysahtymismatka vs. rata_malli)")
     n = len(rivit)
-    dv = np.array([_f(r["nopeus_jalkeen_m_s"]) - _f(r["nopeus_hog1_m_s"]) for r in rivit if _f(r.get("nopeus_jalkeen_m_s")) is not None and _f(r.get("nopeus_hog1_m_s")) is not None])
     ds = np.array([_f(r["irroituksen_suunta_deg"]) - _f(r["suunta_hog1_deg"]) for r in rivit if _f(r.get("irroituksen_suunta_deg")) is not None and _f(r.get("suunta_hog1_deg")) is not None])
     hid = np.array([_f(r["hidastuvuus_m_s2"]) for r in rivit if _f(r.get("hidastuvuus_m_s2")) is not None])
-    if len(dv):
-        print(f"  nopeus irroituksen jalkeen - nopeus hog-viivalla: mediaani {np.median(dv):+.3f} m/s (odotus +0,05 ... +0,15: kivi vain hidastuu), 1,48 MAD {1.4826 * np.median(np.abs(dv - np.median(dv))):.3f};"
-              f" alle -0,05 m/s (irroitus tunnistettu liian aikaisin): {_osuus(int((dv < -0.05).sum()), len(dv))}")
+    a_vapaa = float(np.median(hid)) if len(hid) else 0.068
+    pv = [(_f(r.get("nopeus_jalkeen_m_s")), _f(r.get("nopeus_hog1_m_s")), _f(r.get("irroitus_ennen_hogia_m"))) for r in rivit]
+    pv = [p for p in pv if None not in p and p[0] > 0.3]
+    if pv:
+        dv = np.array([p[0] - p[1] for p in pv])
+        ennuste = np.array([a_vapaa * max(p[2], 0.0) / p[0] for p in pv])                  # vapaa kappale hidastuu irroituksesta hog-viivalle: a * matka / nopeus
+        jaannos = dv - ennuste
+        print(f"  nopeus irroituksen jalkeen - nopeus hog-viivalla: mediaani {np.median(dv):+.3f} m/s; vapaan lennon ennuste (hidastuvuus {a_vapaa:.3f} m/s2 x aika irroituksesta hog-viivalle) mediaani {np.median(ennuste):+.3f};"
+              f" jaannos mediaani {np.median(jaannos):+.3f}, 1,48 MAD {1.4826 * np.median(np.abs(jaannos - np.median(jaannos))):.3f} m/s; |jaannos| > 0,05 m/s: {_osuus(int((np.abs(jaannos) > 0.05).sum()), len(jaannos))};"
+              f" nopeusero alle -0,05 m/s (irroitus tunnistettu liian aikaisin): {_osuus(int((dv < -0.05).sum()), len(dv))}")
     if len(ds):
         print(f"  suunta irroituksessa - suunta hog-viivalla: mediaani {np.median(ds):+.2f} astetta, 1,48 MAD {1.4826 * np.median(np.abs(ds - np.median(ds))):.2f}; yli 0,5 asteen ero: {_osuus(int((np.abs(ds) > 0.5).sum()), len(ds))}")
     if len(hid):

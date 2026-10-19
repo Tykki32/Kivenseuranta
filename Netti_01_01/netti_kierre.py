@@ -46,7 +46,7 @@ def kierrokset(omega_deg_s, t_keski, t1, t2, k=K_KIERRE):
 # HEITTOPAAN KIERRE: robusti Bayes-estimaattori ruutukohtaisista kulmakustannuksista (arvioi_posteriori)
 # ---------------------------------------------------------------------------------------------------------------------
 # Miksi: palkin kulma on havaittavissa vain sitkeasti (kuvassa ~10 x 20 px:n sumea tahra): (1) kasi pitaa kahvasta kiinni vielä ~0,3-1,0 s irroituksen (ratadatasta paatellyn vapaan lennon alun)
-# jalkeen, joten puhtaita ruutuja on vain ~0,5 s kuvan reunaan (Y ~ 750 cm) asti, kun irroitus on myohainen (keltaiset heittajat: Y ~ 540 cm) ja (2) kulma on havaittavissa vain
+# jalkeen (hanta-irroitus; nykyinen irroitus on viimeinen tyonto ja kierto alkaa tavallisesti jo ennen sita, ks. SARANA_*), joten puhtaita ruutuja on vain ~0,5 s kuvan reunaan (Y ~ 750 cm) asti, kun irroitus on myohainen (keltaiset heittajat: Y ~ 590 cm) ja (2) kulma on havaittavissa vain
 # modulo 180 astetta ja peilausepaselvyydella: palkki kulmassa theta nayttaa melkein samalta kuin kulmassa 2 a - theta (a ~ 90 astetta = palkki kameran katselusuunnassa; kallistusvihje on vain
 # ~2-3 px), kun kasi peittaa. Ruutukohtainen paras kulma (argmin) loikkaa silloin peilikuvaan, ja suoran sovitus nayttaa "latauksena" (kulma kiertyy ensin vastakkaiseen suuntaan ja kaantyy
 # V:n karjessa; todellisuudessa kierto on vakio koko ajan). Siksi ei kayteta ruutujen ennalta valittua parasta kulmaa eika kovaa kasirajausta, vaan jokaisen ruudun KOKO kustannuskayra
@@ -211,9 +211,13 @@ def posteriori_omega(k, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lo
     return dict(om=om_ruudukko, p=p, p_ccw=float(p[om_ruudukko > 0].sum()), sig=sig, puhdas=puhdas, t_ka=t_ka, n_eff=float(np.sum(1.0 / (sig / SIG_HYVA) ** 2)), J=J, th=th_ruudukko)
 
 
-SARANA_T_ALKU = -0.6            # saranamalli: ruudut t >= t_irr + tama (s): plateau-ruudut ennen kierron alkua (kasi pitaa kahvaa, kulma vakio)
-SARANA_TC_ALUE = (-0.6, 1.2)    # kierron alkuhetki t_c (s, suhteessa t_irr), tasainen ennakko; sormet irtoavat usein vasta 0,3-1,0 s irroituksen (reittidatan vapaan lennon alun) jalkeen
+SARANA_T_ALKU = -1.0            # saranamalli: ruudut t >= t_irr + tama (s): plateau-ruudut ennen kierron alkua (kasi pitaa kahvaa, kulma vakio)
+SARANA_TC_ALUE = (-1.0, 0.8)    # kierron alkuhetki t_c (s, suhteessa t_irr), tasainen ennakko
 SARANA_TC_ASKEL = 0.05
+# Ikkuna ja ennakko on mitoitettu irroituksen mukaan: irroitus on viimeinen tyonto (liuku_irroitus.irroitus_muutos), mediaanilta 0,33 s (0,19 ... 0,51 s) myohempi kuin aiempi vapaan lennon hanta, jonka suhteen
+# ikkuna oli (-0,6 s ja t_c -0,6 ... +1,2 s). Siirto 0,4 s (-1,0 s ja -1,0 ... +0,8 s) pitaa havaintoaineiston ja ennakon ennallaan: koko videolla (112 heittoa, tallennetuista ruutukayrista) varman kierrosmaaran
+# heitot 68 / 112 (hanta-irroituksella 68; uusi irroitus ja vanha ikkuna 63) ja suunnan varmuus >= 0,99 107 (108; 104). Kierron alkuhetken (t_c) posteriori uuteen irroitukseen nahden: keltaiset mediaani -0,65 s
+# (heittokohtaisten posteriorien 5 ... 95 %: -1,35 ... -0,15 s; heittaja kiertaa kahvaa jo liu'un lopussa), punaiset -0,12 s (-1,07 ... +0,30 s).
 
 
 def posteriori_omega_sarana(k, t_irr, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lognormaali, om_ruudukko=OM_RUUDUKKO, th_ruudukko=TH_RUUDUKKO):

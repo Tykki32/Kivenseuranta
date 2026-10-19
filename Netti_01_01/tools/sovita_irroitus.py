@@ -2,12 +2,13 @@
 
     python netti_live.py --lahde netti.mp4 --nopea --ei-ikkunaa --ei-kierretta --csv heitot.csv --radat radat.pkl      # kerran (--ei-kierretta riittaa: heittopaan radat); radat.pkl sisaltaa laske_viivat:n tarkan syotteen
     python tools/sovita_irroitus.py radat.pkl                           # irroitus nykyisella koodilla kaikille heitoille + vertailu tallennettuun estimaattiin + uskottavuusmittarit
-    python tools/sovita_irroitus.py radat.pkl --menetelma kinkki        # vanha kinkkihaku (kahden paraabelin C1-sovitus) vertailua varten
+    python tools/sovita_irroitus.py radat.pkl --menetelma hanta         # vanha vapaan lennon hanta vertailua varten (--menetelma kinkki: kahden paraabelin C1-sovitus)
     python tools/sovita_irroitus.py radat.pkl --csv irroitus.csv        # heittokohtainen taulukko
 
 Mittarit (kaikki suoraan heittopaan radasta, ilman kaukopaan seurantaa, ellei toisin mainita):
-  * v_jalk - v_hog1: irroituksen jalkeinen nopeus miinus nopeus hog-viivalla (suora mitaus viivan ymparilta). Vapaa kappale vain hidastuu: ero on > 0 (tyypillisesti 0,05-0,15 m/s);
-    negatiivinen ero tarkoittaa, etta 'vapaa lento' sisalsi viela tyontoa (irroitus tunnistettu liian aikaisin) ja nopeus aliarvioitu.
+  * v_jalk - v_hog1: irroituksen jalkeinen nopeus miinus nopeus hog-viivalla (suora mitaus viivan ymparilta). Vapaa kappale vain hidastuu: ero on a_vapaa x aika irroituksesta hog-viivalle
+    (a_vapaa ~0,07 m/s2: myohainen irroitus 1 m ennen viivaa -> ~0,03 m/s, aikainen 3 m -> ~0,1 m/s); 'jaannos' = ero miinus tama ennuste (mediaani ~0, hajonta ~0,02 m/s). Negatiivinen ero tai suuri
+    jaannos tarkoittaa, etta 'vapaa lento' sisalsi viela tyontoa (irroitus tunnistettu liian aikaisin ja nopeus aliarvioitu) tai irroitus on liian myohainen.
   * suunta - suunta_hog1: irroituksen suunta miinus kiven suunta hog-viivalla (kaarto muuttaa suuntaa matkalla vain ~0,1-0,4 astetta).
   * hid_vapaa: vapaan lennon hidastuvuus (m/s2; < 0 = kiihtyy).
   * kaukopaan seurantaan perustuva (--kauko): irroituksen nopeudesta ja kiven vakioista lasketun pysahtymismatkan ero havaittuun (heittajan kiven pysahtyessa ilman tormaysta):
@@ -50,6 +51,8 @@ def mittarit(v):
     out["v_hog1"], out["suunta_hog1"] = vh, sh
     out["dv"] = None if vh is None else v["nopeus_jalkeen"] - vh
     out["dsuunta"] = None if sh is None else v["irr_suunta_deg"] - sh
+    yk = v.get("hog1_Y_keski")
+    out["hog_matka_m"] = None if yk is None else max(float(yk) - float(v["irr_Y"]), 0.0) / 100.0       # irroituksesta hog-ikkunan keskelle
     return out
 
 
@@ -60,7 +63,7 @@ def _f(x, n=2, leveys=6):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("radat", help="netti_live.py --radat -tiedosto (pickle)")
-    ap.add_argument("--menetelma", choices=("hanta", "kinkki"), default=None, help="irroituksen tunnistus (oletus: liuku_irroitus.MENETELMA)")
+    ap.add_argument("--menetelma", choices=("muutos", "hanta", "kinkki"), default=None, help="irroituksen tunnistus (oletus: liuku_irroitus.MENETELMA)")
     ap.add_argument("--ei-esitietoa", action="store_true", help="ilman vapaan lennon fysiikan esitietoa (hidastuvuus, kaarevuus)")
     ap.add_argument("--sigma-a", type=float, default=None, help="vapaan lennon hidastuvuuden esitiedon hajonta (m/s2)")
     ap.add_argument("--sigma-c", type=float, default=None, help="vapaan lennon kaarevuuden esitiedon hajonta (1/cm)")
@@ -117,6 +120,9 @@ def main():
     hv = np.array([r["hid_vapaa"] for r in rivit])
     print(f"\n{len(rivit)} heittoa")
     print(f"v_jalk - v_hog1: mediaani {np.median(dv):+.3f} m/s, 1,48 MAD {1.4826 * np.median(np.abs(dv - np.median(dv))):.3f}; < -0,05 m/s (irroitus liian aikaisin): {int((dv < -0.05).sum())} / {len(dv)}")
+    jn = np.array([r["dv"] - float(np.median(hv)) * r["hog_matka_m"] / r["v_jalk"] for r in rivit if r["dv"] is not None and r.get("hog_matka_m") is not None and r["v_jalk"] > 0.3])
+    if len(jn):
+        print(f"  jaannos (v_jalk - v_hog1 miinus vapaan lennon ennuste {float(np.median(hv)):.3f} m/s2 x aika irroituksesta hog-viivalle): mediaani {np.median(jn):+.3f} m/s, 1,48 MAD {1.4826 * np.median(np.abs(jn - np.median(jn))):.3f}; |jaannos| > 0,05 m/s: {int((np.abs(jn) > 0.05).sum())} / {len(jn)}")
     print(f"suunta - suunta_hog1: mediaani {np.median(ds):+.2f} astetta, 1,48 MAD {1.4826 * np.median(np.abs(ds - np.median(ds))):.2f}; |ero| > 0,5 astetta: {int((np.abs(ds) > 0.5).sum())} / {len(ds)}; > 1 aste: {int((np.abs(ds) > 1.0).sum())}")
     print(f"vapaan lennon hidastuvuus < 0 (kiihtyy): {int((hv < 0).sum())} / {len(hv)}; mediaani {np.median(hv):+.3f} m/s2")
     if ero:
