@@ -148,6 +148,9 @@ KIVI_R_CM = 14.55                # kiven sade (suurin halkaisija 29,1 cm): eture
 HOG_SISA_CM = 640.0              # hog-viivan sisareuna T-viivasta (kalibrointi_netti.HOG_Y_CM); viiva on n. 12,7 cm leveä
 HOG_KESKI_CM = HOG_SISA_CM + 6.35   # hog-viivan keskiviiva: tama ylitys ajoitetaan molemmissa paissa (hog-hog-matka = ETAISYYS_CM - 2 * HOG_KESKI_CM = 21,8 m)
 ESTIMAATTI["Y_r_max"] = HOG_KESKI_CM - KIVI_R_CM    # saanto: irroitus ennen hog-viivaa (kiven etureuna ei ylita viivaa): kiven keskipiste Y <= 631,8 cm; sen jalkeinen rata on varmasti vapaata lentoa
+HOG_HARHA_CM = ((590, +0.00), (600, +0.08), (610, +0.32), (620, +0.71), (630, +0.91), (640, +0.96), (650, +0.80), (660, +0.70), (670, +0.53), (680, +0.33), (690, +0.16), (700, +0.00))     # B-sovituksen toistuva Y-harha (Y cm, harha cm): kiven etureunan ylittaessa hog-viivan Y nayttaa ~1 cm liian suurelta (viivan vari siluetin reunalla), kaikilla heitoilla ja molemmilla
+                                 # vareilla samoin (24 vapaan lennon heiton mediaani, hajonta heitoittain ~0,5 cm). Harha = paikallinen kohouma, jonka 2. derivaatta (~0,4 m/s2) nayttaa tyonnolta ja sen loppumiselta,
+                                 # joten se korjataan ennen irroituksen tunnistusta (valmistele_rata). Taulukon laskee tools/kalibroi_paikkavirhe.py radat.pkl:sta (aja uudelleen, jos kalibrointi tai kivimalli muuttuu).
 HOG_IKKUNA_CM = 120.0            # hog-viivan kohdan paikallinen nopeus / suunta (laske_viivat: nopeus_hog1, suunta_hog1_deg): paikat taman matkan sisalla viivasta
 KIVIA_PAASSA = 8                 # numerointi alkaa alusta taman jalkeen (yhden joukkueen kivet / paa)
 KAARTO_VARMA_1_CM = 4.0e-5       # vapaan lennon kaarevuus (1/cm), jonka yli kaarto ratkaisee kiertosuunnan jos kuvamittaus on epavarma
@@ -511,26 +514,45 @@ def hog_ikkuna(t, X, Y, y0=None, ikkuna=None):
     return dict(v_m_s=float(cy[0] * np.sqrt(1.0 + cx[0] ** 2) / 100.0), suunta_deg=float(np.degrees(np.arctan(cx[0]))), n=int(m.sum()), Y_keski=float(np.mean(Y[m])))
 
 
-def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
-    """Viivaestimaatti kelvollisista (ruutu, X, Y) -naytteista: aikaperusta (aikaperusta.Aikajana) + liu'un ja irroituksen tunnistus (liuku_irroitus). Palauttaa
-    dict tai None. Kaytetaan sellaisenaan tyoprosessissa. fps_lahde = erillisten ruutujen nimellistaajuus (25 tassa videossa: 25 r/s -> 30 r/s kopioruuduilla),
-    fps_ulos = videon ruutunopeus. lisa_f: muut ruutunumerot (kierteen mittauksen ruudut), joille palautetaan sama aika (t_lisa)."""
+def korjaa_hog_harha(Y):
+    """Kiven Y (cm) ilman B-sovituksen toistuvaa, paikkaan sidottua harhaa (HOG_HARHA_CM): taulukon kohouma vahennetaan. Tulos ei muuta heiton fysiikkaa, vain poistaa mittausvirheen, joka
+    muuten nayttaa 'tyonnon loppuna' (ks. HOG_HARHA_CM)."""
+    Y = np.asarray(Y, float)
+    if not HOG_HARHA_CM:
+        return Y
+    ys, e = np.array(HOG_HARHA_CM, float).T
+    return Y - np.interp(Y, ys, e, left=0.0, right=0.0)
+
+
+def valmistele_rata(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None, korjaa=True):
+    """Kelvollisten (ruutu, X, Y) -naytteiden esikasittely viivaestimaattia varten: jarjestys, aikaperusta (aikaperusta.Aikajana: lahdevirran kopioruudut pois, todellinen aika) ja (korjaa)
+    B-sovituksen hog-viivan harhan korjaus (korjaa_hog_harha). Palauttaa (t, X, Y, t_lisa); t_lisa = lisa_f:n ruutujen ajat (kierteen mittauksen ruudut) tai None."""
     aikap.FPS_LAHDE, aikap.FPS_ULOS = float(fps_lahde), float(fps_ulos)
     f = np.asarray(f, float)
     X = np.asarray(X, float)
     Y = np.asarray(Y, float)
     o = np.argsort(f)
     f, X, Y = f[o], X[o], Y[o]
-    if len(f) < 30 or Y.max() < ESTIMAATTI_MIN_Y_CM:
+    with warnings.catch_warnings(), np.errstate(all="ignore"):
+        warnings.simplefilter("ignore")
+        aj = aikap.Aikajana(f, Y)
+        mk = np.array([int(fi) not in aj.kopio for fi in f])
+        f, X, Y = f[mk], X[mk], Y[mk]
+        t = aj.aika(f)
+        t_lisa = [float(x) for x in aj.aika(np.asarray(lisa_f, float))] if lisa_f is not None and len(lisa_f) else None
+    return t, X, (korjaa_hog_harha(Y) if korjaa else Y), t_lisa
+
+
+def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
+    """Viivaestimaatti kelvollisista (ruutu, X, Y) -naytteista: aikaperusta (aikaperusta.Aikajana) + liu'un ja irroituksen tunnistus (liuku_irroitus). Palauttaa
+    dict tai None. Kaytetaan sellaisenaan tyoprosessissa. fps_lahde = erillisten ruutujen nimellistaajuus (25 tassa videossa: 25 r/s -> 30 r/s kopioruuduilla),
+    fps_ulos = videon ruutunopeus. lisa_f: muut ruutunumerot (kierteen mittauksen ruudut), joille palautetaan sama aika (t_lisa)."""
+    if len(f) < 30 or np.max(np.asarray(Y, float)) < ESTIMAATTI_MIN_Y_CM:
         return None
     try:
         with warnings.catch_warnings(), np.errstate(all="ignore"):
             warnings.simplefilter("ignore")
-            aj = aikap.Aikajana(f, Y)
-            mk = np.array([int(fi) not in aj.kopio for fi in f])
-            f, X, Y = f[mk], X[mk], Y[mk]
-            t = aj.aika(f)
-            t_lisa = [float(x) for x in aj.aika(np.asarray(lisa_f, float))] if lisa_f is not None and len(lisa_f) else None
+            t, X, Y, t_lisa = valmistele_rata(f, X, Y, fps_lahde, fps_ulos, lisa_f)
             r = li.analysoi(dict(t=t, X=X, Y=Y), **ESTIMAATTI)
     except Exception as e:                              # liian vahva / outo aineisto: ei estimaattia
         return dict(virhe=repr(e))
@@ -547,7 +569,7 @@ def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
         vapaa_matka_cm=vapaa_Y, vapaa_ruutuja=int(ti["ruutuja"]), Y_max=float(Y.max()), t_lahto=float(la["t_lahto"]),
         nopeus_ennen=ys["nopeus_ennen_m_s"], nopeus_jalkeen=ys["nopeus_jalkeen_m_s"],
         liuku_hidastuvuus=ys["liun_hidastuvuus_m_s2"], vapaa_hidastuvuus=ys["vapaan_lennon_hidastuvuus_m_s2"],
-        kaarto=ti["kaarto"], kaarevuus_1_cm=float(ti["kaarevuus_1_cm"]), t_irr=float(ti["t_r"]), t_lisa=t_lisa, n=int(len(f)),
+        kaarto=ti["kaarto"], kaarevuus_1_cm=float(ti["kaarevuus_1_cm"]), t_irr=float(ti["t_r"]), t_lisa=t_lisa, n=int(len(t)),
         nopeus_hog1=(hg["v_m_s"] if hg else None), suunta_hog1_deg=(hg["suunta_deg"] if hg else None), hog1_Y_keski=(hg["Y_keski"] if hg else None))
 
 

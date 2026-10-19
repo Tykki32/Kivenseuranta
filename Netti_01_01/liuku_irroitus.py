@@ -4,9 +4,9 @@ Tunnistus perustuu pelkkaan kiven rataan (tulokset/radat_<puoli>.csv: ruutu, tod
   * LIUKU (alku): kivi lahtee hackista (lepo -> liike), tyonto kiihdyttaa sen liukunopeuteen (90 % tasanteesta).
   * IRROITUS: irroituksen jalkeen kivi on vapaa kappale, eli rata on tasainen 2. asteen kayra ilman teravia muutoksia: X(Y) paraabeli (kaarto,
     "curl") JA Y(t) 2. asteen polynomi (vakiohidastuvuus). Ennen irroitusta heittaja tyontaa ja ohjaa kivea: kiihtyvyys (Y(t)) ja kaarevuus (X(Y))
-    ovat toiset. Irroitus = kohta, jossa molemmat vaihtuvat SILEASTI (paikka JA nopeus/suunta jatkuvat, vain 2. derivaatta hyppaa): kahden
-    paraabelin C1-sovitus (robusti, Huber), vaihtokohta ruudukkohaulla, X- ja Y-kanavan yhteinen vaihtokohta (khi^2-summa), 2-sigma-vali profiilista,
-    tilastollinen merkitsevyys yhta paraabelia vastaan; sovitus toistetaan eri alkukohdilla (vakaus).
+    ovat toiset. Irroitus = viimeinen merkitseva nopeuden tai suunnan muutos: kohta, jossa kiihtyvyys tai kaarevuus viimeksi muuttuu merkitsevasti
+    (MENETELMA "muutos", irroitus_muutos: kinkkitilaston moniskaalainen profiili, viimeisen yhtenaisen merkitsevan alueen voimakkain kohta). Vanhat menetelmat
+    vertailua varten: "hanta" (vapaan lennon ikkuna kasvaa takaperin: loysa, irroitus liian aikaisin) ja "kinkki" (kahden paraabelin C1-sovitus, irroitus_varmistettu).
   * IRROITUSTILA: sijainti, suunta (kulma radan akseliin, + = oikealle heittajasta katsoen), nopeus, hidastuvuus ja kaarevuus vapaan lennon sovituksesta.
 Aikaperusta: ks. aikaperusta.py (lahdevirran ruutuindeksi; pelkka k / 25 ei kelpaa, koska lahdevirrasta puuttuu ruutuja).
 
@@ -43,7 +43,7 @@ SIGMA_A_VAPAA_M_S2 = 0.03    # ... ja sen hajonta
 SIGMA_KAAREVUUS_1_CM = 5e-5  # vapaan lennon X(Y)-kaarevuus: 0 +- tama (mitattu hajonta 4-5e-5 1/cm, sis. mittakohinan): kinkkihaun ja hannan ikkunan ennustetesti
 SIGMA_KAAREVUUS_TILA_1_CM = 5e-5   # ... ja irroitustilan (suunta irroituksessa) sovituksessa: tiukempi esitieto vakauttaa suunnan (irroituksen suunta = hog-viivan suunta - kaarto matkalla)
 Y_IRROITUS_MAX_CM = None     # irroitus ei voi olla taman jalkeen (saanto: ennen hog-viivaa; reaaliaikaisessa asetuksessa ESTIMAATTI.Y_r_max)
-MENETELMA = "hanta"            # irroituksen tunnistus: "hanta" (vapaan lennon hanta, takaperin kasvava ikkuna; kts. irroitus_hanta) tai "kinkki" (kahden paraabelin C1-sovitus, irroitus_varmistettu)
+MENETELMA = "muutos"           # irroituksen tunnistus: "muutos" (viimeinen merkitseva kiihtyvyyden / kaarevuuden muutos; kts. irroitus_muutos), "hanta" (vapaan lennon hanta, takaperin kasvava ikkuna; kts. irroitus_hanta) tai "kinkki" (kahden paraabelin C1-sovitus, irroitus_varmistettu)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -323,6 +323,169 @@ def irroitus_hanta(t, X, Y, sY=None, sX=None, Y_ankkuri=None, Y_r_min=None, m=No
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# IRROITUS: VIIMEINEN MUUTOS (moniskaalainen kinkkitilasto)
+# ---------------------------------------------------------------------------------------------------------------------
+# Heittaja tyontaa ja ohjaa kivea irroitukseen asti: rata poikkeaa vapaasta lennosta (kiihtyvyys Y(t), kaarevuus X(Y)); irroituksen jalkeen vain hidastuvuus ja kaarto. Irroitus on siis viimeinen
+# merkitseva nopeuden tai suunnan muutos. Silmin todettu (22 heiton kontaktiarkit, keltaisella kahvalla irtoaminen nakyy selvasti): tyonnon loppu = nopeuden huippu, kasi irtoaa 0-60 cm myohemmin.
+# Vapaan lennon ikkunan kasvattaminen takaperin (irroitus_hanta) pysahtyy vasta kun poikkeama on 3 sigmaa, koska loiva tyonto sopii vapaan lennon paraabeliin (vapaat parametrit): irroitus tuli
+# 0,7-1,2 m liian aikaisin, ja tyonnon aikana nopeus ennen ja jalkeen irroituksen erosivat 0,1-0,25 m/s.
+MUUTOS_SKAALAT_CM = (100.0, 150.0, 200.0, 300.0)    # kinkkitilaston ikkunan puolikas L (cm): lyhyt paikantaa terävan muutoksen, pitka havaitsee loivan tyonnon
+MUUTOS_ASKEL_CM = 5.0                               # ehdokaskohtien vali
+MUUTOS_Y_ALKU_CM = 250.0                            # aikaisin ehdokas (hackista lahtevan tyonnon jalkeen)
+MUUTOS_SIGMA_Y_CM = 0.7                             # nimellinen mittakohina (valkoinen) kinkkitilaston nimittajassa; vakio, koska radan lopusta arvioitu kohina sisaltaa myohaisen tyonnon (keltaisilla 0,3-1,6 cm)
+MUUTOS_SIGMA_X_CM = 0.12
+MUUTOS_KYNNYS_Y = 5.0                               # z-kynnys kiihtyvyyden pudotukselle (tyonto loppuu): vapaan lennon heitoilla (24) pienin z alueella Y = 520-632 cm oli -4,9 (skaalat 100-200 cm)
+MUUTOS_KYNNYS_X = 9.0                               # ... ja suurin |z| kaarevuuden muutokselle 8,5 (X-kanava herkempi: sivusuuntainen kohina 0,12 cm, kasi heiluttaa kiveä ohjatussa vaiheessa)
+MUUTOS_HEIKKO = 0.6                                 # heikoin kelvollinen tapahtuma (voimakkuus S; S >= 1 = merkitseva)
+MUUTOS_LAMBDA_CM = 300.0                            # lopun ennakko: tapahtuman S painotetaan exp((Y - Y_ylaraja) / lambda): myohempi muutos voittaa aikaisemman, ellei se ole selvasti heikompi (heittajat irroittavat 0-3 m
+                                                    # ennen hog-viivaa, viimeinen muutos); pehmea valinta on vakaa kynnysten suhteen (kova 'viimeinen merkitseva alue' hyppasi 12 %:lla heitoista > 60 cm kynnysten +-10 %:n muutoksella)
+MUUTOS_PAIKANNUS_OSUUS = 0.8                        # paikannus: hienoin skaala, jolla S >= taman osuus valitun kohdan S:sta +-MUUTOS_PAIKANNUS_CM:n sisalla (karkea skaala vain havaitsee loivan tyonnon)
+MUUTOS_PAIKANNUS_CM = 100.0
+MUUTOS_VALI_OSUUS = 0.75                            # epavarmuusvali: yhtenainen alue valitun kohdan ymparilla, jossa S >= taman osuus huipusta
+MUUTOS_MIN_N = 6                                    # kinkin molemmin puolin vahintaan taman verran pisteita
+MUUTOS_PUHDISTUS = 4.0                              # yksittaiset mittausvirheet (kasi peittaa kiven, B-sovituksen harha): jaannos naapureiden paraabelista > taman * robusti hajonta -> pois
+MUUTOS_PUHDISTUS_S, MUUTOS_PUHDISTUS_CM = 0.3, 40.0   # naapuruston koko: Y(t) +-0,3 s, X(Y) +-40 cm
+MUUTOS_TYONTO_L_CM = 150.0                          # tyonto: ikkunan [Y_h - L, Y_h] kiihtyvyys on selvasti yli vapaan lennon hidastuvuuden (kasi tyontaa kivea): irroitus ei voi olla ennen viimeista tyontoa
+MUUTOS_TYONTO_Z = 4.0
+MUUTOS_TYONTO_MIN_M_S2 = 0.10
+
+
+def _kinkki_z(u, y, uh, skaala, s):
+    """Kinkkitilasto kohdassa uh: ikkunan pisteet (u, y) sovitetaan kahdella paraabelilla, joiden arvo ja 1. derivaatta jatkuvat uh:ssa (y = y_h + v d + 0,5 c_jalkeen d^2 (d >= 0) /
+    0,5 c_ennen d^2 (d < 0)); z = (c_jalkeen - c_ennen) / sigma, sigma = s * sqrt(Var-kerroin) (valkoinen kohina s). skaala vain kuntoon asettamiseen. nan, jos pisteita liian vahan."""
+    d = (u - uh) / skaala
+    ja = d >= 0.0
+    if int(ja.sum()) < MUUTOS_MIN_N or int((~ja).sum()) < MUUTOS_MIN_N:
+        return np.nan
+    d2 = 0.5 * d * d
+    A = np.column_stack([np.ones_like(d), d, d2 * ja, d2 * (~ja)])
+    try:
+        Ni = np.linalg.inv(A.T @ A)
+    except np.linalg.LinAlgError:
+        return np.nan
+    p = Ni @ (A.T @ y)
+    v = Ni[2, 2] + Ni[3, 3] - 2.0 * Ni[2, 3]
+    if not v > 0.0:
+        return np.nan
+    return float((p[2] - p[3]) / (s * np.sqrt(v)))
+
+
+def _poikkeamat(t, X, Y):
+    """Totuusarvotaulukko: False = yksittainen mittausvirhe. Kunkin pisteen jaannos naapuriensa (itse pois) paraabelista; hylataan, jos jaannos > MUUTOS_PUHDISTUS * max(robusti hajonta, nimellinen).
+    Y(t) ja X(Y) erikseen. Aidot muutokset (kinkki, sileä poikkeama) eivat ole yksittaisia: naapuriston paraabeli seuraa niita."""
+    ok = np.ones(len(t), bool)
+    for u, v, s0, ikk in ((t, Y, MUUTOS_SIGMA_Y_CM, MUUTOS_PUHDISTUS_S), (Y, X, MUUTOS_SIGMA_X_CM, MUUTOS_PUHDISTUS_CM)):
+        r = np.full(len(t), np.nan)
+        for k in range(len(t)):
+            m = np.abs(u - u[k]) <= ikk
+            m[k] = False
+            if int(m.sum()) >= 6:
+                r[k] = v[k] - np.polyfit(u[m] - u[k], v[m], 2)[2]
+        if np.isfinite(r).sum() >= 10:
+            s = max(1.4826 * float(np.nanmedian(np.abs(r - np.nanmedian(r)))), s0)
+            ok &= ~(np.abs(np.nan_to_num(r)) > MUUTOS_PUHDISTUS * s)
+    return ok
+
+
+def _muutos_profiilit(t, X, Y, ys):
+    """Kinkkitilastot z_Y (kiihtyvyyden hyppy, Y(t)) ja z_X (kaarevuuden hyppy, X(Y)) skaaloittain (rivit) ja ehdokaskohdittain ys (sarakkeet); ikkuna Y in [Y_h - L, Y_h + L]."""
+    ZY = np.full((len(MUUTOS_SKAALAT_CM), len(ys)), np.nan)
+    ZX = np.full_like(ZY, np.nan)
+    for a, L in enumerate(MUUTOS_SKAALAT_CM):
+        for k, Yh in enumerate(ys):
+            m = (Y >= Yh - L) & (Y <= Yh + L)
+            if int(m.sum()) < 2 * MUUTOS_MIN_N:
+                continue
+            ZY[a, k] = _kinkki_z(t[m], Y[m], float(np.interp(Yh, Y, t)), 1.0, MUUTOS_SIGMA_Y_CM)
+            ZX[a, k] = _kinkki_z(Y[m], X[m], Yh, L, MUUTOS_SIGMA_X_CM)
+    return ZY, ZX
+
+
+def _tyonto_loppu(t, Y, Y_alku):
+    """Viimeinen ikkunan paate Y_h (askel MUUTOS_ASKEL_CM, Y_h >= Y_alku), jonka ikkunassa [Y_h - L, Y_h] (L = MUUTOS_TYONTO_L_CM) kivea tyonnetaan: paraabelin kiihtyvyys on vahintaan
+    MUUTOS_TYONTO_MIN_M_S2 ja z >= MUUTOS_TYONTO_Z yli vapaan lennon hidastuvuuden (A_VAPAA_M_S2). Kasi vaikuttaa silloin ikkunassa, joten irroitus ei ole sita aikaisemmin. None, jos tyontoa ei ole."""
+    viimeinen = None
+    for Yh in np.arange(Y_alku, float(Y.max()) + 1e-9, MUUTOS_ASKEL_CM):
+        m = (Y >= Yh - MUUTOS_TYONTO_L_CM) & (Y <= Yh)
+        if int(m.sum()) < 10:
+            continue
+        d = t[m] - float(t[m].mean())
+        A = np.column_stack([np.ones_like(d), d, 0.5 * d * d])
+        try:
+            Ni = np.linalg.inv(A.T @ A)
+        except np.linalg.LinAlgError:
+            continue
+        a = float((Ni @ (A.T @ Y[m]))[2])                                        # cm/s2
+        if a / 100.0 >= MUUTOS_TYONTO_MIN_M_S2 and (a + 100.0 * A_VAPAA_M_S2) / (MUUTOS_SIGMA_Y_CM * float(np.sqrt(Ni[2, 2]))) >= MUUTOS_TYONTO_Z:
+            viimeinen = float(Yh)
+    return viimeinen
+
+
+def irroitus_muutos(t, X, Y, Y_r_min=None, Y_r_max=None, min_jalkeen=None, **_):
+    """Irroitus = viimeinen merkitseva nopeuden tai suunnan muutos. Ehdokaskohdat Y_h (askel MUUTOS_ASKEL_CM, alue MUUTOS_Y_ALKU_CM / Y_r_min ... min(Y_r_max, radan loppu - min_jalkeen)); kullekin
+    kinkkitilastot z_Y (Y(t): kiihtyvyyden pudotus = tyonto loppuu) ja z_X (X(Y): kaarevuuden muutos) skaaloilla MUUTOS_SKAALAT_CM; voimakkuus S_L = max(-z_Y / KYNNYS_Y, |z_X| / KYNNYS_X), S >= 1 = merkitseva.
+    Valinta: verhokayran max_L S_L suurin arvo painotettuna exp((Y - ylaraja) / MUUTOS_LAMBDA_CM): myohempi muutos voittaa aikaisemman, ellei se ole selvasti heikompi (pehmea 'viimeinen muutos'; kova kynnys
+    hyppasi tuhansia senttimetreja kynnysten pienilla muutoksilla). Paikannus hienoimmalla skaalalla, jolla muutos on edelleen selva (MUUTOS_PAIKANNUS_OSUUS): lyhyt skaala paikantaa terävan muutoksen, pitka vain
+    havaitsee loivan tyonnon. Irroitus ei voi olla ennen viimeista merkitsevaa tyontoa (_tyonto_loppu: ikkunan kiihtyvyys selvasti yli vapaan lennon), ja jos kivea tyonnetaan viela radan lopussa, irroitus
+    ei ole viela tapahtunut -> ehdokasalueen ylareuna (merkitseva = False). merkitseva = valitun muutoksen S >= 1; heikoin hyvaksytty S on MUUTOS_HEIKKO.
+    Palauttaa dict (kuten irroitus_hanta) tai None (rata liian lyhyt / ei ehdokasta; kutsuja palaa kinkkihakuun). Y on korjattava tunnetuista paikkaan sidotuista mittausharhoista ennen (netti_seuranta.korjaa_hog_harha)."""
+    min_jalkeen = MIN_JALKEEN_CM if min_jalkeen is None else min_jalkeen
+    if len(t) < 30:
+        return None
+    ok = _poikkeamat(t, X, Y)
+    t, X, Y = t[ok], X[ok], Y[ok]
+    if len(t) < 25:
+        return None
+    Y_a = max(MUUTOS_Y_ALKU_CM, 0.0 if Y_r_min is None else Y_r_min)
+    Y_b = float(Y.max()) - min_jalkeen
+    if Y_r_max is not None:
+        Y_b = min(Y_b, Y_r_max)
+    if Y_b < Y_a + 20.0:
+        return None
+    ys = np.arange(Y_a, Y_b + 1e-9, MUUTOS_ASKEL_CM)
+    ZY, ZX = _muutos_profiilit(t, X, Y, ys)
+    SLY = -np.where(np.isfinite(ZY), ZY, 0.0) / MUUTOS_KYNNYS_Y                   # voimakkuus skaaloittain (rivit) ja kanavittain: kiihtyvyyden pudotus (Y) ...
+    SLX = np.where(np.isfinite(ZX), np.abs(ZX), 0.0) / MUUTOS_KYNNYS_X            # ... ja kaarevuuden muutos (X)
+    Y_t = _tyonto_loppu(t, Y, Y_a)                                                # kasi vaikuttaa viimeksi ikkunassa [Y_t - L, Y_t]: irroitus ei ole sita aikaisemmin
+    jatkuu = Y_t is not None and Y_t >= float(Y.max()) - 2.0 * MUUTOS_ASKEL_CM
+    if Y_t is not None and not jatkuu:
+        sallittu = ys >= Y_t - MUUTOS_TYONTO_L_CM
+        SLY, SLX = np.where(sallittu, SLY, 0.0), np.where(sallittu, SLX, 0.0)
+    SL = np.maximum(SLY, SLX)
+    env = SL.max(axis=0)                                                          # verhokayra yli skaalojen: ilmaisu
+    if jatkuu:                                                                    # kivea tyonnetaan viela radan lopussa: irroitus ei ole viela tapahtunut
+        k = len(ys) - 1
+        sk = int(np.argmax(SL[:, k]))
+        merkitseva = False
+    else:
+        paino = np.exp((ys - ys[-1]) / MUUTOS_LAMBDA_CM)                          # myohaisempi muutos voittaa, ellei se ole selvasti heikompi
+        k = int(np.argmax(env * paino))
+        merkitseva = bool(env[k] >= 1.0)
+        if env[k] >= MUUTOS_HEIKKO:
+            near = np.abs(ys - ys[k]) <= MUUTOS_PAIKANNUS_CM                      # paikannus hienoimmalla skaalalla, jolla muutos on edelleen selva
+            sk = next((r for r in range(SL.shape[0]) if SL[r, near].max() >= MUUTOS_PAIKANNUS_OSUUS * env[k]), int(np.argmax(SL[:, k])))
+            k = int(np.nonzero(near)[0][np.argmax(SL[sk, near])])
+        elif Y_t is None:
+            return None
+        else:                                                                     # tyonto loppui tahan mennessa, mutta kinkki ei erotu: tyontoikkunan keskipiste
+            k = int(np.argmin(np.abs(ys - min(Y_b, Y_t - 0.5 * MUUTOS_TYONTO_L_CM))))
+            sk = int(np.argmax(SL[:, k]))
+    raja = max(MUUTOS_VALI_OSUUS * float(SL[sk, k]), 0.3)
+    a = b = k
+    while a > 0 and SL[sk, a - 1] >= raja:
+        a -= 1
+    while b < len(ys) - 1 and SL[sk, b + 1] >= raja:
+        b += 1
+    Y_r = float(ys[k])
+    kanava = "y" if SLY[sk, k] >= SLX[sk, k] else "x"
+    z = MUUTOS_KYNNYS_Y * SLY[sk, k] if kanava == "y" else MUUTOS_KYNNYS_X * SLX[sk, k]
+    return dict(jasenet=[], profiilit=[], historia=[Y_r], Y_r=Y_r, Y_min=float(ys[a]), Y_max=float(ys[b]), Y_r_Y_kanava=float(ys[int(np.argmax(SLY.max(axis=0) * np.exp((ys - ys[-1]) / MUUTOS_LAMBDA_CM)))]),
+                Y_r_X_kanava=float(ys[int(np.argmax(SLX.max(axis=0) * np.exp((ys - ys[-1]) / MUUTOS_LAMBDA_CM)))]), dchi2_med=float(z * z), merkitsevia=int(merkitseva), jasenia=1, merkitseva=bool(merkitseva),
+                menetelma="muutos", voimakkuus=float(SL[sk, k]), kanava=kanava, skaala_cm=float(MUUTOS_SKAALAT_CM[sk]), tyonto_jatkuu=bool(jatkuu), tyonto_loppu=Y_t, sigma_Y_cm=MUUTOS_SIGMA_Y_CM,
+                sigma_X_cm=MUUTOS_SIGMA_X_CM, ikkuna_n=int((Y >= Y_r).sum()))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # IRROITUSTILA
 # ---------------------------------------------------------------------------------------------------------------------
 def _paraabeli_arvo(u, y, u0, esi=None):
@@ -431,7 +594,10 @@ def analysoi(rata, kohinakatto=None, **asetus):
     if kohinakatto is not None:
         sY, sX = min(sY, kohinakatto[0]), min(sX, kohinakatto[1])
     ir = None
-    if asetus.get("menetelma", MENETELMA) == "hanta":                            # vapaan lennon hanta, kun rata yltaa hog-viivan taakse (muuten kinkkihaku: osittainen aineisto)
+    menetelma = asetus.get("menetelma", MENETELMA)
+    if menetelma == "muutos":                                                    # viimeinen merkitseva nopeuden / suunnan muutos; ei ehdokasta (lyhyt rata): kinkkihaku
+        ir = irroitus_muutos(t, X, Y, Y_r_min=asetus.get("Y_r_min"), Y_r_max=asetus.get("Y_r_max", Y_IRROITUS_MAX_CM), min_jalkeen=asetus.get("min_jalkeen"))
+    elif menetelma == "hanta":                                                   # vapaan lennon hanta, kun rata yltaa hog-viivan taakse (muuten kinkkihaku: osittainen aineisto)
         ya = asetus.get("Y_r_max")
         ir = (irroitus_hanta(t, X, Y, sY=max(sY, HANTA_SIGMA_Y_MIN), sX=max(sX, HANTA_SIGMA_X_MIN), Y_ankkuri=ya, Y_r_min=asetus.get("Y_r_min"), esitieto=asetus.get("esitieto", False))
               if ya is not None or Y_IRROITUS_MAX_CM is not None else None)

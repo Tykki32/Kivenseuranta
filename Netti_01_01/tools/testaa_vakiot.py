@@ -308,8 +308,78 @@ def testaa_irroitus():
     tarkista("sileä rata: suunta oikein (+-0,4 astetta, tosi -3,4 + kaarto)", abs(r["tila"]["suunta_deg"] - (-3.4 + np.degrees(1e-5 * r["tila"]["Y_cm"]))) <= 0.4, f"{r['tila']['suunta_deg']:+.2f}")
 
 
+def _heitto_tyonnolla(y_tyonto, kesto_s, a_tyonto, rng, ohjaus=0.0, kohouma=0.0, v_liuku=1.8, y_loppu=750.0):
+    """Synteettinen heittopaan rata (25 r/s) tunnetulla irroituksella: tyonto levosta, tasainen liuku (nopeus v_liuku, hidastuvuus 0,10 m/s2), loppuun tyonto (kiihtyvyys a_tyonto m/s2, kesto kesto_s,
+    alkaa kun Y = y_tyonto; a_tyonto = 0: ei tyontoa) ja irroituksen jalkeen vapaa lento (0,07 m/s2). Sivusuunta: suora (-3,4 astetta) + kasi ohjaa irroitukseen asti (kaarevuus `ohjaus` 1/cm),
+    vapaassa lennossa kaarevuus 0,5e-5 1/cm. kohouma: hog-viivan harha kuten B-sovituksessa (netti_seuranta.HOG_HARHA_CM kerrottuna taman luvulla; Y:ssa nakyva). Palauttaa (t, X, Y, tosi irroituksen Y; None, jos kasi
+    ei ole irronnut radan loppuun mennessa)."""
+    dt = 1.0 / 25.0
+    t, y, v, ph, t_ph = [0.0], [-330.0], [0.0], "tyonto0", 0.0
+    y_irr = None
+    while y[-1] < y_loppu:
+        tt, vv = t[-1], v[-1]
+        if ph == "tyonto0":
+            a = 2.2
+            if vv >= v_liuku:
+                ph = "liuku"
+        elif ph == "liuku":
+            a = -0.10
+            if y[-1] >= y_tyonto:
+                ph, t_ph = ("tyonto", tt) if a_tyonto != 0.0 else ("vapaa", tt)
+                if ph == "vapaa":
+                    y_irr = y[-1]
+        if ph == "tyonto":
+            a = a_tyonto
+            if tt - t_ph >= kesto_s:
+                ph, y_irr = "vapaa", y[-1]
+        if ph == "vapaa":
+            a = -0.07
+        vv = max(vv + a * dt, 0.0)
+        v.append(vv)
+        y.append(y[-1] + 100.0 * 0.5 * (v[-1] + v[-2]) * dt)
+        t.append(tt + dt)
+    t, y = np.array(t), np.array(y)
+    d = y + 330.0
+    c = np.where(y < (np.inf if y_irr is None else y_irr), ohjaus, 0.5e-5)                      # kaarevuus (1/cm); suunta jatkuva irroituksessa
+    th = np.tan(np.radians(-3.4)) + np.concatenate([[0.0], np.cumsum(0.5 * (c[1:] + c[:-1]) * np.diff(d))])
+    X = -60.0 + np.concatenate([[0.0], np.cumsum(0.5 * (th[1:] + th[:-1]) * np.diff(d))])
+    Yh = y + (kohouma * np.interp(y, *np.array(ns.HOG_HARHA_CM, float).T, left=0.0, right=0.0) if kohouma else 0.0)
+    return t, X + rng.normal(0, 0.12, len(t)), Yh + rng.normal(0, 0.5, len(t)), y_irr
+
+
+def testaa_irroitus_muutos():
+    print("irroituksen tunnistus: viimeinen merkitseva muutos (liuku_irroitus.irroitus_muutos)")
+    rng = np.random.default_rng(5)
+    for nimi, y_tyonto, kesto, a, ohjaus, raja in (("tyonnon loppu (+0,4 m/s2, 0,7 s)", 380.0, 0.7, 0.4, 0.0, 70.0), ("myohainen voimakas tyonto (+0,6 m/s2, 0,5 s)", 540.0, 0.5, 0.6, 0.0, 70.0),
+                                                   ("loiva pitka tyonto (+0,25 m/s2, 1,2 s)", 330.0, 1.2, 0.25, 0.0, 90.0), ("sivusuunnan ohjaus loppuu (ei tyontoa)", 400.0, 0.0, 0.0, 6e-5, 70.0)):
+        t, X, Y, y_tosi = _heitto_tyonnolla(y_tyonto, kesto, a, rng, ohjaus)
+        if a == 0.0 and ohjaus != 0.0:
+            y_tosi = y_tyonto                                                                    # ohjaus kestaa tyonnon alun paikkaan asti (a = 0: vapaa lento alkaa heti)
+        ir = li.irroitus_muutos(t, X, Y, Y_r_max=ns.ESTIMAATTI["Y_r_max"], min_jalkeen=70.0)
+        tarkista(f"{nimi}: irroitus oikeassa kohdassa (+-{raja:.0f} cm) ja merkitseva", ir is not None and abs(ir["Y_r"] - y_tosi) <= raja and ir["merkitseva"], f"{ir and round(ir['Y_r'])} vs {y_tosi:.0f}")
+    t, X, Y, y_tosi = _heitto_tyonnolla(380.0, 0.0, 0.0, rng)                                    # ei tyontoa eika ohjausta: rata sileä, irroitus ei nay
+    ir = li.irroitus_muutos(t, X, Y, Y_r_max=ns.ESTIMAATTI["Y_r_max"], min_jalkeen=70.0)
+    tarkista("sileä rata: ei merkitsevaa irroitusta", ir is None or not ir["merkitseva"], f"{ir and (round(ir['Y_r']), round(ir['voimakkuus'], 2))}")
+    # hog-viivan harha: B-sovituksen +1 cm kohouma (Y ~ 640) korjataan ennen tunnistusta: irroitus oikein, ja kohouman jalkeen nopeus ei heilahda
+    t, X, Y, y_tosi = _heitto_tyonnolla(380.0, 0.7, 0.4, rng, kohouma=1.0)
+    Yk = ns.korjaa_hog_harha(Y)
+    ir_kork = li.irroitus_muutos(t, X, Yk, Y_r_max=ns.ESTIMAATTI["Y_r_max"], min_jalkeen=70.0)
+    tarkista("hog-viivan harha korjattuna: irroitus oikein (+-70 cm)", ir_kork is not None and abs(ir_kork["Y_r"] - y_tosi) <= 70.0, f"{ir_kork and round(ir_kork['Y_r'])} vs {y_tosi:.0f}")
+    def hog_poikkeama(y):                                                                      # nopeus hog-viivalla (suora mittaus) miinus irroituksen tilan ennuste samalle hetkelle
+        ti = li.analysoi(dict(t=t, X=X, Y=y), kohinakatto=(0.8, 0.15), **{k: v for k, v in ns.ESTIMAATTI.items() if k != "kohinakatto"})["tila"]
+        return ns.hog_ikkuna(t, X, y)["v_m_s"] - (ti["nopeus_m_s"] + ti["hidastuvuus_m_s2"] * (float(np.interp(646.0, y, t)) - ti["t_r"]))
+    p_kork = hog_poikkeama(Yk)
+    tarkista("hog-viivan harha korjattuna: hog-viivan nopeus sopii irroituksen jalkeiseen vapaaseen lentoon (< 0,02 m/s)", abs(p_kork) < 0.02, f"{p_kork:+.3f}")
+    # osittainen rata: tyonto jatkuu viela radan lopussa -> irroitus ei ole viela tapahtunut (ehdokasalueen ylareuna)
+    t, X, Y, y_tosi = _heitto_tyonnolla(380.0, 3.0, 0.45, rng)
+    m = Y < 560.0
+    ir = li.irroitus_muutos(t[m], X[m], Y[m], Y_r_max=ns.ESTIMAATTI["Y_r_max"], min_jalkeen=70.0)
+    tarkista("tyonto jatkuu radan lopussa: irroitus = ehdokasalueen ylareuna, ei merkitseva", ir is not None and ir["tyonto_jatkuu"] and not ir["merkitseva"] and ir["Y_r"] >= Y[m].max() - 80.0, f"{ir and round(ir['Y_r'])} (rata {Y[m].max():.0f})")
+    tarkista("harhakorjaus: nolla taulukon ulkopuolella, kohouma enintaan 1,5 cm", float(ns.korjaa_hog_harha(np.array([300.0, 450.0, 750.0])).tolist() == [300.0, 450.0, 750.0]) and 0.5 <= float(np.max(np.array([590.0, 640.0, 700.0]) - ns.korjaa_hog_harha(np.array([590.0, 640.0, 700.0])))) <= 1.5)
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos):
         t()
     print()
     if VIRHEITA:

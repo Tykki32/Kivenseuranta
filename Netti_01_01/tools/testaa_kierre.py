@@ -53,10 +53,11 @@ def synteettinen(omega, rng, th0=40.0, n_puhdas=14, n_kasi=10, fps=25.0, peilaus
 
 
 def synteettinen_sarana(omega, rng, t_c=0.5, th_p=120.0, n_kasi=22, n_puhdas=10, fps=25.0):
-    """Saranamalli: kahvan kulma on vakio th_p hetkeen t_c (s irroituksesta) asti ja kiertyy sen jalkeen vakionopeudella; ruudut t_irr - 0,6 s alkaen, kasi peittaa ensimmaiset n_kasi ruutua
-    (kohina ~15 aste), loput puhtaita. t_irr = 0. Palauttaa (k, t_irr)."""
+    """Saranamalli: kahvan kulma on vakio th_p hetkeen t_c (s irroituksesta) asti ja kiertyy sen jalkeen vakionopeudella; ruudut t_irr + nk.SARANA_T_ALKU alkaen, kasi peittaa ensimmaiset n_kasi ruutua
+    (kohina ~15 aste), loput puhtaita. t_irr = 0. Palauttaa (k, t_irr). t_c annetaan ikkunan alun -0,6 s mukaan ja siirretaan ikkunan alun mukana (nk.SARANA_T_ALKU + 0,6): rakenne (kasi, puhtaat, kierron alku ikkunassa) ei riipu ikkunan sijainnista irroitukseen nahden."""
     n = n_kasi + n_puhdas
-    t = -0.6 + np.arange(n) / fps
+    t_c = t_c + (nk.SARANA_T_ALKU + 0.6)
+    t = nk.SARANA_T_ALKU + np.arange(n) / fps
     th_tosi = np.where(t < t_c, th_p, th_p + omega * (t - t_c)) % 180.0
     Cz, nkz, nvz = [], [], []
     for i in range(n):

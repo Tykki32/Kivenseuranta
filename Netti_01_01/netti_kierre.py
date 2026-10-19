@@ -211,9 +211,13 @@ def posteriori_omega(k, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lo
     return dict(om=om_ruudukko, p=p, p_ccw=float(p[om_ruudukko > 0].sum()), sig=sig, puhdas=puhdas, t_ka=t_ka, n_eff=float(np.sum(1.0 / (sig / SIG_HYVA) ** 2)), J=J, th=th_ruudukko)
 
 
-SARANA_T_ALKU = -0.6            # saranamalli: ruudut t >= t_irr + tama (s): plateau-ruudut ennen kierron alkua (kasi pitaa kahvaa, kulma vakio)
-SARANA_TC_ALUE = (-0.6, 1.2)    # kierron alkuhetki t_c (s, suhteessa t_irr), tasainen ennakko; sormet irtoavat usein vasta 0,3-1,0 s irroituksen (reittidatan vapaan lennon alun) jalkeen
+SARANA_T_ALKU = -1.0            # saranamalli: ruudut t >= t_irr + tama (s): plateau-ruudut ennen kierron alkua (kasi pitaa kahvaa, kulma vakio)
+SARANA_TC_ALUE = (-1.0, 0.8)    # kierron alkuhetki t_c (s, suhteessa t_irr), tasainen ennakko
 SARANA_TC_ASKEL = 0.05
+# Ikkuna ja ennakko on mitoitettu irroituksen mukaan: irroitus on viimeinen tyonto (liuku_irroitus.irroitus_muutos), mediaanilta 0,33 s (0,19 ... 0,51 s) myohempi kuin aiempi vapaan lennon hanta, jonka suhteen
+# ikkuna oli (-0,6 s ja t_c -0,6 ... +1,2 s). Siirto 0,4 s (-1,0 s ja -1,0 ... +0,8 s) pitaa havaintoaineiston ja ennakon ennallaan: koko videolla (112 heittoa, tallennetuista ruutukayrista) varman kierrosmaaran
+# heitot 68 / 112 (hanta-irroituksella 68; uusi irroitus ja vanha ikkuna 63) ja suunnan varmuus >= 0,99 107 (108; 104). Kierron alkuhetken (t_c) posteriori uuteen irroitukseen nahden: keltaiset mediaani -0,65 s
+# (heittokohtaisten posteriorien 5 ... 95 %: -1,35 ... -0,15 s; heittaja kiertaa kahvaa jo liu'un lopussa), punaiset -0,12 s (-1,07 ... +0,30 s).
 
 
 def posteriori_omega_sarana(k, t_irr, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lognormaali, om_ruudukko=OM_RUUDUKKO, th_ruudukko=TH_RUUDUKKO):
