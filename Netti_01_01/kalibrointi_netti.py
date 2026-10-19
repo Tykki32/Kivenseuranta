@@ -132,6 +132,13 @@ def etsi_renkaat(frame):
     """Sinisen ja punaisen renkaan ulko- ja sisaellipsit. Punainen haetaan vain sinisen ulkorenkaan sisalta."""
     blue_mask = kp.create_blue_mask(frame)
     b_out, b_in = kp.find_house_pair(blue_mask, kp.NEAR_BLUE_MIN_AREA, kp.NEAR_BLUE_MIN_RATIO, kp.NEAR_BLUE_MIN_SIZE_RATIO)
+    for k in (9, 15, 25):                         # rengasta halkova valkoinen viiva (T-/keskiviiva) katkaisee maskin, jolloin sisaellipsia ei synny: sulje rako ja hae uudelleen
+        if b_out is not None and b_in is not None:
+            break
+        suljettu = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8))
+        b_out, b_in = kp.find_house_pair(suljettu, kp.NEAR_BLUE_MIN_AREA, kp.NEAR_BLUE_MIN_RATIO, kp.NEAR_BLUE_MIN_SIZE_RATIO)
+        if b_out is not None and b_in is not None:
+            blue_mask = suljettu
     if b_out is None or b_in is None:
         raise RuntimeError("Sinista rengasta ei loytynyt.")
     inside = np.zeros(blue_mask.shape[:2], np.uint8)

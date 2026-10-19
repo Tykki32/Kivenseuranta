@@ -1,0 +1,13 @@
+{
+ "keltainen": {
+  "h_cm": 5.301,
+  "ell_cm": 12.536,
+  "w_cm": 4.862
+ },
+ "punainen": {
+  "h_cm": 4.774,
+  "ell_cm": 11.908,
+  "w_cm": 6.607
+ },
+ "_lahde": "kierto_netti.py yhteissovitus (kaikki vareittain), tulokset/kierto_vasen.json"
+}

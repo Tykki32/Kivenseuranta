@@ -403,8 +403,151 @@ def testaa_vakaa():
     tarkista("lopullinen estimaatti: vakaa, kun merkitseva (rata keskeytyi ennen hakualueen kattamista)", estimaatit(kattava_y - 60.0, lopullinen=True) == [True, True, True])
 
 
+def _aikaperusta_rata(R, rng, kesto=5.0, v0=2.2, a=-0.07, aukot=((12, 15), (45, 52))):
+    """Synteettinen heittopaan rata (Y cm, ruutunumero 30 r/s -videossa) tunnetulla liikkeella Y(tau) = -330 + 100 (v0 tau + a tau^2 / 2) (tau = todellinen aika, s), kun kuvan lahderuudut tulevat
+    R = 25 r/s (kopioruutu joka kuudes: ruudun sisalto = lahderuudun viimeisin) tai R = 30 r/s (kivi liikkuu 30 askelta / s, joka kuudes ruutu vanha). B-aukkoja (kivea ei loydy) kohdissa aukot."""
+    f, Y, tau = [], [], []
+    for m in range(int(kesto * 30)):
+        if m % 6 == 5:                                   # kopioruutu: sisalto = edellinen, tracker ohittaa
+            continue
+        t_lahde = (m * 25 // 30) / 25.0 if R == 25 else m / 30.0
+        f.append(5000 + m); tau.append(t_lahde); Y.append(-330 + 100 * (v0 * t_lahde + 0.5 * a * t_lahde ** 2) + rng.normal(0, 0.4))
+    f, Y, tau = np.array(f, float), np.array(Y), np.array(tau)
+    keep = Y > 0
+    f, Y, tau = f[keep], Y[keep], tau[keep]
+    ok = np.ones(len(f), bool)
+    for a_, b_ in aukot:
+        ok[a_:b_] = False
+    return f[ok], Y[ok], tau[ok]
+
+
+def testaa_aikaperusta():
+    print("aikaperusta: lahderuutujen taajuus R radan omasta liikkeesta (25 r/s ja 30 r/s -kadenssi), aukot radassa")
+    import aikaperusta as ap
+    rng = np.random.default_rng(11)
+    for R in (25, 30):
+        f, Y, tau = _aikaperusta_rata(R, rng)
+        aj = ap.Aikajana(f, Y)
+        t = aj.aika(f)
+        c = np.polyfit(t - t.mean(), Y, 2)
+        v = (c[1] - (-0.07 * 100) * 0) / 100.0                       # nopeus keskella (m/s)
+        v_tosi = (2.2 - 0.07 * (t.mean() - t[0] + (tau[0] if False else 0))) if False else None
+        c_tosi = np.polyfit(tau - tau.mean(), Y, 2)
+        tarkista(f"R = {R}: taajuus tunnistetaan", aj.R == R, f"arvio {aj.R}")
+        tarkista(f"R = {R}: nopeus (Y(t):n sovituksesta) +-2 % oikeasta", abs(c[1] / c_tosi[1] - 1.0) < 0.02, f"{c[1] / 100:.3f} vs {c_tosi[1] / 100:.3f} m/s")
+        tarkista(f"R = {R}: hidastuvuus +-0,01 m/s2", abs(2 * c[2] - 2 * c_tosi[2]) / 100.0 < 0.01, f"{-2 * c[2] / 100:.3f} vs {-2 * c_tosi[2] / 100:.3f} m/s2")
+        d = aj.j - aj.R * aj.f / 30.0
+        tarkista(f"R = {R}: lahdeindeksin ajautuma seinakelloon nahden rajoissa (vaihtelu <= 4)", float(np.ptp(d - np.median(d))) <= 4.0, f"{np.ptp(d - np.median(d)):.1f}")
+
+
+def testaa_kalibroinnin_tarkistus():
+    print("tarkista_kalibrointi: kuvan siirtyma kansion moodikuvaan nahden (synteettinen video, tunnetut siirrot)")
+    import shutil
+    import tempfile
+    import cv2
+    import tarkista_kalibrointi as tk
+    rng = np.random.default_rng(5)
+    kuva = cv2.GaussianBlur(rng.normal(128, 60, (1080, 1920)).astype(np.float32), (0, 0), 3.0)         # staattinen tekstuuri: kaikissa ikkunoissa gradienttia
+    kuva = np.clip(kuva + 40 * np.sin(np.arange(1920) / 37.0)[None, :], 0, 255).astype(np.uint8)
+    tmp = tempfile.mkdtemp()
+    try:
+        for puoli in ("vasen", "oikea"):
+            x, y, w, h = tk.kn.PUOLET[puoli]
+            cv2.imwrite(os.path.join(tmp, f"moodikuva_{puoli}.png"), cv2.rotate(cv2.cvtColor(kuva[y:y + h, x:x + w], cv2.COLOR_GRAY2BGR), cv2.ROTATE_90_COUNTERCLOCKWISE))
+        for nimi, (sx, sy) in (("sama", (0.0, 0.0)), ("siirretty", (6.0, -4.0))):
+            siirretty = cv2.warpAffine(kuva, np.float32([[1, 0, sx], [0, 1, sy]]), (1920, 1080), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            polku = os.path.join(tmp, f"{nimi}.avi")
+            kirj = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (1920, 1080))
+            for _ in range(30):
+                kirj.write(cv2.cvtColor(siirretty, cv2.COLOR_GRAY2BGR))
+            kirj.release()
+            t = tk.siirtymat(polku, tmp, n=8, alku_s=0.0)
+            for puoli in ("vasen", "oikea"):
+                sopii, _ = tk.arvioi(t[puoli])
+                if nimi == "sama":
+                    tarkista(f"{puoli}: sama kuva sopii", sopii is True and abs(t[puoli]["dx"]) < 0.3 and abs(t[puoli]["dy"]) < 0.3, f"dx {t[puoli].get('dx')}")
+                else:
+                    tarkista(f"{puoli}: siirto (6, -4) px mitataan ja kalibrointi hylataan", sopii is False and abs(t[puoli]["dx"] - sx) < 0.5 and abs(t[puoli]["dy"] - sy) < 0.5, f"dx {t[puoli].get('dx'):.2f} dy {t[puoli].get('dy'):.2f}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _heitto_hog_kohoumalla(rng, kohouma_cm=3.5, tyonto_loppu=None, v0=2.1, ruutuja_pois=0.17):
+    """Synteettinen heittopaan rata (t, X, Y): nopeus v0 - 0,065 t (m/s), vapaa lento; hog-viivalla (Y = 635, puolileveys 40 cm) mitattuun Y:hyn lisataan kolmionmuotoinen kohouma kohouma_cm
+    (B-sovituksen Y-harha: nopeus nousee ja laskee takaisin, mika nayttaa tyonnon loppuna; paikka palaa ennalleen). tyonto_loppu: kivea tyonnetaan (+0,6 m/s2) tahan Y:hyn asti, ei kohoumaa
+    (aito myohainen irroitus: nopeus kasvaa pysyvasti)."""
+    dt = 1.0 / 30.0
+    t, Y, v = [0.0], [200.0], 100.0 * v0
+    while Y[-1] < 740.0:
+        y, tt = Y[-1], t[-1]
+        v -= 100.0 * 0.065 * dt
+        if tyonto_loppu is not None and tyonto_loppu - 100.0 <= y < tyonto_loppu:
+            v += 100.0 * 0.6 * dt                                                         # tyonto: nopeus kasvaa pysyvasti
+        Y.append(y + v * dt)
+        t.append(tt + dt)
+    t, Y = np.array(t), np.array(Y)
+    X = 0.05 * (Y - 200.0) + rng.normal(0.0, 0.12, len(Y))
+    if tyonto_loppu is None:
+        Y = Y + kohouma_cm * np.maximum(0.0, 1.0 - np.abs(Y - 635.0) / 40.0)
+    keep = rng.random(len(t)) > ruutuja_pois
+    return t[keep], X[keep], Y[keep] + rng.normal(0.0, 0.4, int(keep.sum()))
+
+
+def testaa_hog_alue():
+    print("hog-viivan hairioalueen tasoitus (netti_seuranta.tasoita_hog_alue) ja irroitus: nopeuden kohouma hog-viivalla ei ole tyontoa")
+    rng = np.random.default_rng(7)
+    for kohouma in (2.0, 3.5, 5.0):
+        paikalla, ennen = [], []
+        for _ in range(6):
+            t, X, Y = _heitto_hog_kohoumalla(rng, kohouma)
+            Xt, Yt, ok = ns.tasoita_hog_alue(t, X, Y)
+            r_ennen = li.analysoi(dict(t=t, X=X, Y=Y), **ns.ESTIMAATTI)
+            r = li.analysoi(dict(t=t, X=Xt, Y=Yt), **ns.ESTIMAATTI)
+            ennen.append(r_ennen["irroitus"]["Y_max"] if r_ennen.get("irroitus") else None)
+            paikalla.append(ok and (r.get("irroitus") is None or not r["irroitus"]["merkitseva"] or r["tila"]["Y_cm"] < ns.HOG_ALUE_CM[0]))
+        tarkista(f"kohouma {kohouma} cm: tasoitettu, ja irroitus ei lukitu hog-viivalle (Y < {ns.HOG_ALUE_CM[0]:.0f} cm tai ei merkitseva)", all(paikalla), f"{sum(paikalla)} / 6")
+    t, X, Y = _heitto_hog_kohoumalla(rng, 3.5, ruutuja_pois=0.0)
+    Xt, Yt, ok = ns.tasoita_hog_alue(t, X, Y)
+    a = (Y >= ns.HOG_ALUE_CM[0]) & (Y <= ns.HOG_ALUE_CM[1])
+    d = np.concatenate([[np.nan], np.diff(Yt) / np.diff(t) / 100.0])
+    tarkista("tasoitettu rata: nopeus alueella tasainen (vaihtelu < 0,05 m/s)", ok and float(np.ptp(d[a][2:-2])) < 0.05, f"{np.ptp(d[a][2:-2]):.3f} m/s")
+    tarkista("alueen ulkopuoliset naytteet ennallaan", bool(np.array_equal(Yt[~a], Y[~a])))
+    # aito myohainen tyonto hog-viivalle asti: reunat eivat sovi yhteen -> ennallaan, irroitus loytyy viivan lahelta
+    ennallaan, lahella = [], []
+    for _ in range(6):
+        t, X, Y = _heitto_hog_kohoumalla(rng, tyonto_loppu=615.0)
+        Xt, Yt, ok = ns.tasoita_hog_alue(t, X, Y)
+        r = li.analysoi(dict(t=t, X=Xt, Y=Yt), **ns.ESTIMAATTI)
+        ennallaan.append((not ok) and bool(np.array_equal(Yt, Y)))
+        lahella.append(r.get("irroitus") is not None and r["tila"]["Y_cm"] >= 570.0)
+    tarkista("aito tyonto alueelle asti: rataa ei tasoiteta eika irroitus siirry alueen ylapuolelle (>= 570 cm)", all(ennallaan) and sum(lahella) >= 5, f"ennallaan {sum(ennallaan)} / 6, irroitus >= 570: {sum(lahella)} / 6")
+    t, X, Y = _heitto_hog_kohoumalla(rng, 3.5)
+    m = Y < 640.0                                                                                 # rata ei yllä alueen yli: ei reunaa jalkeen -> ennallaan
+    Xt, Yt, ok = ns.tasoita_hog_alue(t[m], X[m], Y[m])
+    tarkista("rata paattyy alueen sisaan (ei jalkeista reunaa): ennallaan", (not ok) and bool(np.array_equal(Yt, Y[m])))
+
+
+def testaa_harva_rata():
+    print("liuku_irroitus.analysoi: harva tai liikkeesta alkava rata ei kaada estimaattia (toisen nettivideon heitoilla LinAlgError / TypeError -> ei estimaattia)")
+    rng = np.random.default_rng(11)
+    t, X, Y = _heitto_hog_kohoumalla(rng, tyonto_loppu=520.0)                                      # rata alkaa jo nopeasta liikkeesta (Y = 200 cm)
+    try:
+        r = li.analysoi(dict(t=t, X=X, Y=Y), **ns.ESTIMAATTI)
+        tarkista("rata alkaa liikkeesta: estimaatti saadaan", r.get("irroitus") is not None and np.isfinite(r["tila"]["Y_cm"]), f"{r.get('tila') and round(r['tila']['Y_cm'])}")
+    except Exception as e:                                                                         # noqa: BLE001
+        tarkista("rata alkaa liikkeesta: estimaatti saadaan", False, repr(e))
+    for nimi, (a, b) in (("aukko irroituksen kohdalla (Y 470-560)", (470.0, 560.0)), ("aukko heti irroituksen jalkeen (Y 520-600)", (520.0, 600.0))):
+        m = ~((Y >= a) & (Y <= b))
+        try:
+            r = li.analysoi(dict(t=t[m], X=X[m], Y=Y[m]), **ns.ESTIMAATTI)
+            ok = r.get("irroitus") is None or all(np.isfinite(r["tila"]["Y_cm"]) for _ in (0,))
+            tarkista(f"{nimi}: ei poikkeusta", ok)
+        except Exception as e:                                                                     # noqa: BLE001
+            tarkista(f"{nimi}: ei poikkeusta", False, repr(e))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata):
         t()
     print()
     if VIRHEITA:

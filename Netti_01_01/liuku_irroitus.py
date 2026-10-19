@@ -92,8 +92,8 @@ def liuku_alku(t, Y):
         i0 -= 1
     havaittu = bool(v[i0] < V_LEPO_CM_S)
     t0, Y0 = float(t[i0]), float(Y[i0])
-    if not havaittu:
-        n = min(10, i90 + 1)
+    n = min(10, i90 + 1)
+    if not havaittu and n >= 4:                                # rata alkaa jo nopeassa vauhdissa (i90 ~ 0): alkuun ei voi ekstrapoloida, lahto = ensimmainen nayte
         c = np.polyfit(t[:n] - t[0], Y[:n], 2)                 # Y = c0 tau^2 + c1 tau + c2
         a = 2.0 * c[0]
         if a > 0 and c[1] > 0:
@@ -348,26 +348,32 @@ MUUTOS_PUHDISTUS_S, MUUTOS_PUHDISTUS_CM = 0.3, 40.0   # naapuruston koko: Y(t) +
 MUUTOS_TYONTO_L_CM = 150.0                          # tyonto: ikkunan [Y_h - L, Y_h] kiihtyvyys on selvasti yli vapaan lennon hidastuvuuden (kasi tyontaa kivea): irroitus ei voi olla ennen viimeista tyontoa
 MUUTOS_TYONTO_Z = 4.0
 MUUTOS_TYONTO_MIN_M_S2 = 0.10
+MUUTOS_JALKEEN_MIN_M_S2 = -0.35                     # irroituksen jalkeen kivi on vapaassa lennossa: kiihtyvyys (Y(t), kinkkisovituksen jalkeinen paraabeli) on ~ -0,07 ... -0,3 m/s2 (1. nettivideo: valituilla irroituksilla -0,35 ... -0,05;
+                                                    # kynnys -0,25 ... -0,4 antaa saman tuloksen). Jyrkempi hidastuminen (2. nettivideo: -0,6 ... -1,9 m/s2) ei ole fysikaalinen irroituksen jalkeen vaan mittausharhaa:
+                                                    # B-sovituksen kapea Y-kohouma hog-viivalla (nopeus nousee ja laskee takaisin: nayttaa tyonnon loppuna). Tallainen ehdokaskohta ja 'tyonto' hylataan.
 
 
-def _kinkki_z(u, y, uh, skaala, s):
+def _kinkki_z(u, y, uh, skaala, s, c_jalkeen=False):
     """Kinkkitilasto kohdassa uh: ikkunan pisteet (u, y) sovitetaan kahdella paraabelilla, joiden arvo ja 1. derivaatta jatkuvat uh:ssa (y = y_h + v d + 0,5 c_jalkeen d^2 (d >= 0) /
-    0,5 c_ennen d^2 (d < 0)); z = (c_jalkeen - c_ennen) / sigma, sigma = s * sqrt(Var-kerroin) (valkoinen kohina s). skaala vain kuntoon asettamiseen. nan, jos pisteita liian vahan."""
+    0,5 c_ennen d^2 (d < 0)); z = (c_jalkeen - c_ennen) / sigma, sigma = s * sqrt(Var-kerroin) (valkoinen kohina s). skaala vain kuntoon asettamiseen. nan, jos pisteita liian vahan.
+    c_jalkeen = True: palauttaa (z, c_jalkeen yksikossa y / u^2 kun skaala = 1)."""
+    ei = (np.nan, np.nan) if c_jalkeen else np.nan
     d = (u - uh) / skaala
     ja = d >= 0.0
     if int(ja.sum()) < MUUTOS_MIN_N or int((~ja).sum()) < MUUTOS_MIN_N:
-        return np.nan
+        return ei
     d2 = 0.5 * d * d
     A = np.column_stack([np.ones_like(d), d, d2 * ja, d2 * (~ja)])
     try:
         Ni = np.linalg.inv(A.T @ A)
     except np.linalg.LinAlgError:
-        return np.nan
+        return ei
     p = Ni @ (A.T @ y)
     v = Ni[2, 2] + Ni[3, 3] - 2.0 * Ni[2, 3]
     if not v > 0.0:
-        return np.nan
-    return float((p[2] - p[3]) / (s * np.sqrt(v)))
+        return ei
+    z = float((p[2] - p[3]) / (s * np.sqrt(v)))
+    return (z, float(p[2])) if c_jalkeen else z
 
 
 def _poikkeamat(t, X, Y):
@@ -388,17 +394,19 @@ def _poikkeamat(t, X, Y):
 
 
 def _muutos_profiilit(t, X, Y, ys):
-    """Kinkkitilastot z_Y (kiihtyvyyden hyppy, Y(t)) ja z_X (kaarevuuden hyppy, X(Y)) skaaloittain (rivit) ja ehdokaskohdittain ys (sarakkeet); ikkuna Y in [Y_h - L, Y_h + L]."""
+    """Kinkkitilastot z_Y (kiihtyvyyden hyppy, Y(t)), z_X (kaarevuuden hyppy, X(Y)) ja kiihtyvyys kinkin jalkeen CA (m/s2) skaaloittain (rivit) ja ehdokaskohdittain ys (sarakkeet); ikkuna Y in [Y_h - L, Y_h + L]."""
     ZY = np.full((len(MUUTOS_SKAALAT_CM), len(ys)), np.nan)
     ZX = np.full_like(ZY, np.nan)
+    CA = np.full_like(ZY, np.nan)                                                  # kiihtyvyys kinkin jalkeen (m/s2)
     for a, L in enumerate(MUUTOS_SKAALAT_CM):
         for k, Yh in enumerate(ys):
             m = (Y >= Yh - L) & (Y <= Yh + L)
             if int(m.sum()) < 2 * MUUTOS_MIN_N:
                 continue
-            ZY[a, k] = _kinkki_z(t[m], Y[m], float(np.interp(Yh, Y, t)), 1.0, MUUTOS_SIGMA_Y_CM)
+            ZY[a, k], c = _kinkki_z(t[m], Y[m], float(np.interp(Yh, Y, t)), 1.0, MUUTOS_SIGMA_Y_CM, c_jalkeen=True)
+            CA[a, k] = c / 100.0
             ZX[a, k] = _kinkki_z(Y[m], X[m], Yh, L, MUUTOS_SIGMA_X_CM)
-    return ZY, ZX
+    return ZY, ZX, CA
 
 
 def _tyonto_loppu(t, Y, Y_alku):
@@ -417,6 +425,12 @@ def _tyonto_loppu(t, Y, Y_alku):
             continue
         a = float((Ni @ (A.T @ Y[m]))[2])                                        # cm/s2
         if a / 100.0 >= MUUTOS_TYONTO_MIN_M_S2 and (a + 100.0 * A_VAPAA_M_S2) / (MUUTOS_SIGMA_Y_CM * float(np.sqrt(Ni[2, 2]))) >= MUUTOS_TYONTO_Z:
+            jm = (Y >= Yh) & (Y <= Yh + MUUTOS_TYONTO_L_CM)                      # tyonnon jalkeen nopeus pysyy: jyrkka hidastuminen ikkunan jalkeen (kohouma, ei tyontoa) ei ole tyonnon loppu
+            if int(jm.sum()) >= 2 * MUUTOS_MIN_N:
+                dj = t[jm] - float(t[jm].mean())
+                aj = float(np.polyfit(dj, Y[jm], 2)[0]) * 2.0 / 100.0
+                if aj < MUUTOS_JALKEEN_MIN_M_S2:
+                    continue
             viimeinen = float(Yh)
     return viimeinen
 
@@ -443,7 +457,8 @@ def irroitus_muutos(t, X, Y, Y_r_min=None, Y_r_max=None, min_jalkeen=None, **_):
     if Y_b < Y_a + 20.0:
         return None
     ys = np.arange(Y_a, Y_b + 1e-9, MUUTOS_ASKEL_CM)
-    ZY, ZX = _muutos_profiilit(t, X, Y, ys)
+    ZY, ZX, CA = _muutos_profiilit(t, X, Y, ys)
+    ZY = np.where(CA < MUUTOS_JALKEEN_MIN_M_S2, np.nan, ZY)                       # kinkin jalkeen ei fysikaalista vapaata lentoa (jyrkka hidastuminen): mittausharha, ei irroitus
     SLY = -np.where(np.isfinite(ZY), ZY, 0.0) / MUUTOS_KYNNYS_Y                   # voimakkuus skaaloittain (rivit) ja kanavittain: kiihtyvyyden pudotus (Y) ...
     SLX = np.where(np.isfinite(ZX), np.abs(ZX), 0.0) / MUUTOS_KYNNYS_X            # ... ja kaarevuuden muutos (X)
     Y_t = _tyonto_loppu(t, Y, Y_a)                                                # kasi vaikuttaa viimeksi ikkunassa [Y_t - L, Y_t]: irroitus ei ole sita aikaisemmin
@@ -554,15 +569,26 @@ def liuku_suureet(t, X, Y, la, ir, til):
     Irroitus on kinemaattinen: hetki, jonka jalkeen kasi ei enaa vaikuta rataan (ei sormien irtoamishetki)."""
     t_r, Y_r = ir["t_r"], til["Y_cm"]
     m = (Y >= la["Y_lahto"]) & (Y <= Y_r)
-    c = np.polyfit(Y[m], X[m], 1)
-    liun_suunta = float(np.degrees(np.arctan(c[0])))
+    if int(m.sum()) >= 3 and float(np.ptp(Y[m])) > 10.0:                  # harva rata (kivi nakyy vasta myohemmin tai aukko): liun suuntaa ei voi mitata
+        c = np.polyfit(Y[m], X[m], 1)
+        liun_suunta = float(np.degrees(np.arctan(c[0])))
+    else:
+        c = np.array([np.nan, np.nan])
+        liun_suunta = float("nan")
     # nopeus juuri ennen irroitusta
     w = (t >= t_r - NOPEUS_IKKUNA_S) & (t <= t_r)
-    cy, covy = np.polyfit(t[w] - t_r, Y[w], 1, cov=True)
-    cx = np.polyfit(Y[w], X[w], 1)
-    kerroin = np.sqrt(1.0 + cx[0] ** 2)
-    v_ennen = float(cy[0] * kerroin / 100.0)
-    e_ennen = float(np.sqrt(covy[0, 0]) * kerroin / 100.0)
+    if int(w.sum()) < 4 or float(np.ptp(t[w])) < 0.1:                      # harva rata irroituksen kohdalla: ikkuna laajennetaan lahimpiin 6 naytteeseen ennen irroitusta
+        ii = np.where(t <= t_r)[0][-6:]
+        w = np.zeros(len(t), bool)
+        w[ii] = True
+    if int(w.sum()) >= 4 and float(np.ptp(t[w])) >= 0.1 and float(np.ptp(Y[w])) > 5.0:
+        cy, covy = np.polyfit(t[w] - t_r, Y[w], 1, cov=True)
+        cx = np.polyfit(Y[w], X[w], 1)
+        kerroin = np.sqrt(1.0 + cx[0] ** 2)
+        v_ennen = float(cy[0] * kerroin / 100.0)
+        e_ennen = float(np.sqrt(covy[0, 0]) * kerroin / 100.0)
+    else:
+        v_ennen = e_ennen = float("nan")
     # liun hidastuvuus
     v = liukuva(t, Y, h=4, aste=1)[:, 1] / 100.0
     g = (t >= la["t_90"] + LIUKU_ALKU_VIIVE_S) & (t <= t_r - LIUKU_LOPPU_VIIVE_S)

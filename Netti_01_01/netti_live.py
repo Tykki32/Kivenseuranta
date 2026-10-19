@@ -1047,6 +1047,21 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                   + (f", ikkunassa {naytto.n_nayt}" if naytto is not None else "") + f", suurin viive piirrossa {tilasto['myohassa_max']:.1f} s", flush=True)
 
 
+def kalibrointitarkistus(video, kansio):
+    """Varoitus, jos kansion kalibrointi ja moodikuva eivat sovi videon kamera-asentoon (toinen peli / kentta / pystytys): seuranta toimisi huonosti ja paikat olisivat vinossa (tools/tarkista_kalibrointi.py)."""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+        import tarkista_kalibrointi as tk
+        tulos = tk.siirtymat(video, kansio)
+        sopimattomat = [(p, tk.arvioi(tulos[p])[1]) for p in ("vasen", "oikea") if tk.arvioi(tulos[p])[0] is False]
+    except Exception as e:                                     # tarkistus ei saa kaataa ajoa
+        print(f"(kalibrointitarkistus ei onnistunut: {e!r})", flush=True)
+        return
+    if sopimattomat:
+        print(f"VAROITUS: kalibrointi (kansio {kansio}) ei sovi tahan videoon, tulokset ovat epatarkkoja: " + "; ".join(f"{p}: {t}" for p, t in sopimattomat)
+              + f"\n  Kalibroi video: python tools/uusi_kalibrointi.py {video} --ulos <uusi kansio>  ja aja --kansio <uusi kansio>  (--ei-kalibrointitarkistusta ohittaa tarkistuksen)", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--youtube", nargs="?", const=YOUTUBE_OLETUS, help=f"YouTube-tunnus tai -osoite (oletus {YOUTUBE_OLETUS})")
@@ -1084,6 +1099,7 @@ def main():
     ap.add_argument("--jpeg", type=int, default=92, help="JPEG-laatu (--puskuri jpeg ja yuv-puskurin ylivuoto)")
     ap.add_argument("--tapahtumat", action="store_true", help="tulosta seurannan kaikki tapahtumat (viritys, lahto, vahvistus, hylkays, ei kivea, valmis): nayttaa myos heittoyritykset, jotka jaavat tunnistamatta")
     ap.add_argument("--hiljaa", action="store_true")
+    ap.add_argument("--ei-kalibrointitarkistusta", action="store_true", help="ei tarkisteta (tiedostolahde), sopiiko --kansio:n kalibrointi ja moodikuva videon kamera-asentoon (tools/tarkista_kalibrointi.py)")
     ap.add_argument("--debug-viive", action="store_true", help="tulosta hitaat analyysiruudut (selvittaa miksi ruutuja ohitetaan)")
     ap.add_argument("--ohita-myohassa", action="store_true", help="reaaliaika: ohita analyysista ruutuja, kun kone ei jaksa (vanha tapa; tulokset riippuvat koneen nopeudesta). Oletus tiedostolla ja YouTube-toistolla: "
                     "kaikki ruudut analysoidaan ja tulos on toistettava (sama kuin --nopea), kuva odottaa analyysia")
@@ -1107,6 +1123,8 @@ def main():
     if not (a.youtube or a.lahde or a.url):
         ap.error("anna --youtube [TUNNUS], --lahde TIEDOSTO tai --url OSOITE")
     sim = bool(a.nopea and a.lahde)
+    if a.lahde and not a.ei_kalibrointitarkistusta and not a.hiljaa:
+        kalibrointitarkistus(a.lahde, a.kansio)
     # laskentaprosessit kayntiin ENNEN lahteen avaamista: spawn-prosessien kaynnistys kestaa 5-15 s eika virta saa odottaa
     an = ns.Analyysi(a.kansio, fps=30.0, saikeet=a.saikeet, tarkka=a.saikeet > 0, synkroninen=sim, fps_lahde=a.fps_lahde, kierre=not a.ei_kierretta)
     if not a.hiljaa:
