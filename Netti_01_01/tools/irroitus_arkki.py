@@ -2,7 +2,7 @@
 
     python netti_live.py --lahde netti.mp4 --nopea --ei-ikkunaa --ei-kierretta --radat radat.pkl      # kerran (radat.pkl sisaltaa viivaestimaatin tarkan syotteen)
     python tools/irroitus_arkki.py radat.pkl netti.mp4 --heitot 13,37                                  # arkit/heitto_13.jpg, arkit/heitto_37.jpg
-    python tools/irroitus_arkki.py radat.pkl netti.mp4 --heitot 13 --vertaa hanta --alue -250,300      # lisaksi vanhan menetelman irroitus sinisella, laajempi ruutuvali
+    python tools/irroitus_arkki.py radat.pkl netti.mp4 --heitot 13 --vertaa hanta --alue -250 300      # lisaksi vanhan menetelman irroitus sinisella, laajempi ruutuvali
 
 Yksi kuva per heitto: kiven (kahvan levyn tason, z = 15 cm) ymparille rajatut, 2-kertaisesti suurennetut alkuperaisen videon ruudut radan Y-valilta [irroitus + alku, irroitus + loppu] (oletus -150 ... +250 cm),
 vain yksilolliset ruudut (lahdevirran kopioruudut pois), aikajarjestyksessa vasemmalta oikealle ja ylhaalta alas. Teksti: ruutu, kiven Y ja aika irroituksesta. Punainen = irroituksen lahin ruutu
@@ -114,7 +114,7 @@ def main():
     ap.add_argument("--heitot", required=True, help="heittojen numerot pilkuilla eroteltuna (1-alkuinen, kuten CSV:ssa)")
     ap.add_argument("--menetelma", choices=("muutos", "hanta", "kinkki"), default=li.MENETELMA, help="irroituksen tunnistus (oletus: liuku_irroitus.MENETELMA)")
     ap.add_argument("--vertaa", choices=("muutos", "hanta", "kinkki"), default=None, help="merkitse lisaksi toisen menetelman irroitus (sininen)")
-    ap.add_argument("--alue", default="-150,250", help="ruutuvali irroituksesta (cm): alku,loppu")
+    ap.add_argument("--alue", nargs=2, type=float, default=(-150.0, 250.0), metavar=("ALKU", "LOPPU"), help="ruutuvali irroituksesta (cm), oletus -150 250")
     ap.add_argument("--askel", type=int, default=2, help="joka n:s yksilollinen ruutu")
     ap.add_argument("--sarakkeita", type=int, default=4)
     ap.add_argument("--leveys", type=int, default=300, help="rajauksen leveys (px)")
@@ -126,7 +126,6 @@ def main():
     ap.add_argument("--fps-lahde", type=float, default=25.0)
     ap.add_argument("--fps", type=float, default=30.0)
     a = ap.parse_args()
-    a.alue = tuple(float(x) for x in a.alue.split(","))
     heitot = pickle.load(open(a.radat, "rb"))
     cap = cv2.VideoCapture(a.video)
     if not cap.isOpened():

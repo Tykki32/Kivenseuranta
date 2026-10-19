@@ -360,6 +360,11 @@ def testaa_irroitus_muutos():
     t, X, Y, y_tosi = _heitto_tyonnolla(380.0, 0.0, 0.0, rng)                                    # ei tyontoa eika ohjausta: rata sileä, irroitus ei nay
     ir = li.irroitus_muutos(t, X, Y, Y_r_max=ns.ESTIMAATTI["Y_r_max"], min_jalkeen=70.0)
     tarkista("sileä rata: ei merkitsevaa irroitusta", ir is None or not ir["merkitseva"], f"{ir and (round(ir['Y_r']), round(ir['voimakkuus'], 2))}")
+    t, X, Y, y_tosi = _heitto_tyonnolla(380.0, 0.7, 0.4, rng)
+    ir = li.irroitus_muutos(t, X, Y, Y_r_max=ns.ESTIMAATTI["Y_r_max"], min_jalkeen=70.0)
+    mp = ir["muutos_profiili"]
+    tarkista("voimakkuusprofiili (kuvaa varten): skaaloittain, huippu irroituksen kohdalla", len(mp["S"]) == len(li.MUUTOS_SKAALAT_CM) and len(mp["S"][0]) == len(mp["Y"]) and abs(mp["Y"][int(np.argmax(np.max(mp["S"], axis=0)))] - ir["Y_r"]) <= 150.0,
+             f"{len(mp['S'])} skaalaa x {len(mp['Y'])} kohtaa")
     # hog-viivan harha: B-sovituksen +1 cm kohouma (Y ~ 640) korjataan ennen tunnistusta: irroitus oikein, ja kohouman jalkeen nopeus ei heilahda
     t, X, Y, y_tosi = _heitto_tyonnolla(380.0, 0.7, 0.4, rng, kohouma=1.0)
     Yk = ns.korjaa_hog_harha(Y)

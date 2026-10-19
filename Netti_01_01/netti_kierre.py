@@ -46,7 +46,7 @@ def kierrokset(omega_deg_s, t_keski, t1, t2, k=K_KIERRE):
 # HEITTOPAAN KIERRE: robusti Bayes-estimaattori ruutukohtaisista kulmakustannuksista (arvioi_posteriori)
 # ---------------------------------------------------------------------------------------------------------------------
 # Miksi: palkin kulma on havaittavissa vain sitkeasti (kuvassa ~10 x 20 px:n sumea tahra): (1) kasi pitaa kahvasta kiinni vielä ~0,3-1,0 s irroituksen (ratadatasta paatellyn vapaan lennon alun)
-# jalkeen, joten puhtaita ruutuja on vain ~0,5 s kuvan reunaan (Y ~ 750 cm) asti, kun irroitus on myohainen (keltaiset heittajat: Y ~ 540 cm) ja (2) kulma on havaittavissa vain
+# jalkeen (hanta-irroitus; nykyinen irroitus on viimeinen tyonto ja kierto alkaa tavallisesti jo ennen sita, ks. SARANA_*), joten puhtaita ruutuja on vain ~0,5 s kuvan reunaan (Y ~ 750 cm) asti, kun irroitus on myohainen (keltaiset heittajat: Y ~ 590 cm) ja (2) kulma on havaittavissa vain
 # modulo 180 astetta ja peilausepaselvyydella: palkki kulmassa theta nayttaa melkein samalta kuin kulmassa 2 a - theta (a ~ 90 astetta = palkki kameran katselusuunnassa; kallistusvihje on vain
 # ~2-3 px), kun kasi peittaa. Ruutukohtainen paras kulma (argmin) loikkaa silloin peilikuvaan, ja suoran sovitus nayttaa "latauksena" (kulma kiertyy ensin vastakkaiseen suuntaan ja kaantyy
 # V:n karjessa; todellisuudessa kierto on vakio koko ajan). Siksi ei kayteta ruutujen ennalta valittua parasta kulmaa eika kovaa kasirajausta, vaan jokaisen ruudun KOKO kustannuskayra

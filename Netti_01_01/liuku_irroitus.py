@@ -482,7 +482,8 @@ def irroitus_muutos(t, X, Y, Y_r_min=None, Y_r_max=None, min_jalkeen=None, **_):
     return dict(jasenet=[], profiilit=[], historia=[Y_r], Y_r=Y_r, Y_min=float(ys[a]), Y_max=float(ys[b]), Y_r_Y_kanava=float(ys[int(np.argmax(SLY.max(axis=0) * np.exp((ys - ys[-1]) / MUUTOS_LAMBDA_CM)))]),
                 Y_r_X_kanava=float(ys[int(np.argmax(SLX.max(axis=0) * np.exp((ys - ys[-1]) / MUUTOS_LAMBDA_CM)))]), dchi2_med=float(z * z), merkitsevia=int(merkitseva), jasenia=1, merkitseva=bool(merkitseva),
                 menetelma="muutos", voimakkuus=float(SL[sk, k]), kanava=kanava, skaala_cm=float(MUUTOS_SKAALAT_CM[sk]), tyonto_jatkuu=bool(jatkuu), tyonto_loppu=Y_t, sigma_Y_cm=MUUTOS_SIGMA_Y_CM,
-                sigma_X_cm=MUUTOS_SIGMA_X_CM, ikkuna_n=int((Y >= Y_r).sum()))
+                sigma_X_cm=MUUTOS_SIGMA_X_CM, ikkuna_n=int((Y >= Y_r).sum()),
+                muutos_profiili=dict(Y=[float(y) for y in ys], S=[[float(x) for x in rivi] for rivi in SL], skaalat_cm=[float(L) for L in MUUTOS_SKAALAT_CM]))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -693,13 +694,21 @@ def piirra(radat, tulokset, ref, polku):
         merkit(a, k, ir)
         a.set(xlabel="Y (cm)", ylabel="nopeus (m/s)", title="nopeus ja kiihtyvyys (kiihtyvyyden kohina ~+-0,2 m/s2); sin. = lahto / tyonto")
         a = ax[3, j]
-        if ir is not None:
-            for jas, P in zip(ir["jasenet"], ir["profiilit"]):
-                P = np.array(P)
-                a.plot(P[:, 0], P[:, 1] + P[:, 2], lw=1, label=f"ikkuna Y >= {jas['Y_a']:.0f}")
-            a.set_yscale("log")
+        mp = None if ir is None else ir.get("muutos_profiili")
+        if mp:                                                              # viimeinen muutos: voimakkuus S skaaloittain (S >= 1 merkitseva, S >= MUUTOS_HEIKKO heikko)
+            for L, S_ in zip(mp["skaalat_cm"], mp["S"]):
+                a.plot(mp["Y"], S_, lw=1, label=f"L = {L:.0f} cm")
+            a.axhline(1.0, color="r", lw=0.8, ls="--", label="merkitseva (S = 1)")
+            a.axhline(MUUTOS_HEIKKO, color="r", lw=0.8, ls=":", label=f"heikko (S = {MUUTOS_HEIKKO})")
+            a.set(xlabel="irroituksen ehdokaskohta Y_h (cm)", ylabel="muutoksen voimakkuus S", title="viimeinen muutos: voimakkuus S")
+        else:
+            if ir is not None:
+                for jas, P in zip(ir["jasenet"], ir["profiilit"]):
+                    P = np.array(P)
+                    a.plot(P[:, 0], P[:, 1] + P[:, 2], lw=1, label=f"ikkuna Y >= {jas['Y_a']:.0f}")
+                a.set_yscale("log")
+            a.set(xlabel="vaihtokohta Y_r (cm)", ylabel="khi^2 (Y(t) + X(Y))", title="vaihtokohdan profiili, viimeinen kierros (pienempi = parempi)")
         merkit(a, k, ir)
-        a.set(xlabel="vaihtokohta Y_r (cm)", ylabel="khi^2 (Y(t) + X(Y))", title="vaihtokohdan profiili, viimeinen kierros (pienempi = parempi)")
         a.legend(fontsize=6)
     fig.tight_layout()
     fig.savefig(polku, dpi=100)

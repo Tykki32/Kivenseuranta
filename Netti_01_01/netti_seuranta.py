@@ -140,7 +140,7 @@ ESTIMAATTI = dict(min_jalkeen=70.0, Y_r_min=200.0, kohinakatto=(0.8, 0.15), esit
 KOPIO_KYNNYS = 15.0              # kopioruutu: harmaasavyero (suurin 0,1 % pikseleista) alle taman (aja_kivi.KOPIO_KYNNYS)
 
 # kierre, hog-viivat, numerointi
-KIERTO_Y_MIN_CM = 200.0          # kierteen mittauksen ruudut (leikkeet) kerataan kun kiven Y on taman ja KIERTO_Y_MAX_CM:n valilla (irroitus on tavallisesti Y = 250-400)
+KIERTO_Y_MIN_CM = 200.0          # kierteen mittauksen ruudut (leikkeet) kerataan kun kiven Y on taman ja KIERTO_Y_MAX_CM:n valilla (irroitus on tavallisesti Y = 360-610)
 KIERTO_Y_MAX_CM = 800.0          # kuvan reuna ~ 750 cm: kiven keskipiste on kuvassa (ja kierre mitataan) siihen asti (aiemmin 720: ikkuna katkesi ennen kuvan reunaa)
 KIERTO_LEIKE_R = 72              # talteen otettavan leikkeen puolikas (px): kierre tarvitsee 56 px + varaa (paikka tarkentuu B:lla jalkikateen)
 KIERTO_MAX_RUUTUJA = 240
@@ -149,7 +149,7 @@ HOG_SISA_CM = 640.0              # hog-viivan sisareuna T-viivasta (kalibrointi_
 HOG_KESKI_CM = HOG_SISA_CM + 6.35   # hog-viivan keskiviiva: tama ylitys ajoitetaan molemmissa paissa (hog-hog-matka = ETAISYYS_CM - 2 * HOG_KESKI_CM = 21,8 m)
 ESTIMAATTI["Y_r_max"] = HOG_KESKI_CM - KIVI_R_CM    # saanto: irroitus ennen hog-viivaa (kiven etureuna ei ylita viivaa): kiven keskipiste Y <= 631,8 cm; sen jalkeinen rata on varmasti vapaata lentoa
 HOG_HARHA_CM = ((590, +0.00), (600, +0.08), (610, +0.32), (620, +0.71), (630, +0.91), (640, +0.96), (650, +0.80), (660, +0.70), (670, +0.53), (680, +0.33), (690, +0.16), (700, +0.00))     # B-sovituksen toistuva Y-harha (Y cm, harha cm): kiven etureunan ylittaessa hog-viivan Y nayttaa ~1 cm liian suurelta (viivan vari siluetin reunalla), kaikilla heitoilla ja molemmilla
-                                 # vareilla samoin (24 vapaan lennon heiton mediaani, hajonta heitoittain ~0,5 cm). Harha = paikallinen kohouma, jonka 2. derivaatta (~0,4 m/s2) nayttaa tyonnolta ja sen loppumiselta,
+                                 # vareilla samoin (vapaan lennon heittojen mediaani: irroitus ennen Y = 470 cm, 38 / 112 heittoa; hajonta heitoittain ~0,3 cm). Harha = paikallinen kohouma, jonka 2. derivaatta (~0,4 m/s2) nayttaa tyonnolta ja sen loppumiselta,
                                  # joten se korjataan ennen irroituksen tunnistusta (valmistele_rata). Taulukon laskee tools/kalibroi_paikkavirhe.py radat.pkl:sta (aja uudelleen, jos kalibrointi tai kivimalli muuttuu).
 HOG_IKKUNA_CM = 120.0            # hog-viivan kohdan paikallinen nopeus / suunta (laske_viivat: nopeus_hog1, suunta_hog1_deg): paikat taman matkan sisalla viivasta
 KIVIA_PAASSA = 8                 # numerointi alkaa alusta taman jalkeen (yhden joukkueen kivet / paa)
