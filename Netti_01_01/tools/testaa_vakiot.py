@@ -383,8 +383,28 @@ def testaa_irroitus_muutos():
     tarkista("harhakorjaus: nolla taulukon ulkopuolella, kohouma enintaan 1,5 cm", float(ns.korjaa_hog_harha(np.array([300.0, 450.0, 750.0])).tolist() == [300.0, 450.0, 750.0]) and 0.5 <= float(np.max(np.array([590.0, 640.0, 700.0]) - ns.korjaa_hog_harha(np.array([590.0, 640.0, 700.0])))) <= 1.5)
 
 
+def testaa_vakaa():
+    print("estimaatin 'vakaa'-lippu (Analyysi._aseta_viivat): rata kattaa koko irroituksen hakualueen")
+    import types
+    kattava_y = ns.ESTIMAATTI["Y_r_max"] + ns.ESTIMAATTI["min_jalkeen"]
+
+    def estimaatit(y_max, irr=(300.0, 305.0, 310.0), merkitseva=True, lopullinen=False):
+        h = types.SimpleNamespace(viivat_hist=[], viivat_loki=[])
+        out = []
+        for y in irr:
+            r = dict(irr_Y=y, merkitseva=merkitseva, Y_max=y_max, vapaa_matka_cm=y_max - y, irr_virhe_deg=0.1, irr_suunta_deg=1.0, irr_X=0.0, liuku_a=0.0, liuku_b=0.0)
+            ns.Analyysi._aseta_viivat(h, r, 100, lopullinen)
+            out.append(r["vakaa"])
+        return out
+    tarkista("lyhyt rata (ei kata hakualuetta): ei vakaa, vaikka estimaatit pysyvat paikallaan ja vapaata lentoa on > 250 cm", estimaatit(kattava_y - 20.0) == [False, False, False], str(estimaatit(kattava_y - 20.0)))
+    tarkista("kattava rata: vakaa, kun kaksi peräkkäistä estimaattia eroaa < 30 cm", estimaatit(kattava_y + 20.0) == [False, True, True], str(estimaatit(kattava_y + 20.0)))
+    tarkista("kattava rata, irroitus hyppaa > 30 cm: ei vakaa", estimaatit(kattava_y + 20.0, irr=(300.0, 400.0)) == [False, False], str(estimaatit(kattava_y + 20.0, irr=(300.0, 400.0))))
+    tarkista("ei merkitseva: ei vakaa (kattavallakaan radalla)", estimaatit(kattava_y + 20.0, merkitseva=False) == [False, False, False])
+    tarkista("lopullinen estimaatti: vakaa, kun merkitseva (rata keskeytyi ennen hakualueen kattamista)", estimaatit(kattava_y - 60.0, lopullinen=True) == [True, True, True])
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa):
         t()
     print()
     if VIRHEITA:

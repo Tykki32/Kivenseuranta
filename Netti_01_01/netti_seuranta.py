@@ -2003,12 +2003,15 @@ class Analyysi:
 
     @staticmethod
     def _aseta_viivat(heitto, r, f, lopullinen=False):
-        """Uusi estimaatti heitolle. vakaa = merkitseva irroitus, vapaata lentoa >= 250 cm, irroituspaikka muuttunut < 30 cm edellisesta estimaatista."""
+        """Uusi estimaatti heitolle. vakaa = merkitseva irroitus, rata kattaa koko irroituksen hakualueen (kiven Y >= Y_r_max + min_jalkeen: myohaisempaa muutosta ei voi olla piilossa; aiempi ehto
+        'vapaata lentoa >= 250 cm' hyvaksyi aikaisen arvion, kun myohainen tyonto ei viela nakynyt: 25 / 68 vakaasta arviosta oli > 100 cm lopullisesta), irroituspaikka muuttunut < 30 cm edellisesta
+        estimaatista ja suunnan virhe < 0,4 astetta."""
         if r is None or "virhe" in r:
             return False
         heitto.viivat_hist = (heitto.viivat_hist + [r["irr_Y"]])[-3:]
         edel = heitto.viivat_hist[-2] if len(heitto.viivat_hist) >= 2 else None
-        r["vakaa"] = bool(r["merkitseva"] and r["vapaa_matka_cm"] >= 250.0 and edel is not None and abs(r["irr_Y"] - edel) < 30.0 and r["irr_virhe_deg"] < 0.4)
+        kattava = r["Y_max"] - ESTIMAATTI["min_jalkeen"] >= ESTIMAATTI["Y_r_max"]
+        r["vakaa"] = bool(r["merkitseva"] and kattava and edel is not None and abs(r["irr_Y"] - edel) < 30.0 and r["irr_virhe_deg"] < 0.4)
         if lopullinen and r["merkitseva"]:
             r["vakaa"] = True
         L = ETAISYYS_CM
