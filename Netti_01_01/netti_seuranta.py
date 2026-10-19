@@ -514,6 +514,46 @@ def hog_ikkuna(t, X, Y, y0=None, ikkuna=None):
     return dict(v_m_s=float(cy[0] * np.sqrt(1.0 + cx[0] ** 2) / 100.0), suunta_deg=float(np.degrees(np.arctan(cx[0]))), n=int(m.sum()), Y_keski=float(np.mean(Y[m])))
 
 
+HOG_ALUE_CM = (590.0, 690.0)     # hog-viivan hairioalue (kiven keskipisteen Y): B-sovituksen Y-harha, joka vaihtelee heitoittain (1. videolla ~1 cm ja taulukolla korjattu, 2. videolla viivan ollessa ohut ja sininen
+                                 # 0-4 cm kapeana kohoumana kiven etureunan ylittaessa viivan: nopeus nousee ja laskee takaisin, mika nayttaa tyonnon loppuna ja siirsi irroituksen 40-60 %:lla heitoista hog-viivalle)
+HOG_ALUE_ENNEN_CM = 100.0        # tasoitus: alueen ylapuolelta (ennen sita) tama matka ja ...
+HOG_ALUE_JALKEEN_CM = 30.0       # ... alueen jalkeen tama matka ovat reunaikkunat, jotka sovitetaan yhteen vapaan lennon paraabeliin (hidastuvuus A_VAPAA_M_S2)
+HOG_ALUE_MIN_ENNEN, HOG_ALUE_MIN_JALKEEN = 8, 3
+HOG_ALUE_RMS_CM = 1.0            # ... ja jos reunaikkunat sopivat siihen (rms alle taman), alueen naytteet korvataan paraabelilla: kivi ei voi saada ja menettaa nopeutta hog-viivalla, joten alueella ei ole tietoa
+                                 # tyonnosta. Jos reunat eivat sovi (tyonto jatkuu alueella: nopeus alueen jalkeen suurempi), data jaa ennalleen.
+
+def tasoita_hog_alue(t, X, Y):
+    """(X, Y, tasoitettu): hog-viivan hairioalueen (HOG_ALUE_CM) B-sovituksen harha pois irroituksen tunnistuksesta. Alueen ylapuolen ja jalkeisen reunaikkunan naytteet sovitetaan yhdella vapaan lennon
+    paraabelilla (Y = c0 + c1 t - 0,5 a t^2, a = liuku_irroitus.A_VAPAA_M_S2; X suoralla); jos sovite sopii reunoihin (rms <= HOG_ALUE_RMS_CM), alueen naytteet korvataan sen arvoilla: alueella
+    ei ole nopeuden muutosta, joten mikaan siella nakyva nopeuden nousu ja lasku on mittausharhaa. Jos reunat eivat sovi yhteen (tyonto jatkuu alueella) tai reunanaytteita on liian vahan (rata ei yllä
+    alueen yli), rata palautetaan ennallaan (tasoitettu = False)."""
+    t, X, Y = np.asarray(t, float), np.asarray(X, float), np.asarray(Y, float)
+    z0, z1 = HOG_ALUE_CM
+    alue = (Y >= z0) & (Y <= z1)
+    ennen = (Y >= z0 - HOG_ALUE_ENNEN_CM) & (Y < z0)
+    jalkeen = (Y > z1) & (Y <= z1 + HOG_ALUE_JALKEEN_CM)
+    if not alue.any() or int(ennen.sum()) < HOG_ALUE_MIN_ENNEN or int(jalkeen.sum()) < HOG_ALUE_MIN_JALKEEN:
+        return X, Y, False
+    reuna = ennen | jalkeen
+    a = 100.0 * li.A_VAPAA_M_S2                                                    # cm/s2
+    tm = float(t[reuna].mean())
+    d = t[reuna] - tm
+    M = np.column_stack([np.ones(len(d)), d])
+    y = Y[reuna] + 0.5 * a * d * d
+    try:
+        c = np.linalg.lstsq(M, y, rcond=None)[0]
+        cx = np.polyfit(d, X[reuna], 1)
+    except np.linalg.LinAlgError:
+        return X, Y, False
+    if float(np.sqrt(np.mean((y - M @ c) ** 2))) > HOG_ALUE_RMS_CM:
+        return X, Y, False
+    da = t[alue] - tm
+    Yt, Xt = Y.copy(), X.copy()
+    Yt[alue] = c[0] + c[1] * da - 0.5 * a * da * da
+    Xt[alue] = np.polyval(cx, da)
+    return Xt, Yt, True
+
+
 def korjaa_hog_harha(Y):
     """Kiven Y (cm) ilman B-sovituksen toistuvaa, paikkaan sidottua harhaa (HOG_HARHA_CM): taulukon kohouma vahennetaan. Tulos ei muuta heiton fysiikkaa, vain poistaa mittausvirheen, joka
     muuten nayttaa 'tyonnon loppuna' (ks. HOG_HARHA_CM)."""
@@ -557,7 +597,8 @@ def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
             warnings.simplefilter("ignore")
             tiedot = {}
             t, X, Y, t_lisa = valmistele_rata(f, X, Y, fps_lahde, fps_ulos, lisa_f, tiedot=tiedot)
-            r = li.analysoi(dict(t=t, X=X, Y=Y), **ESTIMAATTI)
+            Xa, Ya, tiedot["hog_tasoitettu"] = tasoita_hog_alue(t, X, Y)               # irroitus tunnistetaan radasta, jonka hog-viivan hairioalue on tasoitettu (tarvittaessa); hog-nopeus mitataan raa'asta radasta
+            r = li.analysoi(dict(t=t, X=Xa, Y=Ya), **ESTIMAATTI)
     except Exception as e:                              # liian vahva / outo aineisto: ei estimaattia
         return dict(virhe=repr(e))
     if r.get("irroitus") is None or r.get("tila") is None:
@@ -574,7 +615,7 @@ def laske_viivat(f, X, Y, fps_lahde=25.0, fps_ulos=30.0, lisa_f=None):
         nopeus_ennen=ys["nopeus_ennen_m_s"], nopeus_jalkeen=ys["nopeus_jalkeen_m_s"],
         liuku_hidastuvuus=ys["liun_hidastuvuus_m_s2"], vapaa_hidastuvuus=ys["vapaan_lennon_hidastuvuus_m_s2"],
         kaarto=ti["kaarto"], kaarevuus_1_cm=float(ti["kaarevuus_1_cm"]), t_irr=float(ti["t_r"]), t_lisa=t_lisa, n=int(len(t)),
-        nopeus_hog1=(hg["v_m_s"] if hg else None), suunta_hog1_deg=(hg["suunta_deg"] if hg else None), hog1_Y_keski=(hg["Y_keski"] if hg else None), lahdetaajuus=tiedot.get("R"))
+        nopeus_hog1=(hg["v_m_s"] if hg else None), suunta_hog1_deg=(hg["suunta_deg"] if hg else None), hog1_Y_keski=(hg["Y_keski"] if hg else None), lahdetaajuus=tiedot.get("R"), hog_tasoitettu=bool(tiedot.get("hog_tasoitettu")))
 
 
 # ---------------------------------------------------------------------------------------------------------------------

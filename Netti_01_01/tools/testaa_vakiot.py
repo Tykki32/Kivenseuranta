@@ -472,8 +472,82 @@ def testaa_kalibroinnin_tarkistus():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _heitto_hog_kohoumalla(rng, kohouma_cm=3.5, tyonto_loppu=None, v0=2.1, ruutuja_pois=0.17):
+    """Synteettinen heittopaan rata (t, X, Y): nopeus v0 - 0,065 t (m/s), vapaa lento; hog-viivalla (Y = 635, puolileveys 40 cm) mitattuun Y:hyn lisataan kolmionmuotoinen kohouma kohouma_cm
+    (B-sovituksen Y-harha: nopeus nousee ja laskee takaisin, mika nayttaa tyonnon loppuna; paikka palaa ennalleen). tyonto_loppu: kivea tyonnetaan (+0,6 m/s2) tahan Y:hyn asti, ei kohoumaa
+    (aito myohainen irroitus: nopeus kasvaa pysyvasti)."""
+    dt = 1.0 / 30.0
+    t, Y, v = [0.0], [200.0], 100.0 * v0
+    while Y[-1] < 740.0:
+        y, tt = Y[-1], t[-1]
+        v -= 100.0 * 0.065 * dt
+        if tyonto_loppu is not None and tyonto_loppu - 100.0 <= y < tyonto_loppu:
+            v += 100.0 * 0.6 * dt                                                         # tyonto: nopeus kasvaa pysyvasti
+        Y.append(y + v * dt)
+        t.append(tt + dt)
+    t, Y = np.array(t), np.array(Y)
+    X = 0.05 * (Y - 200.0) + rng.normal(0.0, 0.12, len(Y))
+    if tyonto_loppu is None:
+        Y = Y + kohouma_cm * np.maximum(0.0, 1.0 - np.abs(Y - 635.0) / 40.0)
+    keep = rng.random(len(t)) > ruutuja_pois
+    return t[keep], X[keep], Y[keep] + rng.normal(0.0, 0.4, int(keep.sum()))
+
+
+def testaa_hog_alue():
+    print("hog-viivan hairioalueen tasoitus (netti_seuranta.tasoita_hog_alue) ja irroitus: nopeuden kohouma hog-viivalla ei ole tyontoa")
+    rng = np.random.default_rng(7)
+    for kohouma in (2.0, 3.5, 5.0):
+        paikalla, ennen = [], []
+        for _ in range(6):
+            t, X, Y = _heitto_hog_kohoumalla(rng, kohouma)
+            Xt, Yt, ok = ns.tasoita_hog_alue(t, X, Y)
+            r_ennen = li.analysoi(dict(t=t, X=X, Y=Y), **ns.ESTIMAATTI)
+            r = li.analysoi(dict(t=t, X=Xt, Y=Yt), **ns.ESTIMAATTI)
+            ennen.append(r_ennen["irroitus"]["Y_max"] if r_ennen.get("irroitus") else None)
+            paikalla.append(ok and (r.get("irroitus") is None or not r["irroitus"]["merkitseva"] or r["tila"]["Y_cm"] < ns.HOG_ALUE_CM[0]))
+        tarkista(f"kohouma {kohouma} cm: tasoitettu, ja irroitus ei lukitu hog-viivalle (Y < {ns.HOG_ALUE_CM[0]:.0f} cm tai ei merkitseva)", all(paikalla), f"{sum(paikalla)} / 6")
+    t, X, Y = _heitto_hog_kohoumalla(rng, 3.5, ruutuja_pois=0.0)
+    Xt, Yt, ok = ns.tasoita_hog_alue(t, X, Y)
+    a = (Y >= ns.HOG_ALUE_CM[0]) & (Y <= ns.HOG_ALUE_CM[1])
+    d = np.concatenate([[np.nan], np.diff(Yt) / np.diff(t) / 100.0])
+    tarkista("tasoitettu rata: nopeus alueella tasainen (vaihtelu < 0,05 m/s)", ok and float(np.ptp(d[a][2:-2])) < 0.05, f"{np.ptp(d[a][2:-2]):.3f} m/s")
+    tarkista("alueen ulkopuoliset naytteet ennallaan", bool(np.array_equal(Yt[~a], Y[~a])))
+    # aito myohainen tyonto hog-viivalle asti: reunat eivat sovi yhteen -> ennallaan, irroitus loytyy viivan lahelta
+    ennallaan, lahella = [], []
+    for _ in range(6):
+        t, X, Y = _heitto_hog_kohoumalla(rng, tyonto_loppu=615.0)
+        Xt, Yt, ok = ns.tasoita_hog_alue(t, X, Y)
+        r = li.analysoi(dict(t=t, X=Xt, Y=Yt), **ns.ESTIMAATTI)
+        ennallaan.append((not ok) and bool(np.array_equal(Yt, Y)))
+        lahella.append(r.get("irroitus") is not None and r["tila"]["Y_cm"] >= 570.0)
+    tarkista("aito tyonto alueelle asti: rataa ei tasoiteta eika irroitus siirry alueen ylapuolelle (>= 570 cm)", all(ennallaan) and sum(lahella) >= 5, f"ennallaan {sum(ennallaan)} / 6, irroitus >= 570: {sum(lahella)} / 6")
+    t, X, Y = _heitto_hog_kohoumalla(rng, 3.5)
+    m = Y < 640.0                                                                                 # rata ei yllä alueen yli: ei reunaa jalkeen -> ennallaan
+    Xt, Yt, ok = ns.tasoita_hog_alue(t[m], X[m], Y[m])
+    tarkista("rata paattyy alueen sisaan (ei jalkeista reunaa): ennallaan", (not ok) and bool(np.array_equal(Yt, Y[m])))
+
+
+def testaa_harva_rata():
+    print("liuku_irroitus.analysoi: harva tai liikkeesta alkava rata ei kaada estimaattia (toisen nettivideon heitoilla LinAlgError / TypeError -> ei estimaattia)")
+    rng = np.random.default_rng(11)
+    t, X, Y = _heitto_hog_kohoumalla(rng, tyonto_loppu=520.0)                                      # rata alkaa jo nopeasta liikkeesta (Y = 200 cm)
+    try:
+        r = li.analysoi(dict(t=t, X=X, Y=Y), **ns.ESTIMAATTI)
+        tarkista("rata alkaa liikkeesta: estimaatti saadaan", r.get("irroitus") is not None and np.isfinite(r["tila"]["Y_cm"]), f"{r.get('tila') and round(r['tila']['Y_cm'])}")
+    except Exception as e:                                                                         # noqa: BLE001
+        tarkista("rata alkaa liikkeesta: estimaatti saadaan", False, repr(e))
+    for nimi, (a, b) in (("aukko irroituksen kohdalla (Y 470-560)", (470.0, 560.0)), ("aukko heti irroituksen jalkeen (Y 520-600)", (520.0, 600.0))):
+        m = ~((Y >= a) & (Y <= b))
+        try:
+            r = li.analysoi(dict(t=t[m], X=X[m], Y=Y[m]), **ns.ESTIMAATTI)
+            ok = r.get("irroitus") is None or all(np.isfinite(r["tila"]["Y_cm"]) for _ in (0,))
+            tarkista(f"{nimi}: ei poikkeusta", ok)
+        except Exception as e:                                                                     # noqa: BLE001
+            tarkista(f"{nimi}: ei poikkeusta", False, repr(e))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata):
         t()
     print()
     if VIRHEITA:
