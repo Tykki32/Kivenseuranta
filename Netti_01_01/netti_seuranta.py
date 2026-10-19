@@ -418,9 +418,11 @@ def tee_pool(n, **kw):
 _MK = {}
 
 
-def alusta_kierto(kansio, puolet):
-    """Kierteen mittauksen tyoprosessi: vain kamerat (ei kivimallia eika taustamaskeja)."""
-    matala_prioriteetti()
+def alusta_kierto(kansio, puolet, matala=True):
+    """Kierteen mittauksen tyoprosessi: vain kamerat (ei kivimallia eika taustamaskeja). matala = alempi prioriteetti (kaukopaan kierre ja kiven vakiot tarkentavat jalkikateen); heittopaan
+    kierre ajetaan normaalilla prioriteetilla, koska se nakyy livekuvassa heti heiton jalkeen eika saa jaada muiden taustatoiden jalkeen."""
+    if matala:
+        matala_prioriteetti()
     cv2.setNumThreads(1)
     for p in puolet:
         _MK[p] = Mittari(kansio, p, runko=False)
@@ -1761,6 +1763,12 @@ def heiton_suureet(h):
 # ---------------------------------------------------------------------------------------------------------------------
 # ANALYYSI: kopioruudut, molemmat paat, B-tyoprosessit, viivaestimaatti, kierre
 # ---------------------------------------------------------------------------------------------------------------------
+def kierto_prosesseja():
+    """(heittopaan, kaukopaan) kierron laskennan prosessien maara. Heittopaan kierto on oma prosessinsa (ei jonoudu kaukopaan kierron ja kiven vakioiden taakse: kierre nakyy livekuvassa heti
+    heiton jalkeen); kaukopaan kierto ja kiven vakiot jakavat toisen (2, jos ytimia on vahintaan 6): ne tarkentavat tulosta jalkikateen."""
+    return 1, (2 if (os.cpu_count() or 2) >= 6 else 1)
+
+
 class Analyysi:
     """Syota ruudut yksi kerrallaan (syota); vahvistetut heitot (pisteet, viivat) luetaan heitot-listasta (piirtaja). synkroninen = True: B-tyot ja estimaatit
     odotetaan (sim-ajo: tulos ei riipu ajoituksesta); False: ne kulkevat taustalla (oikea reaaliaika). kierre = False: kierteen ja hog-hog-ajan mittaus pois."""
@@ -1778,18 +1786,20 @@ class Analyysi:
         self.tarkka = bool(tarkka)
         self.laske_kierre = bool(kierre) and self.tarkka
         self.M = {p: Mittari(kansio, p) for p in paat}
-        self.pool = self.est_pool = self.kierto_pool = None
+        self.pool = self.est_pool = self.kierto_pool = self.kauko_pool = None
         if self.tarkka and saikeet > 0:
             self.pool = tee_pool(saikeet, initializer=alusta_tyo, initargs=(kansio, tuple(paat)))
         if not synkroninen or saikeet > 0:
             self.est_pool = tee_pool(1, initializer=matala_prioriteetti) if not synkroninen else None
         if self.laske_kierre and not synkroninen:
-            self.kierto_pool = tee_pool(1, initializer=alusta_kierto, initargs=(kansio, tuple(paat)))
+            n_lahi, n_kauko = kierto_prosesseja()
+            self.kierto_pool = tee_pool(n_lahi, initializer=alusta_kierto, initargs=(kansio, tuple(paat), False))       # heittopaan kierre (nakyy livekuvassa)
+            self.kauko_pool = tee_pool(n_kauko, initializer=alusta_kierto, initargs=(kansio, tuple(paat), True))        # kaukopaan kierre + kiven vakiot (tarkentavat jalkikateen)
         self.b_valmis = self.pool is None            # B-tyoprosessit kaynnissa (vasta sitten "kivetonta" kahvaa ei hylata B-todisteen puutteen vuoksi): lampea()
         self.tyot = []                               # [(future, f, heitto, naytteet, alkuarvo)]
         self.est_tyot = []                           # [(future, heitto, f, n)]
         self.kierto_tyot = []                        # [(future, heitto)]
-        self.vakiot_tyot = []                        # [(future, heitto)]: kiven vakioiden sovitus (kierto_pool)
+        self.vakiot_tyot = []                        # [(future, heitto)]: kiven vakioiden sovitus (kauko_pool)
         self.saapumiset = []                         # kaukopaan hakijat (Saapuminen)
         self.kaukoseurannat = []                     # tunnistetut kaukopaan kivet seurannassa (KaukoSeuranta)
         self.paat = {p: Heittopaa(self, p) for p in paat}
@@ -1808,7 +1818,7 @@ class Analyysi:
         """Kaynnistaa tyoprosessit (spawn: tuonnit ja kameramallit, 5-15 s) ja odottaa niita, jotta ensimmaisen heiton B-mittaukset eivat myohastyisi (kivea ei
         muuten todettaisi heiton alussa). Palauttaa kaynnistettyjen prosessien maaran."""
         tehtavat = []
-        for pool, n in ((self.pool, getattr(self.pool, "_max_workers", 1)), (self.est_pool, 1), (self.kierto_pool, 1)):
+        for pool, n in ((self.pool, getattr(self.pool, "_max_workers", 1)), (self.est_pool, 1), (self.kierto_pool, 1), (self.kauko_pool, getattr(self.kauko_pool, "_max_workers", 1))):
             if pool is not None:
                 tehtavat += [pool.submit(tyo_nop) for _ in range(n)]
         if odota and tehtavat:
@@ -1992,6 +2002,8 @@ class Analyysi:
             if ok:
                 self._kierto_aloita(heitto)
             heitto.kierto_kehykset, heitto.kierto_lisa = [], None            # leikkeet (~10 MB / heitto) eivat enaa tarpeen
+            if heitto.kierto_tila is None:                                   # heittopaan kierto ei kaynnistynyt (ei estimaattia / ruutuja): lykattyna ollut kaukopaan kierto ei odota sita
+                self._vapauta_lykatty(heitto)
         if ok:
             self._paivita_kierre(heitto)
         if lopullinen and self.toistettava:
@@ -2040,19 +2052,23 @@ class Analyysi:
         h.kierto_tila = "virhe" if (r is None or "virhe" in r) else "valmis"
         self.tapahtumat.append(("kierto", h.tunnus, h.f_loppu, h.kierto_tila))
         self._paivita_kierre(h)
+        self._vapauta_lykatty(h)
+        if self.toistettava:
+            self._vakiot_aloita(h)
+
+    def _vapauta_lykatty(self, h):
+        """Toistettava ajo: kaukopaan kierron aloitus odotti heittopaan kierron selviamista (tulos tai se, ettei sita tule): kaynnistetaan nyt."""
         lykatty = self._lykatyt.pop(h.tunnus, None)
         if lykatty is not None:
             self._kauko_kierto_aloita(*lykatty)
-        if self.toistettava:
-            self._vakiot_aloita(h)
 
     def _kauko_kierto_aloita(self, h, kh, F, Y):
         """Kierteen mittaus kaukopaan kuvasta (kiven seurannan jalkeen): ruudut ja B-paikat kaukopaan seurannasta, aika aikaperustalla (kiven rata F, Y'). Taustaprosessiin tai
         heti (sim). Sama mittaus kuin heittopaassa (netti_kierre.arvioi): omega kaukopaan puolen kameralla."""
         if not self.laske_kierre or h.kauko_kierto_tila is not None or not kh.kierto_kehykset:
             return
-        if self.toistettava and h.kierto_tila == "kaynnissa":
-            self._lykatyt[h.tunnus] = (h, kh, F, Y)                # kaukopaan alias-ratkaisu kayttaa heittopaan mittausta ennakkona: odotetaan sen valmistumista (ei jumiteta analyysia), kuten sim-ajossa
+        if self.toistettava and (h.kierto_tila == "kaynnissa" or not h.viivat_lopullinen):
+            self._lykatyt[h.tunnus] = (h, kh, F, Y)                # kaukopaan alias-ratkaisu kayttaa heittopaan mittausta ennakkona: odotetaan sen valmistumista (ei jumiteta analyysia), kuten sim-ajossa; myos silloin, kun lopullinen estimaatti (josta heittopaan kierto kaynnistyy) on viela kesken (kuormitettu kone)
             return
         try:
             aj = aikap.Aikajana(F, Y, kopiot_ohitettu=True)
@@ -2078,8 +2094,8 @@ class Analyysi:
         mn = nk.omega_mitta(h.kierto, self.fps)
         ennakko = (float(np.degrees(mn[1])), mn[0], float(np.degrees(mn[2]))) if mn is not None and mn[3] else None          # varma heittopaan mittaus (omega, aika, sd): heikko ennakko, ratkaisee kaukopaan alias-minimien valilla
         args = (kh.puoli, h.vari, havainnot, havainnot[0][0] - 1.0, ennakko)
-        if self.kierto_pool is not None:
-            self.kierto_tyot.append((self.kierto_pool.submit(tyo_kierto, args), h, True))
+        if self.kauko_pool is not None:
+            self.kierto_tyot.append((self.kauko_pool.submit(tyo_kierto, args), h, True))
         else:
             self._aseta_kauko_kierto(h, kierto_laske(self.M[kh.puoli], args))
 
@@ -2094,7 +2110,7 @@ class Analyysi:
     def _vakiot_aloita(self, h):
         """Kiven vakiot (kitkataso A, kaarto kappa; netti_vakiot.sovita) kaukopaan radasta hog-viivalta pysahtymiseen (tai tormayksen alkuun / viimeiseen B-paikkaan, jos kivi
         hukattiin): kierteen mittaus kaukopaasta (tai yhdistetyn kierteen omega hogilla) pakotteena. Kaynnistetaan, kun kaukopaan rata ja sen kierteen mittaus ovat valmiit.
-        Taustaprosessiin (kierto_pool) tai heti (sim)."""
+        Taustaprosessiin (kauko_pool) tai heti (sim)."""
         if not self.laske_kierre or h.vakiot_tila is not None:
             return
         if self.toistettava and (not h.viivat_lopullinen or h.kierto_tila == "kaynnissa" or h.tunnus in self._lykatyt):
@@ -2106,8 +2122,8 @@ class Analyysi:
         args["irr"] = self._irr_tarkistus_argumentit(h)
         h.vakiot_tila = "kaynnissa"
         h.vakiot_omega_lahde = lahde
-        if self.kierto_pool is not None:
-            self.vakiot_tyot.append((self.kierto_pool.submit(vakiot_laske, args), h))
+        if self.kauko_pool is not None:
+            self.vakiot_tyot.append((self.kauko_pool.submit(vakiot_laske, args), h))
         else:
             self._aseta_vakiot(h, vakiot_laske(args))
 
@@ -2387,6 +2403,8 @@ class Analyysi:
             self._keraa_estimaatit(odota=True)
             if not self.est_tyot and not any(h.lopullinen_jonossa for h in self.valmiit):
                 break
+        for h in [x[0] for x in list(self._lykatyt.values())]:                  # lykatty kaukopaan kierto ei jaa odottamaan ikuisesti (lopullista estimaattia ei tullut)
+            self._vapauta_lykatty(h)
         self._keraa_kierto(odota=True)
         for h in self.heitot:
             self._paivita_kierre(h)                          # lopullinen tila kaikesta aineistosta (ei riipu valmistumisjarjestyksesta)
@@ -2440,6 +2458,6 @@ class Analyysi:
         self.edellinen_harmaa = None
 
     def sulje(self):
-        for p in (self.pool, self.est_pool, self.kierto_pool):
+        for p in (self.pool, self.est_pool, self.kierto_pool, self.kauko_pool):
             if p is not None:
                 p.shutdown(wait=False, cancel_futures=True)

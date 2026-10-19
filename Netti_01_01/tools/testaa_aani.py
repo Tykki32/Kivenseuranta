@@ -35,10 +35,11 @@ def ffmpeg(*args):
 
 def tee_aineisto(kansio):
     """Synteettiset tiedostot: kuva 12 s (ei aanta), aani 30 s ja 5 s (sini), aanettoman videon 'aani'."""
-    p = {k: os.path.join(kansio, k) for k in ("kuva.mp4", "aani30.m4a", "aani5.m4a", "roska.m4a")}
+    p = {k: os.path.join(kansio, k) for k in ("kuva.mp4", "aani30.m4a", "aani5.m4a", "roska.m4a", "mykka.m4a")}
     ffmpeg("-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-t", "12", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", p["kuva.mp4"])
     ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "30", "-c:a", "aac", "-b:a", "128k", p["aani30.m4a"])
     ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "5", "-c:a", "aac", "-b:a", "128k", p["aani5.m4a"])
+    ffmpeg("-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "12", "-c:a", "aac", p["mykka.m4a"])
     with open(p["roska.m4a"], "wb") as f:
         f.write(os.urandom(5000))
     return p
@@ -64,7 +65,7 @@ def testaa_liitos(kansio, p):
     k = kopio(p["kuva.mp4"], kansio, "pitka.mp4")
     ok, huom = na.liita(EXE, k, p["aani30.m4a"])
     kesto, aanta, kuvaa = na.tiedot(EXE, k)
-    tarkista("pitka aani: liitetty, kesto sailyy (12 s), kuva- ja aaniraita", ok and abs(kesto - 12.0) < 0.15 and aanta and kuvaa and huom == "", f"{ok} {kesto} {huom!r}")
+    tarkista("pitka aani: liitetty, kesto sailyy (12 s), kuva- ja aaniraita, ei varoituksia, aanen tiedot mukana", ok and abs(kesto - 12.0) < 0.15 and aanta and kuvaa and "huom:" not in huom and "keskivoimakkuus" in huom, f"{ok} {kesto} {huom!r}")
     tarkista("pitka aani: ei valitiedostoa", not os.path.exists(k + ".aani.mp4"))
     k = kopio(p["kuva.mp4"], kansio, "lyhyt.mp4")
     ok, huom = na.liita(EXE, k, p["aani5.m4a"])
@@ -76,6 +77,14 @@ def testaa_liitos(kansio, p):
     ok, huom = na.liita(EXE, k, p["aani30.m4a"], alku_s=25.0)
     kesto, _, _ = na.tiedot(EXE, k)
     tarkista("aanen alku 25 s (aanta jaljella 5 s): kesto sailyy, huomautus", ok and abs(kesto - 12.0) < 0.15 and "mykka" in huom, f"{kesto} {huom!r}")
+    k = kopio(p["kuva.mp4"], kansio, "mykka.mp4")
+    ok, huom = na.liita(EXE, k, p["mykka.m4a"])
+    tarkista("mykka aani: liitetaan, mutta varoitus (ladattu aani on mykka)", ok and "mykka: tarkista aanilahde" in huom, huom[:110])
+    tila = na.aanen_tila(EXE, p["aani30.m4a"], 0.0, 12.0)
+    tarkista("aanen_tila: sini 440 Hz: kesto 12 s (dekoodattu valilta), keskivoimakkuus -35...-10 dB, mono AAC", tila is not None and abs(tila["kesto"] - 12.0) < 0.1 and -35.0 < tila["keski_db"] < -10.0 and tila["koodekki"] == "aac", str(tila))
+    tarkista("aanen_tila: rikkinainen tiedosto -> None", na.aanen_tila(EXE, p["roska.m4a"]) is None)
+    rivit = na.virrat(EXE, k)
+    tarkista("virrat: kesto-, kuva- ja aanirivi", any("Duration" in x for x in rivit) and any("Video:" in x for x in rivit) and any("Audio:" in x for x in rivit), f"{len(rivit)} riviä")
     # huono lahde: tallenne jaa tavu tavulta ennalleen
     for nimi, lahde in (("aaniraidaton tiedosto", p["kuva.mp4"]), ("roskatiedosto", p["roska.m4a"]), ("puuttuva tiedosto", os.path.join(kansio, "ei_ole.m4a"))):
         k = kopio(p["kuva.mp4"], kansio, "ennalleen.mp4")
@@ -211,6 +220,72 @@ def testaa_lataus(kansio, p):
     tarkista("ladattu aani lyhyempi kuin kuva: liitetty, kesto 12 s, huomautus", ok and abs(na.tiedot(EXE, k)[0] - 12.0) < 0.15 and any("mykka" in v for v in viestit), "; ".join(viestit)[:150])
 
 
+def testaa_yt_dlp_logiikka(kansio, p):
+    print("YouTube-latauksen formaattien kokeilu ja tarkistus (simuloitu yt_dlp)")
+
+    def sim_modulit(skripti):
+        """skripti: {formaatti: (format_id, lahdetiedosto tai None = virhe, kesto)}; palauttaa korvaavan yt_dlp-moduulin."""
+        class SimYDL:
+            def __init__(self, opts):
+                self.opts = opts
+                self.skr = skripti[opts["format"]]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download=False):
+                fid, lahde, kesto = self.skr
+                if lahde is None:
+                    self.opts["logger"].error("HTTP Error 403: Forbidden")
+                    raise RuntimeError("HTTP Error 403: Forbidden")
+                if not download:
+                    return {"format_id": fid}
+                polku = self.opts["outtmpl"] % {"ext": "m4a"}
+                shutil.copyfile(lahde, polku)
+                self.opts["logger"].warning("simuloitu varoitus")
+                return {"format_id": fid, "ext": "m4a", "protocol": "https", "acodec": "aac", "abr": 128, "duration": kesto, "requested_downloads": [{"filepath": polku, "format_id": fid}]}
+
+            def prepare_filename(self, info):
+                return self.opts["outtmpl"] % {"ext": "m4a"}
+        return types.SimpleNamespace(YoutubeDL=SimYDL)
+
+    F = na.YT_AANI_FORMAATIT
+    vanha = sys.modules.get("yt_dlp")
+    try:
+        def kokeile(skripti, nimi):
+            sys.modules["yt_dlp"] = sim_modulit(skripti)
+            kohde = os.path.join(kansio, f"ytl_{nimi}")
+            l = na.AaniLataus("TUNNUS", kohde, EXE)
+            l.valmis.wait(60.0)
+            return l, kohde
+        l, kohde = kokeile({F[0]: ("140", p["aani30.m4a"], 30.0), F[1]: ("140", p["aani30.m4a"], 30.0), F[2]: ("140", p["aani30.m4a"], 30.0)}, "a")
+        tarkista("1. formaatti kelpaa: ladattu, tila ja muoto tallessa, ei turhia latauksia", l.virhe is None and l.polku and l.muoto.startswith("140") and l.tila is not None and abs(l.tila["kesto"] - 30.0) < 0.2
+                 and len([x for x in os.listdir(kansio) if x.startswith("ytl_a.")]) == 1, f"{l.virhe!r} {l.muoto} {l.tila}")
+        l, kohde = kokeile({F[0]: ("233", p["mykka.m4a"], 30.0), F[1]: ("140", p["aani30.m4a"], 30.0), F[2]: ("140", p["aani30.m4a"], 30.0)}, "b")
+        tarkista("1. formaatti mykka -> 2. formaatti kelpaa: hyvaksytaan 2., mykka tiedosto poistettu, syy talletettu", l.virhe is None and l.muoto.startswith("140") and any("ei kelvannut" in v for v in l.viestit)
+                 and len([x for x in os.listdir(kansio) if x.startswith("ytl_b.")]) == 1, f"{l.virhe!r} {l.muoto} {l.viestit[:2]}")
+        l, kohde = kokeile({F[0]: ("233", p["mykka.m4a"], 30.0), F[1]: ("233", p["mykka.m4a"], 30.0), F[2]: ("234", p["aani5.m4a"], 30.0)}, "c")
+        tarkista("sama formaatti ei lataudu kahdesti; kun mikaan ei kelpaa, paras (pisin ei-mykka, 5 s) valitaan", l.virhe is None and l.muoto.startswith("234") and l.tila is not None and abs(l.tila["kesto"] - 5.0) < 0.2, f"{l.virhe!r} {l.muoto} {l.tila}")
+        k = os.path.join(kansio, "ytl_c.mp4")
+        shutil.copyfile(p["kuva.mp4"], k)
+        lahde = na.Aanilahde("youtube", "TUNNUS")
+        lahde.lataus = l
+        viestit = []
+        ok = na.liita_tallenteeseen(EXE, k, lahde, loki=viestit.append)
+        tarkista("liitos kayttaa valittua (lyhytta) aanta: liitetty, kesto 12 s, varoitus 'aani loppuu', formaatti ja yt_dlp:n viestit nakyvat", ok and abs(na.tiedot(EXE, k)[0] - 12.0) < 0.15 and any("Ladattu aani: 234" in v for v in viestit)
+                 and any("simuloitu varoitus" in v for v in viestit), "; ".join(viestit)[:200])
+        l, kohde = kokeile({F[0]: ("1", None, 0), F[1]: ("2", None, 0), F[2]: ("3", None, 0)}, "d")
+        tarkista("kaikki formaatit epaonnistuvat: virhe, jossa yt_dlp:n syy (403)", l.virhe is not None and "403" in str(l.virhe), repr(l.virhe))
+    finally:
+        if vanha is not None:
+            sys.modules["yt_dlp"] = vanha
+        else:
+            sys.modules.pop("yt_dlp", None)
+
+
 def testaa_kirjoittaja(kansio, p):
     print("Kirjoittaja (netti_live): tallenne + aani ajon lopussa")
     try:
@@ -262,7 +337,7 @@ def main():
         return 0
     with tempfile.TemporaryDirectory() as kansio:
         p = tee_aineisto(kansio)
-        for t in (testaa_liitos, testaa_verkko, testaa_lataus, testaa_kirjoittaja, testaa_tyokalu):
+        for t in (testaa_liitos, testaa_verkko, testaa_lataus, testaa_yt_dlp_logiikka, testaa_kirjoittaja, testaa_tyokalu):
             t(kansio, p)
     print()
     if VIRHEITA:
