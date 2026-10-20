@@ -623,8 +623,33 @@ def testaa_kahva_ala_mittakaava():
             tarkista(f"{kansio} {puoli}: alaraja ennallaan (~50 px)", abs(px - 50.0) < 1.5, f"alaraja {px:.1f} px")
 
 
+def testaa_ennuste_varalla():
+    print("vahvistetun heiton A-ennuste ja sallittu paikkapuute: yksittainen A-harha (punainen nappi) ei saa karkottaa ennustetta, ja heittajan kehon alla kulkeva kivi pysyy heittona irroitukseen asti")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+    hp = an.paat["vasen"]
+    h = ns.Heitto(1, "vasen", "punainen", 0, (0.0, -300.0))
+    h.tila = "vahvistettu"
+    hp.heitto = h
+    v = 8.5
+    for f in range(100, 125):
+        Y = -120.0 + v * (f - 100)
+        if f == 118:
+            Y += 58.0                                                                    # yksittainen harha: kahvan blobi tarttuu napin punaiseen
+        h.naytteet.append(ns.Naytteet(f, (-5.0, Y), 170.0))
+    pa = hp._ennuste_vain_a(130)
+    oikea = -120.0 + v * 30
+    tarkista("A-suora kestaa yksittaisen 58 cm:n harhan (virhe < 10 cm 6 ruudun paassa)", pa is not None and abs(pa[1] - oikea) < 10.0, f"{pa[1]:.0f} vs {oikea:.0f} cm")
+    tarkista("ennuste kayttaa A-suoraa, kun B-ennustetta ei ole (vahvistettu)", abs(hp._ennuste(130)[1] - pa[1]) < 1e-6)
+    tarkista("liian vanhat A-paikat eivat kelpaa (alle 4 paikkaa 20 ruudun sisalla)", hp._ennuste_vain_a(160) is None)
+    lupa = hp._hukka_lupa()
+    tarkista("kivi hukassa Y ~ 90 cm:ssa: lupa kattaa matkan puoliskon loppuun (> 36 ruutua, enintaan 120)", ns.PAIKKA_PUUTE_RUUTUA < lupa <= ns.HUKKA_MAX_RUUTUA, f"{lupa} ruutua")
+    h.naytteet = [ns.Naytteet(f, (-5.0, 600.0 + v * (f - 100)), 170.0) for f in range(100, 110)]
+    tarkista("kivi hukassa lahella puoliskon loppua: perusraja (36 ruutua)", hp._hukka_lupa() == ns.PAIKKA_PUUTE_RUUTUA, f"{hp._hukka_lupa()} ruutua")
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_ennuste_varalla):
         t()
     print()
     if VIRHEITA:
