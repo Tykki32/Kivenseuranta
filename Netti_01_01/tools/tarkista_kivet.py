@@ -3,8 +3,8 @@
     python tools/tarkista_kivet.py heitot.csv [--loki ajo.log]
 
 Curling-pää on 16 heittoa (8 keltaista + 8 punaista, kivi_nro 1-8 kummallekin) ja joukkueet heittävät vuorotellen, joten puuttuva heitto näkyy ilman mitään totuusaineistoa:
-  * pään heittojen määrä on muu kuin 16 (tai heittoja yhteensä ei ole 16:n monikerta),
-  * värit eivät vuorottele pään sisällä (kaksi samanvärisiä peräkkäin: väliin jäänyt heitto) tai värejä on epätasan,
+  * pään heittojen määrä on muu kuin 16 (videon ensimmäinen ja viimeinen pää voivat olla osittaisia: video voi alkaa kesken päätä ja loppua kesken päätä, joten niiden määrää ei tarkisteta, vain ettei ylity 16),
+  * värit eivät vuorottele pään sisällä (kaksi samanvärisiä peräkkäin: väliin jäänyt heitto; tarkistetaan kaikissa päissä) tai värejä on epätasan (vain täysissä päissä),
   * (vain huomautus, ei virhe) aikaväli kahden heiton välillä on yli 2,2 x mediaani: pään lopussa joukkueet miettivät pitkään, joten pitkä väli yksin ei kerro hukatusta heitosta, kun määrä ja värien vuorottelu ovat kunnossa.
 Lisäksi --loki (netti_live.py --tapahtumat -tuloste): hylätyt heittoyritykset, joissa kiven nopeus oli >= 100 cm/s, ovat mahdollisia hukattuja heittoja (kivi liikkui mutta yritys hylättiin).
 Paluuarvo 0 = kaikki kunnossa, 1 = epäilyttäviä kohtia."""
@@ -38,8 +38,6 @@ def tarkista(rivit):
         ajat += [float(b["alku_s"]) - float(a["alku_s"]) for a, b in zip(paat[k], paat[k][1:])]
     mediaani = float(np.median(ajat)) if ajat else float("nan")
     tiedot = dict(heittoja=len(rivit), paita=len(paat), aikavali_mediaani_s=mediaani, paat={}, huomiot=huomiot)
-    if len(rivit) % HEITTOJA_PAASSA:
-        ongelmat.append(f"heittoja yhteensä {len(rivit)}: ei {HEITTOJA_PAASSA}:n monikerta")
     for k in sorted(paat):
         h = paat[k]
         v = "".join(r["vari"][:1] for r in h)
@@ -48,8 +46,11 @@ def tarkista(rivit):
         aukot = [(i + 1, float(b["alku_s"]) - float(a["alku_s"])) for i, (a, b) in enumerate(zip(h, h[1:])) if float(b["alku_s"]) - float(a["alku_s"]) > AIKAVALI_KERROIN * mediaani]
         t = dict(heittoja=len(h), keltaisia=kelt, punaisia=pun, vari_jono=v, alkaa_s=float(h[0]["alku_s"]), vuorottelun_rikkoja=rikot, pitkia_valeja=aukot)
         tiedot["paat"][k] = t
-        if len(h) != HEITTOJA_PAASSA:
+        osittainen = k in (min(paat), max(paat)) and len(paat) > 1                     # videon ensimmainen ja viimeinen paa
+        if len(h) > HEITTOJA_PAASSA or (len(h) < HEITTOJA_PAASSA and not osittainen):
             ongelmat.append(f"pää {k}: {len(h)} heittoa ({kelt} keltaista, {pun} punaista), pitäisi olla {HEITTOJA_PAASSA}")
+        elif len(h) < HEITTOJA_PAASSA:
+            huomiot.append(f"pää {k}: {len(h)} heittoa (video alkaa tai loppuu kesken päätä?)")
         elif kelt != pun:
             ongelmat.append(f"pää {k}: {kelt} keltaista ja {pun} punaista")
         if rikot:

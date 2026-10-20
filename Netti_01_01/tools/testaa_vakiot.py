@@ -601,8 +601,10 @@ def testaa_tarkista_kivet():
     hyva = rivit("kp" * 8) + rivit("pk" * 8, paa=2, alku=2000.0)
     ong, _ = tkv.tarkista(hyva)
     tarkista("32 heittoa, vuorottelu kunnossa: ei ongelmia", ong == [], str(ong))
-    ong, _ = tkv.tarkista(rivit("kp" * 8) + rivit("pkpkpkpkpkpkpkk", paa=2, alku=2000.0))
-    tarkista("pään 2 viimeinen heitto puuttuu: havaitaan (15 heittoa ja ei 16:n monikertaa)", any("15 heittoa" in o for o in ong) and any("monikerta" in o for o in ong), str(ong))
+    ong, _ = tkv.tarkista(rivit("kp" * 8) + rivit("pk" * 8, paa=2, alku=2000.0) + rivit("kpkpkpkpkpkpkp", paa=3, alku=4000.0))
+    tarkista("viimeinen pää kesken (video loppuu): ei virhe", ong == [], str(ong))
+    ong, _ = tkv.tarkista(rivit("kp" * 8) + rivit("pkpkpkpkpkpkpk", paa=2, alku=2000.0) + rivit("kp" * 8, paa=3, alku=4000.0))
+    tarkista("keskimmäisen pään viimeinen heitto puuttuu: havaitaan", any("pää 2: 14 heittoa" in o for o in ong), str(ong))
     ong, _ = tkv.tarkista(rivit("kpkpkkpkpkpkpkpk"))
     tarkista("heitto puuttuu keskeltä (kaksi samaa väriä peräkkäin): havaitaan", any("eivät vuorottele" in o for o in ong), str(ong))
 
