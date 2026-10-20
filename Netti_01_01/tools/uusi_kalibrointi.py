@@ -38,13 +38,18 @@ def main():
     ap.add_argument("video")
     ap.add_argument("--ulos", required=True, help="uusi kalibrointikansio")
     ap.add_argument("--pohja", default=os.path.join(KOHDE, "tulokset"), help="kansio, josta kivi- ja kahvamallit kopioidaan")
+    ap.add_argument("--koko-video", type=int, default=0, metavar="N", help="moodikuva N ruudusta koko videon yli (oletus: ensin videon 2 ensimmaista minuuttia, sen epaonnistuessa 40 ruudusta koko videon yli)")
     a = ap.parse_args()
     if not cv2.VideoCapture(a.video).isOpened():
         print("videota ei voi avata:", a.video)
         return 1
     n = kopioi_mallit(a.pohja, a.ulos)
     print(f"kopioitu {n} mallitiedostoa kansiosta {a.pohja}")
-    r = subprocess.run([sys.executable, os.path.join(KOHDE, "kalibrointi_netti.py"), a.video, "--ulos", a.ulos], cwd=KOHDE)
+    komento = [sys.executable, os.path.join(KOHDE, "kalibrointi_netti.py"), a.video, "--ulos", a.ulos]
+    r = subprocess.run(komento + (["--koko-video", str(a.koko_video)] if a.koko_video else []), cwd=KOHDE)
+    if r.returncode and not a.koko_video:                      # videon alussa voi olla ihmisia viivoilla: moodikuva koko videon yli
+        print("kalibrointi epaonnistui ensimmaisen 2 minuutin moodikuvalla, yritetaan moodikuvalla koko videon yli")
+        r = subprocess.run(komento + ["--koko-video", "40"], cwd=KOHDE)
     if r.returncode:
         print("kalibrointi epaonnistui (renkaita tai viivoja ei loytynyt moodikuvasta): katso kalibrointi_netti.py:n tuloste")
         return r.returncode

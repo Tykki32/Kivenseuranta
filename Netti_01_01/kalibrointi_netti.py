@@ -57,21 +57,24 @@ K1_SCALE_PX = 1000.0
 # =====================================================================================================================
 # MOODIKUVA
 # =====================================================================================================================
-def moodikuva(video, puoli, nayteväli_s=5.0, max_s=120.0):
-    """Puolison moodikuva (mediaani), kaannettuna 90 astetta vastapaivaan."""
+def moodikuva(video, puoli, vali_s=5.0, max_s=120.0, koko_video=0):
+    """Puolison moodikuva (mediaani), kaannettyna 90 astetta vastapaivaan. Oletus: videon ensimmaiset max_s sekuntia vali_s valein. koko_video = n > 0: n ruutua tasaisesti koko videon yli
+    (ihmiset, harjat ja kivet haviavat mediaanista; alun 2 minuutissa voi olla ihmisia viivoilla, jolloin hairiintyneet viivat eivat loydy: Ahrenberg-video)."""
     x, y, w, h = PUOLET[puoli]
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if koko_video:
+        paikat = np.linspace(int(20 * fps), max(int(20 * fps) + 1, n - int(20 * fps)), int(koko_video)).astype(int)
+    else:
+        paikat = [int(t * fps) for t in np.arange(0.0, max_s, vali_s) if int(t * fps) < n]
     frames = []
-    t = 0.0
-    while t < max_s and int(t * fps) < n:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
+    for k in paikat:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(k))
         ok, fr = cap.read()
         if not ok:
             break
         frames.append(fr[y:y + h, x:x + w])
-        t += nayteväli_s
     cap.release()
     med = np.median(np.stack(frames, axis=0), axis=0).astype(np.uint8)
     return cv2.rotate(med, cv2.ROTATE_90_COUNTERCLOCKWISE), len(frames)
@@ -520,9 +523,9 @@ def piirra_overlay(td):
 
 
 # =====================================================================================================================
-def kalibroi_puoli(video, puoli, ulos, k1_vapaa=True):
+def kalibroi_puoli(video, puoli, ulos, k1_vapaa=True, koko_video=0):
     print(f"=== {puoli} ===")
-    frame, n = moodikuva(video, puoli)
+    frame, n = moodikuva(video, puoli, koko_video=koko_video)
     print(f"  moodikuva {frame.shape[1]}x{frame.shape[0]} ({n} naytetta)")
     os.makedirs(ulos, exist_ok=True)
     cv2.imwrite(os.path.join(ulos, f"moodikuva_{puoli}.png"), frame)
@@ -556,6 +559,7 @@ if __name__ == "__main__":
     ap.add_argument("--ulos", default="tulokset")
     ap.add_argument("--puolet", default="vasen,oikea")
     ap.add_argument("--ei-k1", action="store_true", help="ei objektiivin vaaristymaa")
+    ap.add_argument("--koko-video", type=int, default=0, metavar="N", help="moodikuva N ruudusta tasaisesti koko videon yli (oletus: videon 2 ensimmaista minuuttia); kayta, jos viivoja ei loydy")
     a = ap.parse_args()
     for pu in a.puolet.split(","):
-        kalibroi_puoli(a.video, pu, a.ulos, k1_vapaa=not a.ei_k1)
+        kalibroi_puoli(a.video, pu, a.ulos, k1_vapaa=not a.ei_k1, koko_video=a.koko_video)
