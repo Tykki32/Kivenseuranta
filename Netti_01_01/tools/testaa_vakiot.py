@@ -609,8 +609,22 @@ def testaa_tarkista_kivet():
     tarkista("heitto puuttuu keskeltä (kaksi samaa väriä peräkkäin): havaitaan", any("eivät vuorottele" in o for o in ong), str(ong))
 
 
+def testaa_kahva_ala_mittakaava():
+    print("kahvan alaraja hack-alueella on maatason cm2 (px / skaala^2): videon 3 kamerassa (0,60 px/cm) punainen kahva on vain ~46-57 px, kiintea 50 px virittaa kiven vain sattumalta")
+    raja = {}
+    for kansio in ("tulokset", "tulokset_nettivideo2", "tulokset_nettivideo3"):
+        an = ns.Analyysi(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", kansio), fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+        for puoli, hp in an.paat.items():
+            raja[(kansio, puoli)] = ns.KAHVA_ALA_CM2[0] * hp.hack_skaala2
+    for (kansio, puoli), px in raja.items():
+        if kansio == "tulokset_nettivideo3":
+            tarkista(f"{kansio} {puoli}: videon 3 punaisen kahvan 46 px kelpaa, 25 px (kasi peittaa) ei", px <= 46.0 and px > 25.0, f"alaraja {px:.1f} px")
+        else:
+            tarkista(f"{kansio} {puoli}: alaraja ennallaan (~50 px)", abs(px - 50.0) < 1.5, f"alaraja {px:.1f} px")
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava):
         t()
     print()
     if VIRHEITA:

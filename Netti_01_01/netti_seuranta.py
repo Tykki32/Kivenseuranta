@@ -84,7 +84,8 @@ ETAISYYS_CM = rata.HOUSE_DISTANCE_CM    # pesien keskipisteiden etaisyys (T-viiv
 # ---------------------------------------------------------------------------------------------------------------------
 HACK_X = (-75.0, 75.0)           # siemenalue (cm): kivi levossa hackissa
 HACK_Y = (-370.0, -225.0)
-KAHVA_ALA_PX = (50, 700)         # hyvaksyttava kahvan pinta-ala hack-alueella (keltainen ~150-260, punainen ~110-160)
+KAHVA_ALA_CM2 = (89.0, 1250.0)   # hyvaksyttava kahvan pinta-ala hack-alueella maatason cm2:na (= px / skaala^2; kiintea 50-700 px videon 1 mittakaavalla 0,75 px/cm). Videoilla 1-2 keltainen ~150-260 px,
+                                 # punainen ~110-160 px; videon 3 kamerassa (0,60 px/cm) punainen vain ~46-57 px, jolloin kiintea 50 px:n raja virittaa kiven vain sattumalta (video 3: heitto jai huomaamatta)
 LEPO_S = 0.5                     # kivi hack-alueella vahintaan tama ennen kuin se "viritetaan" (heittaja kasittelee kiveä, joten ei tiukkaa lepoa)
 LEPO_CM = 8.0                    # viritys: sentroidin vaihtelu alle tama
 LEPO_IKKUNA_S = 0.65             # viritys: vakaus tarkistetaan vain viimeisesta taman pituisesta ikkunasta (lista voi alkaa liikkeesta: kivi lasketaan hackiin, kantaminen)
@@ -131,10 +132,11 @@ B_HEIKKO_RMS = 0.25
 B_HEIKKO_POIK_CM = 8.0           # ... ja enintaan taman kaukana ennusteesta: kivi pysyy seurannassa pesan varillisilla renkailla (kelvollisia pikseleita vain 2-10 %)
 ALA_VAIHTELU = (0.6, 1.6)        # kahvan ala (normitettu) paivittaa odotusarvoa vain tassa suhteessa mediaaniin (kasi ei paisuta odotusarvoa) ...
 ALA_ULKONA_MAX = 6               # ... paitsi kun hyvaksytyt blobit ovat taman monta ruutua perakkain sen ulkopuolella (odotusarvo oli vaara): silloin odotusarvo vaihdetaan
-HACK_HUKKA_Y_CM = -200.0         # kivi hukassa hackin lahella (viimeisin paikka Y < taman, heitto viela vahvistamatta): heittajan vauhdinotto vie kiven hackin taakse ja siella se pysahtyy tai kaantyy, joten
+LIIKE_ALA_MAX = 4.5              # liikkeessa (heitto viela vahvistamatta) kahvan blobi saa olla jopa taman monikertainen, jos normaalin ala-ikkunan (0,4-2,2) blobia ei loydy: kahva sulautuu heittajan hanskaan
+                                 # ja hackin takana oleviin punaisiin varusteisiin (ala 2,4-3,8 x odotettu), ja ilman tata kivi hukkuu juuri vahvistusta edeltavaksi 15 ruuduksi. Tallainen blobi ei paivita odotettua alaa.
+HACK_HUKKA_Y_CM = -200.0         # kivi hukassa hackin lahella (viimeisin paikka Y < taman): heittajan vauhdinotto vie kiven hackin taakse ja siella se pysahtyy tai kaantyy, joten
 HACK_HUKKA_RUUTUA = 3            # ... kun A on puuttunut vahintaan taman monta ruutua, kahvaa haetaan myos VIIMEISEN PAIKAN ymparilta (ennuste jatkaisi vauhdinottoa kauas kiven ohi) ...
-HACK_HUKKA_PORTTI_CM = 45.0      # ... taman portin sisalta ja ...
-HACK_HUKKA_ALA_MAX = 4.5         # ... blobin ala saa olla jopa taman monikertainen (kahvan blobi sulautuu heittajan hanskaan ja hackin takana oleviin punaisiin varusteisiin: ala 2,4-3,8 x odotettu)
+HACK_HUKKA_PORTTI_CM = 45.0      # ... taman portin sisalta
 HUKASSA_PORTTI_CM = 1.0          # A:n hakuportti kasvaa taman verran per ruutu, jolla paikkaa ei ole (enintaan HUKASSA_PORTTI_RUUTUA ruudun verran)
 HUKASSA_PORTTI_RUUTUA = 15
 IDLE_VALI = 3                    # IDLE: kandidaattihaku joka n:s yksilollinen ruutu
@@ -935,6 +937,7 @@ class Heittopaa(_Seuranta):
         P = np.array([(x, y, z) for x in HACK_X for y in HACK_Y for z in (0.0, 20.0)])
         u, v = kivimalli.project_3d(self.m.cam.K, self.m.cam.R, self.m.cam.t, P)
         self.hack_alue = (int(u.min()) - 6, int(v.min()) - 6, int(u.max()) + 6, int(v.max()) + 6)
+        self.hack_skaala2 = float(self.m.skaala(0.5 * (HACK_X[0] + HACK_X[1]), 0.5 * (HACK_Y[0] + HACK_Y[1]))) ** 2          # px^2 / cm^2 hackin kohdalla
 
     # ---- apurit --------------------------------------------------------------------------------------------------
     @staticmethod
@@ -960,8 +963,8 @@ class Heittopaa(_Seuranta):
         pois = (vari, X, Y): taman varin ehdokkaat enintaan VAIHTO_ETAISYYS_CM paassa (X, Y):sta ohitetaan (jo viritetty kahva)."""
         loytyi = {}
         for vari in ("keltainen", "punainen"):
-            for c in self.m.kahva(ruutu, self.hack_alue, vari, None, min_ala=KAHVA_ALA_PX[0] // 2, taustaero=False):
-                if not (KAHVA_ALA_PX[0] <= c[2] <= KAHVA_ALA_PX[1]):
+            for c in self.m.kahva(ruutu, self.hack_alue, vari, None, min_ala=max(int(KAHVA_ALA_CM2[0] * self.hack_skaala2) // 2, 4), taustaero=False):
+                if not (KAHVA_ALA_CM2[0] * self.hack_skaala2 <= c[2] <= KAHVA_ALA_CM2[1] * self.hack_skaala2):
                     continue
                 bb = c[3]
                 if not (0.35 <= bb[2] / max(bb[3], 1) <= 2.8):
@@ -1138,15 +1141,20 @@ class Heittopaa(_Seuranta):
         f_paikka_ed = max([m.f for m in h.naytteet[-60:] if m.paikka() is not None] or [self.f_liike])
         portti = 14.0 + 0.5 * self._nopeus_ruutu() + HUKASSA_PORTTI_CM * min(max(f - f_paikka_ed - 2, 0), HUKASSA_PORTTI_RUUTUA)      # kivi hukassa: hakuportti kasvaa
         a = self._vari_a(ruutu, (Xp, Yp), portti, ala_raja=(0.4, 1.8) if h.tila == "vahvistettu" else (0.4, 2.2))
+        lavea = False
         if a is None and h.tila == "liikkuu":
+            a = self._vari_a(ruutu, (Xp, Yp), portti, ala_raja=(0.4, LIIKE_ALA_MAX))
             ed = next((m for m in reversed(h.naytteet[-60:]) if m.paikka() is not None), None)
-            if ed is not None and f - ed.f >= HACK_HUKKA_RUUTUA and ed.paikka()[1] < HACK_HUKKA_Y_CM:
-                a = self._vari_a(ruutu, ed.paikka(), HACK_HUKKA_PORTTI_CM, ala_raja=(0.4, HACK_HUKKA_ALA_MAX))
+            if a is None and ed is not None and f - ed.f >= HACK_HUKKA_RUUTUA and ed.paikka()[1] < HACK_HUKKA_Y_CM:
+                a = self._vari_a(ruutu, ed.paikka(), HACK_HUKKA_PORTTI_CM, ala_raja=(0.4, LIIKE_ALA_MAX))
+            lavea = a is not None
         n = Naytteet(f)
         if a is not None:
             n.A, n.ala = (a[0], a[1]), a[2]
             a_n = a[2] / (a[3] * a[3])
-            if len(self.ala_norm) < 3 or ALA_VAIHTELU[0] <= a_n / float(np.median(self.ala_norm)) <= ALA_VAIHTELU[1]:
+            if lavea:
+                pass                                                       # sulautunut blobi: ei odotetun alan paivitykseen
+            elif len(self.ala_norm) < 3 or ALA_VAIHTELU[0] <= a_n / float(np.median(self.ala_norm)) <= ALA_VAIHTELU[1]:
                 self.ala_norm = (self.ala_norm + [a_n])[-8:]               # paisunut blobi (kasi / hanska kiinni) ei nosta odotusarvoa
                 self._ala_ulkona = []
             else:
