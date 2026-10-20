@@ -546,8 +546,69 @@ def testaa_harva_rata():
             tarkista(f"{nimi}: ei poikkeusta", False, repr(e))
 
 
+def testaa_kalibroinnin_valinta():
+    print("kalibrointi_valinta: videoon sopiva kalibrointikansio valitaan automaattisesti (synteettinen video ja kansiot)")
+    import shutil
+    import tempfile
+    import cv2
+    import kalibrointi_valinta as kv
+    import tarkista_kalibrointi as tk
+    rng = np.random.default_rng(9)
+    pohja = cv2.GaussianBlur(rng.normal(128, 60, (1080, 1920)).astype(np.float32), (0, 0), 3.0)
+    pohja = np.clip(pohja + 40 * np.sin(np.arange(1920) / 37.0)[None, :], 0, 255).astype(np.uint8)
+
+    def kansio(polku, kuva):
+        os.makedirs(polku, exist_ok=True)
+        for puoli in ("vasen", "oikea"):
+            x, y, w, h = tk.kn.PUOLET[puoli]
+            cv2.imwrite(os.path.join(polku, f"moodikuva_{puoli}.png"), cv2.rotate(cv2.cvtColor(kuva[y:y + h, x:x + w], cv2.COLOR_GRAY2BGR), cv2.ROTATE_90_COUNTERCLOCKWISE))
+            open(os.path.join(polku, f"kalibrointi_{puoli}.json"), "w").write("{}")
+
+    def video(polku, kuva):
+        kirj = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (1920, 1080))
+        for _ in range(1860):                                                                      # referenssi() ohittaa 30 s alusta ja lopusta
+            kirj.write(cv2.cvtColor(kuva, cv2.COLOR_GRAY2BGR))
+        kirj.release()
+
+    tmp = tempfile.mkdtemp()
+    try:
+        siirretty = cv2.warpAffine(pohja, np.float32([[1, 0, 7.0], [0, 1, -5.0]]), (1920, 1080), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        kansio(os.path.join(tmp, "tulokset"), pohja)
+        kansio(os.path.join(tmp, "tulokset_toinen"), siirretty)
+        video(os.path.join(tmp, "a.avi"), pohja)
+        video(os.path.join(tmp, "b.avi"), siirretty)
+        k, sel = kv.valitse(os.path.join(tmp, "a.avi"), projekti=tmp, luo=False)
+        tarkista("video a: kansio tulokset", os.path.basename(k) == "tulokset", sel[:80])
+        k, sel = kv.valitse(os.path.join(tmp, "b.avi"), projekti=tmp, luo=False)
+        tarkista("video b (kamera siirtynyt 7, -5 px): kansio tulokset_toinen", os.path.basename(k) == "tulokset_toinen", sel[:80])
+        shutil.rmtree(os.path.join(tmp, "tulokset_toinen"))
+        k, sel = kv.valitse(os.path.join(tmp, "b.avi"), projekti=tmp, luo=False)
+        tarkista("ei sopivaa kansiota (luo = False): tulokset ja selitys", os.path.basename(k) == "tulokset" and "ei sovi" in sel, sel[:80])
+        tarkista("osat jakavat automaattisen kansion", kv.automaattinen_nimi("x/Matarmaa_osa_05.mp4") == kv.automaattinen_nimi("Matarmaa_osa_12.mp4") == "tulokset_auto_Matarmaa", kv.automaattinen_nimi("x/Matarmaa_osa_05.mp4"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def testaa_tarkista_kivet():
+    print("tarkista_kivet: puuttuva heitto havaitaan (ei totuusaineistoa)")
+    import tarkista_kivet as tkv
+
+    def rivit(jono, paa=1, alku=100.0, valit=None):
+        out = []
+        for i, c in enumerate(jono):
+            out.append(dict(paa=str(paa), vari="keltainen" if c == "k" else "punainen", kivi_nro="1", alku_s=str(alku + (valit[i] if valit else 50.0 * i))))
+        return out
+    hyva = rivit("kp" * 8) + rivit("pk" * 8, paa=2, alku=2000.0)
+    ong, _ = tkv.tarkista(hyva)
+    tarkista("32 heittoa, vuorottelu kunnossa: ei ongelmia", ong == [], str(ong))
+    ong, _ = tkv.tarkista(rivit("kp" * 8) + rivit("pkpkpkpkpkpkpkk", paa=2, alku=2000.0))
+    tarkista("pään 2 viimeinen heitto puuttuu: havaitaan (15 heittoa ja ei 16:n monikertaa)", any("15 heittoa" in o for o in ong) and any("monikerta" in o for o in ong), str(ong))
+    ong, _ = tkv.tarkista(rivit("kpkpkkpkpkpkpkpk"))
+    tarkista("heitto puuttuu keskeltä (kaksi samaa väriä peräkkäin): havaitaan", any("eivät vuorottele" in o for o in ong), str(ong))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet):
         t()
     print()
     if VIRHEITA:

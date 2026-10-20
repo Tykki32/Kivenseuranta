@@ -33,6 +33,23 @@ def kopioi_mallit(pohja, ulos):
     return n
 
 
+def kalibroi_video(video, ulos, pohja=None, koko_video=0, tulosta=print):
+    """Kalibroi video kansioon ulos (mallit kopioidaan pohjasta, oletus tulokset); palauttaa 0, jos onnistui ja tulos sopii videoon (tools/tarkista_kalibrointi.py). Sama kuin komentorivi."""
+    pohja = os.path.join(KOHDE, "tulokset") if pohja is None else pohja
+    n = kopioi_mallit(pohja, ulos)
+    tulosta(f"kopioitu {n} mallitiedostoa kansiosta {pohja}")
+    komento = [sys.executable, os.path.join(KOHDE, "kalibrointi_netti.py"), video, "--ulos", ulos]
+    r = subprocess.run(komento + (["--koko-video", str(koko_video)] if koko_video else []), cwd=KOHDE)
+    if r.returncode and not koko_video:                        # videon alussa voi olla ihmisia viivoilla: moodikuva koko videon yli
+        tulosta("kalibrointi epaonnistui ensimmaisen 2 minuutin moodikuvalla, yritetaan moodikuvalla koko videon yli")
+        r = subprocess.run(komento + ["--koko-video", "40"], cwd=KOHDE)
+    if r.returncode:
+        tulosta("kalibrointi epaonnistui (renkaita tai viivoja ei loytynyt moodikuvasta): katso kalibrointi_netti.py:n tuloste")
+        return r.returncode
+    tulosta("\ntarkistus:")
+    return subprocess.run([sys.executable, os.path.join(KOHDE, "tools", "tarkista_kalibrointi.py"), video, "--kansio", ulos], cwd=KOHDE).returncode
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
@@ -43,21 +60,10 @@ def main():
     if not cv2.VideoCapture(a.video).isOpened():
         print("videota ei voi avata:", a.video)
         return 1
-    n = kopioi_mallit(a.pohja, a.ulos)
-    print(f"kopioitu {n} mallitiedostoa kansiosta {a.pohja}")
-    komento = [sys.executable, os.path.join(KOHDE, "kalibrointi_netti.py"), a.video, "--ulos", a.ulos]
-    r = subprocess.run(komento + (["--koko-video", str(a.koko_video)] if a.koko_video else []), cwd=KOHDE)
-    if r.returncode and not a.koko_video:                      # videon alussa voi olla ihmisia viivoilla: moodikuva koko videon yli
-        print("kalibrointi epaonnistui ensimmaisen 2 minuutin moodikuvalla, yritetaan moodikuvalla koko videon yli")
-        r = subprocess.run(komento + ["--koko-video", "40"], cwd=KOHDE)
-    if r.returncode:
-        print("kalibrointi epaonnistui (renkaita tai viivoja ei loytynyt moodikuvasta): katso kalibrointi_netti.py:n tuloste")
-        return r.returncode
-    print("\ntarkistus:")
-    r = subprocess.run([sys.executable, os.path.join(KOHDE, "tools", "tarkista_kalibrointi.py"), a.video, "--kansio", a.ulos], cwd=KOHDE)
-    if r.returncode == 0:
+    r = kalibroi_video(a.video, a.ulos, a.pohja, a.koko_video)
+    if r == 0:
         print(f"\nvalmis: python netti_live.py --lahde {a.video} --kansio {a.ulos} ...")
-    return r.returncode
+    return r
 
 
 if __name__ == "__main__":
