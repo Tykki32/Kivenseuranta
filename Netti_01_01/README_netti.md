@@ -99,7 +99,7 @@ muuttuu joka kutsulla (vaste putoaa nopeasti ja mittaus näyttäisi ruudun "liik
 
 ### Toinen nettivideo: kamera-asento, kalibrointi, aikaperusta ja hog-viivan häiriö (`tools/tarkista_kalibrointi.py`, `tools/uusi_kalibrointi.py`, `tulokset_nettivideo2/`)
 
-Toinen nettivideo (GitHub-release `NettivideoKokoToinen`, osat `hakkinen_osa_00 ... 06.mp4`, yhdistettynä 7335 s, 92-96 heittoa) ei toiminut kunnolla: irroitus osui useilla heitoilla hog-viivalle, nopeudet olivat ~17 % liian pieniä ja 10-13 / 92 heitolla estimaattia ei tullut lainkaan.
+Toinen nettivideo (GitHub-release `NettivideoKokoToinen`, osat `hakkinen_osa_00 ... 12.mp4`, yhdistettynä 7335 s, 92-96 heittoa) ei toiminut kunnolla: irroitus osui useilla heitoilla hog-viivalle, nopeudet olivat ~17 % liian pieniä ja 10-13 / 92 heitolla estimaattia ei tullut lainkaan.
 Syitä oli kolme, ja kaikki löytyivät mittaamalla (ei sovittamalla kynnyksiä):
 
 1. **Lähdevirran taajuus (`aikaperusta.arvioi_lahdetaajuus`).** Aikaperusta oletti lähderuutujen taajuudeksi aina 25 r/s. Videolla 2 kivi liikkuu 30 askelta / s (kopioruutu on silti joka kuudes), joten nopeudet jäivät 17 % pieniksi ja ruutuvälin Y-erosta luettu lähderuutujen määrä meni väärin. Nyt taajuus R luetaan radan omasta liikkeestä: paikallisen nopeuden (30 r/s -kello) ja peräkkäisten ruutujen (ero 1) siirtymän osamäärän mediaani, jonka ±10 %:n sisällä oleva arvo kiinnitetään 25:een tai 30:een (alle 15 kelvollista paria: 25). `Aikajana(R=...)`: aika t = j / R + vakio; kaukopää käyttää heittopään R:ää (`lahdetaajuus`). Lisäksi lähdeindeksin ja seinäkellon (R f / 30) ero saa muuttua enintään 2,5 askelta (iso aukko radassa, jossa kivi kiihtyy, ei enää sotke indeksiä) ja varovainen paraabeliennuste korjaa yksittäisen askelvirheen (tiheä rata, Y >= 150 cm, ennuste enintään 3 askelta, vahvistus kahdella seuraavalla näytteellä). Fysikaalinen tarkistus (hog-hog-matka 21,8 m ja hidastuvuus): hog-viivan nopeus / (D / T + a T / 2) videolla 1 0,994 ja videolla 2 **0,846 -> 1,005**. Videon 1 irroitukset eivät muuttuneet.
@@ -127,6 +127,46 @@ Syitä oli kolme, ja kaikki löytyivät mittaamalla (ei sovittamalla kynnyksiä)
 
 Video 1 ennallaan (jäännös 1 / 112, hidastuvuus < 0: 0, muutokset irroituksen paikassa mediaani 5 cm, `v_jalkeen` ± 0,03 m/s; tasoitus ja johdonmukaisuusehto eivät koske aitoja myöhäisiä irroituksia). Videolla 2 jäljellä olevat 9 poikkeamaa ovat pääosin heittoja, joiden irroitus on epäselvä (sileä rata) tai joiden B-rata on harva; viereinen 3 heiton ryhmä (heitot 7, 40, 47: irroitus Y = 606-617 cm) on edelleen osittain hog-viivan häiriön vaikutuksessa (reunaikkunoiden ero 1,2-1,5 cm > rms-raja). Yksikkötestit: `tools/testaa_vakiot.py` (aikaperusta R = 25 / 30, kalibroinnin tarkistus synteettisellä videolla, hog-alueen tasoitus kohoumalla 2-5 cm / aito työntö / lyhyt rata, harva rata).
 Käytännön ohje: **uusi video eli uusi kamera-asento vaatii oman kalibrointikansion** (`tools/tarkista_kalibrointi.py`, `tools/uusi_kalibrointi.py`); videon 1 `tulokset/` sopii vain videoon 1.
+
+### Kolme uutta nettivideota: kalibroinnin valinta, kaikkien heittojen löytyminen ja talon keskellä katkeava rata (`kalibrointi_valinta.py`, `tools/tarkista_kivet.py`, `tulokset_nettivideo3/`)
+
+GitHub-releaseissa on saman tyylisiä (kaksi kattokameraa, jaettu 1920 x 1080 -kuva, sama kenttä) kokovideoita osina; yhdistettynä (`ffmpeg -f concat`):
+
+| video | release | osia | kesto | kalibrointikansio | heittoja |
+|---|---|---|---|---|---|
+| video 1 (`Recording.2026-10-14.115218`) | `Nettivideo` | 1 | 7625 s | `tulokset` | 112 |
+| video 2 (`toinen`) | `NettivideoKokoToinen` | 13 (00 ... 12) | 7335 s | `tulokset_nettivideo2` | 96 |
+| Saarelainen | `NettiVideotKoko4` | 14 | 8315 s | `tulokset_nettivideo2` (sama kamera kuin videolla 2) | 91 |
+| Matarmaa | `NettiVideotKoko3` | 17 | 9845 s | `tulokset_nettivideo3` | 127 |
+| Ahrenberg | `NettiVideotKoko5` | 15 | 8700 s | `tulokset_nettivideo3` (sama kamera kuin Matarmaalla) | 124 |
+
+Matarmaan ja Ahrenbergin kamera on eri asennossa kuin videoilla 1-2 (0,60 px/cm hackin kohdalla, videoilla 1-2 0,75 px/cm); `tulokset_nettivideo3/` on kalibroitu Ahrenbergin koko videon mediaanikuvasta (alun 2 minuutin mediaanista renkaita ei löytynyt: `uusi_kalibrointi.py --koko-video 40`, `kalibrointi_netti.moodikuva(koko_video=N)`).
+
+**Kalibrointikansion valinta automaattisesti (`kalibrointi_valinta.py`).** `netti_live.py --lahde tiedosto.mp4` ilman `--kansio`:ta tarkistaa videon mediaanikuvan siirtymän kunkin `tulokset*`-kansion moodikuvaan (`tools/tarkista_kalibrointi.py`, p90 < 1,5 px), käyttää ensimmäistä sopivaa ja muuten kalibroi videon itse kansioon `tulokset_auto_<nimi>` (`tools/uusi_kalibrointi.py`); valinta tulostetaan ("Kalibrointi: ..."). Selvä `--kansio` toimii kuten ennen (ja varoittaa, jos kalibrointi ei sovi).
+
+**Löytyvätkö kaikki kivet? (`python tools/tarkista_kivet.py heitot.csv [--loki ajo.log]`).** Ilman totuusaineistoa: pää on 16 heittoa (8 + 8), värit vuorottelevat, joten puuttuva heitto näkyy päässä, jossa on alle 16 heittoa (videon ensimmäinen ja viimeinen pää voivat olla osittaisia: video alkaa / loppuu kesken päätä) tai värit eivät vuorottele. `--loki` listaa lisäksi hylätyt yritykset, joissa kiven nopeus oli >= 100 cm/s. Ensimmäisellä ajolla uusilla videoilla puuttui heittoja (Saarelainen 4, Ahrenberg 3, Matarmaa 0; videot 1-2 täydelliset). Syyt:
+
+1. **Kahvan blobi sulautuu heittäjän hanskaan hackin takana (Saarelainen).** Heittäjän vauhdinotto vie kiven hackin taakse, kahvan blobi yhdistyy hanskaan ja punaisiin varusteisiin (ala 2,4-3,8 x odotettu, ala-ikkuna 0,4-2,2), ennuste jatkaa vauhdinottoa kauas ohi ja yritys hylätään 15 hukkaruudun jälkeen (raja 14). Korjaus (`netti_seuranta.LIIKE_ALA_MAX`, `HACK_HUKKA_*`): liikkeessä (vahvistamaton heitto) hyväksytään myös enintään 4,5-kertainen blobi ennusteen ympäriltä, ja hackin lähellä (Y < -200 cm) kadonnutta kahvaa haetaan myös viimeisen paikan ympäriltä (portti 45 cm). Sulautunut blobi ei päivitä odotettua alaa.
+2. **Kahvan alaraja oli kiinteä 50 px (Ahrenberg).** Videon 3 kamerassa punaisen kahvan blobi on hackissa vain ~46-57 px, joten viritys onnistui vain sattumalta (kandidaattilista nollautuu aina kun yksikin näyte jää alle rajan): heitto jäi huomaamatta, vaikka sama kohta toimi pätkäajona lähtökohdasta riippuen. Raja on nyt maatason cm2 (`KAHVA_ALA_CM2 = (89, 1250)` = px / skaala^2): videoilla 1-2 ennallaan (~50 px), videon 3 kameralla ~32 px.
+
+**Talon keskellä katkeava rata.** Punaisen kiven kulkiessa punaisen napin yli (Y ~ 60-140 cm) B-sovitus on kohinaista (kelvollisia pikseleitä 3-20 %) ja kahvan A-paikat harhaisia, eikä kahva näy lainkaan, kun heittäjä pitää kiveä kehon alla irroitukseen (Y 375-590 cm) asti. B-ennuste hyppäsi yhdessä ruudussa +32 cm ohi, konsolidoitujen paikkojen pienimmän neliösumman suora karkasi yksittäisestä A-harhasta (+58 cm) ja 36 ruudun paikkapuute päätti heiton "kivi hukassa" Y ~ 100 cm:ssa ilman irroitusestimaattia (videolla 2 3 / 96, Ahrenberg 2 / 124, Saarelainen 1 / 91 heittoa). Korjaus: ilman tuoretta B-ennustetta vahvistetun heiton varaennuste on A-paikkojen Theil-Sen-suora (`_ennuste_vain_a`), muuten vanha B-suora (`ENNUSTE_B_TUORE_PITKA`); A haetaan myös A-ennusteen ympäriltä, kun B-ennusteen ympäriltä ei löydy (`B_ENNUSTE_EROA_CM`); sallittu paikkapuute kattaa matkan puoliskon loppuun (`_hukka_lupa`, enintään `HUKKA_MAX_RUUTUA = 120`).
+
+**Tulos (koko ajot, `--ei-tahdistusta`; "heittoja" ja vuorottelun rikkojat: ennen = ensimmäinen ajo; estimaatittomat ja "kivi hukassa": ennen = ennen talon keskustan korjausta; nyt = kaikki korjaukset).**
+
+| | video 1 | video 2 | Saarelainen | Matarmaa | Ahrenberg |
+|---|---|---|---|---|---|
+| heittoja ennen -> nyt | 112 -> 112 | 96 -> 96 | 87 -> 91 | 127 -> 127 | 121 -> 124 |
+| päät, joissa 16 heittoa ja värit vuorottelevat | 7 / 7 | 6 / 6 | 5 / 5 (+ osittainen 11) | 7 / 7 (+ osittainen 15) | 6 / 6 (+ osittaiset 13 ja 15) |
+| värien vuorottelun rikkoja | 0 | 0 | 0 (ennen 4) | 0 | 0 (ennen 2) |
+| heittoja ilman irroitusestimaattia | 0 | 3 -> 1 | 2 -> 0 | 0 | 3 -> 0 |
+| "kivi hukassa" -loppuja | 0 | 3 -> 0 | 1 -> 0 | 0 | 3 -> 0 |
+
+Irroituksen laadun mittarit (`irroitus_Y` mediaani, hidastuvuus, nopeuden jatkuvuus irroituksessa, irroituksen suunnan virhe) pysyvät ennallaan kaikilla videoilla (esim. video 1: nopeusjäännöksen 1,48 MAD 0,024 -> 0,023, video 2: 0,027 -> 0,027). Ajot ovat deterministisiä (kaksi identtistä ajoa antaa täsmälleen samat rivit), mutta ennusteen muutos siirtää yksittäisten ratojen irroituskohtaa: Matarmaalla 37 / 127 heitolla yli 5 cm, mutta mittarit eivät muutu systemaattisesti.
+
+**Tunnetut rajat.**
+* Viimeinen pää voi olla osittainen (Matarmaa 15, Ahrenberg 15 heittoa, Saarelainen alku 11): Matarmaalla video loppuu 16. heiton aikana; Ahrenbergin 8. päässä on 14 oikeaa heittoa (viimeisiä kiviä ei heitetty, tuomarit mittaavat), ja 15. rivi (8424 s, v 135 cm/s) on väärä: tuomarit kantavat punaista kiveä hackista taloon (kävelynopeus ylittää vahvistuksen 120 cm/s; oikeiden heittojen pienin nopeus vahvistuskohdassa oli 161-200 cm/s koko aineistossa), eikä kiveä näy kaukopäässä.
+* Video 2 heitto 67 ei saa irroitusestimaattia, vaikka rata kulkee puoliskon läpi (230 kelvollista B-mittausta): rata ei yllä irroitukseen.
+* Draft-releasen assetit eivät ole ladattavissa (404): vain julkaistut releaset on käytetty.
 
 ## Kiven tunnistus ja mittaus (`kivi_netti.py`, `aja_kivi.py`, `piirra_radat.py`)
 
