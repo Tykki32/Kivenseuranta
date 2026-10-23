@@ -120,16 +120,12 @@ KIVI_B_LEPO = 2                  # ennen lahtoa hackissa on todettava kivi: vahi
 KIVI_B_VAHVISTUS = 8             # heiton vahvistus: kelvollisia B-sovituksia vahintaan tama monta liikkeen aikana
 VAHVISTUS_V_VARMA_CM_S = 150.0   # hitaampi kuin tama (120-150 cm/s) vahvistetaan vain, kun B-sovituksia on vahintaan KIVI_B_VAHVISTUS_HIDAS: kavelevan tuomarin kantama kivi (Ahrenberg, pelin lopussa: 135 cm/s, 32 B-sovitusta)
 KIVI_B_VAHVISTUS_HIDAS = 60      # ... ei ole heitto; oikeiden heittojen nopeus vahvistuksessa oli 159-348 cm/s (450 heittoa) ja hitaimmilla 74-189 B-sovitusta
-PAIKKA_PUUTE_RUUTUA = 36         # heitto paattyy kun yhtaan paikkaa (A / B) ei ole ollut taman monta ruutua ...
-HUKKA_LAAJA_Y_MAX_CM = 260.0    # pitkat paikkapuute- ja A-varahaku-lisat koskevat vain taloa (viimeisin Y < taman): varivaihtelun alueella B-sovitus ja A pettavat, mutta puhtaalla jaalla (Y > taman) kivi hukkuu oikeasti (sweeperit peittavat) ja pidennys tarttuisi muihin punaisiin esineisiin (Ahrenberg 15: sweeperin esine kulki kivea hitaammin ja estimaatti meni pieleen)
-HUKKA_MAX_RUUTUA = 120           # ... paitsi kun kiven viimeisin tunnettu paikka ja nopeus eivat viela vie sita puoliskon loppuun: kahva on heittajan kehon alla irroitukseen (Y 375-590 cm) asti, ja
-                                 # kivi nakyy taas vasta silloin (aiemmin vahvistettu heitto paattyi "kivi hukassa" Y ~ 100 cm:ssa ilman irroitusestimaattia); enintaan taman monta ruutua
+PAIKKA_PUUTE_RUUTUA = 36         # heitto paattyy kun yhtaan paikkaa (A / B) ei ole ollut taman monta ruutua
 # vahvistetun heiton seuranta: B-pohjainen ennuste, B:n hyvaksyminen ennusteen suhteen, A:n (kahvan vari) harhojen torjunta. Punaisen kahvan blobiin tarttuu heittajan
 # kasi / hanska (ala jopa 3-kertainen), jolloin A viivastyy kymmenia senttimetreja; ilman B-ankkuria ennuste ja seuranta hukkaavat kiven.
 ENNUSTE_B_MIN = 4                # B-pohjainen ennuste: vahintaan nain monta B / pehmeaa B -paikkaa ...
 ENNUSTE_B_IKKUNA = 30            # ... viimeisen taman ruutumaaran ajalta ...
 ENNUSTE_B_TUORE = 16             # ... ja uusin niista enintaan taman ruutumaaran vanha
-ENNUSTE_B_TUORE_PITKA = 60       # vahvistettu heitto, ei tuoretta B:ta eika A-paikkoja: vanhempi B-suora (kivi liukuu lahes vakionopeudella heittajan kehon alla) kelpaa taman ruutumaaran ajan
 ENNUSTE_B_ROBUSTI_CM = 4.0       # B-suoran poikkeama, jonka yli B-paikka jaa pois suoran sovituksesta
 A_HARHA_CM = 7.0                 # A (+ B-A -ero) poikkeaa B-ennusteesta yli taman: B:n alkuarvo on ennuste
 B_HEIKKO_KELV = 0.02             # heikko B (vahvistettu heitto, ennuste B:sta): kelvollisia pikseleita vahintaan tama ...
@@ -143,8 +139,6 @@ LIIKE_ALA_MAX = 4.5              # liikkeessa (heitto viela vahvistamatta) kahva
 HACK_HUKKA_Y_CM = -200.0         # kivi hukassa hackin lahella (viimeisin paikka Y < taman): heittajan vauhdinotto vie kiven hackin taakse ja siella se pysahtyy tai kaantyy, joten
 HACK_HUKKA_RUUTUA = 3            # ... kun A on puuttunut vahintaan taman monta ruutua, kahvaa haetaan myos VIIMEISEN PAIKAN ymparilta (ennuste jatkaisi vauhdinottoa kauas kiven ohi) ...
 HACK_HUKKA_PORTTI_CM = 45.0      # ... taman portin sisalta
-B_ENNUSTE_EROA_CM = 8.0          # vahvistettu heitto, A puuttuu B-ennusteen ymparilta: kahvaa haetaan myos A-pohjaisen ennusteen ymparilta, jos se on vahintaan taman kaukana B-ennusteesta
-                                 # (punaisen kiven yli talon napin B-sovitus on kohinaista -> B-ennuste hyppaa kymmenia senttimetreja ohi, kun A-paikat ovat edelleen oikein)
 HUKASSA_PORTTI_CM = 1.0          # A:n hakuportti kasvaa taman verran per ruutu, jolla paikkaa ei ole (enintaan HUKASSA_PORTTI_RUUTUA ruudun verran)
 HUKASSA_PORTTI_RUUTUA = 15
 IDLE_VALI = 3                    # IDLE: kandidaattihaku joka n:s yksilollinen ruutu
@@ -176,7 +170,7 @@ SAAP_ALKU_S = 3.0                # haku alkaa taman verran heittopaan poistumise
 SAAP_LOPPU_S = 45.0              # ... ja paattyy taman jalkeen
 SAAP_X_CM = 300.0                # hakuvyohyke kaukopaassa: |X'| <= taman, Y' valilla
 SAAP_Y_CM = (450.0, 800.0)
-SAAP_ALA_RAJAT = (0.2, 2.2)      # hakuvyohykkeen blobin ala suhteessa odotettuun (heittopaan kahvan normitettu ala x skaala^2)
+SAAP_ALA_RAJAT = (0.45, 2.2)     # hakuvyohykkeen blobin ala suhteessa odotettuun (heittopaan kahvan normitettu ala x skaala^2)
 SAAP_PISTEITA = 6                # rata vahvistetaan kun vahintaan taman verran pisteita
 SAAP_PISTEITA_B = 4              # kaukopaan rata hyvaksytaan kiveksi, kun siina on vahintaan taman verran pisteita ...
 SAAP_B_HYVAKSY = 2               # ... joista vahintaan taman monelle B-sovitus toteaa kiven (graniittia siluetin sisalla: kivi 0,34-0,95, ihmisen varusteet, esim. sweeperin punainen kasivarsinauha, 0,06-0,28) ...
@@ -688,73 +682,6 @@ class Naytteet:
         return self.B is not None or self.Bs is not None
 
 
-PISTE_SILOTUS_IKKUNA = 12.0      # piirrettavien pisteiden silotus: paikallisen sovituksen puoli-ikkuna (ruutua; ~100 cm 8 cm / ruutu)
-PISTE_PAINO = (1.0, 0.04, 0.02)  # paikallisen sovituksen paino lahteittain: kelvollinen B, pehmea B, A (kahvan blobi)
-PISTE_ANKKURI_RAJA_CM = (1.0, 6.0)  # kelvollinen B korvataan ymparistonsa sovitteella, jos se poikkeaa siita yli taman (X, Y; Y:ssa ruutuindeksin aikaperustan hammastus ~ +-3 cm)
-PISTE_ANKKUREITA_MIN = 3         # pehmeat B- ja A-pisteet korvataan sovituksella vain, jos ikkunassa on vahintaan nain monta kelvollista B-pistetta (muuten ennallaan)
-
-
-def silota_pisteet(F, P, lahde, ikkuna=PISTE_SILOTUS_IKKUNA, paino=None):
-    """Piirrettavien pisteiden silotus taustavarin vaihtuessa. Kelvollisia B-sovituksia (lahde 0) on talon renkaiden ja viivojen kohdalla vain 0-30 %: silloin rata tulee pehmeasta B:sta
-    (lahde 1) ja kahvan blobista (A, lahde 2), joiden taso poikkeaa toisistaan ja kelvollisesta B:sta taustan mukaan +-3-5 cm (etumerkki vaihtuu varirajalla) ja hajonta on 5-10 cm,
-    joten piirrettava rata hyppii. Kelvolliset B-pisteet jaavat ennalleen; pehmea B ja A korvataan niiden ymparille sovitetulla sileaalla radalla (paikallinen painotettu toisen asteen
-    sovitus ruutuindeksin funktiona, robusti: pehmeat / A-pisteet painavat vahan ja poikkeavat pisteet pudotetaan). Ikkuna laajenee (ikkuna, 1,5 x, 2 x), kunnes siina on
-    PISTE_ANKKUREITA_MIN kelvollista B-pistetta; jos niita ei sittenkaan ole, piste jaa ennalleen. F: ruutuindeksit (nouseva), P: (N, 2) paikat, lahde: (N,) 0 / 1 / 2.
-    Palauttaa uuden P:n (N, 2) ja totuusarvotaulukon (N,): pistetta on silotettu."""
-    F = np.asarray(F, float)
-    P = np.asarray(P, float)
-    lahde = np.asarray(lahde, int)
-    out = P.copy()
-    muutettu = np.zeros(len(F), bool)
-    if int((lahde == 0).sum()) < PISTE_ANKKUREITA_MIN:
-        return out, muutettu
-    w0 = np.array([PISTE_PAINO[int(k)] for k in lahde]) if paino is None else np.asarray(paino, float)         # paino: testikaytto (ristiinvalidointi piilottaa pisteita)
-    for i in np.nonzero(lahde != 0)[0]:
-        d = F - F[i]
-        for lev in (ikkuna, 1.5 * ikkuna, 2.0 * ikkuna):
-            lahella = np.abs(d) <= lev
-            if int((lahella & (lahde == 0)).sum()) >= PISTE_ANKKUREITA_MIN:
-                break
-        else:
-            continue
-        x = d[lahella]
-        w = w0[lahella] * (1.0 - (np.abs(x) / (lev + 1.0)) ** 3) ** 3                          # tricube
-        y = P[lahella]
-        jasen = 3 if (int(((d < 0) & lahella & (lahde == 0)).sum()) >= 1 and int(((d > 0) & lahella & (lahde == 0)).sum()) >= 1) else 2     # molemmin puolin ankkureita: toisen asteen, muuten suora
-        A = np.vander(x, jasen)
-        rw = np.ones(len(x))
-        c = None
-        for _ in range(3):
-            W = (w * rw)[:, None]
-            c = np.linalg.lstsq(A * np.sqrt(W), y * np.sqrt(W), rcond=None)[0]
-            r = np.hypot(*(y - A @ c).T)
-            sk = 1.0 + 1.48 * float(np.median(r[lahde[lahella] == 0]))
-            rw = np.where(r < 3.0 * sk, (1.0 - (r / (3.0 * sk)) ** 2) ** 2, 0.0)
-        out[i] = c[-1]                                                                          # sovite ruudulla i (x = 0)
-        muutettu[i] = True
-    for i in np.nonzero(lahde == 0)[0]:                                                         # kelvollisen B:n ulkolaiset (talon varialueella B:n kelvolliset pikselit vahan): korvataan ymparistosta sovitetulla
-        d = F - F[i]
-        lahella = (np.abs(d) <= ikkuna) & (np.arange(len(F)) != i)
-        if int((lahella & (lahde == 0)).sum()) < PISTE_ANKKUREITA_MIN + 1:
-            continue
-        x = d[lahella]
-        w = w0[lahella] * (1.0 - (np.abs(x) / (ikkuna + 1.0)) ** 3) ** 3
-        y = P[lahella]
-        A = np.vander(x, 3)
-        rw = np.ones(len(x))
-        for _ in range(3):
-            W = (w * rw)[:, None]
-            c = np.linalg.lstsq(A * np.sqrt(W), y * np.sqrt(W), rcond=None)[0]
-            r = np.hypot(*(y - A @ c).T)
-            sk = 1.0 + 1.48 * float(np.median(r[lahde[lahella] == 0]))
-            rw = np.where(r < 3.0 * sk, (1.0 - (r / (3.0 * sk)) ** 2) ** 2, 0.0)
-        e = P[i] - c[-1]
-        if abs(e[0]) > PISTE_ANKKURI_RAJA_CM[0] or abs(e[1]) > PISTE_ANKKURI_RAJA_CM[1]:
-            out[i] = c[-1]
-            muutettu[i] = True
-    return out, muutettu
-
-
 class Heitto:
     def __init__(self, tunnus, puoli, vari, f_lepo, lepo_XY):
         self.tunnus, self.puoli, self.vari = tunnus, puoli, vari
@@ -835,31 +762,25 @@ class Heitto:
     def pisteet(self, B_VALI=4, EROTUS_IKKUNA=20):
         """[(f, X, Y)] piirrettavat pisteet lahtoruudusta alkaen: B / pehmea B. A (kahvan vari) vain kun B-paikkaa ei ole B_VALI ruudun sisalla: pesassa heittajan kasi
         vetaa punaisen kahvan blobia kymmenia senttimetreja, joten A-pisteet B-paikkojen vieressa jatetaan pois (aukko tayttyy piirtajalla interpoloimalla). Yksinaiset
-        A-pisteet korjataan lahialueen B - A -erolla (EROTUS_IKKUNA ruutua, mediaani, vahintaan 3 paria). Lopuksi pehmea B ja A silotetaan kelvollisten B-pisteiden mukaan
-        (silota_pisteet): taustavarin vaihtuessa (talon renkaat, viivat) kelvollisia B-pisteita on vahan ja lahteiden tasot poikkeavat toisistaan, jolloin rata hyppisi."""
+        A-pisteet korjataan lahialueen B - A -erolla (EROTUS_IKKUNA ruutua, mediaani, vahintaan 3 paria)."""
         ns = [n for n in list(self.naytteet) if self.f_alku is not None and n.f >= self.f_alku and n.paikka() is not None]
         fb = np.array([n.f for n in ns if n.kivi()], float)
         pari_f = np.array([n.f for n in ns if n.B is not None and n.A is not None], float)
         pari_d = np.array([np.subtract(n.B, n.A) for n in ns if n.B is not None and n.A is not None], float).reshape(-1, 2)
-        F, P, L = [], [], []
+        out = []
         for n in ns:
             if n.kivi():
                 p = n.paikka()
-                lahde = 0 if n.B is not None else 1
             else:
                 if len(fb) and float(np.min(np.abs(fb - n.f))) <= B_VALI:
                     continue
                 p = np.asarray(n.A, float)
-                lahde = 2
                 if len(pari_f):
                     lahella = np.abs(pari_f - n.f) <= EROTUS_IKKUNA
                     if int(lahella.sum()) >= 3:
                         p = p + np.median(pari_d[lahella], axis=0)
-            F.append(n.f); P.append(p); L.append(lahde)
-        if not F:
-            return []
-        P, _ = silota_pisteet(F, P, L)
-        return [(int(f), float(p[0]), float(p[1])) for f, p in zip(F, P)]
+            out.append((n.f, float(p[0]), float(p[1])))
+        return out
 
 
 class _Seuranta:
@@ -877,7 +798,7 @@ class _Seuranta:
             return np.array(n.A, float) + o
         return None
 
-    def _ennuste_b(self, f, tuore=ENNUSTE_B_TUORE):
+    def _ennuste_b(self, f):
         """B-pohjainen ennuste vahvistetulle heitolle: B / pehmean B -paikkojen robusti suora ruutuindeksin funktiona (vakionopeus). None, jos heitto ei ole vahvistettu tai
         B-paikkoja ei ole tarpeeksi tuoreesti. A:ta (kahvan vari) ei kayteta: heittajan kasi ja hanska vetavat punaisen kahvan blobia kymmenia senttimetreja."""
         h = self.heitto
@@ -885,13 +806,13 @@ class _Seuranta:
             return None
         pts = []
         for n in reversed(h.naytteet):
-            if f - n.f > ENNUSTE_B_IKKUNA + tuore - ENNUSTE_B_TUORE:
+            if f - n.f > ENNUSTE_B_IKKUNA:
                 break
             if n.kivi():
                 pts.append((n.f, n.paikka()))
             if len(pts) >= 8:
                 break
-        if len(pts) < ENNUSTE_B_MIN or f - pts[0][0] > tuore:
+        if len(pts) < ENNUSTE_B_MIN or f - pts[0][0] > ENNUSTE_B_TUORE:
             return None
         ff = np.array([p[0] for p in pts], float)
         Q = np.array([p[1] for p in pts], float)
@@ -920,9 +841,6 @@ class _Seuranta:
         self._ennuste_luotettava = pb is not None
         if pb is not None:
             return pb
-        pv = self._ennuste_varalla(f)
-        if pv is not None:
-            return pv
         o = self._offset_b()
         pts = []
         for n in reversed(self.heitto.naytteet):
@@ -949,24 +867,6 @@ class _Seuranta:
         c = np.linalg.lstsq(A, Q, rcond=None)[0]
         p = c[0] + c[1] * (f - fm)
         return float(p[0]), float(p[1])
-
-    def _ennuste_varalla(self, f):
-        """Ennuste, kun tuoretta B-ennustetta ei ole (None: kaytetaan konsolidoitujen paikkojen suoraa). Heittopaa ylikirjoittaa."""
-        return None
-
-    def _ennuste_vain_a(self, f):
-        """Ennuste (X, Y) pelkista A-paikoista (kahvan blobi; ei B:ta, joka voi olla kohinaista punaisen napin ja renkaiden kohdalla): viimeisten 20 ruudun A-paikkojen Theil-Sen-suora
-        (vakionopeus, vastustaa yksittaisia harhoja). None, jos A-paikkoja on alle 4."""
-        pts = [(n.f, n.A) for n in self.heitto.naytteet[-40:] if n.A is not None and f - n.f <= 20]
-        if len(pts) < 4:
-            return None
-        ff = np.array([p[0] for p in pts], float)
-        Q = np.array([p[1] for p in pts], float)
-        i, j = np.triu_indices(len(ff), 1)
-        ok = ff[j] > ff[i]
-        v = np.median((Q[j[ok]] - Q[i[ok]]) / (ff[j[ok]] - ff[i[ok]])[:, None], axis=0)
-        c = np.median(Q - np.outer(ff, v), axis=0)
-        return float(c[0] + v[0] * f), float(c[1] + v[1] * f)
 
     def _offset_b(self):
         """B - A -erotus viimeisista naytteista, joissa molemmat tunnetaan (A:n systemaattinen poikkeama): mediaani."""
@@ -1047,28 +947,6 @@ class Heittopaa(_Seuranta):
     @staticmethod
     def _hack_sisalla(X, Y):
         return HACK_X[0] <= X <= HACK_X[1] and HACK_Y[0] <= Y <= HACK_Y[1]
-
-    def _ennuste_varalla(self, f):
-        """Vahvistettu heitto ilman tuoretta B-ennustetta: A-paikkojen robusti suora (konsolidoitujen paikkojen pienimman neliosumman suora ylireagoi yksittaisiin A-harhoihin punaisen
-        napin kohdalla: ennuste karkaa ohi ja kivi hukataan), muuten vanha B-suora."""
-        if self.heitto is None or self.heitto.tila != "vahvistettu":
-            return None
-        viim = next((n for n in reversed(self.heitto.naytteet) if n.paikka() is not None), None)
-        if viim is None or viim.paikka()[1] >= HUKKA_LAAJA_Y_MAX_CM:                  # vain talon alue (ks. HUKKA_LAAJA_Y_MAX_CM)
-            return None
-        pa = self._ennuste_vain_a(f)
-        if pa is not None:
-            return pa
-        return self._ennuste_b(f, ENNUSTE_B_TUORE_PITKA)
-
-    def _hukka_lupa(self):
-        """Vahvistetun heiton sallittu paikkapuute (ruutua): kunnes viimeisin tunnettu paikka ja nopeus veisivat kiven puoliskon loppuun (+ 10 ruutua), vahintaan PAIKKA_PUUTE_RUUTUA ja
-        enintaan HUKKA_MAX_RUUTUA."""
-        ns = [n for n in self.heitto.naytteet[-90:] if n.paikka() is not None]
-        if not ns or ns[-1].paikka()[1] >= HUKKA_LAAJA_Y_MAX_CM:
-            return PAIKKA_PUUTE_RUUTUA
-        v = float(np.clip(self._nopeus_ruutu(), 4.0, 14.0))
-        return int(min(max(PAIKKA_PUUTE_RUUTUA, (LOPPU_Y_CM - ns[-1].paikka()[1]) / v + 10.0), HUKKA_MAX_RUUTUA))
 
     def _idle_alkuun(self):
         self.tila = "IDLE"
@@ -1274,12 +1152,6 @@ class Heittopaa(_Seuranta):
             if a is None and ed is not None and f - ed.f >= HACK_HUKKA_RUUTUA and ed.paikka()[1] < HACK_HUKKA_Y_CM:
                 a = self._vari_a(ruutu, ed.paikka(), HACK_HUKKA_PORTTI_CM, ala_raja=(0.4, LIIKE_ALA_MAX))
             lavea = a is not None
-        elif a is None and h.tila == "vahvistettu" and luotettava and Yp < HUKKA_LAAJA_Y_MAX_CM:
-            pa = self._ennuste_vain_a(f)
-            if pa is not None and np.hypot(pa[0] - Xp, pa[1] - Yp) >= B_ENNUSTE_EROA_CM:
-                a = self._vari_a(ruutu, pa, portti, ala_raja=(0.4, 1.8))
-                if a is not None:
-                    luotettava = False                                     # B-ennuste meni ohi: B haetaan A:n paikasta, ja A-ennuste pitaa seurannan kasissa
         n = Naytteet(f)
         if a is not None:
             n.A, n.ala = (a[0], a[1]), a[2]
@@ -1320,7 +1192,7 @@ class Heittopaa(_Seuranta):
                 self.an.tapahtumat.append(("hylatty", h.tunnus, f, f"v {v:.0f} cm/s, hukka {self.hukka}"))
                 self._takaisin_viritykseen(f)
         elif h.tila == "vahvistettu":
-            if Yp >= LOPPU_Y_CM or self.hukka > self._hukka_lupa():
+            if Yp >= LOPPU_Y_CM or self.hukka > PAIKKA_PUUTE_RUUTUA:
                 self._valmis(f, "matka" if Yp >= LOPPU_Y_CM else "kivi hukassa")
 
     def _ei_etene(self, f):

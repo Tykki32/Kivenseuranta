@@ -623,60 +623,36 @@ def testaa_kahva_ala_mittakaava():
             tarkista(f"{kansio} {puoli}: alaraja ennallaan (~50 px)", abs(px - 50.0) < 1.5, f"alaraja {px:.1f} px")
 
 
-def testaa_ennuste_varalla():
-    print("vahvistetun heiton A-ennuste ja sallittu paikkapuute: yksittainen A-harha (punainen nappi) ei saa karkottaa ennustetta, ja heittajan kehon alla kulkeva kivi pysyy heittona irroitukseen asti")
-    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
-    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
-    hp = an.paat["vasen"]
-    h = ns.Heitto(1, "vasen", "punainen", 0, (0.0, -300.0))
-    h.tila = "vahvistettu"
-    hp.heitto = h
-    v = 8.5
-    for f in range(100, 125):
-        Y = -120.0 + v * (f - 100)
-        if f == 118:
-            Y += 58.0                                                                    # yksittainen harha: kahvan blobi tarttuu napin punaiseen
-        h.naytteet.append(ns.Naytteet(f, (-5.0, Y), 170.0))
-    pa = hp._ennuste_vain_a(130)
-    oikea = -120.0 + v * 30
-    tarkista("A-suora kestaa yksittaisen 58 cm:n harhan (virhe < 10 cm 6 ruudun paassa)", pa is not None and abs(pa[1] - oikea) < 10.0, f"{pa[1]:.0f} vs {oikea:.0f} cm")
-    tarkista("ennuste kayttaa A-suoraa, kun B-ennustetta ei ole (vahvistettu)", abs(hp._ennuste(130)[1] - pa[1]) < 1e-6)
-    tarkista("liian vanhat A-paikat eivat kelpaa (alle 4 paikkaa 20 ruudun sisalla)", hp._ennuste_vain_a(160) is None)
-    lupa = hp._hukka_lupa()
-    tarkista("kivi hukassa Y ~ 90 cm:ssa: lupa kattaa matkan puoliskon loppuun (> 36 ruutua, enintaan 120)", ns.PAIKKA_PUUTE_RUUTUA < lupa <= ns.HUKKA_MAX_RUUTUA, f"{lupa} ruutua")
-    h.naytteet = [ns.Naytteet(f, (-5.0, 600.0 + v * (f - 100)), 170.0) for f in range(100, 110)]
-    tarkista("kivi hukassa lahella puoliskon loppua: perusraja (36 ruutua)", hp._hukka_lupa() == ns.PAIKKA_PUUTE_RUUTUA, f"{hp._hukka_lupa()} ruutua")
+def testaa_tausta_maskit():
+    print("taustan luotettavuus (kivi_tarkka.tausta_maskit) ja graniitin vari (kivi_netti.graniitti_vari): kameran jaan mukaan, jatkuva virhemalli kiintean reunalaajennuksen sijaan")
+    import types
+    import cv2
+    import kivi_netti as kv
+    import kivi_tarkka as kt
 
+    def kamera(jaa_bgr, punainen_bgr):
+        h, w = 160, 160
+        mode = np.zeros((h, w, 3), np.uint8)
+        mode[:] = jaa_bgr
+        cv2.circle(mode, (80, 80), 40, punainen_bgr, -1)                              # terava, korkeakontrastinen reuna
+        cv2.line(mode, (10, 20), (150, 20), tuple(int(c) - 22 for c in jaa_bgr), 1)  # ohut, matalakontrastinen viiva (esim. tekstin pehmea reuna)
+        mode = cv2.GaussianBlur(mode, (0, 0), 0.8)
+        return types.SimpleNamespace(mode=mode, lane=np.ones((h, w), np.uint8))
 
-def testaa_piste_silotus():
-    print("piirrettavien pisteiden silotus (netti_seuranta.silota_pisteet): taustavarin vaihtuessa pehmea B / A -pisteet eivat hyppaa, kelvolliset B-pisteet jaavat ennalleen")
-    rng = np.random.default_rng(5)
-    F = np.arange(0, 80, 1.0)
-    Y = -140.0 + 8.5 * F
-    X = -15.0 - 0.012 * (Y + 140.0)                                                   # suora liuku
-    lahde = np.zeros(len(F), int)
-    P = np.column_stack([X + rng.normal(0, 0.1, len(F)), Y + rng.normal(0, 0.5, len(F))])
-    kaista = (Y > -65.0) & (Y < 35.0)                                                 # kelvollista B:ta ei: pehmea B tai A, taso poikkeaa 3 cm ja hajonta 1 cm
-    lahde[kaista] = 1
-    lahde[np.nonzero(kaista)[0][::3]] = 2
-    P[kaista] += np.array([2.5, -4.0]) + rng.normal(0, 1.0, (int(kaista.sum()), 2))
-    Q, mut = ns.silota_pisteet(F, P, lahde)
-    e_vanha = np.abs(P[kaista, 0] - X[kaista]).mean()
-    e_uusi = np.abs(Q[kaista, 0] - X[kaista]).mean()
-    tarkista("kaistan X-virhe pienenee (keskim. 2,5 cm -> alle 0,5 cm)", e_uusi < 0.5 < e_vanha, f"{e_vanha:.2f} -> {e_uusi:.2f} cm")
-    tarkista("kaistan Y-virhe pienenee (keskim. 4 cm -> alle 2 cm)", np.abs(Q[kaista, 1] - Y[kaista]).mean() < 2.0 < np.abs(P[kaista, 1] - Y[kaista]).mean(), f"{np.abs(P[kaista, 1] - Y[kaista]).mean():.1f} -> {np.abs(Q[kaista, 1] - Y[kaista]).mean():.1f} cm")
-    puhdas = (lahde == 0) & ~np.isin(np.arange(len(F)), np.nonzero(kaista)[0])
-    tarkista("kelvolliset B-pisteet kaistan ulkopuolella ennallaan", bool(np.allclose(Q[puhdas], P[puhdas])), f"{int((~np.isclose(Q[puhdas], P[puhdas]).all(axis=1)).sum())} muuttunut")
-    L2 = lahde.copy(); L2[:] = 1
-    Q2, mut2 = ns.silota_pisteet(F, P, L2)
-    tarkista("ilman kelvollisia B-pisteita rataa ei muuteta", bool(np.array_equal(Q2, P)) and not mut2.any())
-    P3 = P.copy(); P3[10, 0] += 6.0                                                   # kelvollinen B, jonka X on 6 cm vaarassa (ulkolainen)
-    Q3, _ = ns.silota_pisteet(F, P3, lahde)
-    tarkista("kelvollisen B:n ulkolainen korvataan ymparistosta", abs(Q3[10, 0] - X[10]) < 0.5, f"{Q3[10, 0] - X[10]:+.2f} cm")
+    k1 = kamera((236, 229, 227), (117, 93, 180))                                       # video 1: punainen on RGB-etaisyydella 56 graniitista (aiempi raja 60 hylkasi)
+    k3 = kamera((213, 209, 207), (81, 81, 222))
+    g1, g3 = kv.graniitti_vari(k1), kv.graniitti_vari(k3)
+    tarkista("graniitin vari seuraa kameran jaata (video 1 ~ 128, video 3 ~ 115 kanavalla B)", abs(g1[0] - 128.0) < 3.0 and abs(g3[0] - 115.7) < 3.0 and g3[0] < g1[0] - 8.0, f"{g1.round(0)} / {g3.round(0)}")
+    for nimi, k in (("video 1", k1), ("video 3", k3)):
+        jaa, vari = kt.tausta_maskit(k)
+        tarkista(f"{nimi}: punaisen ympyran sisus on luotettavaa varillista taustaa", float(vari[70:90, 70:90].mean()) > 0.95, f"{vari[70:90, 70:90].mean():.2f}")
+        tarkista(f"{nimi}: jaa luotettavaa jaata (kaukana reunoista)", float(jaa[100:150, 5:40].mean()) > 0.95, f"{jaa[100:150, 5:40].mean():.2f}")
+        tarkista(f"{nimi}: terava punainen reuna on epaluotettava (alfan virhe liian suuri)", float((jaa | vari)[78:83, 39:42].mean()) < 0.5, f"{(jaa | vari)[78:83, 39:42].mean():.2f}")
+        tarkista(f"{nimi}: ohut matalakontrastinen viiva ei hylkaa ymparistoaan (aiempi 7 x 7 -laajennus hylkasi)", float(jaa[17:24, 20:140].mean()) > 0.9, f"{jaa[17:24, 20:140].mean():.2f}")
 
 
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_ennuste_varalla, testaa_piste_silotus):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit):
         t()
     print()
     if VIRHEITA:
