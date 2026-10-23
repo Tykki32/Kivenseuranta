@@ -648,8 +648,35 @@ def testaa_ennuste_varalla():
     tarkista("kivi hukassa lahella puoliskon loppua: perusraja (36 ruutua)", hp._hukka_lupa() == ns.PAIKKA_PUUTE_RUUTUA, f"{hp._hukka_lupa()} ruutua")
 
 
+def testaa_piste_silotus():
+    print("piirrettavien pisteiden silotus (netti_seuranta.silota_pisteet): taustavarin vaihtuessa pehmea B / A -pisteet eivat hyppaa, kelvolliset B-pisteet jaavat ennalleen")
+    rng = np.random.default_rng(5)
+    F = np.arange(0, 80, 1.0)
+    Y = -140.0 + 8.5 * F
+    X = -15.0 - 0.012 * (Y + 140.0)                                                   # suora liuku
+    lahde = np.zeros(len(F), int)
+    P = np.column_stack([X + rng.normal(0, 0.1, len(F)), Y + rng.normal(0, 0.5, len(F))])
+    kaista = (Y > -65.0) & (Y < 35.0)                                                 # kelvollista B:ta ei: pehmea B tai A, taso poikkeaa 3 cm ja hajonta 1 cm
+    lahde[kaista] = 1
+    lahde[np.nonzero(kaista)[0][::3]] = 2
+    P[kaista] += np.array([2.5, -4.0]) + rng.normal(0, 1.0, (int(kaista.sum()), 2))
+    Q, mut = ns.silota_pisteet(F, P, lahde)
+    e_vanha = np.abs(P[kaista, 0] - X[kaista]).mean()
+    e_uusi = np.abs(Q[kaista, 0] - X[kaista]).mean()
+    tarkista("kaistan X-virhe pienenee (keskim. 2,5 cm -> alle 0,5 cm)", e_uusi < 0.5 < e_vanha, f"{e_vanha:.2f} -> {e_uusi:.2f} cm")
+    tarkista("kaistan Y-virhe pienenee (keskim. 4 cm -> alle 2 cm)", np.abs(Q[kaista, 1] - Y[kaista]).mean() < 2.0 < np.abs(P[kaista, 1] - Y[kaista]).mean(), f"{np.abs(P[kaista, 1] - Y[kaista]).mean():.1f} -> {np.abs(Q[kaista, 1] - Y[kaista]).mean():.1f} cm")
+    puhdas = (lahde == 0) & ~np.isin(np.arange(len(F)), np.nonzero(kaista)[0])
+    tarkista("kelvolliset B-pisteet kaistan ulkopuolella ennallaan", bool(np.allclose(Q[puhdas], P[puhdas])), f"{int((~np.isclose(Q[puhdas], P[puhdas]).all(axis=1)).sum())} muuttunut")
+    L2 = lahde.copy(); L2[:] = 1
+    Q2, mut2 = ns.silota_pisteet(F, P, L2)
+    tarkista("ilman kelvollisia B-pisteita rataa ei muuteta", bool(np.array_equal(Q2, P)) and not mut2.any())
+    P3 = P.copy(); P3[10, 0] += 6.0                                                   # kelvollinen B, jonka X on 6 cm vaarassa (ulkolainen)
+    Q3, _ = ns.silota_pisteet(F, P3, lahde)
+    tarkista("kelvollisen B:n ulkolainen korvataan ymparistosta", abs(Q3[10, 0] - X[10]) < 0.5, f"{Q3[10, 0] - X[10]:+.2f} cm")
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_ennuste_varalla):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_ennuste_varalla, testaa_piste_silotus):
         t()
     print()
     if VIRHEITA:

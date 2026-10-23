@@ -683,6 +683,73 @@ class Naytteet:
         return self.B is not None or self.Bs is not None
 
 
+PISTE_SILOTUS_IKKUNA = 12.0      # piirrettavien pisteiden silotus: paikallisen sovituksen puoli-ikkuna (ruutua; ~100 cm 8 cm / ruutu)
+PISTE_PAINO = (1.0, 0.04, 0.02)  # paikallisen sovituksen paino lahteittain: kelvollinen B, pehmea B, A (kahvan blobi)
+PISTE_ANKKURI_RAJA_CM = (1.0, 6.0)  # kelvollinen B korvataan ymparistonsa sovitteella, jos se poikkeaa siita yli taman (X, Y; Y:ssa ruutuindeksin aikaperustan hammastus ~ +-3 cm)
+PISTE_ANKKUREITA_MIN = 3         # pehmeat B- ja A-pisteet korvataan sovituksella vain, jos ikkunassa on vahintaan nain monta kelvollista B-pistetta (muuten ennallaan)
+
+
+def silota_pisteet(F, P, lahde, ikkuna=PISTE_SILOTUS_IKKUNA, paino=None):
+    """Piirrettavien pisteiden silotus taustavarin vaihtuessa. Kelvollisia B-sovituksia (lahde 0) on talon renkaiden ja viivojen kohdalla vain 0-30 %: silloin rata tulee pehmeasta B:sta
+    (lahde 1) ja kahvan blobista (A, lahde 2), joiden taso poikkeaa toisistaan ja kelvollisesta B:sta taustan mukaan +-3-5 cm (etumerkki vaihtuu varirajalla) ja hajonta on 5-10 cm,
+    joten piirrettava rata hyppii. Kelvolliset B-pisteet jaavat ennalleen; pehmea B ja A korvataan niiden ymparille sovitetulla sileaalla radalla (paikallinen painotettu toisen asteen
+    sovitus ruutuindeksin funktiona, robusti: pehmeat / A-pisteet painavat vahan ja poikkeavat pisteet pudotetaan). Ikkuna laajenee (ikkuna, 1,5 x, 2 x), kunnes siina on
+    PISTE_ANKKUREITA_MIN kelvollista B-pistetta; jos niita ei sittenkaan ole, piste jaa ennalleen. F: ruutuindeksit (nouseva), P: (N, 2) paikat, lahde: (N,) 0 / 1 / 2.
+    Palauttaa uuden P:n (N, 2) ja totuusarvotaulukon (N,): pistetta on silotettu."""
+    F = np.asarray(F, float)
+    P = np.asarray(P, float)
+    lahde = np.asarray(lahde, int)
+    out = P.copy()
+    muutettu = np.zeros(len(F), bool)
+    if int((lahde == 0).sum()) < PISTE_ANKKUREITA_MIN:
+        return out, muutettu
+    w0 = np.array([PISTE_PAINO[int(k)] for k in lahde]) if paino is None else np.asarray(paino, float)         # paino: testikaytto (ristiinvalidointi piilottaa pisteita)
+    for i in np.nonzero(lahde != 0)[0]:
+        d = F - F[i]
+        for lev in (ikkuna, 1.5 * ikkuna, 2.0 * ikkuna):
+            lahella = np.abs(d) <= lev
+            if int((lahella & (lahde == 0)).sum()) >= PISTE_ANKKUREITA_MIN:
+                break
+        else:
+            continue
+        x = d[lahella]
+        w = w0[lahella] * (1.0 - (np.abs(x) / (lev + 1.0)) ** 3) ** 3                          # tricube
+        y = P[lahella]
+        jasen = 3 if (int(((d < 0) & lahella & (lahde == 0)).sum()) >= 1 and int(((d > 0) & lahella & (lahde == 0)).sum()) >= 1) else 2     # molemmin puolin ankkureita: toisen asteen, muuten suora
+        A = np.vander(x, jasen)
+        rw = np.ones(len(x))
+        c = None
+        for _ in range(3):
+            W = (w * rw)[:, None]
+            c = np.linalg.lstsq(A * np.sqrt(W), y * np.sqrt(W), rcond=None)[0]
+            r = np.hypot(*(y - A @ c).T)
+            sk = 1.0 + 1.48 * float(np.median(r[lahde[lahella] == 0]))
+            rw = np.where(r < 3.0 * sk, (1.0 - (r / (3.0 * sk)) ** 2) ** 2, 0.0)
+        out[i] = c[-1]                                                                          # sovite ruudulla i (x = 0)
+        muutettu[i] = True
+    for i in np.nonzero(lahde == 0)[0]:                                                         # kelvollisen B:n ulkolaiset (talon varialueella B:n kelvolliset pikselit vahan): korvataan ymparistosta sovitetulla
+        d = F - F[i]
+        lahella = (np.abs(d) <= ikkuna) & (np.arange(len(F)) != i)
+        if int((lahella & (lahde == 0)).sum()) < PISTE_ANKKUREITA_MIN + 1:
+            continue
+        x = d[lahella]
+        w = w0[lahella] * (1.0 - (np.abs(x) / (ikkuna + 1.0)) ** 3) ** 3
+        y = P[lahella]
+        A = np.vander(x, 3)
+        rw = np.ones(len(x))
+        for _ in range(3):
+            W = (w * rw)[:, None]
+            c = np.linalg.lstsq(A * np.sqrt(W), y * np.sqrt(W), rcond=None)[0]
+            r = np.hypot(*(y - A @ c).T)
+            sk = 1.0 + 1.48 * float(np.median(r[lahde[lahella] == 0]))
+            rw = np.where(r < 3.0 * sk, (1.0 - (r / (3.0 * sk)) ** 2) ** 2, 0.0)
+        e = P[i] - c[-1]
+        if abs(e[0]) > PISTE_ANKKURI_RAJA_CM[0] or abs(e[1]) > PISTE_ANKKURI_RAJA_CM[1]:
+            out[i] = c[-1]
+            muutettu[i] = True
+    return out, muutettu
+
+
 class Heitto:
     def __init__(self, tunnus, puoli, vari, f_lepo, lepo_XY):
         self.tunnus, self.puoli, self.vari = tunnus, puoli, vari
@@ -763,25 +830,31 @@ class Heitto:
     def pisteet(self, B_VALI=4, EROTUS_IKKUNA=20):
         """[(f, X, Y)] piirrettavat pisteet lahtoruudusta alkaen: B / pehmea B. A (kahvan vari) vain kun B-paikkaa ei ole B_VALI ruudun sisalla: pesassa heittajan kasi
         vetaa punaisen kahvan blobia kymmenia senttimetreja, joten A-pisteet B-paikkojen vieressa jatetaan pois (aukko tayttyy piirtajalla interpoloimalla). Yksinaiset
-        A-pisteet korjataan lahialueen B - A -erolla (EROTUS_IKKUNA ruutua, mediaani, vahintaan 3 paria)."""
+        A-pisteet korjataan lahialueen B - A -erolla (EROTUS_IKKUNA ruutua, mediaani, vahintaan 3 paria). Lopuksi pehmea B ja A silotetaan kelvollisten B-pisteiden mukaan
+        (silota_pisteet): taustavarin vaihtuessa (talon renkaat, viivat) kelvollisia B-pisteita on vahan ja lahteiden tasot poikkeavat toisistaan, jolloin rata hyppisi."""
         ns = [n for n in list(self.naytteet) if self.f_alku is not None and n.f >= self.f_alku and n.paikka() is not None]
         fb = np.array([n.f for n in ns if n.kivi()], float)
         pari_f = np.array([n.f for n in ns if n.B is not None and n.A is not None], float)
         pari_d = np.array([np.subtract(n.B, n.A) for n in ns if n.B is not None and n.A is not None], float).reshape(-1, 2)
-        out = []
+        F, P, L = [], [], []
         for n in ns:
             if n.kivi():
                 p = n.paikka()
+                lahde = 0 if n.B is not None else 1
             else:
                 if len(fb) and float(np.min(np.abs(fb - n.f))) <= B_VALI:
                     continue
                 p = np.asarray(n.A, float)
+                lahde = 2
                 if len(pari_f):
                     lahella = np.abs(pari_f - n.f) <= EROTUS_IKKUNA
                     if int(lahella.sum()) >= 3:
                         p = p + np.median(pari_d[lahella], axis=0)
-            out.append((n.f, float(p[0]), float(p[1])))
-        return out
+            F.append(n.f); P.append(p); L.append(lahde)
+        if not F:
+            return []
+        P, _ = silota_pisteet(F, P, L)
+        return [(int(f), float(p[0]), float(p[1])) for f, p in zip(F, P)]
 
 
 class _Seuranta:
