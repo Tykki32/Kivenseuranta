@@ -42,7 +42,9 @@ CHR_MAX = 9.0                        # Lab a*b* -etaisyys taustasta (kahvan muov
 L_TUMMA = 28.0                       # L < tama: musta hihaa / hanska
 REIKA_MAX_ALA = 80                   # graniitin sisaiset alfa < 0,5 -alueet (kiilto) alle tama (px) -> ei valia
 DEV_MAX_VARI = 45.0                  # varillisella taustalla: etaisyys janasta tausta-graniitti (BGR), jonka yli ei graniittia eika jaata
-TAUSTA_EROTUS_MIN = 60.0             # |graniitti - tausta| (BGR) vahintaan tama, jotta alfa on luotettava
+TAUSTA_DELTA_PX = 0.7                # taustakuvan rekisteroinnin alipikselivirhe (kameran heilunta <= 0,65 px, tools/kameran_heilunta.py)
+TAUSTA_VIRHE_MAX = 0.25              # alfan odotettu virhe (delta x taustan gradientti / |graniitti - tausta|) enintaan tama
+TAUSTA_DE_MIN = 22.0                 # graniitin ja taustan Lab-ero (dE) vahintaan tama: alfa on silloin erotettavissa taustasta
 
 
 class Runko:
@@ -134,24 +136,30 @@ def malli_kuva(cam, runko, win, X, Y, sR=1.0, H=None):
 # HAVAINTO: alfa + kelvolliset pikselit koko ruudusta
 # ---------------------------------------------------------------------------------------------------------------------
 def tausta_maskit(cam):
-    """Taustakuvan (moodikuva) luokitus kerran per kamera:
-    jaa  = jaan vari (|moodi - jaa| < 24), eroodattu 5x5 (maalattujen viivojen reunat pois)
-    vari = varillinen tausta (renkaat, viivat, logot), jossa graniitin sekoitus on luotettava: |graniitti - tausta| > 60, kaukana taustan reunoista
-           (gradientti, laajennus 3 px). Kiven alfa lasketaan pikselikohtaisella taustalla, joten rengas ei haittaa; ongelma on vain
-           tumma varjo sinisella renkaalla (ks. havainto: L < L_TUMMA)."""
+    """Taustakuvan (moodikuva) luokitus kerran per kamera: (jaa, vari) = pikselit, joilla kiven alfa (graniitin sekoitus taustaan) on luotettava; jaa = taustan vari on jaan vari,
+    vari = varillinen tausta (renkaat, viivat, logot). Luotettavuus mitataan, ei kiintealla rajalla:
+      * erotettavuus: Lab-ero graniitin ja taustan valilla (dE) >= TAUSTA_DE_MIN. Lab, koska graniitti on vareeton ja punainen / sininen tausta on varillinen: RGB-etaisyys
+        (aiempi raja 60) hylkasi videon 1 punaisen ympyran (56) vaikka dE on ~45;
+      * rekisterointivirhe: taustan gradientti x TAUSTA_DELTA_PX / |graniitti - tausta| (alfan virhe, kun moodikuva on delta px vinossa) < TAUSTA_VIRHE_MAX. Aiempi kiintea
+        'gradientti > 60, laajennus 7 x 7' hylkasi 30-70 % kiven siluetin pikseleista talon renkaiden, viivojen ja tekstin kohdalla (kelvollisia B-sovituksia talossa vain 0-30 %),
+        jolloin rata tuli pehmeasta B:sta ja kahvan blobista, joiden taso poikkeaa taustan mukaan +-3-5 cm: piirretty rata hyppi varirajoilla.
+    Kiven alfa lasketaan pikselikohtaisella taustalla, joten rengas ei haittaa; ongelma on vain tumma varjo sinisella renkaalla (ks. havainto: L < L_TUMMA)."""
     if not hasattr(cam, "_tausta"):
         mode = cam.mode.astype(np.int16)
-        jaa_vari = np.median(mode.reshape(-1, 3)[(cam.lane.reshape(-1) > 0)], axis=0)
-        jaa = (np.max(np.abs(mode - jaa_vari[None, None, :]), axis=2) < 24).astype(np.uint8)
-        jaa = cv2.erode(jaa, np.ones((5, 5), np.uint8)) > 0
+        jaa_vari = kv.jaan_vari(cam)
+        ice = np.max(np.abs(mode - jaa_vari[None, None, :]), axis=2) < 24
         mf = cam.mode.astype(np.float32)
-        gx = cv2.Sobel(mf, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(mf, cv2.CV_32F, 0, 1, ksize=3)
-        reuna = np.max(np.hypot(gx, gy), axis=2) > 60.0
-        reuna = cv2.dilate(reuna.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
-        d = kv.GRANIITTI_BGR.astype(np.float32)[None, None, :] - mf
-        sopii = np.sum(d * d, axis=2) > TAUSTA_EROTUS_MIN ** 2
-        cam._tausta = (jaa, sopii & (~reuna) & (~jaa))
+        gx = cv2.Sobel(mf, cv2.CV_32F, 1, 0, ksize=3) / 8.0
+        gy = cv2.Sobel(mf, cv2.CV_32F, 0, 1, ksize=3) / 8.0
+        grad = np.max(np.hypot(gx, gy), axis=2)                                    # taustan tason muutos / px (suurin kanava)
+        g = kv.graniitti_vari(cam)
+        dist = np.sqrt(np.sum((g.astype(np.float32)[None, None, :] - mf) ** 2, axis=2))
+        virhe = TAUSTA_DELTA_PX * grad / np.maximum(dist, 1.0)
+        lab_m = cv2.cvtColor(cam.mode, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab_g = cv2.cvtColor(np.clip(g, 0, 255).astype(np.uint8).reshape(1, 1, 3), cv2.COLOR_BGR2LAB).astype(np.float32).reshape(3)
+        de = np.sqrt(((lab_m[..., 0] - lab_g[0]) * (100.0 / 255.0)) ** 2 + (lab_m[..., 1] - lab_g[1]) ** 2 + (lab_m[..., 2] - lab_g[2]) ** 2)
+        luotettava = (de > TAUSTA_DE_MIN) & (virhe < TAUSTA_VIRHE_MAX) & (cam.lane > 0)
+        cam._tausta = (ice & luotettava, luotettava & ~ice)
     return cam._tausta
 
 
@@ -176,7 +184,7 @@ def havainto(cam, frame, alfa=None, varillinen_tausta=True):
     # varillisella taustalla: poikkeama janasta [tausta, graniitti] (muovi, iho)
     b = cam.mode.astype(np.float32)
     p = frame.astype(np.float32)
-    d = kv.GRANIITTI_BGR.astype(np.float32)[None, None, :] - b
+    d = kv.graniitti_vari(cam).astype(np.float32)[None, None, :] - b
     a = np.clip(np.sum((p - b) * d, axis=2) / np.maximum(np.sum(d * d, axis=2), 1.0), 0.0, 1.0)
     rez = p - (b + a[..., None] * d)
     dev = cv2.GaussianBlur(np.sqrt(np.sum(rez * rez, axis=2)), (0, 0), 1.0)

@@ -250,6 +250,7 @@ def _leike_kamera(cam, x0, y0, w, h):
     sl = (slice(y0, y0 + h), slice(x0, x0 + w))
     c = types.SimpleNamespace(mode=cam.mode[sl], mode_hsv=cam.mode_hsv[sl], lane=cam.lane[sl])
     c._tausta = (jaa[sl], vari[sl])
+    c.graniitti = kv.graniitti_vari(cam)
     c.maskit = types.MethodType(kv.Kamera.maskit, c)
     return c
 
@@ -293,7 +294,7 @@ class Mittari:
         """C++-sovitin (netti_fit.BFit): taustakuva, kaistamaski, jaa- ja varimaskit, kamera ja kiven profiili kerran muistiin."""
         jaa, vari = kt.tausta_maskit(self.cam)
         r_prof, z_prof = self.runko.profiili()
-        vakiot = dict(fg_kynnys=kv.FG_KYNNYS, g_vmin=kv.G_VMIN, g_vmax=kv.G_VMAX, g_smax=kv.G_SMAX, varjo=kv.VARJO_ALARAJA, graniitti=[float(x) for x in kv.GRANIITTI_BGR],
+        vakiot = dict(fg_kynnys=kv.FG_KYNNYS, g_vmin=kv.G_VMIN, g_vmax=kv.G_VMAX, g_smax=kv.G_SMAX, varjo=kv.VARJO_ALARAJA, graniitti=[float(x) for x in kv.graniitti_vari(self.cam)],
                       chr_max=kt.CHR_MAX, l_tumma=kt.L_TUMMA, reika_max_ala=kt.REIKA_MAX_ALA, dev_max_vari=kt.DEV_MAX_VARI)
         return _netti_fit.BFit(np.ascontiguousarray(self.cam.mode), np.ascontiguousarray(self.cam.lane), np.ascontiguousarray(jaa.astype(np.uint8)),
                                np.ascontiguousarray(vari.astype(np.uint8)), self.cam.K, self.cam.R, self.cam.t, r_prof, z_prof, self.runko.sigma_opt, self.runko.b_cm,

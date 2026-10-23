@@ -252,7 +252,35 @@ HANDLE_R_FRAC = 0.5
 HANDLE_H_CM = 8.0
 
 
-GRANIITTI_BGR = np.array([130.0, 126.0, 136.0])      # graniitin mitattu vari (kuvan mediaani)
+GRANIITTI_BGR = np.array([130.0, 126.0, 136.0])      # graniitin vari videolla 1 (kuvan mediaani); vara, kun kameran jaan varia ei tunneta
+GRANIITTI_SUHDE = np.array([0.543, 0.542, 0.563])    # graniitin pinnan vari / jaan vari (kanavittain), mitattu kelvollisista B-sovituksista: video 1 0,53-0,56, video 2 0,57-0,59, video 3 0,52-0,54
+
+
+def jaan_vari(cam):
+    """Kameran jaan vari (BGR): moodikuvan mediaani kaistan pikseleilla (jaa on enemmistona, renkaat ja viivat eivat vaikuta)."""
+    v = getattr(cam, "_jaan_vari", None)
+    if v is None:
+        m = cam.mode.reshape(-1, 3)[cam.lane.reshape(-1) > 0]
+        v = np.median(m.astype(np.float32), axis=0) if len(m) else None
+        try:
+            cam._jaan_vari = v
+        except AttributeError:
+            pass
+    return v
+
+
+def graniitti_vari(cam):
+    """Graniitin vari (BGR) kameran kuvassa = jaan vari x GRANIITTI_SUHDE. Vakio GRANIITTI_BGR on videon 1 valotuksen mukainen: videon 3 kuva on ~10 % tummempi (jaa 213 vs 236)
+    ja graniitti 111 vs 126, jolloin vakiovarilla alfa ja poikkeama (dev) menivat vaarin ja kivi todettiin kelvottomaksi varillisella jaalla."""
+    g = getattr(cam, "graniitti", None)
+    if g is None:
+        j = jaan_vari(cam)
+        g = GRANIITTI_BGR.copy() if j is None else (j * GRANIITTI_SUHDE).astype(np.float64)
+        try:
+            cam.graniitti = g
+        except AttributeError:
+            pass
+    return g
 
 
 def alfa_kartta(cam, frame, gran, handle=None):
@@ -263,7 +291,7 @@ def alfa_kartta(cam, frame, gran, handle=None):
     Vain graniittimaskin laajennetulla alueella ja kun |g - b| on riittava."""
     b = cam.mode.astype(np.float32)
     p = frame.astype(np.float32)
-    d = GRANIITTI_BGR.astype(np.float32)[None, None, :] - b
+    d = graniitti_vari(cam).astype(np.float32)[None, None, :] - b
     dd = np.sum(d * d, axis=2)
     a = np.sum((p - b) * d, axis=2) / np.maximum(dd, 1.0)
     a = np.where(dd > 2500.0, a, 0.0)
