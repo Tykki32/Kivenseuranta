@@ -118,7 +118,10 @@ SOFT_KELV = 0.08                 # pehmea B (tiukka B ei kelpaa): kelvollisia va
 PEITTO_MIN = 0.35                # B kelpaa vain jos graniittia (alfa) on rungon siluetin sisalla vahintaan tama (oikea kivi ~0,4-0,95, ei-kivi ~0-0,2)
 KIVI_B_LEPO = 2                  # ennen lahtoa hackissa on todettava kivi: vahintaan tama monta kelvollista B-sovitusta viimeisen 90 ruudun aikana
 KIVI_B_VAHVISTUS = 8             # heiton vahvistus: kelvollisia B-sovituksia vahintaan tama monta liikkeen aikana
+VAHVISTUS_V_VARMA_CM_S = 150.0   # hitaampi kuin tama (120-150 cm/s) vahvistetaan vain, kun B-sovituksia on vahintaan KIVI_B_VAHVISTUS_HIDAS: kavelevan tuomarin kantama kivi (Ahrenberg, pelin lopussa: 135 cm/s, 32 B-sovitusta)
+KIVI_B_VAHVISTUS_HIDAS = 60      # ... ei ole heitto; oikeiden heittojen nopeus vahvistuksessa oli 159-348 cm/s (450 heittoa) ja hitaimmilla 74-189 B-sovitusta
 PAIKKA_PUUTE_RUUTUA = 36         # heitto paattyy kun yhtaan paikkaa (A / B) ei ole ollut taman monta ruutua ...
+HUKKA_LAAJA_Y_MAX_CM = 260.0    # pitkat paikkapuute- ja A-varahaku-lisat koskevat vain taloa (viimeisin Y < taman): varivaihtelun alueella B-sovitus ja A pettavat, mutta puhtaalla jaalla (Y > taman) kivi hukkuu oikeasti (sweeperit peittavat) ja pidennys tarttuisi muihin punaisiin esineisiin (Ahrenberg 15: sweeperin esine kulki kivea hitaammin ja estimaatti meni pieleen)
 HUKKA_MAX_RUUTUA = 120           # ... paitsi kun kiven viimeisin tunnettu paikka ja nopeus eivat viela vie sita puoliskon loppuun: kahva on heittajan kehon alla irroitukseen (Y 375-590 cm) asti, ja
                                  # kivi nakyy taas vasta silloin (aiemmin vahvistettu heitto paattyi "kivi hukassa" Y ~ 100 cm:ssa ilman irroitusestimaattia); enintaan taman monta ruutua
 # vahvistetun heiton seuranta: B-pohjainen ennuste, B:n hyvaksyminen ennusteen suhteen, A:n (kahvan vari) harhojen torjunta. Punaisen kahvan blobiin tarttuu heittajan
@@ -173,6 +176,7 @@ SAAP_ALKU_S = 3.0                # haku alkaa taman verran heittopaan poistumise
 SAAP_LOPPU_S = 45.0              # ... ja paattyy taman jalkeen
 SAAP_X_CM = 300.0                # hakuvyohyke kaukopaassa: |X'| <= taman, Y' valilla
 SAAP_Y_CM = (450.0, 800.0)
+SAAP_ALA_RAJAT = (0.2, 2.2)      # hakuvyohykkeen blobin ala suhteessa odotettuun (heittopaan kahvan normitettu ala x skaala^2)
 SAAP_PISTEITA = 6                # rata vahvistetaan kun vahintaan taman verran pisteita
 SAAP_PISTEITA_B = 4              # kaukopaan rata hyvaksytaan kiveksi, kun siina on vahintaan taman verran pisteita ...
 SAAP_B_HYVAKSY = 2               # ... joista vahintaan taman monelle B-sovitus toteaa kiven (graniittia siluetin sisalla: kivi 0,34-0,95, ihmisen varusteet, esim. sweeperin punainen kasivarsinauha, 0,06-0,28) ...
@@ -1048,6 +1052,9 @@ class Heittopaa(_Seuranta):
         napin kohdalla: ennuste karkaa ohi ja kivi hukataan), muuten vanha B-suora."""
         if self.heitto is None or self.heitto.tila != "vahvistettu":
             return None
+        viim = next((n for n in reversed(self.heitto.naytteet) if n.paikka() is not None), None)
+        if viim is None or viim.paikka()[1] >= HUKKA_LAAJA_Y_MAX_CM:                  # vain talon alue (ks. HUKKA_LAAJA_Y_MAX_CM)
+            return None
         pa = self._ennuste_vain_a(f)
         if pa is not None:
             return pa
@@ -1057,7 +1064,7 @@ class Heittopaa(_Seuranta):
         """Vahvistetun heiton sallittu paikkapuute (ruutua): kunnes viimeisin tunnettu paikka ja nopeus veisivat kiven puoliskon loppuun (+ 10 ruutua), vahintaan PAIKKA_PUUTE_RUUTUA ja
         enintaan HUKKA_MAX_RUUTUA."""
         ns = [n for n in self.heitto.naytteet[-90:] if n.paikka() is not None]
-        if not ns:
+        if not ns or ns[-1].paikka()[1] >= HUKKA_LAAJA_Y_MAX_CM:
             return PAIKKA_PUUTE_RUUTUA
         v = float(np.clip(self._nopeus_ruutu(), 4.0, 14.0))
         return int(min(max(PAIKKA_PUUTE_RUUTUA, (LOPPU_Y_CM - ns[-1].paikka()[1]) / v + 10.0), HUKKA_MAX_RUUTUA))
@@ -1266,7 +1273,7 @@ class Heittopaa(_Seuranta):
             if a is None and ed is not None and f - ed.f >= HACK_HUKKA_RUUTUA and ed.paikka()[1] < HACK_HUKKA_Y_CM:
                 a = self._vari_a(ruutu, ed.paikka(), HACK_HUKKA_PORTTI_CM, ala_raja=(0.4, LIIKE_ALA_MAX))
             lavea = a is not None
-        elif a is None and h.tila == "vahvistettu" and luotettava:
+        elif a is None and h.tila == "vahvistettu" and luotettava and Yp < HUKKA_LAAJA_Y_MAX_CM:
             pa = self._ennuste_vain_a(f)
             if pa is not None and np.hypot(pa[0] - Xp, pa[1] - Yp) >= B_ENNUSTE_EROA_CM:
                 a = self._vari_a(ruutu, pa, portti, ala_raja=(0.4, 1.8))
@@ -1302,7 +1309,7 @@ class Heittopaa(_Seuranta):
         p = viim[-1].paikka() if viim else (Xp, Yp)               # vahvistus vain MITATUSTA paikasta (ei ennusteesta)
         if h.tila == "liikkuu":
             v = self._nopeus_ruutu() * self.an.fps
-            if viim and p[1] >= VAHVISTUS_Y_CM and v >= VAHVISTUS_V_CM_S and h.kivi_n(10 ** 6, f) >= KIVI_B_VAHVISTUS:
+            if viim and p[1] >= VAHVISTUS_Y_CM and v >= VAHVISTUS_V_CM_S and h.kivi_n(10 ** 6, f) >= KIVI_B_VAHVISTUS and (v >= VAHVISTUS_V_VARMA_CM_S or h.kivi_n(10 ** 6, f) >= KIVI_B_VAHVISTUS_HIDAS):
                 h.tila = "vahvistettu"
                 h.f_vahvistus = f
                 self.an.tapahtumat.append(("vahvistettu", h.tunnus, f, f"v {v:.0f} cm/s Y {p[1]:.0f} kivi_B {h.kivi_n(10 ** 6, f)}"))
@@ -1506,7 +1513,7 @@ class Saapuminen:
             s = self.m.skaala(X, Y)
             if h.ala_med:
                 odotus = h.ala_med * s * s
-                if not (0.45 * odotus <= ala <= 2.2 * odotus):
+                if not (SAAP_ALA_RAJAT[0] * odotus <= ala <= SAAP_ALA_RAJAT[1] * odotus):
                     continue
             elif not (50 <= ala <= 900):
                 continue
