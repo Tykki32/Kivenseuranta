@@ -33,7 +33,7 @@ RUUTU_Y_CM = 50.0
 class GraniittiHaku:
     """Graniittiehdokkaat maatason suorakulmiosta X x Y (cm, kalibrointitaso): ROI haetaan harvennettuna (deci) suoraan alkuperaisesta ruudusta."""
 
-    def __init__(self, mittari, X=(-300.0, 300.0), Y=(450.0, 800.0), deci=2, marg=10):
+    def __init__(self, mittari, X=(-300.0, 300.0), Y=(450.0, 800.0), deci=3, marg=10):
         self.m = mittari
         cam = mittari.cam
         self.X, self.Y, self.deci = X, Y, int(deci)

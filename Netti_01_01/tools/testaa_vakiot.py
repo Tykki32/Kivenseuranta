@@ -738,8 +738,80 @@ def testaa_kandidaatti_kivi():
     tarkista("keltainen haamu ja punainen kivi: punainen virittyy (keltainen ei ole ensin vain varin takia)", r is not None and r[0] == "punainen")
 
 
+def testaa_graniittihaku():
+    print("graniittihaku (kivi_haku): kiven runko loytyy ilman kahvan varia; ihmisen vaatteet ja kahvan muovi eivat ole graniittia")
+    import kivi_haku as kh
+    import kivi_netti as kvn
+    import kivi_tarkka as ktt
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+    m = ns.Mittari(kansio, "oikea")
+    h = kh.GraniittiHaku(m, deci=3)
+    d, cam = h.deci, m.cam
+    g = kvn.graniitti_vari(cam)
+
+    def kuva(X, Y, kivi=True, vaate=None):
+        """Harvennettu ROI: tausta + graniittirunko (nakyva osa) kohdassa (X, Y) + valinnainen vaatekappale (BGR) kiven vierella."""
+        roi = h.tausta.astype(np.float32).copy()
+        win = (h.x0, h.y0, roi.shape[1] * d, roi.shape[0] * d)
+        if kivi:
+            c, wt = ktt.malli_kuva(cam, m.runko, win, X, Y)
+            a = (c * wt)[::d, ::d][:roi.shape[0], :roi.shape[1]]
+            roi = roi * (1 - a[..., None]) + g[None, None, :] * a[..., None]
+        if vaate is not None:
+            u, v = (np.asarray(q)[0] for q in m.maa_oikaistuun(X + 70.0, Y, 0.0))
+            i, j = int((v - h.y0) / d), int((u - h.x0) / d)
+            roi[max(i - 8, 0):i + 8, max(j - 6, 0):j + 6] = vaate
+        return np.clip(roi, 0, 255).astype(np.uint8)
+
+    X0, Y0 = 20.0, 560.0
+    c = [x for x in h.blobit(kuva(X0, Y0)) if kh.ALA_RAJAT[0] <= x["suhde"] <= kh.ALA_RAJAT[1]]
+    paras = min(c, key=lambda x: np.hypot(x["X"] - X0, x["Y"] - Y0)) if c else None
+    tarkista("kivi loytyy rungosta (keskipiste <= 8 cm akselista)", paras is not None and np.hypot(paras["X"] - X0, paras["Y"] - Y0) <= 8.0)
+    tarkista("alan suhde odotettuun jarkeva (0,35-1,9)", paras is not None and kh.ALA_RAJAT[0] <= paras["suhde"] <= kh.ALA_RAJAT[1])
+    for nimi, vari in (("sininen takki", (170, 60, 20)), ("musta housu", (15, 15, 15)), ("punainen harja", (40, 40, 200)), ("keltainen harja", (40, 190, 230))):
+        c = [x for x in h.blobit(kuva(X0, Y0, kivi=False, vaate=vari)) if kh.ALA_RAJAT[0] <= x["suhde"] <= kh.ALA_RAJAT[1]]
+        tarkista(f"{nimi} ei ole graniittia", not c)
+
+
+def testaa_saapuminen_graniitti():
+    print("kaukopaan saapuminen graniittikanavalla: kulkeva, B:lla todettu rata hyvaksytaan; paikallaan oleva kivi ja B-tonta rata eivat")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+
+    def aja(ehdokkaat, b_ok):
+        an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+        an.tarkka = True
+        h = ns.Heitto(7, "vasen", "punainen", 0, (0.0, -330.0))
+        h.f_loppu, h.ala_med = 0, 30.0
+        sa = ns.Saapuminen(an, h)
+        sa._blobit = lambda r: []
+        sa._kartoita = lambda f, r: None
+        sa.f_alku = 0
+        sa.haku = type("H", (), {"ehdokkaat": lambda self, r: ehdokkaat(self.f)})()
+        pyynnot = []
+
+        def b(hp, heitto, naytteet, ruutu, X0, Y0, ennuste=None):
+            pyynnot.append(naytteet.f)
+            if b_ok:
+                naytteet.B = (X0, Y0)
+        an.pyyda_b = b
+        for f in range(0, 90):
+            sa.haku.f = f
+            if not sa.kasittele(f, None):
+                break
+        return h.saapuminen, len(an.kaukoseurannat), pyynnot
+
+    liikkuva = lambda f: [dict(X=40.0, Y=720.0 - 5.0 * f, ala=900, suhde=1.0)]                    # 5 cm / ruutu = 150 cm/s kohti pesaa
+    paikallaan = lambda f: [dict(X=110.0, Y=600.0, ala=900, suhde=1.0)]
+    tila, n, _ = aja(liikkuva, True)
+    tarkista("kulkeva graniittirata B-todistein hyvaksytaan", tila == "loytyi" and n == 1)
+    tila, n, _ = aja(liikkuva, False)
+    tarkista("kulkeva rata ilman B-todisteita ei kelpaa (ihmisen varuste)", tila != "loytyi" and n == 0)
+    tila, n, pyynnot = aja(paikallaan, True)
+    tarkista("paikallaan oleva kivi ei ole saapuva kivi eika sille pyydeta B:ta", tila != "loytyi" and n == 0 and not pyynnot)
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti):
         t()
     print()
     if VIRHEITA:

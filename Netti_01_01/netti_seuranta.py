@@ -40,6 +40,7 @@ import numpy as np
 
 import aikaperusta as aikap
 import kahva_malli as km
+import kivi_haku
 import kivi_netti as kv
 import kivi_tarkka as kt
 import kivimalli
@@ -180,6 +181,8 @@ SAAP_ALA_RAJAT = (0.45, 2.2)     # hakuvyohykkeen blobin ala suhteessa odotettuu
 SAAP_PISTEITA = 6                # rata vahvistetaan kun vahintaan taman verran pisteita
 SAAP_PISTEITA_B = 4              # kaukopaan rata hyvaksytaan kiveksi, kun siina on vahintaan taman verran pisteita ...
 SAAP_B_HYVAKSY = 2               # ... joista vahintaan taman monelle B-sovitus toteaa kiven (graniittia siluetin sisalla: kivi 0,34-0,95, ihmisen varusteet, esim. sweeperin punainen kasivarsinauha, 0,06-0,28) ...
+SAAP_GRAN_VALI = 2                # graniittikanava: ehdokashaku joka n:s yksilollinen ruutu
+SAAP_B_HYVAKSY_G = 3             # graniittirata (kanava ei tunne varia) hyvaksytaan, kun B toteaa kiven vahintaan taman monessa pisteessa
 SAAP_B_VALI = 3                  # ... ja B pyydetaan radan uusimmalle pisteelle taman monen ruudun valein (vain kulkevalle radalle)
 # kaukopaan seuranta: kivi tunnistettu -> seuranta (A + B) pysahtymiseen asti
 KAUKO_HUKKA_RUUTUA = 180         # seuranta paattyy, kun B-paikkaa ei ole ollut taman monta ruutua (kivi piilossa harjaajien alla tai poistunut kuvasta); ennuste kantaa piilossaolon yli
@@ -1328,10 +1331,11 @@ class KaukoHeitto:
 class _Rata(list):
     """Kaukopaan blobirata [(f, X', Y', ala), ...] ja sen naytteet (A; B-sovitukset liitetaan myohemmin): rata, jonka kivi todetaan B:lla, muuttuu kaukopaan seurannaksi."""
 
-    def __init__(self, tunnus, puoli, vari):
+    def __init__(self, tunnus, puoli, vari, lahde="kahva"):
         super().__init__()
         self.heitto = KaukoHeitto(tunnus, puoli, vari)
         self.f_b = -10 ** 9                               # viimeisimman B-pyynnon ruutu
+        self.lahde = lahde                                # "kahva" (kahvan variblobi) | "graniitti" (kiven runko, kivi_haku)
 
     def lisaa(self, q):
         self.append(q)
@@ -1371,6 +1375,9 @@ class Saapuminen:
         self.alue_kartta = (int(u2.min()) - 10, int(v2.min()) - 10, int(u2.max()) + 10, int(v2.max()) + 10)       # pelialue (kivikartta ennen heittoa)
         self.karttat = []                                 # [(ruutu, [(X', Y')])]: paikallaan olevat saman varin kahvat pelialueella
         self._kartta_f = -10 ** 9
+        self.radat_g = []                                 # graniittikanavan radat: kiven runko (ei kahvan vari), joten kahvan piilossaolo / koko / vari ei estä loytymista
+        self.haku = analyysi.graniittihaku(self.puoli) if analyysi.tarkka else None
+        self._n_g = 0
         heitto.saapuminen = "haku"
 
     def _maski(self, roi):
@@ -1457,9 +1464,30 @@ class Saapuminen:
             elif not (50 <= ala <= 900):
                 continue
             uudet.append((f, float(X), float(Y), int(ala)))
-        for q in uudet:                                   # yhdista lahimpaan rataan (viimeisin piste lahella, eri ruutu)
+        self._liita(self.radat, uudet, f, "kahva")
+        if self.haku is not None:
+            self._n_g += 1
+            if self._n_g % SAAP_GRAN_VALI == 0:
+                self._liita(self.radat_g, [(f, c["X"], c["Y"], int(c["ala"])) for c in self.haku.ehdokkaat(ruutu)], f, "graniitti")
+        # B (asynkroninen) vain kulkevan radan uusimmalle pisteelle: kivella on graniittirunko (peitto 0,34-0,95), sweeperin kasivarsinauhalla ei (0,06-0,28)
+        for radat in (self.radat, self.radat_g):
+            for r in radat:
+                if len(r) >= 3 and r[-1][0] == f and f - r.f_b >= SAAP_B_VALI and self._kulkee(r):
+                    r.f_b = f
+                    self.an.pyyda_b(self, r.heitto, r.heitto.naytteet[-1], ruutu, r[-1][1], r[-1][2])
+        for radat, b_raja in ((self.radat, SAAP_B_HYVAKSY), (self.radat_g, SAAP_B_HYVAKSY_G)):
+            for r in radat:
+                if len(r) >= SAAP_PISTEITA_B and sum(1 for q in r.heitto.naytteet if q.kivi()) >= b_raja and self._kulkee(r):
+                    self._hyvaksy(r)
+                    return False
+        return True
+
+    def _liita(self, radat, uudet, f, lahde):
+        """Pisteet (f, X', Y', ala) radoille: yhdista lahimpaan rataan (viimeisin piste lahella, eri ruutu) tai aloita uusi; vanhat radat (> 20 ruutua) pois."""
+        h = self.h
+        for q in uudet:
             paras, d_paras = None, None
-            for r in self.radat:
+            for r in radat:
                 fl, Xl, Yl, _ = r[-1]
                 if f <= fl or f - fl > 10:
                     continue
@@ -1467,20 +1495,10 @@ class Saapuminen:
                 if d <= min(25.0 + 12.0 * (f - fl), 70.0) and (paras is None or d < d_paras):
                     paras, d_paras = r, d
             if paras is None:
-                paras = _Rata(h.tunnus, self.puoli, h.vari)
-                self.radat.append(paras)
+                paras = _Rata(h.tunnus, self.puoli, h.vari, lahde)
+                radat.append(paras)
             paras.lisaa(q)
-        self.radat = [r for r in self.radat if f - r[-1][0] <= 20]
-        # B (asynkroninen) vain kulkevan radan uusimmalle pisteelle: kivella on graniittirunko (peitto 0,34-0,95), sweeperin kasivarsinauhalla ei (0,06-0,28)
-        for r in self.radat:
-            if len(r) >= 3 and r[-1][0] == f and f - r.f_b >= SAAP_B_VALI and self._kulkee(r):
-                r.f_b = f
-                self.an.pyyda_b(self, r.heitto, r.heitto.naytteet[-1], ruutu, r[-1][1], r[-1][2])
-        for r in self.radat:
-            if len(r) >= SAAP_PISTEITA_B and sum(1 for q in r.heitto.naytteet if q.kivi()) >= SAAP_B_HYVAKSY and self._kulkee(r):
-                self._hyvaksy(r)
-                return False
-        return True
+        radat[:] = [r for r in radat if f - r[-1][0] <= 20]
 
     def _kulkee(self, r):
         """Radan viimeiset pisteet etenevat tasaisesti kohti pesaa (40-450 cm/s, ei sivuttaisliikettaa): kulkeva kivi (tai sen mukana kulkeva esine), ei paikallaan oleva kahva."""
@@ -1613,7 +1631,7 @@ class KaukoSeuranta(_Seuranta):
         self.f_paattyi = None
         self.n_ruutu = 0
         self.hukka = 0
-        analyysi.tapahtumat.append(("kauko_alku", heitto.tunnus, rata[-1][0], f"{self.puoli} {heitto.vari}"))
+        analyysi.tapahtumat.append(("kauko_alku", heitto.tunnus, rata[-1][0], f"{self.puoli} {heitto.vari}" + (" (graniitti)" if getattr(rata, "lahde", "kahva") == "graniitti" else "")))
 
     # ---- ennuste ----------------------------------------------------------------------------------------------------------------
     def _ennuste(self, f):
@@ -1939,6 +1957,7 @@ class Analyysi:
         self.tarkka = bool(tarkka)
         self.laske_kierre = bool(kierre) and self.tarkka
         self.M = {p: Mittari(kansio, p) for p in paat}
+        self._haut = {}                                 # graniittihaku (kivi_haku) per puolisko, luodaan ensimmaisella kaytolla
         self.pool = self.est_pool = self.kierto_pool = self.kauko_pool = None
         if self.tarkka and saikeet > 0:
             self.pool = tee_pool(saikeet, initializer=alusta_tyo, initargs=(kansio, tuple(paat)))
@@ -1988,6 +2007,13 @@ class Analyysi:
         self._fps_auto = False
         osuus = self.kopioita / max(self.yksilollisia + self.kopioita, 1)
         self.fps_lahde = self.fps if osuus < 0.03 else 25.0
+
+    def graniittihaku(self, puoli):
+        """Kaukopaan hakualueen graniittihaku puoliskolle (valimuistissa: haku on tilaton)."""
+        h = self._haut.get(puoli)
+        if h is None:
+            h = self._haut[puoli] = kivi_haku.GraniittiHaku(self.M[puoli], X=(-SAAP_X_CM, SAAP_X_CM), Y=SAAP_Y_CM)
+        return h
 
     def uusi_tunnus(self):
         self._tunnus += 1
