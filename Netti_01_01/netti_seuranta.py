@@ -1352,9 +1352,12 @@ class Heittopaa(_Seuranta):
                     self.ala_norm, self._ala_ulkona = list(self._ala_ulkona), []
             o = self._offset_b()
             X0, Y0 = a[0] + o[0], a[1] + o[1]
-            if luotettava and np.hypot(X0 - Xp, Y0 - Yp) > A_HARHA_CM:
+            xa, ya = X0, Y0
+            if luotettava and np.hypot(X0 - Xp, Y0 - Yp) > float(os.environ.get("NETTI_A_HARHA", A_HARHA_CM)):
                 X0, Y0 = Xp, Yp                                            # A harhainen: B:n alkuarvo on B-ennuste
             esi = (X0, Y0) if (X0, Y0) != (Xp, Yp) else None                   # kahvan (A) antama paikka B:n esitietona (ei, jos A oli harhainen)
+            if os.environ.get("NETTI_ESI_AINA"):
+                esi = (xa, ya)
         else:
             X0, Y0 = Xp, Yp
             esi = None
