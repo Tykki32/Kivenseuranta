@@ -74,32 +74,31 @@ class GraniittiHaku:
         return v
 
     # ---- graniittimaski ---------------------------------------------------------------------------------------------------------------
-    def maski(self, roi, sl=(slice(None), slice(None))):
-        """Kelvolliset graniittipikselit (bool, ROI:n koko) harvennetusta ROI:sta (sl: ROI:n viipale, jos roi on vain osa hakualueesta). Raskaat laskut vain etualan pikseleille
-        (taustaero > FG_KYNNYS)."""
-        ero = cv2.absdiff(roi, self.tausta[sl])
+    def maski(self, roi):
+        """Kelvolliset graniittipikselit (bool, ROI:n koko) harvennetusta ROI:sta. Raskaat laskut vain etualan pikseleille (taustaero > FG_KYNNYS)."""
+        ero = cv2.absdiff(roi, self.tausta)
         ero = np.maximum(np.maximum(ero[..., 0], ero[..., 1]), ero[..., 2])
-        fg = (ero > kv.FG_KYNNYS) & self._kelpaa[sl]
+        fg = (ero > kv.FG_KYNNYS) & self._kelpaa
         G = np.zeros(fg.shape, bool)
         idx = np.nonzero(fg)
         if len(idx[0]) == 0:
             return G
         p = roi[idx].astype(np.float32)
-        b = self._b[sl][idx]
-        dv = self._dvec[sl][idx]
+        b = self._b[idx]
+        dv = self._dvec[idx]
         e = p - b
-        a = np.sum(e * dv, axis=1) / np.maximum(self._dd[sl][idx], 1.0)
+        a = np.sum(e * dv, axis=1) / np.maximum(self._dd[idx], 1.0)
         res = e - np.clip(a, 0.0, 1.0)[:, None] * dv
         dev = np.sqrt(np.sum(res * res, axis=1))
         L = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)[..., 0][idx].astype(np.float32) * (100.0 / 255.0)
         G[idx] = (a > ALFA_RAJA) & (dev < DEV_MAX) & (L >= L_MIN)
         return G
 
-    def blobit(self, roi, sl=(slice(None), slice(None))):
-        """Graniittiblobit ROI:sta (tai sen viipaleesta sl): [dict(u, v, X, Y, ala, odotus, suhde, bbox)] (u, v oikaistun kuvan pikseleina); vain hakualueen sisalla, ala >= MIN_ALA_PX."""
+    def blobit(self, roi):
+        """Graniittiblobit ROI:sta: [dict(u, v, X, Y, ala, odotus, suhde, bbox)] (u, v oikaistun kuvan pikseleina); vain hakualueen sisalla, ala >= MIN_ALA_PX."""
         d = self.deci
-        ox, oy = self.x0 + d * (sl[1].start or 0), self.y0 + d * (sl[0].start or 0)
-        G = cv2.morphologyEx(self.maski(roi, sl).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        ox, oy = self.x0, self.y0
+        G = cv2.morphologyEx(self.maski(roi).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
         n, lab, st, cen = cv2.connectedComponentsWithStats(G)
         out = []
         for k in range(1, n):
@@ -113,27 +112,6 @@ class GraniittiHaku:
             odo = self.odotettu_ala(X, Y)
             out.append(dict(u=u, v=v, X=float(X), Y=float(Y), ala=ala, odotus=odo, suhde=ala / max(odo, 1.0), bbox=tuple(int(q) * d for q in st[k, :4])))
         return out
-
-    def _viipale(self, X0, Y0, r_cm, marg=10):
-        """ROI:n viipale (rivit, sarakkeet), joka kattaa maatason kiekon (X0, Y0, r_cm) ja kiven korkeuden; None, jos kiekko on hakualueen ulkopuolella."""
-        th = np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False)
-        P = np.array([(X0 + r_cm * np.cos(t), Y0 + r_cm * np.sin(t), z) for t in th for z in (0.0, 22.0)])
-        u, v = kivimalli.project_3d(self.m.cam.K, self.m.cam.R, self.m.cam.t, P)
-        d = self.deci
-        h, w = self.mx.shape
-        j0, j1 = max(int((u.min() - marg - self.x0) // d), 0), min(int((u.max() + marg - self.x0) // d) + 1, w)
-        i0, i1 = max(int((v.min() - marg - self.y0) // d), 0), min(int((v.max() + marg - self.y0) // d) + 1, h)
-        if j1 - j0 < 4 or i1 - i0 < 4:
-            return None
-        return (slice(i0, i1), slice(j0, j1))
-
-    def ehdokkaat_lahella(self, ruutu, X0, Y0, r_cm):
-        """Kivikandidaatit (kuten ehdokkaat) vain maatason kiekosta (X0, Y0, r_cm): vain sen ikkunan kuva kasitellaan (lennon aikainen uudelleenloyto ennusteen ymparilta)."""
-        sl = self._viipale(X0, Y0, r_cm)
-        if sl is None or not self.ok:
-            return []
-        roi = cv2.remap(ruutu, np.ascontiguousarray(self.mx[sl]), np.ascontiguousarray(self.my[sl]), cv2.INTER_LINEAR)
-        return [c for c in self.blobit(roi, sl) if ALA_RAJAT[0] <= c["suhde"] <= ALA_RAJAT[1] and np.hypot(c["X"] - X0, c["Y"] - Y0) <= r_cm]
 
     def ehdokkaat(self, ruutu):
         """Kivikandidaatit alkuperaisesta ruudusta: blobit, joiden ala sopii kivelle (ALA_RAJAT), keskipiste (X, Y) maatasolla."""
