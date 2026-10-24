@@ -304,7 +304,9 @@ class Mittari:
         jaa, vari = kt.tausta_maskit(self.cam)
         r_prof, z_prof = self.runko.profiili()
         vakiot = dict(fg_kynnys=kv.FG_KYNNYS, g_vmin=kv.G_VMIN, g_vmax=kv.G_VMAX, g_smax=kv.G_SMAX, varjo=kv.VARJO_ALARAJA, graniitti=[float(x) for x in kv.graniitti_vari(self.cam)],
-                      chr_max=kt.CHR_MAX, l_tumma=kt.L_TUMMA, reika_max_ala=kt.REIKA_MAX_ALA, dev_max_vari=kt.DEV_MAX_VARI)
+                      chr_max=kt.CHR_MAX, l_tumma=kt.L_TUMMA, reika_max_ala=kt.REIKA_MAX_ALA, dev_max_vari=kt.DEV_MAX_VARI,
+                      moni_kaista=kt.MONI_KAISTA, moni_s0=kt.MONI_S0, moni_ep_kelv=kt.MONI_EPAVARMA_KELV, moni_ep_peitto=kt.MONI_EPAVARMA_PEITTO, moni_peitto_min=kt.MONI_PEITTO_MIN,
+                      moni_rms_max=kt.MONI_RMS_MAX, moni_kelv_min=kt.MONI_KELV_MIN, esi_sigma=kt.MONI_ESI_SIGMA_CM, esi_raja=kt.MONI_ESI_RAJA, esi_kappa=kt.MONI_ESI_KAPPA)
         return _netti_fit.BFit(np.ascontiguousarray(self.cam.mode), np.ascontiguousarray(self.cam.lane), np.ascontiguousarray(jaa.astype(np.uint8)),
                                np.ascontiguousarray(vari.astype(np.uint8)), self.cam.K, self.cam.R, self.cam.t, r_prof, z_prof, self.runko.sigma_opt, self.runko.b_cm,
                                self.runko.gamma, vakiot)
@@ -383,7 +385,7 @@ class Mittari:
             if not laaja:
                 return self._cpp.sovita(roi, int(x0), int(y0), float(X0), float(Y0))
             if getattr(self._cpp, "monialku", False):
-                return self._cpp.sovita(roi, int(x0), int(y0), float(X0), float(Y0), True)
+                return self._cpp.sovita(roi, int(x0), int(y0), float(X0), float(Y0), True, float("nan") if esi is None else float(esi[0]), float("nan") if esi is None else float(esi[1]))
         return self.sovita_leike_python(roi, x0, y0, X0, Y0, laaja, esi)
 
     def _peitto(self, alfa, x0, y0, X, Y):

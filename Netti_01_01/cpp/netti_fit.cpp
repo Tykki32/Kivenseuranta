@@ -113,6 +113,16 @@ public:
         l_tumma_ = lue(konst, "l_tumma", 28.0);
         reika_max_ala_ = (int)lue(konst, "reika_max_ala", 80);
         dev_max_vari_ = (float)lue(konst, "dev_max_vari", 45.0);
+        moni_kaista_ = (int)lue(konst, "moni_kaista", 6);
+        moni_s0_ = lue(konst, "moni_s0", 0.25);
+        moni_ep_kelv_ = lue(konst, "moni_ep_kelv", 0.45);
+        moni_ep_peitto_ = lue(konst, "moni_ep_peitto", 0.75);
+        moni_peitto_min_ = lue(konst, "moni_peitto_min", 0.35);
+        moni_rms_max_ = lue(konst, "moni_rms_max", 0.30);
+        moni_kelv_min_ = lue(konst, "moni_kelv_min", 0.08);
+        esi_sigma_ = lue(konst, "esi_sigma", 5.0);
+        esi_raja_ = lue(konst, "esi_raja", 3.0);
+        esi_kappa_ = lue(konst, "esi_kappa", 0.01);
         if (konst.contains("graniitti")) {
             py::sequence g = konst["graniitti"].cast<py::sequence>();
             for (int i = 0; i < 3; ++i)
@@ -122,16 +132,19 @@ public:
 
     // Yhden ruudun B-mittaus: roi = BGR-leike oikaistusta kuvasta (vasen ylakulma (x0, y0) oikaistussa kuvassa), alkuarvo (X0, Y0) cm.
     // Palauttaa dict(X, Y, rms, kelvolliset, peitto, sR, H) (kuten Python: Mittari.sovita_leike).
-    py::dict sovita(const ArrU8& roi_, int x0, int y0, double X0, double Y0) const
+    // laaja: liikkuva kivi; epavarma sovitus (kelvollisia < moni_ep_kelv_ tai peitto < moni_ep_peitto_) toistetaan rangaistun kaistakustannuksen minimoinnilla (kivi_tarkka.minimoi_rangaistu):
+    // skannaus siemenen ymparilla + kuviohaku; esi_x, esi_y: kahvan (A) antama paikka kustannuksen esitietona (NaN: ei esitietoa). Tulos "moni" = 1, jos minimi valittiin.
+    py::dict sovita(const ArrU8& roi_, int x0, int y0, double X0, double Y0, bool laaja = false, double esi_x = std::nan(""), double esi_y = std::nan("")) const
     {
         cv::Mat roi = viittaus(roi_, CV_8UC1, CV_8UC3);
         if (roi.type() != CV_8UC3)
             throw std::runtime_error("netti_fit: leikkeen pitaa olla BGR (h x w x 3)");
         double X = 0.0, Y = 0.0, rms = 0.0, kelv = 0.0, peitto = 0.0;
+        int moni = 0;
         Aika aika;
         {
             py::gil_scoped_release vapauta;
-            laske(roi, x0, y0, X0, Y0, X, Y, rms, kelv, peitto, aika);
+            laske(roi, x0, y0, X0, Y0, X, Y, rms, kelv, peitto, aika, laaja, esi_x, esi_y, moni);
         }
         py::dict out;
         out["X"] = X;
@@ -140,6 +153,7 @@ public:
         out["kelvolliset"] = kelv;
         out["peitto"] = peitto;
         out["sR"] = 1.0;
+        out["moni"] = moni;
         out["t_maskit_ms"] = aika.maskit_ms;  // diagnostiikka: ajan jakautuminen
         out["t_sovitus_ms"] = aika.sovitus_ms;
         out["n_malli"] = aika.n_malli;
@@ -581,7 +595,122 @@ private:
         }
     }
 
-    void laske(const cv::Mat& roi, int x0, int y0, double X0, double Y0, double& X, double& Y, double& rms, double& kelv, double& peitto, Aika& aika) const
+    // graniitin alfa-keskiarvo mallisiluetin (mallikuva > 0,5) sisalla koko leikkeessa (kuten peitto laskennassa sovituksen jalkeen)
+    double peitto_laske(const cv::Mat& alfa, int x0, int y0, int w, int h, double X, double Y) const
+    {
+        cv::Mat mc;
+        malli(X, Y, Win{x0, y0, w, h}, mc, nullptr);
+        double summa = 0.0;
+        long long n = 0;
+        for (int y = 0; y < h; ++y) {
+            const float* pm = mc.ptr<float>(y);
+            const float* pa = alfa.ptr<float>(y);
+            for (int x = 0; x < w; ++x)
+                if (pm[x] > 0.5f) {
+                    summa += pa[x];
+                    ++n;
+                }
+        }
+        return n > 0 ? summa / (double)n : 0.0;
+    }
+
+    // rangaistu kaistakustannus paikassa (X, Y) (kivi_tarkka.kaistakustannus): kehys rakennetaan paikassa; kelvoton kaistapikseli maksaa s0^2
+    double rangaistu(const cv::Mat& alfa, const cv::Mat& ok, int ox, int oy, double X, double Y, int kaista, double* kelv_ulos) const
+    {
+        Kehys f = tee_kehys(alfa, ok, ox, oy, X, Y, kaista);
+        cv::Mat c, wt;
+        malli(X, Y, f.win, c, &wt, &f.tasot);
+        const float* pc = c.ptr<float>();
+        const float* pw = wt.ptr<float>();
+        const float* po = f.o.ptr<float>();
+        const float* pk = f.ok.ptr<float>();
+        double sr2 = 0.0, sw = 0.0, sinv = 0.0;
+        for (size_t i = 0; i < f.idx.size(); ++i) {
+            const int j = f.idx[i];
+            const double w = (double)pk[j] * (double)pw[j];
+            const double r = ((double)pc[j] - (double)po[j]) * w;
+            sr2 += r * r;
+            sw += w;
+            sinv += 1.0 - std::min(std::max(w, 0.0), 1.0);
+        }
+        const double n = (double)f.idx.size();
+        if (kelv_ulos != nullptr)
+            *kelv_ulos = sw / n;
+        return std::sqrt((sr2 + moni_s0_ * moni_s0_ * sinv) / n);
+    }
+
+    double esikustannus(double X, double Y, double esi_x, double esi_y) const
+    {
+        if (std::isnan(esi_x) || std::isnan(esi_y))
+            return 0.0;
+        const double t = std::hypot(X - esi_x, Y - esi_y) / esi_sigma_;
+        return esi_kappa_ * std::min(t * t, esi_raja_ * esi_raja_);
+    }
+
+    // siluetti mahtuu leikkeeseen (6 px reunaa jaa)
+    bool mahtuu(double X, double Y, int ox, int oy, int w, int h) const
+    {
+        std::vector<cv::Point2f> hl;
+        hull(X, Y, hl, nullptr, nullptr);
+        for (const auto& p : hl)
+            if (p.x < ox + 6 || p.y < oy + 6 || p.x > ox + w - 6 || p.y > oy + h - 6)
+                return false;
+        return true;
+    }
+
+    // skannaus (dy x dx) + kuviohaku (askeleet) rangaistun kustannuksen (+ esikustannus) minimille; false, jos mikaan ehdokas ei mahdu leikkeeseen
+    bool moni_haku(const cv::Mat& alfa, const cv::Mat& ok, int ox, int oy, int w, int h, double X0, double Y0, double esi_x, double esi_y, double& Xo, double& Yo, double& co) const
+    {
+        auto kust = [&](double X, double Y, double& c) -> bool {
+            try {
+                if (!mahtuu(X, Y, ox, oy, w, h))
+                    return false;
+                c = rangaistu(alfa, ok, ox, oy, X, Y, moni_kaista_, nullptr) + esikustannus(X, Y, esi_x, esi_y);
+                return true;
+            } catch (const std::exception&) {
+                return false;
+            }
+        };
+        bool on = false;
+        double bc = 0.0, bX = 0.0, bY = 0.0;
+        for (double dy = -48.0; dy <= 48.0 + 1e-9; dy += 6.0)
+            for (int ix = -1; ix <= 1; ++ix) {
+                const double X = X0 + 12.0 * ix, Y = Y0 + dy;
+                double c = 0.0;
+                if (kust(X, Y, c) && (!on || c < bc)) {
+                    on = true;
+                    bc = c;
+                    bX = X;
+                    bY = Y;
+                }
+            }
+        if (!on)
+            return false;
+        const double askeleet[3] = {3.0, 1.5, 0.75};
+        for (double st : askeleet) {
+            bool parani = true;
+            while (parani) {
+                parani = false;
+                const double dd[4][2] = {{st, 0.0}, {-st, 0.0}, {0.0, st}, {0.0, -st}};
+                for (const auto& d : dd) {
+                    double c = 0.0;
+                    if (kust(bX + d[0], bY + d[1], c) && c < bc - 1e-6) {
+                        bc = c;
+                        bX += d[0];
+                        bY += d[1];
+                        parani = true;
+                    }
+                }
+            }
+        }
+        Xo = bX;
+        Yo = bY;
+        co = bc;
+        return true;
+    }
+
+    void laske(const cv::Mat& roi, int x0, int y0, double X0, double Y0, double& X, double& Y, double& rms, double& kelv, double& peitto, Aika& aika, bool laaja, double esi_x, double esi_y,
+               int& moni) const
     {
         using kello = std::chrono::steady_clock;
         const auto t_a = kello::now();
@@ -622,6 +751,30 @@ private:
                 }
         }
         peitto = n > 0 ? summa / (double)n : 0.0;
+        moni = 0;
+        if (laaja && (kelv < moni_ep_kelv_ || peitto < moni_ep_peitto_)) {
+            double Xm = 0.0, Ym = 0.0, cm = 0.0;
+            if (moni_haku(alfa, ok, x0, y0, w, h, X0, Y0, esi_x, esi_y, Xm, Ym, cm)) {
+                // minimin mittarit kuten sovituksen toisella kierroksella (kaista 5 px, koko hull) ja peitto
+                Kehys f5 = tee_kehys(alfa, ok, x0, y0, Xm, Ym, 5);
+                std::vector<double> r5;
+                double kelv5 = 0.0;
+                residuaalit(f5, Xm, Ym, r5, &kelv5, true);
+                const double rms5 = std::sqrt(dot(r5, r5) / (double)r5.size());
+                const double peitto5 = peitto_laske(alfa, x0, y0, w, h, Xm, Ym);
+                if (peitto5 >= moni_peitto_min_ && rms5 <= moni_rms_max_ && kelv5 >= moni_kelv_min_) {
+                    const double c0 = rangaistu(alfa, ok, x0, y0, X, Y, moni_kaista_, nullptr) + esikustannus(X, Y, esi_x, esi_y);
+                    if (cm < c0) {
+                        X = Xm;
+                        Y = Ym;
+                        rms = rms5;
+                        kelv = kelv5;
+                        peitto = peitto5;
+                        moni = 1;
+                    }
+                }
+            }
+        }
         const auto t_c = kello::now();
         aika.maskit_ms = std::chrono::duration<double, std::milli>(t_b - t_a).count();
         aika.sovitus_ms = std::chrono::duration<double, std::milli>(t_c - t_b).count();
@@ -636,6 +789,9 @@ private:
     int fg_kynnys_ = 28, g_vmin_ = 75, g_vmax_ = 175, g_smax_ = 70, reika_max_ala_ = 80;
     float varjo_ = 0.3f, chr_max_ = 9.0f, dev_max_vari_ = 45.0f;
     double l_tumma_ = 28.0;
+    int moni_kaista_ = 6;
+    double moni_s0_ = 0.25, moni_ep_kelv_ = 0.45, moni_ep_peitto_ = 0.75, moni_peitto_min_ = 0.35, moni_rms_max_ = 0.30, moni_kelv_min_ = 0.08;
+    double esi_sigma_ = 5.0, esi_raja_ = 3.0, esi_kappa_ = 0.01;
     float gran_[3] = {130.0f, 126.0f, 136.0f};
 };
 
@@ -647,7 +803,9 @@ PYBIND11_MODULE(netti_fit, m)
                       const py::dict&>(),
              py::arg("mode"), py::arg("lane"), py::arg("jaa"), py::arg("vari"), py::arg("K"), py::arg("R"), py::arg("t"), py::arg("r_profiili"), py::arg("z_profiili"),
              py::arg("sigma_opt"), py::arg("b_cm"), py::arg("gamma"), py::arg("vakiot") = py::dict())
-        .def("sovita", &BFit::sovita, py::arg("roi"), py::arg("x0"), py::arg("y0"), py::arg("X0"), py::arg("Y0"));
+        .def("sovita", &BFit::sovita, py::arg("roi"), py::arg("x0"), py::arg("y0"), py::arg("X0"), py::arg("Y0"), py::arg("laaja") = false, py::arg("esi_x") = std::nan(""),
+             py::arg("esi_y") = std::nan(""))
+        .def_property_readonly("monialku", [](const BFit&) { return true; });
     m.def("saikeet", [](int n) { cv::setNumThreads(n); }, py::arg("n"), "OpenCV:n oma rinnakkaistus (tyoprosessissa 1)");
     m.def("versio", []() { return std::string("netti_fit ") + __DATE__ + " " + __TIME__ + " (OpenCV " + CV_VERSION + ")"; });
 }
