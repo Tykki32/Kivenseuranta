@@ -137,7 +137,7 @@ ENNUSTE_B_MIN = 4                # B-pohjainen ennuste: vahintaan nain monta B /
 ENNUSTE_B_IKKUNA = 30            # ... viimeisen taman ruutumaaran ajalta ...
 ENNUSTE_B_TUORE = 16             # ... ja uusin niista enintaan taman ruutumaaran vanha
 ENNUSTE_B_ROBUSTI_CM = 4.0       # B-suoran poikkeama, jonka yli B-paikka jaa pois suoran sovituksesta
-A_HARHA_CM = 7.0                 # A (+ B-A -ero) poikkeaa B-ennusteesta yli taman: B:n alkuarvo on ennuste
+A_HARHA_CM = 15.0                # A (+ B-A -ero) poikkeaa B-ennusteesta yli taman: B:n alkuarvo on ennuste (B-ennuste seuraa viivella (viive_b) B:n omia virheita ja kiihtyvan kiven ohi: 7 cm hylkasi usein oikean A:n)
 B_HEIKKO_KELV = 0.02             # heikko B (vahvistettu heitto, ennuste B:sta): kelvollisia pikseleita vahintaan tama ...
 B_HEIKKO_PEITTO = 0.5            # ... graniittia siluetin sisalla vahintaan tama ...
 B_HEIKKO_RMS = 0.25
@@ -1352,12 +1352,9 @@ class Heittopaa(_Seuranta):
                     self.ala_norm, self._ala_ulkona = list(self._ala_ulkona), []
             o = self._offset_b()
             X0, Y0 = a[0] + o[0], a[1] + o[1]
-            xa, ya = X0, Y0
-            if luotettava and np.hypot(X0 - Xp, Y0 - Yp) > float(os.environ.get("NETTI_A_HARHA", A_HARHA_CM)):
+            esi = (X0, Y0)                                                 # kahvan (A) antama paikka B:n esitietona aina: esitieto kyllastyy (kt.MONI_ESI_RAJA), joten harhainen A ei vedä kauas
+            if luotettava and np.hypot(X0 - Xp, Y0 - Yp) > A_HARHA_CM:
                 X0, Y0 = Xp, Yp                                            # A harhainen: B:n alkuarvo on B-ennuste
-            esi = (X0, Y0) if (X0, Y0) != (Xp, Yp) else None                   # kahvan (A) antama paikka B:n esitietona (ei, jos A oli harhainen)
-            if os.environ.get("NETTI_ESI_AINA"):
-                esi = (xa, ya)
         else:
             X0, Y0 = Xp, Yp
             esi = None

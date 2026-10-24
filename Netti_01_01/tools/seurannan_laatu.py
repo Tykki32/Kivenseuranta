@@ -6,6 +6,8 @@ mittari ei muuta rataa eika karsi pisteita. Mittarit vyohykkeittain (kiven Y hei
   * hypyt: B-pisteiden jaannos paikallisesta sileasta radasta (ruutuindeksin funktiona, ei aikaperustan arviosta: leave-one-out, robusti toisen asteen sovitus +-12 ruutua), osuus
     pisteista, joilla jaannos > 8 cm ja > 15 cm. Kiven todellinen rata on sile; lahdevirran pudonneet ruudut tekevat yksittaisen askeleen (valkoisella jaalla Y > 300 cm jaannos > 8 cm
     on ~2 %: tama on mittarin pohja), joten vaikeus nakyy vain, kun osuus on tata selvasti suurempi (pesan renkailla ja heittajan kaden kohdalla ennen korjausta ~20 %).
+  * pesan reunan epajatkuvuus: pesan sisapuolen pisteiden (Y 120...183 cm) Y-poikkeama suorasta, joka on sovitettu valkoisen puolen pisteisiin (Y 183...265 cm). Valkoisella jaalla kiven
+    paikka on varma, joten jos B jaa pesan renkailla kiven taakse (kasia kohti), seuranta "hyppaa" kohdalleen juuri renkaiden reunalla. Mediaani heitoittain; |poikkeama| > 5 / > 10 cm.
   * takaisinliike: peräkkaiset B-pisteet, joiden Y pienenee > 2 cm, vaikka kivi etenee (Y -150...450 cm): kivi ei peruuta.
   * A-B-sopu: kahvan blobin (A, riippumaton mittaus) ja siluettisovituksen (B) Y-eron robusti hajonta ja osuudet > 6 / > 12 cm, kun heiton oma mediaaniero on poistettu (A:n
     systemaattinen poikkeama kiven akselista). Jos B seuraa kaytta kiven sijaan, ero kasvaa.
@@ -18,7 +20,8 @@ import sys
 
 import numpy as np
 
-VYOHYKKEET = [(-150, 0), (0, 150), (150, 300), (300, 450)]
+VYOHYKKEET = [(-150, 0), (0, 100), (100, 190), (190, 300), (300, 450)]   # pesan reuna (12 jalan rengas) on Y = 183 cm
+PESAN_REUNA_CM = 183.0
 IKKUNA = 12            # ruutua
 HYPPY_CM = (8.0, 15.0)
 
@@ -47,6 +50,17 @@ def jaannokset(f, P, w=IKKUNA, min_n=6):
     return d
 
 
+def reunan_epajatkuvuus(f, P):
+    """Pesan reunan epajatkuvuus (cm, Y-suunnassa; negatiivinen = pesan puolella kiven taakse) tai None, jos pisteita liian vahan."""
+    Y = P[:, 1]
+    v = (Y >= PESAN_REUNA_CM) & (Y < 265.0)
+    s = (Y >= 120.0) & (Y < PESAN_REUNA_CM)
+    if v.sum() < 5 or s.sum() < 3:
+        return None
+    c = np.polyfit(f[v] - f[v].mean(), Y[v], 1)
+    return float(np.median(Y[s] - np.polyval(c, f[s] - f[v].mean())))
+
+
 def heiton_mitat(h):
     """Yhden heiton mittarit (dict) tai None, jos B-pisteita on alle 12."""
     pts = [p for p in h["near"] if p[3]]
@@ -56,7 +70,7 @@ def heiton_mitat(h):
     P = np.array([[p[1], p[2]] for p in pts], float)
     Y = P[:, 1]
     d = jaannokset(f, P)
-    out = dict(vyoh={}, back=0, ab={}, kattavuus=None, max_aukko=None, hidastuvuus=None)
+    out = dict(vyoh={}, back=0, ab={}, kattavuus=None, max_aukko=None, hidastuvuus=None, raja=reunan_epajatkuvuus(f, P))
     for z in VYOHYKKEET:
         m = np.isfinite(d) & (Y >= z[0]) & (Y < z[1])
         out["vyoh"][z] = (int(m.sum()), int((d[m] > HYPPY_CM[0]).sum()), int((d[m] > HYPPY_CM[1]).sum()))
@@ -89,6 +103,7 @@ def raportti(nimi, radat, n_pahimmat=0, vyohykkeet=True):
     n = 0
     hidas = []
     aukot = []
+    rajat = []
     rivit = []
     for h in radat:
         m = heiton_mitat(h)
@@ -101,6 +116,8 @@ def raportti(nimi, radat, n_pahimmat=0, vyohykkeet=True):
         back += m["back"]
         kat += m["kattavuus"]
         aukot.append(m["max_aukko"])
+        if m["raja"] is not None:
+            rajat.append(m["raja"])
         if m["hidastuvuus"] is not None:
             hidas.append(m["hidastuvuus"])
         yht = sum(m["vyoh"][z][1] for z in VYOHYKKEET)
@@ -113,6 +130,9 @@ def raportti(nimi, radat, n_pahimmat=0, vyohykkeet=True):
             ab_s = (f"{1.4826 * np.median(np.abs(a - np.median(a))):7.2f} cm {np.mean(np.abs(a) > 6):8.1%} {np.mean(np.abs(a) > 12):8.1%}" if len(a) else "      -")
             print(f"  {z[0]:5d}..{z[1]:4d}      {int(tot[z][0]):7d}   {tot[z][1] / max(tot[z][0], 1):10.1%} {tot[z][2] / max(tot[z][0], 1):9.1%}   |        {ab_s}")
     print(f"  takaisinliikkeita (dY < -2 cm): {back} ({back / max(n, 1):.2f} / heitto); B-kattavuus lahdosta Y 450 cm:iin keskimaarin {kat / max(n, 1):.1%}; pisin B-aukko mediaani {np.median(aukot):.0f} ruutua, max {max(aukot) if aukot else 0}")
+    if rajat:
+        r = np.abs(np.array(rajat))
+        print(f"  pesan reunan epajatkuvuus (Y): {len(r)} heittoa, |poikkeama| mediaani {np.median(r):.1f} cm, > 5 cm: {np.mean(r > 5):.0%}, > 10 cm: {np.mean(r > 10):.0%}; mediaani etumerkillisena {np.median(rajat):+.1f} cm")
     if hidas:
         h = np.array(hidas, float)
         print(f"  irroituksen jalkeinen hidastuvuus: mediaani {np.median(h):.3f} m/s2, <= 0: {int((h <= 0).sum())} / {len(h)}")
