@@ -174,16 +174,16 @@ class LepoHaku:
             d = sorted(float(np.hypot(p[0] - self.ennuste[0], p[1] - self.ennuste[1])) for p in pisteet)
             erilaiset = max(np.hypot(a[0] - b[0], a[1] - b[1]) for a in pisteet for b in pisteet) > 6.0
             if erilaiset and not (d[1] >= LEPO_SELVA_SUHDE * max(d[0], 1.0)):
-                self.tulos = dict(epaselva=True, ehdokkaita=len(vahvistetut), f_vahv=int(f))
+                self.tulos = dict(epaselva=True, ehdokkaita=len(vahvistetut), f_vahv=int(f), katsottu=self.n_kerta)
                 return
             i = int(np.argmin([np.hypot(p[0] - self.ennuste[0], p[1] - self.ennuste[1]) for p in pisteet]))
         else:
             i = 0
         X, Y = pisteet[i]
-        self.tulos = dict(X=X, Y=Y, f_vahv=int(f), ero_cm=float(np.hypot(X - self.viim[1], Y - self.viim[2])), ehdokkaita=len(vahvistetut))
+        self.tulos = dict(X=X, Y=Y, f_vahv=int(f), ero_cm=float(np.hypot(X - self.viim[1], Y - self.viim[2])), ehdokkaita=len(vahvistetut), katsottu=self.n_kerta)
 
     def _paata(self, f):
-        self.tulos = dict(ei_loytynyt=True, ehdokkaita=len(self.ehdokkaat), f_vahv=int(f))
+        self.tulos = dict(ei_loytynyt=True, ehdokkaita=len(self.ehdokkaat), f_vahv=int(f), katsottu=self.n_kerta)
 
     def paata_kesken(self, f):
         """Videon loppu kesken haun."""

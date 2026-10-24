@@ -44,6 +44,7 @@ import kivi_haku
 import kivi_netti as kv
 import kivi_tarkka as kt
 import kivimalli
+import lepo_haku
 import liuku_irroitus as li
 import netti_kierre as nk
 import netti_tausta
@@ -1987,6 +1988,7 @@ class KaukoSeuranta(_Seuranta):
         self.an._vakiot_aloita(h)
         self.an.tapahtumat.append(("kauko_valmis", h.tunnus, int(round(F[-1])), f"{self.syy}, pysahtyi {f_pys / fps:.1f} s paikkaan ({X_pys:.0f}, {Y_pys:.0f}) cm"
                                    + (f", tormays {torm['f'] / fps:.1f} s" if torm else "")))
+        self.an._lepo_aloita(h, self, F, P)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -2110,6 +2112,8 @@ class Analyysi:
         self.vakiot_tyot = []                        # [(future, heitto)]: kiven vakioiden sovitus (kauko_pool)
         self.saapumiset = []                         # kaukopaan hakijat (Saapuminen)
         self.kaukoseurannat = []                     # tunnistetut kaukopaan kivet seurannassa (KaukoSeuranta)
+        self.lepohaut = []                           # [(heitto, LepoHaku)]: hukassa-heittojen lepopaikan haku pesan kartasta (lepo_haku)
+        self._lepo_kartat = {}                       # puoli -> PesaKartta
         self.paat = {p: Heittopaa(self, p) for p in paat}
         self.heitot = []                             # vahvistetut heitot (piirtajalle)
         self.valmiit, self.hylatyt = [], []
@@ -2730,6 +2734,10 @@ class Analyysi:
         for ks in self.kaukoseurannat:
             ks.viimeistele()
         self.kaukoseurannat = []
+        for hl in self.lepohaut:                       # videon loppu: haku ei jatku (ei enaa ruutuja)
+            hl[1].paata_kesken(self.viim_f if self.viim_f is not None else 0)
+            self._lepo_valmis(*hl)
+        self.lepohaut = []
         self._loppujen_tarkistus()
         for _ in range(4):                           # kesken olevat ja jonossa odottavat lopulliset estimaatit
             self._keraa_estimaatit(odota=True)
@@ -2741,6 +2749,26 @@ class Analyysi:
         for h in self.heitot:
             self._paivita_kierre(h)                          # lopullinen tila kaikesta aineistosta (ei riipu valmistumisjarjestyksesta)
         self._keraa_vakiot(odota=True)
+
+    def _lepo_aloita(self, h, ks, F, P):
+        """Kaukopaan seuranta paattyi (KaukoSeuranta._valmis): jos kivi hukattiin (piilossa / sweeperien alla, pysahtymista ei nahty), sen lepopaikkaa haetaan pesan kartasta (lepo_haku): ensimmaiset
+        ruudut sweeperit ovat kiven paalla, joten pesaa katsotaan viela seuraavat LEPO_AIKARAJA_S. NETTI_LEPO_KAIKILLE: haku myos seurannan pysahtymilla (vertailu seurannan paikkaan)."""
+        k = h.kauko
+        if k is None or "virhe" in k or len(F) < 5 or not (k["tila"] == "hukassa" or k.get("peitossa") or os.environ.get("NETTI_LEPO_KAIKILLE")):
+            return
+        n = min(len(F), 8)
+        v = (P[-1] - P[-n]) / max(float(F[-1] - F[-n]), 1.0)
+        kartta = self._lepo_kartat.get(ks.puoli)
+        if kartta is None:
+            kartta = self._lepo_kartat[ks.puoli] = lepo_haku.PesaKartta(ks.m)
+        haku = lepo_haku.LepoHaku(ks.m, kartta, h.vari, h.ala_med, ks.kartta, (float(F[-1]), float(P[-1][0]), float(P[-1][1]), float(v[0]), float(v[1])), self.viim_f if self.viim_f is not None else float(F[-1]), self.fps)
+        self.lepohaut.append((h, haku))
+
+    def _lepo_valmis(self, h, haku):
+        h.kauko["lepo_kartta"] = haku.tulos
+        t = haku.tulos
+        teksti = f"paikka ({t['X']:.0f}, {t['Y']:.0f}) cm, {t['ero_cm']:.0f} cm viimeisesta tunnetusta" if "X" in t else ("epaselva" if t.get("epaselva") else "ei loytynyt")
+        self.tapahtumat.append(("lepo_haku", h.tunnus, haku.f_edell if haku.f_edell > 0 else (self.viim_f or 0), f"{h.kauko['tila']}: {teksti}"))
 
     def valmista_kaikki(self):
         """True kun mikaan tausta- tai kaukopaan tyo ei ole kesken (reaaliajassa: lopetus voi odottaa tulokset)."""
@@ -2775,6 +2803,10 @@ class Analyysi:
         for ks in list(self.kaukoseurannat):
             if not ks.kasittele(f, ruutu):
                 self.kaukoseurannat.remove(ks)
+        for hl in list(self.lepohaut):
+            if not hl[1].kasittele(f, ruutu):
+                self.lepohaut.remove(hl)
+                self._lepo_valmis(*hl)
         t3 = pc()
         self.aika["kaukopaa"] += t3 - t2
         self.odota(f - self.viive_b if (self.synkroninen or self.toistettava) else None)
