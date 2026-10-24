@@ -405,25 +405,26 @@ class Mittari:
         return s
 
     def _monialku(self, alfa, ok, x0, y0, X0, Y0, s):
-        """Ensimmainen sovitus s on epavarma: tarkenna skannausehdokkaista ja valitse pienin rangaistu kaistakustannus ehdokkaista, jotka tayttavat B:n hyvaksymisehdot."""
-        kand = [s]
-        for _, X, Y in kt.moni_ehdokkaat(self.cam, self.runko, alfa, ok, X0, Y0, ox=x0, oy=y0):
-            if np.hypot(X - s["X"], Y - s["Y"]) < 6.0:
-                continue                                               # sama laakso kuin ensimmaisessa sovituksessa
-            try:
-                t = kt.sovita(self.cam, self.runko, alfa, ok, X, Y, kaarros=(8, 5), ox=x0, oy=y0)
-                t["peitto"] = self._peitto(alfa, x0, y0, t["X"], t["Y"])
-            except Exception:
-                continue
-            kand.append(t)
-        hyvat = [t for t in kand if t["peitto"] >= kt.MONI_PEITTO_MIN and t["rms"] <= kt.MONI_RMS_MAX and t["kelvolliset"] >= kt.MONI_KELV_MIN]
-        if not hyvat:
+        """Ensimmainen sovitus s on epavarma (kelvollisia pikseleita vahan / graniittipeitto pieni): minimoi rangaistu kaistakustannus (kt.minimoi_rangaistu) siemenen ymparilla ja
+        valitse sovituksen ja minimin valilta pienempi rangaistu kustannus, jos minimi tayttaa B:n hyvaksymisehdot."""
+        try:
+            m = kt.minimoi_rangaistu(self.cam, self.runko, alfa, ok, X0, Y0, ox=x0, oy=y0)
+            if m is None:
+                return s
+            X, Y, c = m
+            f = kt.Kehys(self.cam, self.runko, alfa, ok, X, Y, kaista=5, ox=x0, oy=y0)           # kuten sovituksen toinen kierros: rms ja kelvollinen osuus kaistalla 5 px
+            r = f.residuaalit(self.cam, self.runko, X, Y)
+            t = dict(X=float(X), Y=float(Y), rms=float(np.sqrt(np.mean(r ** 2))), kelvolliset=f.kelvolliset(self.cam, self.runko, X, Y), sR=1.0, H=self.runko.H,
+                     peitto=self._peitto(alfa, x0, y0, X, Y))
+        except Exception:
             return s
-        for t in hyvat:
-            t["_k"] = kt.kaistakustannus(self.cam, self.runko, alfa, ok, t["X"], t["Y"], 6, x0, y0)[1]
-        paras = min(hyvat, key=lambda t: t["_k"])
-        paras["moni"] = 0 if paras is s else 1
-        return paras
+        if not (t["peitto"] >= kt.MONI_PEITTO_MIN and t["rms"] <= kt.MONI_RMS_MAX and t["kelvolliset"] >= kt.MONI_KELV_MIN):
+            return s
+        c0 = kt.kaistakustannus(self.cam, self.runko, alfa, ok, s["X"], s["Y"], kt.MONI_KAISTA, x0, y0)[1]
+        if c < c0:
+            t["moni"] = 1
+            return t
+        return s
 
     def tarkka(self, ruutu, X0, Y0):
         v = self.valmistele(ruutu, X0, Y0)
