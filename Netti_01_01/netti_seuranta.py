@@ -101,6 +101,8 @@ ULOTTUMA_MAX_CM = 60.0
 VAIHTO_S = 1.0                   # viritetyn, viela todentamattoman kahvan voi korvata toisella vakaalla kandidaatilla vasta taman ajan kuluttua (aika kahdelle B-sovitukselle)
 VAIHTO_ETAISYYS_CM = 12.0        # ... ja saman varin kandidaatti on vahintaan taman verran viritetysta kahvasta
 VAIHTO_KIVEN_KESKELLA_CM = 8.0   # todennetun kiven viritys vaihtuu, jos toinen kandidaatti on enintaan taman verran kiven (B) keskipisteesta ja vahintaan VAIHTO_PARANNUS_CM lahempana kuin viritetty kahva:
+VARI_ERO_CM = 14.0               # heiton vahvistuksessa: viritetyn varin kahva (A) on liikkeen aikana yli taman paassa kiven (B) paikasta -> viritetty kohde ei ollut kiven kahva (tosikivella <= ~12 cm)
+VARI_KESKELLA_CM = 10.0          # ... ja toisen varin kahva loytyy enintaan taman paasta kiven (B) paikasta: se on kiven oikea kahva
 VAIHTO_PARANNUS_CM = 3.0         # kahva on kiven keskella, kun taas viereinen punainen kenkapohja (video 1, 3105 s) lipsahti "kiveksi", koska sen viereisen kiven B-sovitukset osuivat <= 12 cm paahan
 EI_KIVEA_B = 6                   # viritetty kahva hylataan ei-kivena, kun viimeiset taman monta B-sovitusta ovat selvasti ei-kivea (graniittia < EI_KIVEA_PEITTO) eika kivea ole todettu
 EI_KIVEA_PEITTO = 0.25
@@ -1211,6 +1213,7 @@ class Heittopaa(_Seuranta):
             if viim and p[1] >= VAHVISTUS_Y_CM and v >= VAHVISTUS_V_CM_S and h.kivi_n(10 ** 6, f) >= KIVI_B_VAHVISTUS and (v >= VAHVISTUS_V_VARMA_CM_S or h.kivi_n(10 ** 6, f) >= KIVI_B_VAHVISTUS_HIDAS):
                 h.tila = "vahvistettu"
                 h.f_vahvistus = f
+                self._tarkista_vari(f, ruutu)
                 self.an.tapahtumat.append(("vahvistettu", h.tunnus, f, f"v {v:.0f} cm/s Y {p[1]:.0f} kivi_B {h.kivi_n(10 ** 6, f)}"))
             elif (f - self.f_liike) / self.an.fps > HYLKAYS_AIKA_S or self.hukka > HUKKA_LIIKE_RUUTUA or v > 600.0 or self._ei_etene(f):
                 h.tila = "hylatty"
@@ -1220,6 +1223,27 @@ class Heittopaa(_Seuranta):
         elif h.tila == "vahvistettu":
             if Yp >= LOPPU_Y_CM or self.hukka > PAIKKA_PUUTE_RUUTUA:
                 self._valmis(f, "matka" if Yp >= LOPPU_Y_CM else "kivi hukassa")
+
+    def _tarkista_vari(self, f, ruutu):
+        """Kiven vari kiven keskelta: kahva on kiven keskella (A - B mediaani 1-5 cm, enintaan ~12 cm), joten jos viritetyn varin A on liikkeen aikana yli VARI_ERO_CM:n paassa kiven
+        B-paikasta, viritetty kohde oli viereinen esine (punainen kenkapohja keltaisen kiven vieressa) ja kiven oikea kahva on toista vaaria. Silloin vari korjataan: toisen varin
+        kahva kiven keskella (<= VARI_KESKELLA_CM) tulee heiton varivaksi."""
+        h = self.heitto
+        ero = [float(np.hypot(n.A[0] - n.B[0], n.A[1] - n.B[1])) for n in h.naytteet[-40:] if n.A is not None and n.B is not None and not n.lepo]
+        if len(ero) < 4 or float(np.median(ero)) <= VARI_ERO_CM:
+            return
+        B = next((n.B for n in reversed(h.naytteet) if n.B is not None), None)
+        if B is None:
+            return
+        vanha = self.vari
+        self.vari = "keltainen" if vanha == "punainen" else "punainen"
+        a = self._vari_a(ruutu, B, VARI_KESKELLA_CM, tarkka_ala=False)
+        if a is None:
+            self.vari = vanha
+            return
+        h.vari = self.vari
+        self.ala_norm = [a[2] / (a[3] * a[3])]
+        self.an.tapahtumat.append(("vari_korjaus", h.tunnus, f, f"{vanha} -> {self.vari}: kahva oli {float(np.median(ero)):.0f} cm kiven keskipisteesta"))
 
     def _ei_etene(self, f):
         """Liikkeessa vahintaan EI_ETENE_S, mutta kivi on viimeisen EI_ETENE_S aikana liikkunut alle EI_ETENE_CM (X- tai Y-vaihteluvali): kivea kasitellaan, ei
