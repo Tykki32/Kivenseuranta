@@ -96,9 +96,10 @@ LEPO_N = 15                      # lepopaikan arvioon kaytetaan enintaan naita v
 HUKKA_LEPO_S = 2.0               # kahva ja (todetun kiven) runko poissa levossa >= tama -> takaisin IDLE:en (heittajan kasi peittaa kahvan hetkeksi; liian lyhyt aika pudotti kiven kesken valmistelun)
 B_LEPO_POIK_CM = 12.0            # levossa (viritetty kahva) B kelpaa kiveksi vain jos se on enintaan tama kaukana kahvan (A) paikasta: kahva on kiven keskella (tosikivella mediaani 1-5 cm, p90 <= 9 cm, max 10,4 cm), kiven viereinen kenka / kasi on 12-27 cm paassa
 B_LEPO_PEITTO = 0.5              # "kaukainen kivi": B-sovituksessa graniittia vahintaan tama, mutta yli B_LEPO_POIK_CM kahvan paikasta -> kahva ei ole kiven kahva
-B_ULOTTUMA_PEITTO = 0.5          # lahdon jalkeen (heittoa ei viela vahvistettu): B kelpaa myos > B_MAX_POIKKEAMA_CM alkuarvosta, jos se on edellisen hyvaksytyn B:n ulottuvilla ja graniittia vahintaan taman verran
+B_ULOTTUMA_PEITTO = 0.5          # lennossa: B kelpaa myos > B_MAX_POIKKEAMA_CM alkuarvosta, jos se on edellisen hyvaksytyn B:n ulottuvilla ja graniittia vahintaan taman verran
 ULOTTUMA_V_CM_RUUTU = 8.0        # ... ulottuma = B_MAX_POIKKEAMA_CM + taman verran per ruutu edellisesta hyvaksytysta B:sta (kivi kiihtyy lahdossa jopa 8 cm / ruutu: 2,4 m/s)
 ULOTTUMA_MAX_CM = 60.0
+ULOTTUMA_VAHVISTETTU_RUUTUA = 12  # vahvistetulla heitolla ulottuma-hyvaksynta vain, kun edellisesta hyvaksytysta B:sta on enintaan taman monta ruutua (pidemman aukon jalkeen kiven identiteetti ei ole varma)
 VAIHTO_S = 1.0                   # viritetyn, viela todentamattoman kahvan voi korvata toisella vakaalla kandidaatilla vasta taman ajan kuluttua (aika kahdelle B-sovitukselle)
 VAIHTO_ETAISYYS_CM = 12.0        # ... ja saman varin kandidaatti on vahintaan taman verran viritetysta kahvasta
 KANDIDAATTI_B_RUUTUA = 12        # vakaan kandidaatin kivitarkistus (B-sovitus kahvan kohdalla) toistetaan enintaan taman valein (ruutua): pysyva haamu (harjan paa) ei kuormita
@@ -2197,7 +2198,7 @@ class Analyysi:
         naytteet.rms, naytteet.kelv, naytteet.peitto, naytteet.poik = s["rms"], kelv, peitto, poik
         raja = B_LEPO_POIK_CM if naytteet.lepo else B_MAX_POIKKEAMA_CM
         poik_ok = min(poik, poik_e if poik_e is not None else poik) <= raja
-        if not poik_ok and heitto.tila == "liikkuu" and not naytteet.lepo and peitto >= B_ULOTTUMA_PEITTO:
+        if not poik_ok and isinstance(heitto, Heitto) and heitto.tila in ("liikkuu", "vahvistettu") and not naytteet.lepo and peitto >= B_ULOTTUMA_PEITTO:
             poik_ok = self._ulottuvilla(heitto, naytteet, s)
         kivi = peitto >= PEITTO_MIN and s["rms"] <= B_MAX_RMS and poik_ok
         if naytteet.lepo and not poik_ok and peitto >= B_LEPO_PEITTO and s["rms"] <= B_MAX_RMS and kelv >= B_VAIN_KELV:
@@ -2216,9 +2217,13 @@ class Analyysi:
     def _ulottuvilla(heitto, naytteet, s):
         """Lahdon jalkeen kivi kiihtyy nopeasti (jopa 8 cm / ruutu) ja kasi peittaa kahvan, joten ennuste (viimeisten paikkojen suora; A puuttuu) jaa jalkeen kymmenia senttimetreja ja
         sovitus, joka loysi kiven (graniittia 0,8-0,9), hylattiin 15 cm:n rajan takia: kivi hukattiin heti lahdon jalkeen (video 6820 s, punainen). Hyvaksytaan B, jos se on edellisen
-        hyvaksytyn B:n ulottuvilla (kivi ei liiku nopeammin kuin ULOTTUMA_V_CM_RUUTU)."""
+        hyvaksytyn B:n ulottuvilla (kivi ei liiku nopeammin kuin ULOTTUMA_V_CM_RUUTU). Sama vahvistetulla heitolla (enintaan ULOTTUMA_VAHVISTETTU_RUUTUA edellisesta B:sta): kahva (A)
+        ja ennuste jaavat nopeasti liikkuvan kiven jalkeen 15-24 cm (B-tulokset saapuvat viiveella, kahva viipyy harjaajien kasissa), ja hyva sovitus (peitto 0,4-0,76, rms <= 0,14)
+        hylattiin siemenen etaisyyden takia: talon B-peitto jai 51-77 %:iin."""
         for m in reversed(heitto.naytteet[-60:]):
             if m.f < naytteet.f and m.kivi():
+                if heitto.tila == "vahvistettu" and naytteet.f - m.f > ULOTTUMA_VAHVISTETTU_RUUTUA:
+                    return False
                 p = m.paikka()
                 return bool(np.hypot(s["X"] - p[0], s["Y"] - p[1]) <= min(ULOTTUMA_MAX_CM, B_MAX_POIKKEAMA_CM + ULOTTUMA_V_CM_RUUTU * (naytteet.f - m.f)))
         return False

@@ -897,8 +897,35 @@ def testaa_viritys_rungosta():
     tarkista("liian pieni kahvan sirpale (0,3 x alaraja): ei viritysta", r is None)
 
 
+def testaa_ulottuma_vahvistettu():
+    print("B hyvaksytaan ulottuman perusteella myos vahvistetulla heitolla (siemen jaa nopean kiven jalkeen), mutta ei pitkan aukon jalkeen eika kaukopaassa")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+
+    def heitto(luokka=ns.Heitto, tila="vahvistettu", f_b=100):
+        h = luokka(1, "vasen", "punainen", 0, (0.0, -330.0)) if luokka is ns.Heitto else luokka(1, "vasen", "punainen")
+        h.tila = tila
+        n = ns.Naytteet(f_b)
+        n.B = (10.0, 100.0)
+        h.naytteet.append(n)
+        return h
+
+    def tulos(h, f, Y, seed_Y, peitto=0.7):
+        n = ns.Naytteet(f)
+        h.naytteet.append(n)
+        an._liita_b(h, n, dict(X=10.0, Y=Y, rms=0.1, kelvolliset=0.5, peitto=peitto), (10.0, seed_Y))
+        return n.B is not None
+
+    tarkista("siemen 24 cm jaljessa, sovitus 9 cm edellisesta B:sta (1 ruutu): hyvaksytaan", tulos(heitto(), 101, 109.0, 85.0))
+    tarkista("sama liikkuvalla (ei vahvistetulla) heitolla", tulos(heitto(tila="liikkuu"), 101, 109.0, 85.0))
+    tarkista("heikko peitto (0,3): ei ulottumahyvaksyntaa", not tulos(heitto(), 101, 109.0, 85.0, peitto=0.3))
+    tarkista("liian kaukana edellisesta B:sta (15 + 8 cm / ruutu: 40 cm 1 ruudussa): ei hyvaksyta", not tulos(heitto(), 101, 140.0, 85.0))
+    tarkista("vahvistetulla heitolla yli 12 ruudun aukko: ei ulottumahyvaksyntaa", not tulos(heitto(f_b=80), 101, 109.0, 85.0))
+    tarkista("kaukopaan seuranta (KaukoHeitto) ei kayta ulottumaa", not tulos(heitto(ns.KaukoHeitto), 101, 109.0, 85.0))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_graniitti_siemen, testaa_viritys_rungosta):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_graniitti_siemen, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu):
         t()
     print()
     if VIRHEITA:
