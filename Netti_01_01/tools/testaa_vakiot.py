@@ -651,8 +651,37 @@ def testaa_tausta_maskit():
         tarkista(f"{nimi}: ohut matalakontrastinen viiva ei hylkaa ymparistoaan (aiempi 7 x 7 -laajennus hylkasi)", float(jaa[17:24, 20:140].mean()) > 0.9, f"{jaa[17:24, 20:140].mean():.2f}")
 
 
+def testaa_vaihto_todennettu():
+    print("todennetun kiven viritys: vaihto toiseen kandidaattiin vain, jos se on kiven keskella ja lahempana kuin viritetty kahva (viereinen kenkapohja ei saa jaada virityksen kohteeksi)")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+    hp = an.paat["vasen"]
+
+    def asetelma(kahva, kivi, ehdokas):
+        h = ns.Heitto(1, "vasen", "punainen", 0, kahva)
+        h.lepo = np.array(kahva, float)
+        for i in range(4):
+            n = ns.Naytteet(100 + i * 8, kahva, 200.0)
+            n.lepo = True
+            n.B = kivi                                                                 # kivi todettu levossa kivi-paikassa
+            h.naytteet.append(n)
+        h.validoitu = True
+        hp.heitto, hp.vari = h, "punainen"
+        vaihdot = []
+        hp._vakaa_kandidaatti = lambda f, ruutu, pois=None: ("keltainen", [], ehdokas)
+        hp._virita_kandidaatista = lambda f, ruutu, vari, ikk, XY: vaihdot.append((vari, XY))
+        return h, vaihdot
+
+    h, v = asetelma((0.0, -343.0), (-12.0, -328.0), (-15.0, -321.0))                   # kenkapohja 19 cm kivesta, keltainen kahva 7,6 cm kiven keskipisteesta
+    tarkista("kenkapohja virittyneena, keltainen kahva kiven keskella: vaihto", hp._vaihda_kandidaatti(130, None, todennettu=True) and len(v) == 1)
+    h, v = asetelma((-10.0, -325.0), (-12.0, -328.0), (-15.0, -321.0))                 # oikea kahva 3,6 cm kiven keskipisteesta: ei vaihtoa
+    tarkista("oikea kahva kiven keskella: ei vaihtoa", not hp._vaihda_kandidaatti(130, None, todennettu=True) and not v)
+    h, v = asetelma((0.0, -343.0), (-12.0, -328.0), (-50.0, -281.0))                   # toinen ehdokas kaukana kivesta (viereinen odottava kivi): ei vaihtoa
+    tarkista("toinen kandidaatti kaukana kivesta: ei vaihtoa", not hp._vaihda_kandidaatti(130, None, todennettu=True) and not v)
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu):
         t()
     print()
     if VIRHEITA:
