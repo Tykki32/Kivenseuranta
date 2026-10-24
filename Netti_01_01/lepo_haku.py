@@ -19,13 +19,13 @@ import kivimalli
 LEPO_VALI = 15                    # ruutua: pesan katselun vali
 LEPO_AIKARAJA_S = 45.0            # haku loppuu taman jalkeen seurannan katkeamisesta
 LEPO_KARTTA_CM = 4.0              # ehdokas on vanha kivi, jos se on taman sisalla ennen heittoa olleesta samanvarisesta kahvasta
-LEPO_N = 4                        # ehdokkaan perakkaisia havaintoja
-LEPO_PIDETTY_S = 3.0              # ... jotka kattavat vahintaan taman ajan
+LEPO_N = 4                        # ehdokkaan havaintoja (katselukertoja) ...
+LEPO_PIDETTY_S = 3.0              # ... jotka kattavat vahintaan taman ajan (katselu LEPO_VALI ruudun valein: 3 s = 7 katselua; 4 perakkaista katselua kattaisi vain 1,5 s)
 LEPO_HAJONTA_CM = 2.5             # ... ja pysyvat taman sisalla mediaanipaikasta
 LEPO_LIITOS_CM = 3.0              # havainto kuuluu ehdokkaalle, jos se on taman sisalla ehdokkaan viimeisesta paikasta
 LEPO_NAKYMATON_N = 4              # ehdokas unohdetaan, kun sita ei ole nahty taman monella katselukerralla
 LEPO_X_CM = 260.0                 # pesan alue kaukopaan koordinaateissa: |X'| <= taman, Y' valilla
-LEPO_Y_CM = (-290.0, 470.0)
+LEPO_Y_CM = (-290.0, 640.0)
 LEPO_EDESSA_CM = 30.0             # ehdokas enintaan taman verran viimeisen tunnetun paikan takana (Y' pienenee kiven edetessa)
 LEPO_ULOTTUMA_CM = 1200.0         # ehdokas enintaan taman paassa viimeisesta tunnetusta paikasta
 LEPO_HIDASTUVUUS_CM_S2 = 7.0      # kuvitellun pysahtymispisteen hidastuvuus (cm / s2)
@@ -118,7 +118,9 @@ class LepoHaku:
         self.ehdokkaat = [c for c in self.ehdokkaat if self.n_kerta - c["nahty"] <= LEPO_NAKYMATON_N]
 
     def _paikallaan(self, c):
-        h = c["hist"][-LEPO_N:]
+        """Ehdokas on pysynyt paikallaan: viimeiset LEPO_PIDETTY_S s (+ yksi katselu) havainnot, vahintaan LEPO_N kappaletta ja kattavat koko ajan, ovat LEPO_HAJONTA_CM:n sisalla mediaanipaikasta."""
+        t = c["hist"][-1][0]
+        h = [q for q in c["hist"] if t - q[0] <= LEPO_PIDETTY_S * self.fps + LEPO_VALI]
         if len(h) < LEPO_N or (h[-1][0] - h[0][0]) < LEPO_PIDETTY_S * self.fps:
             return None
         P = np.array([(q[1], q[2]) for q in h])
