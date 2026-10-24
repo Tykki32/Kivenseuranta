@@ -1687,12 +1687,13 @@ class Saapuminen:
 
 
 def pysahtymishetki(F, P, fps):
-    """Radasta (ruudut F, paikat P (n, 2)) pysahtymisruutu ja lepopaikka: lepopaikka on viimeisten paikkojen mediaani; pysahtymishetki on ensimmainen hetki, josta alkaen silotettu (7 paikan
-    liukuva mediaani) etaisyys lepopaikasta pysyy levon kohinatason sisalla (raakojen etaisyyksien 95 %:n fraktiili viimeisen 1,5 s:n ajalta; vahintaan KAUKO_PYS_RAJA_CM)
+    """Radasta (ruudut F, paikat P (n, 2)) pysahtymisruutu ja lepopaikka: lepopaikka on radan viimeisen 1,5 s:n paikkojen mediaani (vahintaan 5 paikkaa); pysahtymishetki on ensimmainen hetki,
+    josta alkaen silotettu (7 paikan liukuva mediaani) etaisyys lepopaikasta pysyy levon kohinatason sisalla (raakojen etaisyyksien 95 %:n fraktiili samalta ajalta; vahintaan KAUKO_PYS_RAJA_CM)
     seuraavat 2 s (tai radan loppuun), + KAUKO_PYS_LISA_S. (Paikat ovat B- ja A-paikkoja; kohina levossa on useita senttimetreja, joten kiinteaa 1,5 cm:n rajaa ei voi kayttaa; pitkan levon
-    kohinahuiput eivat siirra hetkea myohemmaksi.)"""
+    kohinahuiput eivat siirra hetkea myohemmaksi. Lepo-ikkuna on ajassa eika paikkojen lukumaarassa: hitaassa vaiheessa ja levossa B tulee harvemmin, joten 45 viimeista paikkaa kattaisi
+    useita sekunteja ja sisaltaisi liikkeen: lepopaikka oli 10-50 cm pielessa 18 %:lla pysahtyneista, ks. README.)"""
     n = len(F)
-    k = min(n, max(8, int(round(1.5 * fps))))
+    k = min(n, max(5, int((np.asarray(F) >= F[-1] - 1.5 * fps).sum())))
     lepo = np.median(P[-k:], axis=0)
     d = np.hypot(*(P - lepo).T)
     ds = np.array([float(np.median(d[max(0, i - 3):i + 4])) for i in range(n)])      # silotus: liukuva mediaani (7)

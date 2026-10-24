@@ -107,6 +107,19 @@ def testaa_pysahtymishetki():
     tarkista("pysahtymishetki +-1,5 s", abs(f_pys / fps - t_s) <= 1.5, f"{f_pys / fps:.1f} s vs {t_s:.1f} s")
     tarkista("lepopaikka +-3 cm", abs(Y - y[-1]) <= 3.0 and abs(X - 60.0) <= 3.0)
     tarkista("ei kiihtymiskohtaa vapaassa liu'ussa", ns.kiihtymiskohta(F, P, fps) is None)
+    # harva rata levossa: hidas vaihe ja lepo naytteistetaan harvemmin (B ei tule joka ruudulle), joten 45 viimeista paikkaa kattaisi liikkeen: lepopaikka ajan mukaan
+    Ff = np.arange(0.0, 100.0)                                              # liike: tihea (joka ruutu), 330 -> 160 cm
+    yf = 160.0 + 170.0 * (1.0 - Ff / 99.0) ** 2
+    Fc = np.arange(100.0, 160.0, 5.0)                                       # hiipiminen: joka 5. ruutu (2 s), 160 -> 100 cm
+    yc = 160.0 - 60.0 * (Fc - 100.0) / 55.0
+    Fl = np.arange(160.0, 280.0, 6.0)                                       # lepo: joka 6. ruutu (4 s)
+    Fh = np.concatenate([Ff, Fc, Fl])
+    yh = np.concatenate([yf, np.minimum(yc, 160.0), np.full(len(Fl), 100.0)])
+    yh = np.maximum(yh, 100.0)
+    Ph = np.column_stack([60.0 + rng.normal(0, 1.0, len(Fh)), yh + rng.normal(0, 1.0, len(Fh))])
+    f_h, Xh, Yh = ns.pysahtymishetki(Fh, Ph, fps)
+    tarkista("harva lepo: lepopaikka +-3 cm (45 paikan ikkuna olisi sisaltanyt liikkeen)", abs(Yh - 100.0) <= 3.0 and abs(Xh - 60.0) <= 3.0, f"Y {Yh:.1f} X {Xh:.1f}")
+    tarkista("harva lepo: pysahtymishetki lepoon saapumisen (5 s) ja sen +3 s valilla", 5.0 <= f_h / fps <= 8.0, f"{f_h / fps:.1f} s")
     P2 = P.copy()
     i0 = int(np.searchsorted(t, 6.5))                                        # hidas kivi (~25 cm/s) -> 1 m/s: toinen kohde
     P2[i0:, 0] += 100.0 * (t[i0:] - t[i0])
