@@ -697,11 +697,49 @@ def testaa_vaihto_todennettu():
     tarkista("todettu kivi, joka ei nay levossa: viritys pysyy", not hp._vaihda_kandidaatti(222, None) and not v)
 
     h, v = asetelma((0.0, -340.0), [nayte(200, (0.0, -340.0))], (-15.0, -321.0), False)
-    tarkista("kahvan luona ei kivea eika todisteita: vaihto vakaaseen kandidaattiin", hp._vaihda_kandidaatti(222, None) and len(v) == 1)
+    tarkista("vaihtoa ei tehda ennen VAIHTO_S:aa viritysta", not hp._vaihda_kandidaatti(222, None) and not v)
+    tarkista("kahvan luona ei kivea eika todisteita: vaihto vakaaseen kandidaattiin", hp._vaihda_kandidaatti(240, None) and len(v) == 1)
+
+
+def testaa_kandidaatti_kivi():
+    print("kahvakandidaatti viriteaan vain, jos sen kohdalla on kivi (harjan paa ei saa estaa viereisen kiven viritysta)")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+    an.tarkka = True                                                                  # B-sovitus kaytossa (sovitus korvataan alla)
+    hp = an.paat["oikea"]
+
+    def blobi(X, Y, ala=70.0):
+        u, v = hp.m.maa_oikaistuun(X, Y)
+        return (float(u[0]), float(v[0]), ala, (int(u[0]) - 5, int(v[0]) - 5, 10, 11))
+
+    def aja(kahvat, kivet):
+        """kahvat: vari -> (X, Y); kivet: kohdat (X, Y), joissa on kivi (sovitus loytaa kiven siita, enintaan 3 cm kahvasta); muualla ei kivea (peitto 0,2)."""
+        hp.kandidaatit, hp._kivi_muisti = {}, {}
+        hp.m.valmistele = lambda ruutu, X0, Y0: ("roi", 0, 0)
+        def sovita(roi, x0, y0, X0, Y0):
+            for (X, Y) in kivet:
+                if np.hypot(X - X0, Y - Y0) <= 20.0:
+                    return dict(X=X + 2.0, Y=Y, rms=0.1, peitto=0.8, kelvolliset=0.5)
+            return dict(X=X0 + 20.0, Y=Y0 - 20.0, rms=0.13, peitto=0.2, kelvolliset=0.5)
+        hp.m.sovita_leike = sovita
+        hp.m.kahva = lambda ruutu, alue, vari, ennuste, min_ala=0, taustaero=False: [blobi(*kahvat[vari])] if vari in kahvat else []
+        r = None
+        for f in range(0, 60, 3):
+            r = hp._vakaa_kandidaatti(f, None) or r
+            if r:
+                break
+        return r
+
+    r = aja({"punainen": (-11.0, -316.0)}, [(-11.0, -316.0)])
+    tarkista("kahva kiven paalla: kandidaatti", r is not None and r[0] == "punainen")
+    r = aja({"keltainen": (-43.0, -286.0)}, [])
+    tarkista("harjan paa (ei kivea): ei kandidaattia", r is None)
+    r = aja({"keltainen": (-43.0, -286.0), "punainen": (-11.0, -316.0)}, [(-11.0, -316.0)])
+    tarkista("keltainen haamu ja punainen kivi: punainen virittyy (keltainen ei ole ensin vain varin takia)", r is not None and r[0] == "punainen")
 
 
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi):
         t()
     print()
     if VIRHEITA:

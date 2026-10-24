@@ -100,6 +100,7 @@ ULOTTUMA_V_CM_RUUTU = 8.0        # ... ulottuma = B_MAX_POIKKEAMA_CM + taman ver
 ULOTTUMA_MAX_CM = 60.0
 VAIHTO_S = 1.0                   # viritetyn, viela todentamattoman kahvan voi korvata toisella vakaalla kandidaatilla vasta taman ajan kuluttua (aika kahdelle B-sovitukselle)
 VAIHTO_ETAISYYS_CM = 12.0        # ... ja saman varin kandidaatti on vahintaan taman verran viritetysta kahvasta
+KANDIDAATTI_B_RUUTUA = 12        # vakaan kandidaatin kivitarkistus (B-sovitus kahvan kohdalla) toistetaan enintaan taman valein (ruutua): pysyva haamu (harjan paa) ei kuormita
 LEPO_TODISTE_RUUTUA = 90         # levossa kiven todisteet (B-sovitukset kahvan kohdalla / kaukana) lasketaan vain taman ajan ajalta: kantamisen ja laskemisen aikaiset sovitukset eivat saa todentaa kahvaa, kun kivi on jo asettunut muualle
 LEPO_KESKI_N = 3                 # levossa olevan kiven keskipiste = viimeisten taman monen graniittisovituksen (sovitus loytaa kiven lahtopaikasta riippumatta) mediaani, ...
 LEPO_KESKI_HAJONTA_CM = 5.0      # ... kun ne ovat enintaan taman verran mediaanista (kivi lepaa)
@@ -932,6 +933,7 @@ class Heittopaa(_Seuranta):
         self.tila = "IDLE"
         self.heitto = None
         self.kandidaatit = {}                   # IDLE: vari -> lista (f, X, Y, u, v, ala)
+        self._kivi_muisti = {}                  # kandidaatin kivitarkistus: (vari, X, Y karkeasti) -> (ruutu, tulos)
         self.lepo = []                          # ARMED: viimeisimmat A-havainnot (f, X, Y, u, v, ala)
         self.f_nahty = None                     # viimeisin ruutu, jossa kahva nakyi (ARMED)
         self.vari = None
@@ -967,8 +969,28 @@ class Heittopaa(_Seuranta):
         if k is not None:
             self._virita_kandidaatista(f, ruutu, *k)
 
+    def _kivi_kahvalla(self, f, ruutu, vari, X, Y):
+        """Vakaan kahvakandidaatin kohdalla on kivi: B-sovitus (graniitti siluetin sisalla, pieni jaannos) kahvasta lahtien loytaa kiven enintaan B_LEPO_POIK_CM paahan. Ilman
+        kivea (harjan paa, vaatetus, kenka) kahvaa ei viriteta: haamu ei estaisi viereisen oikean kiven viritysta eika kuluttaisi sen aikaa (video 3, 8229 s: keltainen harjan paa
+        ehti viritetyksi punaisen kiven edelle ja kivi heitettiin ennen kuin viritys vaihtui). Tulos pidetaan KANDIDAATTI_B_RUUTUA ruutua."""
+        if not self.an.tarkka:
+            return True                                             # ilman B-sovitusta ei todistetta (vain kahvan vari)
+        avain = (vari, int(round(X / 8.0)), int(round(Y / 8.0)))
+        m = self._kivi_muisti.get(avain)
+        if m is not None and f - m[0] <= KANDIDAATTI_B_RUUTUA:
+            return m[1]
+        v = self.m.valmistele(ruutu, X, Y)
+        if v is None:
+            return True                                             # kuvan reunalla: ei arvioitavissa
+        r = self.m.sovita_leike(*v, X, Y)
+        ok = bool(r is not None and "virhe" not in r and r.get("peitto", 1.0) >= PEITTO_MIN and r["rms"] <= B_MAX_RMS and float(np.hypot(r["X"] - X, r["Y"] - Y)) <= B_LEPO_POIK_CM)
+        if len(self._kivi_muisti) > 32:
+            self._kivi_muisti.clear()
+        self._kivi_muisti[avain] = (f, ok)
+        return ok
+
     def _vakaa_kandidaatti(self, f, ruutu, pois=None):
-        """Kandidaattihaku hack-alueelta (kahvan vari, molemmat varit); palauttaa (vari, lista, (X, Y)) ensimmaiselle vakaalle kandidaatille (keltainen ensin) tai None.
+        """Kandidaattihaku hack-alueelta (kahvan vari, molemmat varit); palauttaa (vari, lista, (X, Y)) ensimmaiselle vakaalle, kiven paalla olevalle kandidaatille (keltainen ensin) tai None.
         pois = (vari, X, Y): taman varin ehdokkaat enintaan VAIHTO_ETAISYYS_CM paassa (X, Y):sta ohitetaan (jo viritetty kahva)."""
         loytyi = {}
         for vari in ("keltainen", "punainen"):
@@ -1004,7 +1026,8 @@ class Heittopaa(_Seuranta):
             if (ikk[-1][0] - ikk[0][0]) / self.an.fps >= LEPO_S and len(ikk) >= 4:
                 X = float(np.median([c[1] for c in ikk]))
                 Y = float(np.median([c[2] for c in ikk]))
-                if max(np.hypot(c[1] - X, c[2] - Y) for c in ikk) <= LEPO_CM and np.hypot(ikk[-1][1] - ikk[0][1], ikk[-1][2] - ikk[0][2]) <= LEPO_SIIRTYMA_CM:
+                if (max(np.hypot(c[1] - X, c[2] - Y) for c in ikk) <= LEPO_CM and np.hypot(ikk[-1][1] - ikk[0][1], ikk[-1][2] - ikk[0][2]) <= LEPO_SIIRTYMA_CM
+                        and self._kivi_kahvalla(f, ruutu, vari, X, Y)):
                     return vari, ikk, (X, Y)
         return None
 
@@ -1064,9 +1087,14 @@ class Heittopaa(_Seuranta):
     def _vaihda_kandidaatti(self, f, ruutu):
         """Toinen kandidaatti (toinen vari tai toinen paikka hack-alueella) on ollut vakaana: virityksen kohde voi vaihtua. Kahva on kiven keskella, joten levossa olevan kiven
         keskipisteen (_kiven_keskipiste) perusteella kandidaatti vaihtuu, jos se on enintaan B_LEPO_POIK_CM keskipisteesta ja vahintaan VAIHTO_PARANNUS_CM lahempana kuin viritetty kahva.
-        Ilman keskipistetta (kiven todetaan vasta) vaihto vain, jos viritetyn kahvan luona ei ole kivea (ei todettu, eika vierella ole kivea useammin kuin kahvan kohdalla)."""
+        Ilman keskipistetta (kiven todetaan vasta) vaihto vain, jos viritetyn kahvan luona ei ole kivea (ei todettu, eika vierella ole kivea useammin kuin kahvan kohdalla).
+        Kandidaattien vakautta seurataan koko viritetyn ajan (VAIHTO_S vain rajoittaa vaihtoa): muuten oikea kahva alkaisi vakauden laskennan nollasta vasta vaihtoajan jalkeen,
+        eika ehtisi viritykseen (video 3, 8229 s: keltainen harjan paa ehti viritetyksi punaisen kiven edelle, ja kivi heitettiin 2 s myohemmin)."""
         h = self.heitto
         X0, Y0 = h.lepo
+        k = self._vakaa_kandidaatti(f, ruutu, (self.vari, X0, Y0))
+        if k is None or (f - h.naytteet[0].f) / self.an.fps < VAIHTO_S:
+            return False
         c = self._kiven_keskipiste(h, f)
         if c is None:
             if h.validoitu:
@@ -1074,9 +1102,6 @@ class Heittopaa(_Seuranta):
             sop, kauk = self._lepo_todisteet(h, f)
             if kauk < sop:                                          # kahvan kohdalla on kivea useammin kuin vieressa: oikea kivi, jonka B-sovitukset vain viipyvat (kasi peittaa)
                 return False
-        k = self._vakaa_kandidaatti(f, ruutu, (self.vari, X0, Y0))
-        if k is None:
-            return False
         if c is not None:
             kd, ad = float(np.hypot(k[2][0] - c[0], k[2][1] - c[1])), float(np.hypot(X0 - c[0], Y0 - c[1]))
             if not (kd <= B_LEPO_POIK_CM and kd + VAIHTO_PARANNUS_CM <= ad):
@@ -1088,7 +1113,7 @@ class Heittopaa(_Seuranta):
     def _armed(self, f, ruutu):
         h = self.heitto
         h.validoitu = self._validoitu(h, f)
-        if self.n_ruutu % IDLE_VALI == 0 and (f - h.naytteet[0].f) / self.an.fps >= VAIHTO_S and self._vaihda_kandidaatti(f, ruutu):
+        if self.n_ruutu % IDLE_VALI == 0 and self._vaihda_kandidaatti(f, ruutu):
             return
         X0, Y0 = h.lepo
         r = self._vari_a(ruutu, (X0, Y0), 35.0, tarkka_ala=False)
