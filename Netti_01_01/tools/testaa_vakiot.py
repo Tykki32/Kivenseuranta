@@ -852,8 +852,53 @@ def testaa_graniitti_siemen():
     tarkista("vain liikkuvalle / vahvistetulle heitolle", hp._graniitti_siemen(100, None, (0.0, 150.0)) is None)
 
 
+def testaa_viritys_rungosta():
+    print("viritys kiven rungosta: vakaa graniittiblobi + B todentaa kiven + kahva kiven keskella maaraa varin; ilman kahvaa ei viritysta")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+    an.tarkka = True
+    hp = an.paat["vasen"]
+    ala_kahva = 1.2 * ns.KAHVA_ALA_CM2[0] * hp.hack_skaala2
+
+    def blobi(X, Y, ala):
+        u, v = hp.m.maa_oikaistuun(X, Y)
+        return (float(u[0]), float(v[0]), ala, (int(u[0]) - 5, int(v[0]) - 5, 10, 11))
+
+    def aja(runko, kahvat, b_ok=True, liike=0.0):
+        """runko: (X, Y) graniittiblobin keskipiste; kahvat: vari -> [(X, Y, ala)]; liike: blobin siirtyma cm / kutsu."""
+        hp.kandidaatit_g, hp._runko_muisti = [], {}
+        haku = type("H", (), {"ehdokkaat": lambda self, r: [dict(X=runko[0] + liike * self.n, Y=runko[1], ala=900, suhde=1.0)], "n": 0})()
+        an.graniittihaku_hack = lambda puoli: haku
+        hp._runko_b = lambda f, ruutu, X, Y: ((X + 1.0, Y - 1.0) if b_ok else None)
+        hp.m.kahva = lambda ruutu, alue, vari, ennuste, min_ala=0, taustaero=False: [blobi(*q) for q in kahvat.get(vari, [])]
+        r = None
+        for i, f in enumerate(range(0, 60, 3)):
+            haku.n = i
+            r = hp._vakaa_runko(f, None)
+            if r:
+                break
+        return r
+
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)]})
+    tarkista("vakaa runko + kahva kiven keskella: viritys keltaisena", r is not None and r[0] == "keltainen" and abs(r[2][0] + 4.0) < 1.5)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)], "punainen": [(30.0, -330.0, ala_kahva)]})
+    tarkista("toinen vari kauempana (kenkapohja 35 cm): vari kiven keskelta", r is not None and r[0] == "keltainen")
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)], "punainen": [(-2.0, -338.0, ala_kahva)]})
+    tarkista("molemmat varit kiven lahella: lahin keskipisteeseen (keltainen 2 cm, punainen 13 cm -> keltainen)", r is not None and r[0] == "keltainen")
+    r = aja((-5.0, -325.0), {"punainen": [(40.0, -300.0, ala_kahva)]})
+    tarkista("kahva yli 12 cm keskipisteesta (kenka, harjan paa): ei viritysta", r is None)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)]}, b_ok=False)
+    tarkista("B ei toteaa kivea: ei viritysta", r is None)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)]}, liike=3.0)
+    tarkista("blobi liikkuu (kantaminen): ei viritysta", r is None)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, 0.6 * ns.KAHVA_ALA_CM2[0] * hp.hack_skaala2)]})
+    tarkista("osittain peitetty kahva (0,6 x alaraja) riittaa varin maaraamiseen", r is not None)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, 0.3 * ns.KAHVA_ALA_CM2[0] * hp.hack_skaala2)]})
+    tarkista("liian pieni kahvan sirpale (0,3 x alaraja): ei viritysta", r is None)
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_graniitti_siemen):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_graniitti_siemen, testaa_viritys_rungosta):
         t()
     print()
     if VIRHEITA:

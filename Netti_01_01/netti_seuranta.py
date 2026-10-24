@@ -105,6 +105,7 @@ KANDIDAATTI_B_RUUTUA = 12        # vakaan kandidaatin kivitarkistus (B-sovitus k
 LEPO_TODISTE_RUUTUA = 90         # levossa kiven todisteet (B-sovitukset kahvan kohdalla / kaukana) lasketaan vain taman ajan ajalta: kantamisen ja laskemisen aikaiset sovitukset eivat saa todentaa kahvaa, kun kivi on jo asettunut muualle
 LEPO_KESKI_N = 3                 # levossa olevan kiven keskipiste = viimeisten taman monen graniittisovituksen (sovitus loytaa kiven lahtopaikasta riippumatta) mediaani, ...
 LEPO_KESKI_HAJONTA_CM = 5.0      # ... kun ne ovat enintaan taman verran mediaanista (kivi lepaa)
+RUNKO_KAHVA_ALA_SUHDE = 0.5      # kiven keskella olevan kahvan pienin ala: tama osuus kahvakandidaatin alarajasta (kivi on rungosta todettu, osittain peitetty kahva riittaa varin maaraamiseen)
 VAIHTO_PARANNUS_CM = 3.0         # viritys vaihtuu toiseen kandidaattiin, jos se on enintaan B_LEPO_POIK_CM kiven keskipisteesta ja vahintaan taman verran lahempana kuin viritetty kahva (video 1, 3105 s: punainen kenkapohja 17 cm, keltainen kahva 6 cm)
 EI_KIVEA_B = 6                   # viritetty kahva hylataan ei-kivena, kun viimeiset taman monta B-sovitusta ovat selvasti ei-kivea (graniittia < EI_KIVEA_PEITTO) eika kivea ole todettu
 EI_KIVEA_PEITTO = 0.25
@@ -940,6 +941,8 @@ class Heittopaa(_Seuranta):
         self.tila = "IDLE"
         self.heitto = None
         self.kandidaatit = {}                   # IDLE: vari -> lista (f, X, Y, u, v, ala)
+        self.kandidaatit_g = []                 # IDLE: kiven rungon (graniittiblobin) paikat (f, X, Y, ala): viritys rungosta, kun kahvan vakaus ei toteudu
+        self._runko_muisti = {}                 # rungon B-todennus: (X, Y karkeasti) -> (ruutu, keskipiste | None)
         self._kivi_muisti = {}                  # kandidaatin kivitarkistus: (vari, X, Y karkeasti) -> (ruutu, tulos)
         self.lepo = []                          # ARMED: viimeisimmat A-havainnot (f, X, Y, u, v, ala)
         self.f_nahty = None                     # viimeisin ruutu, jossa kahva nakyi (ARMED)
@@ -967,6 +970,7 @@ class Heittopaa(_Seuranta):
         self.tila = "IDLE"
         self.heitto = None
         self.kandidaatit = {}
+        self.kandidaatit_g = []
         self.lepo = []
 
     # ---- IDLE: kandidaattihaku ----------------------------------------------------------------------------------
@@ -974,8 +978,73 @@ class Heittopaa(_Seuranta):
         if self.n_ruutu % IDLE_VALI:
             return
         k = self._vakaa_kandidaatti(f, ruutu)
+        if k is None:
+            k = self._vakaa_runko(f, ruutu)                       # kahvaa ei saada vakaaksi (kasi / harja / kenka peittaa osan): kivi todetaan rungosta, vari kiven keskella olevasta kahvasta
         if k is not None:
             self._virita_kandidaatista(f, ruutu, *k)
+
+    def _runko_b(self, f, ruutu, X, Y):
+        """Graniittiblobin kohdalla on kivi: B-sovitus blobin keskipisteesta (graniitti siluetin sisalla, pieni jaannos) -> kiven akseli (X, Y) tai None. Tulos pidetaan KANDIDAATTI_B_RUUTUA ruutua."""
+        avain = (int(round(X / 8.0)), int(round(Y / 8.0)))
+        m = self._runko_muisti.get(avain)
+        if m is not None and f - m[0] <= KANDIDAATTI_B_RUUTUA:
+            return m[1]
+        v = self.m.valmistele(ruutu, X, Y)
+        k = None
+        if v is not None:
+            r = self.m.sovita_leike(*v, X, Y)
+            if r is not None and "virhe" not in r and r.get("peitto", 0.0) >= PEITTO_MIN and r["rms"] <= B_MAX_RMS and r["kelvolliset"] >= B_VAIN_KELV and float(np.hypot(r["X"] - X, r["Y"] - Y)) <= B_MAX_POIKKEAMA_CM:
+                k = (float(r["X"]), float(r["Y"]))
+        if len(self._runko_muisti) > 32:
+            self._runko_muisti.clear()
+        self._runko_muisti[avain] = (f, k)
+        return k
+
+    def _vakaa_runko(self, f, ruutu):
+        """Viritys kiven rungosta: hack-alueen graniittiblobi on ollut vakaana (kuten kahvakandidaatti: LEPO_S, LEPO_CM, LEPO_SIIRTYMA_CM), B toteaa kiven (_runko_b), ja kiven keskella
+        (<= B_LEPO_POIK_CM keskipisteesta) on kahvan variblobi: lahin niista maaraa varin ja kahvan. Palauttaa (vari, lista, (X, Y)) kuten _vakaa_kandidaatti tai None.
+        Kahvaan nojaava haku (_vakaa_kandidaatti) vaatii kahvan vakauden: kasi, harjan varsi tai kenka peittaa osan kahvasta ja blobin keskipiste vaeltaa, vaikka kivi lepaa (Ahrenberg
+        8229 s: punainen kahva, tuomarin jalka); runko nakyy silti. Kenkapohja tai harjan paa ei voi maaratä varia, koska vari otetaan vain kiven keskipisteen lahelta."""
+        haku = self.an.graniittihaku_hack(self.puoli) if self.an.tarkka else None
+        if haku is None:
+            return None
+        uudet = [(c["X"], c["Y"], c["ala"]) for c in haku.ehdokkaat(ruutu) if self._hack_sisalla(c["X"], c["Y"])]
+        lista = self.kandidaatit_g
+        if uudet and lista and min(np.hypot(c[0] - lista[-1][1], c[1] - lista[-1][2]) for c in uudet) <= LEPO_CM:
+            c = min(uudet, key=lambda q: np.hypot(q[0] - lista[-1][1], q[1] - lista[-1][2]))
+            lista.append((f, c[0], c[1], c[2]))
+        elif uudet:
+            c = max(uudet, key=lambda q: q[2])
+            self.kandidaatit_g = lista = [(f, c[0], c[1], c[2])]
+        else:
+            self.kandidaatit_g = []
+            return None
+        if len(lista) > 60:
+            del lista[:-60]
+        ikk = [c for c in lista if lista[-1][0] - c[0] <= LEPO_IKKUNA_S * self.an.fps]
+        if (ikk[-1][0] - ikk[0][0]) / self.an.fps < LEPO_S or len(ikk) < 4:
+            return None
+        X = float(np.median([c[1] for c in ikk]))
+        Y = float(np.median([c[2] for c in ikk]))
+        if not (max(np.hypot(c[1] - X, c[2] - Y) for c in ikk) <= LEPO_CM and np.hypot(ikk[-1][1] - ikk[0][1], ikk[-1][2] - ikk[0][2]) <= LEPO_SIIRTYMA_CM):
+            return None
+        keski = self._runko_b(f, ruutu, X, Y)
+        if keski is None:
+            return None
+        paras = None
+        for vari in ("keltainen", "punainen"):
+            for c in self.m.kahva(ruutu, self.hack_alue, vari, None, min_ala=4, taustaero=False):
+                if not (RUNKO_KAHVA_ALA_SUHDE * KAHVA_ALA_CM2[0] * self.hack_skaala2 <= c[2] <= KAHVA_ALA_CM2[1] * self.hack_skaala2):
+                    continue
+                if not (0.35 <= c[3][2] / max(c[3][3], 1) <= 2.8):
+                    continue
+                Xh, Yh = self._a_maa(c)
+                d = float(np.hypot(Xh - keski[0], Yh - keski[1]))
+                if d <= B_LEPO_POIK_CM and self._hack_sisalla(Xh, Yh) and (paras is None or d < paras[0]):
+                    paras = (d, vari, (f, Xh, Yh, c[0], c[1], c[2]))
+        if paras is None:
+            return None
+        return paras[1], [paras[2]], (paras[2][1], paras[2][2])
 
     def _kivi_kahvalla(self, f, ruutu, vari, X, Y):
         """Vakaan kahvakandidaatin kohdalla on kivi: B-sovitus (graniitti siluetin sisalla, pieni jaannos) kahvasta lahtien loytaa kiven enintaan B_LEPO_POIK_CM paahan. Ilman
@@ -1055,6 +1124,7 @@ class Heittopaa(_Seuranta):
         self.ala_norm = [c[5] / (sk * sk) for c in lista][-8:]
         self._ala_ulkona = []
         self.kandidaatit = {}
+        self.kandidaatit_g = []
         self.hukka = 0
         self.heitto = Heitto(self.an.uusi_tunnus(), self.puoli, vari, lista[0][0], XY)
         self.an.tapahtumat.append(("viritetty", self.heitto.tunnus, f, f"{self.puoli} {vari} ({XY[0]:.0f},{XY[1]:.0f})"))
@@ -1984,6 +2054,7 @@ class Analyysi:
         self.M = {p: Mittari(kansio, p) for p in paat}
         self._haut = {}                                 # graniittihaku (kivi_haku) per puolisko, luodaan ensimmaisella kaytolla
         self._haut_h = {}                               # sama heittopaan kaistalle
+        self._haut_k = {}                               # ... ja hack-alueelle
         self.pool = self.est_pool = self.kierto_pool = self.kauko_pool = None
         if self.tarkka and saikeet > 0:
             self.pool = tee_pool(saikeet, initializer=alusta_tyo, initargs=(kansio, tuple(paat)))
@@ -2039,6 +2110,13 @@ class Analyysi:
         h = self._haut.get(puoli)
         if h is None:
             h = self._haut[puoli] = kivi_haku.GraniittiHaku(self.M[puoli], X=(-SAAP_X_CM, SAAP_X_CM), Y=SAAP_Y_CM)
+        return h
+
+    def graniittihaku_hack(self, puoli):
+        """Hack-alueen graniittihaku (valimuistissa): kivi levossa rungosta (viritys)."""
+        h = self._haut_k.get(puoli)
+        if h is None:
+            h = self._haut_k[puoli] = kivi_haku.GraniittiHaku(self.M[puoli], X=HACK_X, Y=HACK_Y, deci=2)
         return h
 
     def graniittihaku_heitto(self, puoli):
