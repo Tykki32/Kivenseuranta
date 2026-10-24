@@ -2751,10 +2751,11 @@ class Analyysi:
         self._keraa_vakiot(odota=True)
 
     def _lepo_aloita(self, h, ks, F, P):
-        """Kaukopaan seuranta paattyi (KaukoSeuranta._valmis): jos kivi hukattiin (piilossa / sweeperien alla, pysahtymista ei nahty), sen lepopaikkaa haetaan pesan kartasta (lepo_haku): ensimmaiset
-        ruudut sweeperit ovat kiven paalla, joten pesaa katsotaan viela seuraavat LEPO_AIKARAJA_S. NETTI_LEPO_KAIKILLE: haku myos seurannan pysahtymilla (vertailu seurannan paikkaan)."""
+        """Kaukopaan seuranta paattyi (KaukoSeuranta._valmis): kiven lepopaikka haetaan pesan kartasta (lepo_haku): ensimmaiset ruudut sweeperit ovat kiven paalla, joten pesaa katsotaan viela
+        seuraavat LEPO_AIKARAJA_S. Haku kaikille heitoille: hukatun kiven paikka (ei pysahtymista nahty) ja seurannan pysahtyneen kiven paikan tarkistus (kartta on tarkempi: ks. README).
+        NETTI_EI_LEPOHAKUA poistaa haun kaytosta."""
         k = h.kauko
-        if k is None or "virhe" in k or len(F) < 5 or not (k["tila"] == "hukassa" or k.get("peitossa") or os.environ.get("NETTI_LEPO_KAIKILLE")):
+        if k is None or "virhe" in k or len(F) < 5 or os.environ.get("NETTI_EI_LEPOHAKUA"):
             return
         n = min(len(F), 8)
         v = (P[-1] - P[-n]) / max(float(F[-1] - F[-n]), 1.0)

@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import netti_kierre as nk  # noqa: E402
 import netti_seuranta as ns  # noqa: E402
 import liuku_irroitus as li  # noqa: E402
+import lepo_haku as lh  # noqa: E402
 import netti_vakiot as nv  # noqa: E402
 import rata_malli as rm  # noqa: E402
 
@@ -885,8 +886,66 @@ def testaa_ulottuma_vahvistettu():
     tarkista("kaukopaan seuranta (KaukoHeitto) ei kayta ulottumaa", not tulos(heitto(ns.KaukoHeitto), 101, 109.0, 85.0))
 
 
+def testaa_lepo_haku():
+    """Lepopaikan palautus (lepo_haku.LepoHaku): paikallaanolo ajan mukaan, vanhat kivet, kivi ei peruuta, valinta, odotus ennen valintaa, tyhjentyneet vanhat kivet."""
+    class Kartta:
+        def __init__(self, blobit):
+            self.blobit = blobit
+
+        def kahvat(self, ruutu, vari, ala_med):
+            return list(self.blobit)
+
+    class Haku(lh.LepoHaku):
+        def _b(self, ruutu, X, Y):
+            return (X, Y)                                            # B-todennus korvattu: kaikki paikallaan pysyvat ovat kivia
+
+    def uusi(blobit, ennen=(), viim=(0, 0.0, 100.0, 0.0, 0.0)):
+        return Haku(None, Kartta(blobit), "punainen", None, ennen, viim, 0, 30.0)
+
+    def aja(h, kesto_s, vali=lh.LEPO_VALI, f0=100):
+        f = f0
+        while f - f0 <= kesto_s * 30.0 and h.kasittele(f, None):
+            f += vali
+        return f
+
+    h = uusi([(50.0, 60.0, 400)])
+    f = aja(h, 12.0)
+    tarkista("paikallaan pysyva kahva (7 katselua / 3 s) loytyy odotuksen jalkeen", h.tulos is not None and "X" in h.tulos and abs(h.tulos["X"] - 50.0) < 1e-6, str(h.tulos))
+    tarkista("valinta odottaa LEPO_ODOTUS_S ensimmaisen vahvistuksen jalkeen", h.tulos is not None and h.tulos["f_vahv"] - h.f_vahv1 >= lh.LEPO_ODOTUS_S * 30.0, str(h.tulos))
+    h = uusi([(50.0, 60.0, 400)])
+    aja(h, 1.5)
+    tarkista("1,5 s ei riita paikallaanoloksi", h.tulos is None and all(h._paikallaan(c) is None for c in h.ehdokkaat))
+    h = uusi([])
+    for k in range(14):
+        h.kartta.blobit = [(50.0 + 2.0 * k, 60.0, 400)]                          # hiipiva kivi / kuljetettava esine: 2 cm per katselu (liittyy samaan ehdokkaaseen, mutta ei pysy paikallaan)
+        h.kasittele(100 + k * lh.LEPO_VALI, None)
+    tarkista("hiipiva blobi (2 cm / 0,5 s) ei ole paikallaanoloa", h.tulos is None and len(h.ehdokkaat) == 1 and all(h._paikallaan(c) is None for c in h.ehdokkaat))
+    h = uusi([(50.0, 60.0, 400)], ennen=[(51.0, 61.0)])
+    aja(h, 12.0)
+    tarkista("ennen heittoa paikallaan ollut kivi (kartta) ei ole ehdokas", not h.ehdokkaat)
+    h = uusi([(50.0, 160.0, 400)], viim=(0, 0.0, 100.0, 0.0, 0.0))
+    aja(h, 12.0)
+    tarkista("kivi ei peruuta: ehdokas yli 30 cm viimeisen paikan takana hylataan", not h.ehdokkaat)
+    h = uusi([(50.0, 60.0, 400), (-120.0, 20.0, 400)], viim=(0, 40.0, 110.0, 0.0, -0.5))
+    aja(h, 14.0)
+    tarkista("kaksi ehdokasta, toinen selvasti lahempana kuvitellulle pysahtymispisteelle: valitaan lahempi", h.tulos is not None and "X" in h.tulos and abs(h.tulos["X"] - 50.0) < 1e-6 and h.tulos["ehdokkaita"] == 2, str(h.tulos))
+    h = uusi([(40.0, 60.0, 400), (-40.0, 60.0, 400)], viim=(0, 0.0, 110.0, 0.0, -0.5))
+    aja(h, 14.0)
+    tarkista("kaksi yhta kaukana olevaa ehdokasta: epaselva, ei paikkaa", h.tulos is not None and h.tulos.get("epaselva") and "X" not in h.tulos, str(h.tulos))
+    h = uusi([(50.0, 60.0, 400)], ennen=[(-100.0, 0.0), (100.0, 0.0)])
+    aja(h, 12.0)
+    tarkista("molemmat vanhat kivet nakymattomia 3 katselun ajan: tyhjentyneita 2 tuloksessa", h.tulos is not None and h.tulos["tyhjentyneita"] == 2, str(h.tulos))
+    h = uusi([(50.0, 60.0, 400)])
+    aja(h, lh.LEPO_AIKARAJA_S + 5.0, f0=100)
+    tarkista("aikaraja: tulos on aina (loytyi tai ei_loytynyt)", h.tulos is not None)
+    h = uusi([(50.0, 60.0, 400)])
+    aja(h, 4.0)
+    h.paata_kesken(10 ** 6)
+    tarkista("videon loppu kesken odotuksen: jo vahvistettu ehdokas ratkaistaan", h.tulos is not None and "X" in h.tulos, str(h.tulos))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku):
         t()
     print()
     if VIRHEITA:
