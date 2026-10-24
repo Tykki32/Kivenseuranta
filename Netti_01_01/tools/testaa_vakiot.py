@@ -774,10 +774,10 @@ def testaa_graniittihaku():
 
 
 def testaa_saapuminen_graniitti():
-    print("kaukopaan saapuminen graniittikanavalla: kulkeva, B:lla todettu rata hyvaksytaan; paikallaan oleva kivi ja B-tonta rata eivat")
+    print("kaukopaan saapuminen graniittikanavalla: kulkeva, B:lla todettu rata, jonka keskella on kiven varinen kahva, hyvaksytaan; paikallaan oleva kivi, B-tonta ja kahvaton (sweeperin paita) rata eivat")
     kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
 
-    def aja(ehdokkaat, b_ok):
+    def aja(ehdokkaat, b_ok, kahva=True):
         an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
         an.tarkka = True
         h = ns.Heitto(7, "vasen", "punainen", 0, (0.0, -330.0))
@@ -785,6 +785,7 @@ def testaa_saapuminen_graniitti():
         sa = ns.Saapuminen(an, h)
         sa._blobit = lambda r: []
         sa._kartoita = lambda f, r: None
+        sa._kahva_lahella = lambda ruutu, X, Y: kahva
         sa.f_alku = 0
         sa.haku = type("H", (), {"ehdokkaat": lambda self, r: ehdokkaat(self.f)})()
         pyynnot = []
@@ -806,6 +807,8 @@ def testaa_saapuminen_graniitti():
     tarkista("kulkeva graniittirata B-todistein hyvaksytaan", tila == "loytyi" and n == 1)
     tila, n, _ = aja(liikkuva, False)
     tarkista("kulkeva rata ilman B-todisteita ei kelpaa (ihmisen varuste)", tila != "loytyi" and n == 0)
+    tila, n, pyynnot = aja(liikkuva, True, kahva=False)
+    tarkista("kulkeva B:lla todettu rata ilman kiven varista kahvaa ei kelpaa (sweeperin kuviollinen paita on graniitin nakoinen)", tila != "loytyi" and n == 0 and pyynnot)
     tila, n, pyynnot = aja(paikallaan, True)
     tarkista("paikallaan oleva kivi ei ole saapuva kivi eika sille pyydeta B:ta", tila != "loytyi" and n == 0 and not pyynnot)
 

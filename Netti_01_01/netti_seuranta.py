@@ -184,7 +184,10 @@ SAAP_PISTEITA = 6                # rata vahvistetaan kun vahintaan taman verran 
 SAAP_PISTEITA_B = 4              # kaukopaan rata hyvaksytaan kiveksi, kun siina on vahintaan taman verran pisteita ...
 SAAP_B_HYVAKSY = 2               # ... joista vahintaan taman monelle B-sovitus toteaa kiven (graniittia siluetin sisalla: kivi 0,34-0,95, ihmisen varusteet, esim. sweeperin punainen kasivarsinauha, 0,06-0,28) ...
 SAAP_GRAN_VALI = 2                # graniittikanava: ehdokashaku joka n:s yksilollinen ruutu
-SAAP_B_HYVAKSY_G = 3             # graniittirata (kanava ei tunne varia) hyvaksytaan, kun B toteaa kiven vahintaan taman monessa pisteessa
+SAAP_B_HYVAKSY_G = 3             # graniittirata (kanava ei tunne varia) hyvaksytaan, kun B toteaa kiven vahintaan taman monessa pisteessa ...
+SAAP_KAHVA_G = 3                 # ... ja heiton kiven varinen kahva nakyy kiven keskella vahintaan taman monessa B-pyynnossa ja ...
+SAAP_KAHVA_OSUUS_G = 0.2         # ... vahintaan taman osassa radan B-pyynnoista (sweeperin kuviollinen paita on graniitin nakoinen: B hyvaksyy sen, mutta kahvaa ei ole; osuusraja estaa pitkan radan satunnaisten osumien kertymisen)
+SAAP_KAHVA_CM = 6.0              # kahvan blobin keskipiste enintaan taman kaukana radan pisteesta
 SAAP_B_VALI = 3                  # ... ja B pyydetaan radan uusimmalle pisteelle taman monen ruudun valein (vain kulkevalle radalle)
 # kaukopaan seuranta: kivi tunnistettu -> seuranta (A + B) pysahtymiseen asti
 KAUKO_HUKKA_RUUTUA = 180         # seuranta paattyy, kun B-paikkaa ei ole ollut taman monta ruutua (kivi piilossa harjaajien alla tai poistunut kuvasta); ennuste kantaa piilossaolon yli
@@ -1409,6 +1412,8 @@ class _Rata(list):
         super().__init__()
         self.heitto = KaukoHeitto(tunnus, puoli, vari)
         self.f_b = -10 ** 9                               # viimeisimman B-pyynnon ruutu
+        self.pyynnot = 0                                  # B-pyyntojen maara (graniittirata)
+        self.kahva_n = 0                                  # niista pyynnot, joissa kiven varinen kahva on radan pisteen kohdalla (graniittirata: todiste kivesta)
         self.lahde = lahde                                # "kahva" (kahvan variblobi) | "graniitti" (kiven runko, kivi_haku)
 
     def lisaa(self, q):
@@ -1548,13 +1553,24 @@ class Saapuminen:
             for r in radat:
                 if len(r) >= 3 and r[-1][0] == f and f - r.f_b >= SAAP_B_VALI and self._kulkee(r):
                     r.f_b = f
+                    if r.lahde == "graniitti":
+                        r.pyynnot += 1
+                        r.kahva_n += self._kahva_lahella(ruutu, r[-1][1], r[-1][2])
                     self.an.pyyda_b(self, r.heitto, r.heitto.naytteet[-1], ruutu, r[-1][1], r[-1][2])
         for radat, b_raja in ((self.radat, SAAP_B_HYVAKSY), (self.radat_g, SAAP_B_HYVAKSY_G)):
             for r in radat:
-                if len(r) >= SAAP_PISTEITA_B and sum(1 for q in r.heitto.naytteet if q.kivi()) >= b_raja and self._kulkee(r):
+                if len(r) >= SAAP_PISTEITA_B and sum(1 for q in r.heitto.naytteet if q.kivi()) >= b_raja and (r.lahde == "kahva" or r.kahva_n >= max(SAAP_KAHVA_G, SAAP_KAHVA_OSUUS_G * r.pyynnot)) and self._kulkee(r):
                     self._hyvaksy(r)
                     return False
         return True
+
+    def _kahva_lahella(self, ruutu, X, Y):
+        """Heiton kiven varinen kahva (blobi >= 12 px) on pisteen (X, Y) kohdalla (<= SAAP_KAHVA_CM): kivella on kahva kiven keskella, sweeperin paidalla ei."""
+        m = self.m
+        up, vp = m.maa_oikaistuun(X, Y)
+        s = float(m.skaala(X, Y))
+        r_px = float(np.clip(45.0 + 0.25 * SAAP_KAHVA_CM * s, 45.0, 140.0))
+        return bool(m.kahva(ruutu, m.alue_kuvasta(up[0], vp[0], r_px), self.h.vari, (up[0], vp[0]), max_etaisyys_px=SAAP_KAHVA_CM * s))
 
     def _liita(self, radat, uudet, f, lahde):
         """Pisteet (f, X', Y', ala) radoille: yhdista lahimpaan rataan (viimeisin piste lahella, eri ruutu) tai aloita uusi; vanhat radat (> 20 ruutua) pois."""
