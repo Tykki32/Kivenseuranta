@@ -110,7 +110,8 @@ EI_KIVEA_PEITTO = 0.25
 EI_KIVEA_TAUKO_S = 1.0           # hylkayksen jalkeen IDLE-haku tauolla taman ajan (aiemmin 4 s: heitto ehti alkaa tauon aikana ja jai huomaamatta)
 VAHVISTUS_Y_CM = -100.0          # heitto vahvistetaan kun Y yli taman ...
 VAHVISTUS_V_CM_S = 120.0         # ... ja nopeus vahintaan tama (mitatuista paikoista; kavelija ei yllä)
-HYLKAYS_AIKA_S = 10.0            # lahto, jonka jalkeen kivi ei vahvistu tassa ajassa -> hylataan (ylaraja)
+HYLKAYS_AIKA_S = 10.0            # lahdosta tai viimeisesta nopeasta (>= VAHVISTUS_V_CM_S) liikkeesta kulunut aika, jonka jalkeen vahvistamaton kivi hylataan (ylaraja jumittuneelle yritykselle): heittaja
+                                 # voi kasitella kivea hackissa kuusi sekuntia ennen heittoa, ja sama yritys jatkuu heittoon (video 2, 3532 s: heitto hylattiin 0,6 s ennen vahvistusta)
 EI_ETENE_S = 1.5                 # hylkays: tama aika liikkeessa ja liikealue alle EI_ETENE_CM -> kivea vain kasitellaan
 EI_ETENE_CM = 12.0
 LOPPU_Y_CM = 735.0               # kivi poistuu kuvasta (puolisko loppuu)
@@ -941,6 +942,7 @@ class Heittopaa(_Seuranta):
         self.hukka = 0
         self.ala_norm = []                      # hyvaksyttyjen kahvojen ala / skaala^2 (viimeiset 8): odotetun alan mediaani
         self.f_liike = None
+        self.f_nopea = -10 ** 9                  # viimeisin ruutu, jolla kivi liikkui nopeudella >= VAHVISTUS_V_CM_S (hylkayksen ajastin)
         self.edellinen_loppu_f = -10 ** 9
         self.ei_ennen_f = -10 ** 9               # IDLE-haku tauolla tahan ruutuun asti (kivettomat kandidaatit)
         self._ennuste_luotettava = False         # viimeisin ennuste oli B-pohjainen (_ennuste_b)
@@ -1173,6 +1175,7 @@ class Heittopaa(_Seuranta):
         h.tila = "liikkuu"
         self.tila = "LIIKKUU"
         self.f_liike = f
+        self.f_nopea = f
         self.hukka = 0
         i = len(self.lepo)
         while i > 0 and np.hypot(self.lepo[i - 1][1] - X0, self.lepo[i - 1][2] - Y0) > 2.0:
@@ -1243,11 +1246,13 @@ class Heittopaa(_Seuranta):
         p = viim[-1].paikka() if viim else (Xp, Yp)               # vahvistus vain MITATUSTA paikasta (ei ennusteesta)
         if h.tila == "liikkuu":
             v = self._nopeus_ruutu() * self.an.fps
+            if v >= VAHVISTUS_V_CM_S:
+                self.f_nopea = f
             if viim and p[1] >= VAHVISTUS_Y_CM and v >= VAHVISTUS_V_CM_S and h.kivi_n(10 ** 6, f) >= KIVI_B_VAHVISTUS and (v >= VAHVISTUS_V_VARMA_CM_S or h.kivi_n(10 ** 6, f) >= KIVI_B_VAHVISTUS_HIDAS):
                 h.tila = "vahvistettu"
                 h.f_vahvistus = f
                 self.an.tapahtumat.append(("vahvistettu", h.tunnus, f, f"v {v:.0f} cm/s Y {p[1]:.0f} kivi_B {h.kivi_n(10 ** 6, f)}"))
-            elif (f - self.f_liike) / self.an.fps > HYLKAYS_AIKA_S or self.hukka > HUKKA_LIIKE_RUUTUA or v > 600.0 or self._ei_etene(f):
+            elif (f - max(self.f_liike, self.f_nopea)) / self.an.fps > HYLKAYS_AIKA_S or self.hukka > HUKKA_LIIKE_RUUTUA or v > 600.0 or self._ei_etene(f):
                 h.tila = "hylatty"
                 self.an.hylatyt.append(h)
                 self.an.tapahtumat.append(("hylatty", h.tunnus, f, f"v {v:.0f} cm/s, hukka {self.hukka}"))
