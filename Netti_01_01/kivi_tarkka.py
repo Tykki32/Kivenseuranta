@@ -46,6 +46,20 @@ TAUSTA_DELTA_PX = 0.7                # taustakuvan rekisteroinnin alipikselivirh
 TAUSTA_VIRHE_MAX = 0.25              # alfan odotettu virhe (delta x taustan gradientti / |graniitti - tausta|) enintaan tama
 TAUSTA_DE_MIN = 22.0                 # graniitin ja taustan Lab-ero (dE) vahintaan tama: alfa on silloin erotettavissa taustasta
 
+# MONIALKUHAKU (sovitus ei saa riippua siemenesta): paikallinen sovitus pysahtyy siemenen lahelle, kun kustannuspinta on tasainen (kiven kasi / hihat peittavat siluetin: kelvollisia
+# pikseleita 15-40 %) ja siemen jaa nopeasti liikkuvan kiven jalkeen: tulos seurasi siementa +-25 cm. Silmamaarainen tarkistus 24 ruudusta, joissa vanha ja uusi tulos poikkesivat: uusi osui
+# kiveen 20 ruudussa, vanha 2, 2 epaselvaa; kaikissa 21 selvassa ruudussa parempi siluetti oli se, jonka oma kaistakustannus (rms) oli pienempi, eli vanha sovitus jai paikalliseen minimiin.
+MONI_DY = tuple(float(v) for v in np.arange(-48.0, 48.1, 6.0))   # skannattavat siirtymat siemenesta (cm, kulkusuunta)
+MONI_DX = (-12.0, 0.0, 12.0)                                      # ... ja sivusuunta (cm)
+MONI_KAISTA = 14                                                  # skannauksen kaista (px): leveampi kuin sovituksen (8 / 5), jotta etaiset reunat nakyvat
+MONI_SKAN_KELV_MIN = 0.15                                         # skannauksen ehdokas: kaistan kelvollinen osuus vahintaan tama
+MONI_EHDOKKAITA = 2                                               # tarkennettavien skannausehdokkaiden maara
+MONI_ERO_CM = 14.0                                                # ehdokkaiden vahimmaisetaisyys toisistaan
+MONI_S0 = 0.35                                                    # valintakustannus: kelvottoman kaistapikselin oletettu virhe (kelvottomaan paikkaan ei voi paeta)
+MONI_EPAVARMA_KELV = 0.45                                         # monialkuhaku vain, kun ensimmaisen sovituksen kelvollinen osuus < tama ...
+MONI_EPAVARMA_PEITTO = 0.75                                       # ... tai graniittipeitto < tama (valkoisella jaalla sovitus on varma eika siemenesta riipu)
+MONI_PEITTO_MIN, MONI_RMS_MAX, MONI_KELV_MIN = 0.35, 0.30, 0.08   # ehdokas kelpaa vain, jos se tayttaa B:n hyvaksymisehdot (netti_seuranta.PEITTO_MIN, B_MAX_RMS, SOFT_KELV)
+
 
 class Runko:
     """Kiven runkomalli (profiili solmuina) ja sen projektio."""
@@ -273,3 +287,45 @@ def sovita(cam, runko, alfa, ok, X0, Y0, vapaa=False, kaarros=(10, 6), ox=0, oy=
     X, Y, sR, H = (float(v) for v in paras.x)
     r = f.residuaalit(cam, runko, X, Y, sR, H)
     return dict(X=X, Y=Y, rms=float(np.sqrt(np.mean(r ** 2))), kelvolliset=f.kelvolliset(cam, runko, X, Y, sR, H), sR=sR, H=H)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# MONIALKUHAKU
+# ---------------------------------------------------------------------------------------------------------------------
+def kaistakustannus(cam, runko, alfa, ok, X, Y, kaista, ox=0, oy=0, s0=MONI_S0):
+    """(rms, rangaistu, kelvollinen osuus) paikassa (X, Y): rms = reunakaistan painotettu residuaali (sama kuin sovituksen tavoite, kelvottomat pikselit pois); rangaistu = sama, mutta
+    kelvoton kaistapikseli maksaa s0^2 (muuten kelvottomaan paikkaan, esim. hihaan, sijoitettu malli saisi pienen rms:n)."""
+    k = Kehys(cam, runko, alfa, ok, X, Y, kaista=kaista, ox=ox, oy=oy)
+    c, wt = malli_kuva(cam, runko, k.win, X, Y)
+    w = (k.ok * wt).ravel()[k.idx]
+    r = ((c - k.o) * k.ok * wt).ravel()[k.idx]
+    rms = float(np.sqrt(np.sum(r * r) / max(float(np.sum(w * w)), 1e-6)))
+    rang = float(np.sqrt(np.mean(r * r + (1.0 - np.clip(w, 0.0, 1.0)) * s0 * s0)))
+    return rms, rang, float(w.mean()) if len(w) else 0.0
+
+
+def moni_ehdokkaat(cam, runko, alfa, ok, X0, Y0, ox=0, oy=0):
+    """Skannaus siemenen (X0, Y0) ymparilla (MONI_DY x MONI_DX): leveakaistaisen kustannuksen (rms, kelvollinen osuus >= MONI_SKAN_KELV_MIN) paikalliset minimit, parhaat
+    MONI_EHDOKKAITA kpl vahintaan MONI_ERO_CM:n paassa toisistaan: [(kustannus, X, Y)]. Ehdokkaat, joiden ikkuna ei mahdu leikkeeseen, jatetaan pois."""
+    h, w = alfa.shape[:2]
+    out = []
+    for dy in MONI_DY:
+        for dx in MONI_DX:
+            X, Y = X0 + dx, Y0 + dy
+            try:
+                hull = runko.hull(cam, X, Y)
+                if hull[:, 0].min() < ox + 8 or hull[:, 1].min() < oy + 8 or hull[:, 0].max() > ox + w - 8 or hull[:, 1].max() > oy + h - 8:
+                    continue
+                rms, _, kelv = kaistakustannus(cam, runko, alfa, ok, X, Y, MONI_KAISTA, ox, oy)
+            except Exception:
+                continue
+            if kelv >= MONI_SKAN_KELV_MIN:
+                out.append((rms, X, Y))
+    out.sort()
+    valitut = []
+    for c in out:
+        if all(np.hypot(c[1] - v[1], c[2] - v[2]) >= MONI_ERO_CM for v in valitut):
+            valitut.append(c)
+            if len(valitut) >= MONI_EHDOKKAITA:
+                break
+    return valitut

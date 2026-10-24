@@ -123,6 +123,7 @@ B_VAIN_KELV = 0.2                # B hyvaksytaan: kelvollisia pikseleita vahinta
 B_MAX_RMS = 0.30
 B_MAX_POIKKEAMA_CM = 15.0        # B enintaan tama kaukana ennusteesta / A:sta
 B_LEPO_VALI = 8                  # levossa B joka n:s yksilollinen ruutu
+B_LEIKE_MARG_LAAJA_PX = 52          # B:n leikkeen marginaali (px), kun sovitus voi hakea siemenen ymparilta (liikkuva kivi: kt.moni_ehdokkaat skannaa +-48 cm)
 SOFT_KELV = 0.08                 # pehmea B (tiukka B ei kelpaa): kelvollisia vahintaan tama -> kelpaa seurantaan ja pisteisiin, ei estimaattiin
 PEITTO_MIN = 0.35                # B kelpaa vain jos graniittia (alfa) on rungon siluetin sisalla vahintaan tama (oikea kivi ~0,4-0,95, ei-kivi ~0-0,2)
 KIVI_B_LEPO = 2                  # ennen lahtoa hackissa on todettava kivi: vahintaan tama monta kelvollista B-sovitusta viimeisen 90 ruudun aikana
@@ -373,23 +374,56 @@ class Mittari:
         roi, x0, y0 = self.kuvain.leike(ruutu, *alue)
         return None if roi is None else (roi, x0, y0)
 
-    def sovita_leike(self, roi, x0, y0, X0, Y0):
-        """Kiven akseli (X, Y) leikkeesta (alkuarvo X0, Y0): dict(X, Y, rms, kelvolliset, peitto). Kaksi kierrosta (kaista 8 -> 5 px). C++ (netti_fit), jos kaytossa."""
+    def sovita_leike(self, roi, x0, y0, X0, Y0, laaja=False):
+        """Kiven akseli (X, Y) leikkeesta (alkuarvo X0, Y0): dict(X, Y, rms, kelvolliset, peitto). Kaksi kierrosta (kaista 8 -> 5 px). C++ (netti_fit), jos kaytossa.
+        laaja: liikkuva kivi, jonka siemen voi jaada jalkeen: epavarma sovitus (kelvollisia pikseleita vahan tai graniittipeitto pieni) toistetaan skannausehdokkaista ja valitaan
+        pienin kustannus (kt.moni_ehdokkaat); ei kayteta, jos NETTI_EI_MONIALKU on asetettu."""
+        laaja = bool(laaja) and not os.environ.get("NETTI_EI_MONIALKU")
         if self._cpp is not None:
-            return self._cpp.sovita(roi, int(x0), int(y0), float(X0), float(Y0))
-        return self.sovita_leike_python(roi, x0, y0, X0, Y0)
+            if not laaja:
+                return self._cpp.sovita(roi, int(x0), int(y0), float(X0), float(Y0))
+            if getattr(self._cpp, "monialku", False):
+                return self._cpp.sovita(roi, int(x0), int(y0), float(X0), float(Y0), True)
+        return self.sovita_leike_python(roi, x0, y0, X0, Y0, laaja)
 
-    def sovita_leike_python(self, roi, x0, y0, X0, Y0):
+    def _peitto(self, alfa, x0, y0, X, Y):
+        h, w = alfa.shape[:2]
+        mc, _ = kt.malli_kuva(self.cam, self.runko, (x0, y0, w, h), X, Y)
+        sis = mc > 0.5
+        return float(alfa[sis].mean()) if sis.any() else 0.0
+
+    def sovita_leike_python(self, roi, x0, y0, X0, Y0, laaja=False):
         h, w = roi.shape[:2]
         c = _leike_kamera(self.cam, x0, y0, w, h)
         fg, gran, handle = c.maskit(roi)
         alfa, ok = kt.havainto(c, roi, kv.alfa_kartta(c, roi, gran))
         s = kt.sovita(self.cam, self.runko, alfa, ok, X0, Y0, kaarros=(8, 5), ox=x0, oy=y0)
         # peitto: graniitin (alfa) keskiarvo sovitetun rungon siluetin sisalla (ei-kivi: ~0; kivi ~0,6-0,95, kasi voi peittaa osan)
-        mc, _ = kt.malli_kuva(self.cam, self.runko, (x0, y0, w, h), s["X"], s["Y"])
-        sis = mc > 0.5
-        s["peitto"] = float(alfa[sis].mean()) if sis.any() else 0.0
+        s["peitto"] = self._peitto(alfa, x0, y0, s["X"], s["Y"])
+        if laaja and (s["kelvolliset"] < kt.MONI_EPAVARMA_KELV or s["peitto"] < kt.MONI_EPAVARMA_PEITTO):
+            s = self._monialku(alfa, ok, x0, y0, X0, Y0, s)
         return s
+
+    def _monialku(self, alfa, ok, x0, y0, X0, Y0, s):
+        """Ensimmainen sovitus s on epavarma: tarkenna skannausehdokkaista ja valitse pienin rangaistu kaistakustannus ehdokkaista, jotka tayttavat B:n hyvaksymisehdot."""
+        kand = [s]
+        for _, X, Y in kt.moni_ehdokkaat(self.cam, self.runko, alfa, ok, X0, Y0, ox=x0, oy=y0):
+            if np.hypot(X - s["X"], Y - s["Y"]) < 6.0:
+                continue                                               # sama laakso kuin ensimmaisessa sovituksessa
+            try:
+                t = kt.sovita(self.cam, self.runko, alfa, ok, X, Y, kaarros=(8, 5), ox=x0, oy=y0)
+                t["peitto"] = self._peitto(alfa, x0, y0, t["X"], t["Y"])
+            except Exception:
+                continue
+            kand.append(t)
+        hyvat = [t for t in kand if t["peitto"] >= kt.MONI_PEITTO_MIN and t["rms"] <= kt.MONI_RMS_MAX and t["kelvolliset"] >= kt.MONI_KELV_MIN]
+        if not hyvat:
+            return s
+        for t in hyvat:
+            t["_k"] = kt.kaistakustannus(self.cam, self.runko, alfa, ok, t["X"], t["Y"], 6, x0, y0)[1]
+        paras = min(hyvat, key=lambda t: t["_k"])
+        paras["moni"] = 0 if paras is s else 1
+        return paras
 
     def tarkka(self, ruutu, X0, Y0):
         v = self.valmistele(ruutu, X0, Y0)
@@ -423,10 +457,10 @@ def alusta_tyo(kansio, puolet):
 
 
 def tyo_b(args):
-    """B-tehtava: (avain, puoli, roi, x0, y0, X0, Y0) -> (avain, tulos)."""
-    avain, puoli, roi, x0, y0, X0, Y0 = args
+    """B-tehtava: (avain, puoli, roi, x0, y0, X0, Y0, laaja) -> (avain, tulos)."""
+    avain, puoli, roi, x0, y0, X0, Y0, laaja = args
     try:
-        return avain, _M[puoli].sovita_leike(roi, x0, y0, X0, Y0)
+        return avain, _M[puoli].sovita_leike(roi, x0, y0, X0, Y0, laaja)
     except Exception as e:                              # yksittainen ruutu ei saa kaataa seurantaa
         return avain, dict(virhe=repr(e))
 
@@ -1316,7 +1350,7 @@ class Heittopaa(_Seuranta):
         else:
             X0, Y0 = Xp, Yp
         h.naytteet.append(n)
-        self.an.pyyda_b(self, h, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None)
+        self.an.pyyda_b(self, h, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None, laaja=True)
         if KIERTO_Y_MIN_CM <= Y0 <= KIERTO_Y_MAX_CM and len(h.kierto_kehykset) < KIERTO_MAX_RUUTUJA:
             self._kierto_leike(h, n, ruutu, X0, Y0)
         # paikan puute: viimeisin ruutu, jolla on jokin paikka (A tai B; B voi saapua myohemmin)
@@ -1804,7 +1838,7 @@ class KaukoSeuranta(_Seuranta):
         v = self._nopeus_ruutu()
         vali = KAUKO_B_LIIKKUU_RUUTUA if v > 1.0 else (KAUKO_B_HIDAS_RUUTUA if v > 0.1 else KAUKO_B_LEPO_RUUTUA)
         if self.n_ruutu % vali == 0:
-            self.an.pyyda_b(self, kh, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None)
+            self.an.pyyda_b(self, kh, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None, laaja=v > 1.0)
         if KAUKO_KIERTO_Y_MIN_CM <= Y0 <= KAUKO_KIERTO_Y_MAX_CM and len(kh.kierto_kehykset) < KAUKO_KIERTO_MAX_RUUTUJA and (a is not None or luotettava):
             self._kierto_leike(kh, n, ruutu, X0, Y0)
         f_paikka = max([m.f for m in kh.naytteet[-400:] if m.kivi()] or [self.f_alku])
@@ -2152,23 +2186,24 @@ class Analyysi:
         (aja_reaaliaika). Ei sovi live-virtaan, jossa kone ei voi odottaa."""
         self.toistettava = bool(paalla)
 
-    def pyyda_b(self, hp, heitto, naytteet, ruutu, X0, Y0, ennuste=None):
+    def pyyda_b(self, hp, heitto, naytteet, ruutu, X0, Y0, ennuste=None, laaja=False):
         """B-mittaus naytteelle: tyoprosessille (leike) tai suoraan (ei poolia / sim ilman prosesseja). Reaaliajassa ruuhkautuessa B jatetaan pois. ennuste: luotettava
         (B-pohjainen) paikkaennuste (X, Y), jonka suhteen tulos hyvaksytaan myos silloin, kun alkuarvo (A) oli harhainen."""
         if not self.tarkka:
             return
         if self.pool is not None and not self.synkroninen and not self.toistettava and len(self.tyot) > 24:
             return
-        v = hp.m.valmistele(ruutu, X0, Y0)
+        laaja = bool(laaja) and not os.environ.get("NETTI_EI_MONIALKU")
+        v = hp.m.valmistele(ruutu, X0, Y0, marg_px=B_LEIKE_MARG_LAAJA_PX if laaja else 36)
         if v is None:
             return
         naytteet.odottaa = True
         alku = (X0, Y0) if ennuste is None else (X0, Y0, float(ennuste[0]), float(ennuste[1]))
         if self.pool is not None:
-            fut = self.pool.submit(tyo_b, (id(naytteet), hp.puoli, v[0], v[1], v[2], X0, Y0))
+            fut = self.pool.submit(tyo_b, (id(naytteet), hp.puoli, v[0], v[1], v[2], X0, Y0, laaja))
             self.tyot.append((fut, naytteet.f, heitto, naytteet, alku))
         else:
-            self._liita_b(heitto, naytteet, hp.m.sovita_leike(*v, X0, Y0), alku)
+            self._liita_b(heitto, naytteet, hp.m.sovita_leike(*v, X0, Y0, laaja), alku)
 
     def _liita_b(self, heitto, naytteet, s, alku):
         """B-tulos naytteelle: kivi todetaan (graniittia siluetin sisalla, pieni jaannos, enintaan B_MAX_POIKKEAMA_CM alkuarvosta tai B-ennusteesta); B kun kelvollisia
