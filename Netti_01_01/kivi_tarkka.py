@@ -56,6 +56,9 @@ MONI_DX = (-12.0, 0.0, 12.0)                                      # ... ja sivus
 MONI_KAISTA = 6                                                   # kustannuksen kaista (px)
 MONI_ASKELEET = (3.0, 1.5, 0.75)                                  # kuviohaun askeleet (cm)
 MONI_S0 = 0.25                                                    # kelvottoman kaistapikselin oletettu virhe
+MONI_ESI_SIGMA_CM = 5.0                                           # kahvan (A) antama paikka kustannuksessa: neliollinen rangaistus (etaisyys / sigma)^2, ...
+MONI_ESI_RAJA = 3.0                                               # ... katkaistuna 3 sigmaan (vaara A, esim. harjan pää tai hihan nauha, ei saa vetaa sovitusta pois kivesta)
+MONI_ESI_KAPPA = 0.01                                             # ... ja painotettuna (kustannusyksikkoa): 10 cm eroa A:sta maksaa 0,04, siluettiero 15 cm on ~0,03
 MONI_EPAVARMA_KELV = 0.45                                         # rangaistu minimointi vain, kun ensimmaisen sovituksen kelvollinen osuus < tama ...
 MONI_EPAVARMA_PEITTO = 0.75                                       # ... tai graniittipeitto < tama (valkoisella jaalla sovitus on varma)
 MONI_PEITTO_MIN, MONI_RMS_MAX, MONI_KELV_MIN = 0.35, 0.30, 0.08   # tulos kelpaa vain, jos se tayttaa B:n hyvaksymisehdot (netti_seuranta.PEITTO_MIN, B_MAX_RMS, SOFT_KELV)
@@ -303,16 +306,24 @@ def kaistakustannus(cam, runko, alfa, ok, X, Y, kaista=MONI_KAISTA, ox=0, oy=0, 
     return rms, rang, float(w.mean()) if len(w) else 0.0
 
 
-def minimoi_rangaistu(cam, runko, alfa, ok, X0, Y0, ox=0, oy=0):
-    """Rangaistun kaistakustannuksen minimi siemenen (X0, Y0) ymparilla: skannaus (MONI_DY x MONI_DX), sitten kuviohaku (MONI_ASKELEET). Palauttaa (X, Y, kustannus) tai None.
-    Ehdokkaat, joiden siluetti ei mahdu leikkeeseen, jatetaan pois."""
+def esikustannus(X, Y, esi):
+    """A-pohjaisen paikan esi = (X, Y) | None antama lisakustannus paikassa (X, Y): kappa * min((d / sigma)^2, raja^2)."""
+    if esi is None:
+        return 0.0
+    d = float(np.hypot(X - esi[0], Y - esi[1]))
+    return MONI_ESI_KAPPA * min((d / MONI_ESI_SIGMA_CM) ** 2, MONI_ESI_RAJA ** 2)
+
+
+def minimoi_rangaistu(cam, runko, alfa, ok, X0, Y0, ox=0, oy=0, esi=None):
+    """Rangaistun kaistakustannuksen (+ esikustannus, kun kahvan blobi antaa paikan esi) minimi siemenen (X0, Y0) ymparilla: skannaus (MONI_DY x MONI_DX), sitten kuviohaku
+    (MONI_ASKELEET). Palauttaa (X, Y, kustannus) tai None. Ehdokkaat, joiden siluetti ei mahdu leikkeeseen, jatetaan pois."""
     h, w = alfa.shape[:2]
 
     def kust(X, Y):
         hull = runko.hull(cam, X, Y)
         if hull[:, 0].min() < ox + 6 or hull[:, 1].min() < oy + 6 or hull[:, 0].max() > ox + w - 6 or hull[:, 1].max() > oy + h - 6:
             return None
-        return kaistakustannus(cam, runko, alfa, ok, X, Y, MONI_KAISTA, ox, oy)[1]
+        return kaistakustannus(cam, runko, alfa, ok, X, Y, MONI_KAISTA, ox, oy)[1] + esikustannus(X, Y, esi)
 
     paras = None
     for dy in MONI_DY:

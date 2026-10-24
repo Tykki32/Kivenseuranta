@@ -374,17 +374,17 @@ class Mittari:
         roi, x0, y0 = self.kuvain.leike(ruutu, *alue)
         return None if roi is None else (roi, x0, y0)
 
-    def sovita_leike(self, roi, x0, y0, X0, Y0, laaja=False):
+    def sovita_leike(self, roi, x0, y0, X0, Y0, laaja=False, esi=None):
         """Kiven akseli (X, Y) leikkeesta (alkuarvo X0, Y0): dict(X, Y, rms, kelvolliset, peitto). Kaksi kierrosta (kaista 8 -> 5 px). C++ (netti_fit), jos kaytossa.
         laaja: liikkuva kivi, jonka siemen voi jaada jalkeen: epavarma sovitus (kelvollisia pikseleita vahan tai graniittipeitto pieni) toistetaan skannausehdokkaista ja valitaan
-        pienin kustannus (kt.moni_ehdokkaat); ei kayteta, jos NETTI_EI_MONIALKU on asetettu."""
+        rangaistu kustannus (kt.minimoi_rangaistu); esi: kahvan (A) antama paikka (X, Y) kustannuksen esitietona; ei kayteta, jos NETTI_EI_MONIALKU on asetettu."""
         laaja = bool(laaja) and not os.environ.get("NETTI_EI_MONIALKU")
         if self._cpp is not None:
             if not laaja:
                 return self._cpp.sovita(roi, int(x0), int(y0), float(X0), float(Y0))
             if getattr(self._cpp, "monialku", False):
                 return self._cpp.sovita(roi, int(x0), int(y0), float(X0), float(Y0), True)
-        return self.sovita_leike_python(roi, x0, y0, X0, Y0, laaja)
+        return self.sovita_leike_python(roi, x0, y0, X0, Y0, laaja, esi)
 
     def _peitto(self, alfa, x0, y0, X, Y):
         h, w = alfa.shape[:2]
@@ -392,7 +392,7 @@ class Mittari:
         sis = mc > 0.5
         return float(alfa[sis].mean()) if sis.any() else 0.0
 
-    def sovita_leike_python(self, roi, x0, y0, X0, Y0, laaja=False):
+    def sovita_leike_python(self, roi, x0, y0, X0, Y0, laaja=False, esi=None):
         h, w = roi.shape[:2]
         c = _leike_kamera(self.cam, x0, y0, w, h)
         fg, gran, handle = c.maskit(roi)
@@ -401,14 +401,14 @@ class Mittari:
         # peitto: graniitin (alfa) keskiarvo sovitetun rungon siluetin sisalla (ei-kivi: ~0; kivi ~0,6-0,95, kasi voi peittaa osan)
         s["peitto"] = self._peitto(alfa, x0, y0, s["X"], s["Y"])
         if laaja and (s["kelvolliset"] < kt.MONI_EPAVARMA_KELV or s["peitto"] < kt.MONI_EPAVARMA_PEITTO):
-            s = self._monialku(alfa, ok, x0, y0, X0, Y0, s)
+            s = self._monialku(alfa, ok, x0, y0, X0, Y0, s, esi)
         return s
 
-    def _monialku(self, alfa, ok, x0, y0, X0, Y0, s):
+    def _monialku(self, alfa, ok, x0, y0, X0, Y0, s, esi=None):
         """Ensimmainen sovitus s on epavarma (kelvollisia pikseleita vahan / graniittipeitto pieni): minimoi rangaistu kaistakustannus (kt.minimoi_rangaistu) siemenen ymparilla ja
         valitse sovituksen ja minimin valilta pienempi rangaistu kustannus, jos minimi tayttaa B:n hyvaksymisehdot."""
         try:
-            m = kt.minimoi_rangaistu(self.cam, self.runko, alfa, ok, X0, Y0, ox=x0, oy=y0)
+            m = kt.minimoi_rangaistu(self.cam, self.runko, alfa, ok, X0, Y0, ox=x0, oy=y0, esi=esi)
             if m is None:
                 return s
             X, Y, c = m
@@ -420,7 +420,7 @@ class Mittari:
             return s
         if not (t["peitto"] >= kt.MONI_PEITTO_MIN and t["rms"] <= kt.MONI_RMS_MAX and t["kelvolliset"] >= kt.MONI_KELV_MIN):
             return s
-        c0 = kt.kaistakustannus(self.cam, self.runko, alfa, ok, s["X"], s["Y"], kt.MONI_KAISTA, x0, y0)[1]
+        c0 = kt.kaistakustannus(self.cam, self.runko, alfa, ok, s["X"], s["Y"], kt.MONI_KAISTA, x0, y0)[1] + kt.esikustannus(s["X"], s["Y"], esi)
         if c < c0:
             t["moni"] = 1
             return t
@@ -458,10 +458,10 @@ def alusta_tyo(kansio, puolet):
 
 
 def tyo_b(args):
-    """B-tehtava: (avain, puoli, roi, x0, y0, X0, Y0, laaja) -> (avain, tulos)."""
-    avain, puoli, roi, x0, y0, X0, Y0, laaja = args
+    """B-tehtava: (avain, puoli, roi, x0, y0, X0, Y0, laaja, esi) -> (avain, tulos)."""
+    avain, puoli, roi, x0, y0, X0, Y0, laaja, esi = args
     try:
-        return avain, _M[puoli].sovita_leike(roi, x0, y0, X0, Y0, laaja)
+        return avain, _M[puoli].sovita_leike(roi, x0, y0, X0, Y0, laaja, esi)
     except Exception as e:                              # yksittainen ruutu ei saa kaataa seurantaa
         return avain, dict(virhe=repr(e))
 
@@ -919,8 +919,12 @@ class _Seuranta:
         return float(p[0]), float(p[1])
 
     def _offset_b(self):
-        """B - A -erotus viimeisista naytteista, joissa molemmat tunnetaan (A:n systemaattinen poikkeama): mediaani."""
-        d = [np.array(n.B) - np.array(n.A) for n in self.heitto.naytteet[-12:] if n.B is not None and n.A is not None]
+        """B - A -erotus (A:n systemaattinen poikkeama kiven akselista): mediaani viimeisista (<= 12) naytteista, joissa molemmat tunnetaan ja B on varma (kelvollisia >= MONI_EPAVARMA_KELV
+        ja graniittipeitto >= MONI_EPAVARMA_PEITTO). Epavarma B (heittajan kasi, pesan renkaat) jaa kasia kohti 5 cm ja veisi A-pohjaisen alkuarvon ja esitiedon mukanaan; jos varmoja
+        pareja ei ole 3, kaikki parit."""
+        ns = [n for n in self.heitto.naytteet[-80:] if n.B is not None and n.A is not None]
+        varmat = [n for n in ns if n.kelv is not None and n.peitto is not None and n.kelv >= kt.MONI_EPAVARMA_KELV and n.peitto >= kt.MONI_EPAVARMA_PEITTO]
+        d = [np.array(n.B) - np.array(n.A) for n in (varmat[-12:] if len(varmat) >= 3 else ns[-12:])]
         return np.median(np.array(d), axis=0) if len(d) >= 3 else np.zeros(2)
 
     def _nopeus_ruutu(self):
@@ -1348,10 +1352,12 @@ class Heittopaa(_Seuranta):
             X0, Y0 = a[0] + o[0], a[1] + o[1]
             if luotettava and np.hypot(X0 - Xp, Y0 - Yp) > A_HARHA_CM:
                 X0, Y0 = Xp, Yp                                            # A harhainen: B:n alkuarvo on B-ennuste
+            esi = (X0, Y0) if (X0, Y0) != (Xp, Yp) else None                   # kahvan (A) antama paikka B:n esitietona (ei, jos A oli harhainen)
         else:
             X0, Y0 = Xp, Yp
+            esi = None
         h.naytteet.append(n)
-        self.an.pyyda_b(self, h, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None, laaja=True)
+        self.an.pyyda_b(self, h, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None, laaja=True, esi=esi)
         if KIERTO_Y_MIN_CM <= Y0 <= KIERTO_Y_MAX_CM and len(h.kierto_kehykset) < KIERTO_MAX_RUUTUJA:
             self._kierto_leike(h, n, ruutu, X0, Y0)
         # paikan puute: viimeisin ruutu, jolla on jokin paikka (A tai B; B voi saapua myohemmin)
@@ -1833,13 +1839,15 @@ class KaukoSeuranta(_Seuranta):
             X0, Y0 = a[0] + o[0], a[1] + o[1]
             if luotettava and np.hypot(X0 - Xp, Y0 - Yp) > A_HARHA_CM:
                 X0, Y0 = Xp, Yp                                # A harhainen (harjaajan kasivarsinauha): B:n alkuarvo on B-ennuste
+            esi = (X0, Y0) if (a_kelpaa and (X0, Y0) != (Xp, Yp)) else None       # kahvan (A) antama paikka B:n esitietona
         else:
             X0, Y0 = Xp, Yp
+            esi = None
         kh.naytteet.append(n)
         v = self._nopeus_ruutu()
         vali = KAUKO_B_LIIKKUU_RUUTUA if v > 1.0 else (KAUKO_B_HIDAS_RUUTUA if v > 0.1 else KAUKO_B_LEPO_RUUTUA)
         if self.n_ruutu % vali == 0:
-            self.an.pyyda_b(self, kh, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None, laaja=v > 1.0)
+            self.an.pyyda_b(self, kh, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None, laaja=v > 1.0, esi=esi)
         if KAUKO_KIERTO_Y_MIN_CM <= Y0 <= KAUKO_KIERTO_Y_MAX_CM and len(kh.kierto_kehykset) < KAUKO_KIERTO_MAX_RUUTUJA and (a is not None or luotettava):
             self._kierto_leike(kh, n, ruutu, X0, Y0)
         f_paikka = max([m.f for m in kh.naytteet[-400:] if m.kivi()] or [self.f_alku])
@@ -2187,7 +2195,7 @@ class Analyysi:
         (aja_reaaliaika). Ei sovi live-virtaan, jossa kone ei voi odottaa."""
         self.toistettava = bool(paalla)
 
-    def pyyda_b(self, hp, heitto, naytteet, ruutu, X0, Y0, ennuste=None, laaja=False):
+    def pyyda_b(self, hp, heitto, naytteet, ruutu, X0, Y0, ennuste=None, laaja=False, esi=None):
         """B-mittaus naytteelle: tyoprosessille (leike) tai suoraan (ei poolia / sim ilman prosesseja). Reaaliajassa ruuhkautuessa B jatetaan pois. ennuste: luotettava
         (B-pohjainen) paikkaennuste (X, Y), jonka suhteen tulos hyvaksytaan myos silloin, kun alkuarvo (A) oli harhainen."""
         if not self.tarkka:
@@ -2201,10 +2209,10 @@ class Analyysi:
         naytteet.odottaa = True
         alku = (X0, Y0) if ennuste is None else (X0, Y0, float(ennuste[0]), float(ennuste[1]))
         if self.pool is not None:
-            fut = self.pool.submit(tyo_b, (id(naytteet), hp.puoli, v[0], v[1], v[2], X0, Y0, laaja))
+            fut = self.pool.submit(tyo_b, (id(naytteet), hp.puoli, v[0], v[1], v[2], X0, Y0, laaja, esi))
             self.tyot.append((fut, naytteet.f, heitto, naytteet, alku))
         else:
-            self._liita_b(heitto, naytteet, hp.m.sovita_leike(*v, X0, Y0, laaja), alku)
+            self._liita_b(heitto, naytteet, hp.m.sovita_leike(*v, X0, Y0, laaja, esi), alku)
 
     def _liita_b(self, heitto, naytteet, s, alku):
         """B-tulos naytteelle: kivi todetaan (graniittia siluetin sisalla, pieni jaannos, enintaan B_MAX_POIKKEAMA_CM alkuarvosta tai B-ennusteesta); B kun kelvollisia
