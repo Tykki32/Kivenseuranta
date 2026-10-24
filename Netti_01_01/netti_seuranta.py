@@ -1555,11 +1555,17 @@ class Saapuminen:
         self.karttat = self.karttat[-4:]
 
     def kartta_ennen(self, f_ensimmainen):
-        """Viimeisin kartta, joka on otettu ennen kuin liikkuva rata ilmestyi (>= 20 ruutua ennen radan ensimmaista pistetta); muuten vanhin."""
-        for fs, pos in reversed(self.karttat):
-            if fs <= f_ensimmainen - 20:
-                return list(pos)
-        return list(self.karttat[0][1]) if self.karttat else []
+        """Kivet ennen heittoa: viimeisten karttojen (<= 4, 2 s valein), jotka on otettu ennen kuin liikkuva rata ilmestyi (>= 20 ruutua ennen radan ensimmaista pistetta), yhdiste (paikat 3 cm:n
+        sisalla samoja); muuten vanhin kartta. Yksittainen kartta voi jattaa kiven pois (ihminen / harja peitti kahvan hetkeksi), ja silloin paikallaan ollut kivi nayttaisi myohemmin uudelta."""
+        kaikki = [(fs, pos) for fs, pos in self.karttat if fs <= f_ensimmainen - 20]
+        if not kaikki:
+            return list(self.karttat[0][1]) if self.karttat else []
+        out = []
+        for _, pos in reversed(kaikki):
+            for q in pos:
+                if not any(np.hypot(q[0] - o[0], q[1] - o[1]) <= 3.0 for o in out):
+                    out.append(q)
+        return out
 
     def kasittele(self, f, ruutu):
         """Yksi (yksilollinen) ruutu; palauttaa False kun haku on paattynyt (kivi tunnistettu: kaukopaan seuranta alkaa, tai aika loppui)."""

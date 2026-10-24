@@ -951,6 +951,11 @@ def testaa_lepo_haku():
     h = uusi([(50.0, 60.0, 400)])
     aja(h, lh.LEPO_AIKARAJA_S + 5.0, f0=100)
     tarkista("aikaraja: tulos on aina (loytyi tai ei_loytynyt)", h.tulos is not None)
+    import types
+    nk_ = types.SimpleNamespace(karttat=[(0, [(10.0, 10.0), (50.0, 60.0)]), (60, [(10.5, 10.2)]), (120, [(10.2, 9.9), (-80.0, 20.0)]), (400, [(10.0, 10.0), (99.0, 99.0)])])
+    kk_ = ns.Saapuminen.kartta_ennen(nk_, 200)
+    tarkista("kartta ennen: ennen rataa otettujen karttojen yhdiste (kiven pudottanut kartta ei jata sita pois), duplikaatit 3 cm:n sisalla yhdistetty, rataa myohemmin otettu kartta pois",
+             len(kk_) == 3 and any(abs(q[0] - 50.0) < 1e-6 for q in kk_) and any(abs(q[0] + 80.0) < 1e-6 for q in kk_) and not any(abs(q[0] - 99.0) < 1e-6 for q in kk_), str(kk_))
     h = uusi([(50.0, 60.0, 400)])
     aja(h, 4.0)
     h.paata_kesken(10 ** 6)

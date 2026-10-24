@@ -542,8 +542,8 @@ class Kirjaaja:
                "omega_sd_deg_s", "suunta_p",
                # lepopaikan lahde: seuranta (kivi pysahtyi nakyviin) | kartta (kivi hukattiin, lepopaikka loydettiin pesan kartasta, lepo_haku.py: pysahtymishetki tuntematon) | epaselva | ei_loytynyt
                "lepo_lahde",
-               # pesan kartasta (lepo_haku.py) loydetty lepopaikka kaikille heitoille, joiden kivi loytyi; ero seurannan pysahtymispaikkaan (cm), ja kuinka monta ehdokasta oli (1 = yksiselitteinen)
-               "lepo_kartta_X_cm", "lepo_kartta_Y_cm", "lepo_kartta_ero_cm", "lepo_kartta_ehdokkaita"]
+               # pesan kartasta (lepo_haku.py) loydetty lepopaikka kaikille heitoille, joiden kivi loytyi; ero seurannan pysahtymispaikkaan (cm), kuinka monta ehdokasta oli (1 = yksiselitteinen) ja matka seurannan viimeisesta paikasta (cm; iso matka = tunnistus epavarmempi)
+               "lepo_kartta_X_cm", "lepo_kartta_Y_cm", "lepo_kartta_ero_cm", "lepo_kartta_ehdokkaita", "lepo_kartta_matka_cm"]
     OTSIKKO_KIVET = ["vari", "kivi_nro", "heittoja", "A_mediaani", "A_hajonta", "kappa_heittoja", "kappa_mediaani", "kappa_hajonta", "heitot"]
 
     def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False, radat_polku=None):
@@ -818,7 +818,7 @@ class Kirjaaja:
             rivi += [N(None if v is None else v.get("nopeus_hog1"), 3), N(None if v is None else v.get("suunta_hog1_deg"), 3), "", "", "", ""]
         rivi += [N(None if s is None else s["omega_sd_deg_s"], 1), N(None if s is None else s["suunta_p"], 4)]
         if k is None:
-            rivi += [""] * 5
+            rivi += [""] * 6
         else:
             lk = k.get("lepo_kartta")
             if k["tila"] == "pysahtyi":
@@ -827,9 +827,9 @@ class Kirjaaja:
                 rivi.append("" if lk is None else ("kartta" if "X" in lk else ("epaselva" if lk.get("epaselva") else "ei_loytynyt")))
             if lk is not None and "X" in lk:
                 ero = float(np.hypot(lk["X"] - k["X_pys"], lk["Y"] - k["Y_pys"])) if k["tila"] == "pysahtyi" else None
-                rivi += [N(-lk["X"], 1), N(lk["Y"], 1), N(ero, 1), lk["ehdokkaita"]]
+                rivi += [N(-lk["X"], 1), N(lk["Y"], 1), N(ero, 1), lk["ehdokkaita"], N(lk["ero_cm"], 0)]
             else:
-                rivi += [""] * 4
+                rivi += [""] * 5
         return rivi
 
     def _kirjoita_csv(self, an):
