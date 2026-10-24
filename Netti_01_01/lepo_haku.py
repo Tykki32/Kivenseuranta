@@ -35,6 +35,7 @@ LEPO_B_RMS = 0.30                 # ... jaannos enintaan ...
 LEPO_B_POIK_CM = 12.0             # ... ja enintaan taman verran kahvan paikasta
 LEPO_B_YRITYKSIA = 3              # B-yrityksia / ehdokas
 LEPO_SELVA_SUHDE = 2.0            # usean ehdokkaan kesken valinta vaatii: toinen on vahintaan taman kertaa kauempana kuvitellusta pysahtymispisteesta
+LEPO_ODOTUS_S = 6.0               # ensimmaisen vahvistetun ehdokkaan jalkeen odotetaan taman verran: muut (toisen kiven tai siirtyneen vanhan kiven) ehdokkaat ehtivat vahvistua ennen valintaa
 
 
 class PesaKartta:
@@ -78,6 +79,8 @@ class LepoHaku:
         self.n_kerta = 0
         self.f_edell = -10 ** 9
         self.tulos = None
+        self.f_vahv1 = None                        # ensimmaisen vahvistetun ehdokkaan ruutu
+        self.vanhat_nahty = [0] * len(self.ennen)  # vanhan kiven (kartta ennen heittoa) viimeisin katselukerta, jolla blobi oli sen paikalla
         v = float(np.hypot(viim[3], viim[4])) * fps                    # cm / s
         if v > 1.0:
             s = v * v / (2.0 * LEPO_HIDASTUVUUS_CM_S2)
@@ -96,6 +99,9 @@ class LepoHaku:
 
     def _paivita(self, f, blobit):
         self.n_kerta += 1
+        for i, q in enumerate(self.ennen):
+            if any(np.hypot(X - q[0], Y - q[1]) <= LEPO_KARTTA_CM for X, Y, _ in blobit):
+                self.vanhat_nahty[i] = self.n_kerta
         kaytetty = set()
         for X, Y, ala in blobit:
             if not self._kelpaa(X, Y):
@@ -165,9 +171,12 @@ class LepoHaku:
             if c["b"] is not None:
                 vahvistetut.append(c)
         if vahvistetut:
-            self._ratkaise(f, vahvistetut)
-            if self.tulos is not None:
-                return False
+            if self.f_vahv1 is None:
+                self.f_vahv1 = f
+            if f - self.f_vahv1 >= LEPO_ODOTUS_S * self.fps:
+                self._ratkaise(f, vahvistetut)
+                if self.tulos is not None:
+                    return False
         return True
 
     def _ratkaise(self, f, vahvistetut):
@@ -182,10 +191,19 @@ class LepoHaku:
         else:
             i = 0
         X, Y = pisteet[i]
-        self.tulos = dict(X=X, Y=Y, f_vahv=int(f), ero_cm=float(np.hypot(X - self.viim[1], Y - self.viim[2])), ehdokkaita=len(vahvistetut), katsottu=self.n_kerta)
+        self.tulos = dict(X=X, Y=Y, f_vahv=int(f), ero_cm=float(np.hypot(X - self.viim[1], Y - self.viim[2])), ehdokkaita=len(vahvistetut), katsottu=self.n_kerta, tyhjentyneita=self._tyhjentyneita())
+
+    def _tyhjentyneita(self):
+        """Vanhoja (ennen heittoa paikallaan olleita) kiveja, joita ei ole nahty paikallaan kolmella viimeisella katselulla: siirtyneita (tormays) tai piilossa; siirtynyt vanha kivi nayttaa uudelta ehdokkaalta."""
+        return int(sum(1 for n in self.vanhat_nahty if self.n_kerta - n >= 3))
 
     def _paata(self, f):
-        self.tulos = dict(ei_loytynyt=True, ehdokkaita=len(self.ehdokkaat), f_vahv=int(f), katsottu=self.n_kerta)
+        """Aikaraja tai videon loppu: jo vahvistetut ehdokkaat ratkaistaan (odotus ei ehtinyt umpeen), muuten ei loytynyt."""
+        vahv = [c for c in self.ehdokkaat if c["b"] is not None and self._paikallaan(c) is not None]
+        if vahv:
+            self._ratkaise(f, vahv)
+        else:
+            self.tulos = dict(ei_loytynyt=True, ehdokkaita=len(self.ehdokkaat), f_vahv=int(f), katsottu=self.n_kerta)
 
     def paata_kesken(self, f):
         """Videon loppu kesken haun."""
