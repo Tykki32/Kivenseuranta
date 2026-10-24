@@ -148,8 +148,6 @@ LIIKE_ALA_MAX = 4.5              # liikkeessa (heitto viela vahvistamatta) kahva
 HACK_HUKKA_Y_CM = -200.0         # kivi hukassa hackin lahella (viimeisin paikka Y < taman): heittajan vauhdinotto vie kiven hackin taakse ja siella se pysahtyy tai kaantyy, joten
 HACK_HUKKA_RUUTUA = 3            # ... kun A on puuttunut vahintaan taman monta ruutua, kahvaa haetaan myos VIIMEISEN PAIKAN ymparilta (ennuste jatkaisi vauhdinottoa kauas kiven ohi) ...
 HACK_HUKKA_PORTTI_CM = 45.0      # ... taman portin sisalta
-GRAN_SIEMEN_AUKKO = 2             # lennossa: A puuttuu eika B:ta ole saatu taman monelle tunnetulle ruudulle (B-tulokset saapuvat viive_b ruutua myohemmin) -> graniittiehdokas B:n siemeneksi
-GRAN_SIEMEN_PORTTI_CM = (25.0, 45.0)   # graniittiehdokkaan hakuportti ennusteen ymparilla: 25 cm + 3 cm per aukkoruutu, enintaan 45 cm
 HUKASSA_PORTTI_CM = 1.0          # A:n hakuportti kasvaa taman verran per ruutu, jolla paikkaa ei ole (enintaan HUKASSA_PORTTI_RUUTUA ruudun verran)
 HUKASSA_PORTTI_RUUTUA = 15
 IDLE_VALI = 3                    # IDLE: kandidaattihaku joka n:s yksilollinen ruutu
@@ -674,12 +672,11 @@ def tviiva_ruutu(pts, Y_raja=KELLO_TVIIVA_Y_CM, ikkuna=KELLO_TVIIVA_IKKUNA_CM):
 
 class Naytteet:
     """Yksi yksilollinen ruutu: A (kahvan sentroidi) ja B (tarkka sovitus), maakoordinaatit cm."""
-    __slots__ = ("f", "A", "ala", "B", "Bs", "Bk", "rms", "kelv", "peitto", "odottaa", "poik", "lepo", "gs")
+    __slots__ = ("f", "A", "ala", "B", "Bs", "Bk", "rms", "kelv", "peitto", "odottaa", "poik", "lepo")
 
     def __init__(self, f, A=None, ala=0):
         self.f, self.A, self.ala = f, A, ala
         self.B, self.Bs, self.rms, self.kelv, self.peitto, self.odottaa = None, None, None, None, None, False
-        self.gs = False                        # B:n siemen oli graniittiehdokas (Heittopaa._graniitti_siemen), ei kahva eika ennuste
         self.Bk = None                         # levossa: graniittisovitus (kivi todettu) kauempana kuin B_LEPO_POIK_CM viritetysta kahvasta: kivi on muualla kuin kahva
         self.poik = None                       # B:n etaisyys alkuarvosta (A / ennuste), cm
         self.lepo = False                      # levossa viritetylle kahvalle pyydetty B (tiukempi kiven hyvaksynta: B_LEPO_POIK_CM)
@@ -979,10 +976,13 @@ class Heittopaa(_Seuranta):
         if self.n_ruutu % IDLE_VALI:
             return
         k = self._vakaa_kandidaatti(f, ruutu)
-        if k is None:
+        runko = k is None
+        if runko:
             k = self._vakaa_runko(f, ruutu)                       # kahvaa ei saada vakaaksi (kasi / harja / kenka peittaa osan): kivi todetaan rungosta, vari kiven keskella olevasta kahvasta
         if k is not None:
             self._virita_kandidaatista(f, ruutu, *k)
+            if runko:
+                self.an.tapahtumat.append(("viritys_runko", self.heitto.tunnus, f, f"{self.puoli} {self.vari}: kivi rungosta, vari kiven keskella olevasta kahvasta"))
 
     def _runko_b(self, f, ruutu, X, Y):
         """Graniittiblobin kohdalla on kivi: B-sovitus blobin keskipisteesta (graniitti siluetin sisalla, pieni jaannos) -> kiven akseli (X, Y) tai None. Tulos pidetaan KANDIDAATTI_B_RUUTUA ruutua."""
@@ -1312,9 +1312,6 @@ class Heittopaa(_Seuranta):
                 X0, Y0 = Xp, Yp                                            # A harhainen: B:n alkuarvo on B-ennuste
         else:
             X0, Y0 = Xp, Yp
-            g = self._graniitti_siemen(f, ruutu, (Xp, Yp))
-            if g is not None:
-                X0, Y0, n.gs = g[0], g[1], True                           # kahva ei nay eika B ole onnistunut: kiven runko kertoo, missa kivi on
         h.naytteet.append(n)
         self.an.pyyda_b(self, h, n, ruutu, X0, Y0, (Xp, Yp) if luotettava else None)
         if KIERTO_Y_MIN_CM <= Y0 <= KIERTO_Y_MAX_CM and len(h.kierto_kehykset) < KIERTO_MAX_RUUTUJA:
@@ -1340,25 +1337,6 @@ class Heittopaa(_Seuranta):
         elif h.tila == "vahvistettu":
             if Yp >= LOPPU_Y_CM or self.hukka > PAIKKA_PUUTE_RUUTUA:
                 self._valmis(f, "matka" if Yp >= LOPPU_Y_CM else "kivi hukassa")
-
-    def _graniitti_siemen(self, f, ruutu, ennuste):
-        """B:n siemen kiven rungosta, kun kahva ei nay (A puuttuu) eika B ole onnistunut ennusteen siemenella: lahin graniittiehdokas ennusteen ymparilta (portti kasvaa aukon mukana).
-        Kahvan piilossaolo (heittajan kasi, harjaajat) ja ennusteen harha (hidastuva / kaartava kivi, pesan harjaajat) jattavat B:n aukkoja, vaikka runko nakyy: aukkoruuduilla
-        (paras mahdollinen siemen) B onnistuu 55-100 %, ennusteen siemenella talossa vain ~50 %. Palauttaa (X, Y) tai None."""
-        h = self.heitto
-        haku = self.an.graniittihaku_heitto(self.puoli) if self.an.tarkka else None
-        if haku is None or h.tila not in ("liikkuu", "vahvistettu"):
-            return None
-        f_b = max([m.f for m in h.naytteet[-120:] if m.kivi()] or [self.f_liike])
-        aukko = f - f_b - self.an.viive_b                                  # tunnettuja B-epaonnistumisia (tuoreimmat tulokset ovat viela matkalla)
-        if aukko < GRAN_SIEMEN_AUKKO:
-            return None
-        r = min(GRAN_SIEMEN_PORTTI_CM[0] + 3.0 * (aukko - GRAN_SIEMEN_AUKKO), GRAN_SIEMEN_PORTTI_CM[1])
-        c = haku.ehdokkaat_lahella(ruutu, ennuste[0], ennuste[1], r)
-        if not c:
-            return None
-        k = min(c, key=lambda q: np.hypot(q["X"] - ennuste[0], q["Y"] - ennuste[1]))
-        return float(k["X"]), float(k["Y"])
 
     def _ei_etene(self, f):
         """Liikkeessa vahintaan EI_ETENE_S, mutta kivi on viimeisen EI_ETENE_S aikana liikkunut alle EI_ETENE_CM (X- tai Y-vaihteluvali): kivea kasitellaan, ei
@@ -2054,7 +2032,6 @@ class Analyysi:
         self.laske_kierre = bool(kierre) and self.tarkka
         self.M = {p: Mittari(kansio, p) for p in paat}
         self._haut = {}                                 # graniittihaku (kivi_haku) per puolisko, luodaan ensimmaisella kaytolla
-        self._haut_h = {}                               # sama heittopaan kaistalle
         self._haut_k = {}                               # ... ja hack-alueelle
         self.pool = self.est_pool = self.kierto_pool = self.kauko_pool = None
         if self.tarkka and saikeet > 0:
@@ -2118,13 +2095,6 @@ class Analyysi:
         h = self._haut_k.get(puoli)
         if h is None:
             h = self._haut_k[puoli] = kivi_haku.GraniittiHaku(self.M[puoli], X=HACK_X, Y=HACK_Y, deci=2)
-        return h
-
-    def graniittihaku_heitto(self, puoli):
-        """Heittopaan kaistan graniittihaku (valimuistissa): kiven loytaminen rungosta ennusteen ymparilta, kun kahva ei nay."""
-        h = self._haut_h.get(puoli)
-        if h is None:
-            h = self._haut_h[puoli] = kivi_haku.GraniittiHaku(self.M[puoli], X=(-170.0, 170.0), Y=(-400.0, 760.0))
         return h
 
     def uusi_tunnus(self):

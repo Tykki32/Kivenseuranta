@@ -810,48 +810,6 @@ def testaa_saapuminen_graniitti():
     tarkista("paikallaan oleva kivi ei ole saapuva kivi eika sille pyydeta B:ta", tila != "loytyi" and n == 0 and not pyynnot)
 
 
-def testaa_graniitti_siemen():
-    print("heittopaan lennon aikainen graniittisiemen: vain kun kahva ei nay eika B ole onnistunut; lahin ehdokas portin sisalta")
-    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset")
-    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
-    an.tarkka = True
-    hp = an.paat["vasen"]
-
-    class Haku:
-        def __init__(self, c):
-            self.c, self.kutsut = c, []
-
-        def ehdokkaat_lahella(self, ruutu, X0, Y0, r):
-            self.kutsut.append(r)
-            return [q for q in self.c if np.hypot(q["X"] - X0, q["Y"] - Y0) <= r]
-
-    def asetelma(ehdokkaat, f_b, f_nyt=100):
-        h = ns.Heitto(1, "vasen", "punainen", 0, (0.0, -330.0))
-        h.tila = "vahvistettu"
-        hp.heitto, hp.f_liike = h, 40
-        for f in range(40, f_nyt):
-            n = ns.Naytteet(f)
-            if f <= f_b:
-                n.B = (0.0, 100.0 + f)
-            h.naytteet.append(n)
-        haku = Haku(ehdokkaat)
-        an.graniittihaku_heitto = lambda puoli: haku
-        return haku
-
-    e = [dict(X=3.0, Y=150.0, ala=900, suhde=1.0), dict(X=-40.0, Y=148.0, ala=900, suhde=1.0)]
-    haku = asetelma(e, f_b=99)
-    tarkista("B onnistui juuri (aukko alle viiveen + GRAN_SIEMEN_AUKKO): ei siemenmuutosta", hp._graniitti_siemen(100, None, (0.0, 150.0)) is None and not haku.kutsut)
-    haku = asetelma(e, f_b=80)
-    g = hp._graniitti_siemen(100, None, (0.0, 150.0))
-    tarkista("B epaonnistunut: lahin graniittiehdokas portin sisalta", g is not None and abs(g[0] - 3.0) < 1e-6 and abs(g[1] - 150.0) < 1e-6)
-    tarkista("portti kasvaa aukon mukana (25 cm + 3 cm / ruutu, enintaan 45 cm)", haku.kutsut and 25.0 <= haku.kutsut[-1] <= 45.0)
-    haku = asetelma([dict(X=60.0, Y=150.0, ala=900, suhde=1.0)], f_b=80)
-    tarkista("ehdokas portin ulkopuolella: ei siemenmuutosta", hp._graniitti_siemen(100, None, (0.0, 150.0)) is None)
-    haku = asetelma(e, f_b=80)
-    hp.heitto.tila = "hylatty"
-    tarkista("vain liikkuvalle / vahvistetulle heitolle", hp._graniitti_siemen(100, None, (0.0, 150.0)) is None)
-
-
 def testaa_viritys_rungosta():
     print("viritys kiven rungosta: vakaa graniittiblobi + B todentaa kiven + kahva kiven keskella maaraa varin; ilman kahvaa ei viritysta")
     kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset")
@@ -925,7 +883,7 @@ def testaa_ulottuma_vahvistettu():
 
 
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_graniitti_siemen, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu):
         t()
     print()
     if VIRHEITA:
