@@ -652,32 +652,52 @@ def testaa_tausta_maskit():
 
 
 def testaa_vaihto_todennettu():
-    print("todennetun kiven viritys: vaihto toiseen kandidaattiin vain, jos se on kiven keskella ja lahempana kuin viritetty kahva (viereinen kenkapohja ei saa jaada virityksen kohteeksi)")
+    print("levossa olevan kiven viritys: tuore todiste ja kiven keskipiste ratkaisevat, mika kahva on kiven kahva (viereinen kenkapohja ei saa jaada virityksen kohteeksi)")
     kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset")
     an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
     hp = an.paat["vasen"]
 
-    def asetelma(kahva, kivi, ehdokas):
+    def nayte(f, kahva, B=None, Bk=None, poik=None):
+        n = ns.Naytteet(f, kahva, 200.0)
+        n.lepo = True
+        n.B, n.Bk = B, Bk
+        if B is not None or Bk is not None:
+            n.peitto, n.rms, n.kelv, n.poik = 0.8, 0.15, 0.5, poik
+        return n
+
+    def asetelma(kahva, naytteet, ehdokas, validoitu):
         h = ns.Heitto(1, "vasen", "punainen", 0, kahva)
         h.lepo = np.array(kahva, float)
-        for i in range(4):
-            n = ns.Naytteet(100 + i * 8, kahva, 200.0)
-            n.lepo = True
-            n.B = kivi                                                                 # kivi todettu levossa kivi-paikassa
-            h.naytteet.append(n)
-        h.validoitu = True
+        h.naytteet = naytteet
+        h.validoitu = validoitu
         hp.heitto, hp.vari = h, "punainen"
         vaihdot = []
         hp._vakaa_kandidaatti = lambda f, ruutu, pois=None: ("keltainen", [], ehdokas)
         hp._virita_kandidaatista = lambda f, ruutu, vari, ikk, XY: vaihdot.append((vari, XY))
         return h, vaihdot
 
-    h, v = asetelma((0.0, -343.0), (-12.0, -328.0), (-15.0, -321.0))                   # kenkapohja 19 cm kivesta, keltainen kahva 7,6 cm kiven keskipisteesta
-    tarkista("kenkapohja virittyneena, keltainen kahva kiven keskella: vaihto", hp._vaihda_kandidaatti(130, None, todennettu=True) and len(v) == 1)
-    h, v = asetelma((-10.0, -325.0), (-12.0, -328.0), (-15.0, -321.0))                 # oikea kahva 3,6 cm kiven keskipisteesta: ei vaihtoa
-    tarkista("oikea kahva kiven keskella: ei vaihtoa", not hp._vaihda_kandidaatti(130, None, todennettu=True) and not v)
-    h, v = asetelma((0.0, -343.0), (-12.0, -328.0), (-50.0, -281.0))                   # toinen ehdokas kaukana kivesta (viereinen odottava kivi): ei vaihtoa
-    tarkista("toinen kandidaatti kaukana kivesta: ei vaihtoa", not hp._vaihda_kandidaatti(130, None, todennettu=True) and not v)
+    # video 1, 3105 s: punainen kenkapohja (0, -343) virittyi, kun kivea kannettiin sen ohi (B <= 12 cm kahvasta); kivi asettui (-13, -325):n tienoille, keltainen kahva (-15, -321)
+    vanhat = [nayte(100, (0.0, -343.0), B=(-6.0, -338.0), poik=7.0), nayte(108, (0.0, -343.0), B=(-5.0, -336.0), poik=8.0)]
+    uudet = [nayte(200 + 8 * i, (0.0, -340.0), Bk=bk, poik=18.0) for i, bk in enumerate([(-10.0, -327.0), (-12.0, -326.0), (-13.0, -325.0)])]
+    h, v = asetelma((0.0, -340.0), vanhat + uudet, (-15.0, -321.0), True)
+    tarkista("vanha todiste ei pidata kenkapohjaa todennettuna, kun tuoreet sovitukset osoittavat kiven muualle", not hp._validoitu(h, 222))
+    tarkista("kiven keskipiste tuoreista sovituksista", np.allclose(hp._kiven_keskipiste(h, 222), (-12.0, -326.0)))
+    tarkista("kenkapohja virittyneena, keltainen kahva kiven keskella: vaihto", hp._vaihda_kandidaatti(222, None) and len(v) == 1)
+
+    uudet = [nayte(200 + 8 * i, (-10.0, -325.0), B=b, poik=3.0) for i, b in enumerate([(-12.0, -327.0), (-12.0, -328.0), (-11.0, -327.0)])]
+    h, v = asetelma((-10.0, -325.0), uudet, (-15.0, -321.0), False)
+    tarkista("kahvan kohdalla olevat sovitukset todentavat kahvan", hp._validoitu(h, 222))
+    tarkista("oikea kahva kiven keskella: ei vaihtoa", not hp._vaihda_kandidaatti(222, None) and not v)
+    h, v = asetelma((0.0, -340.0), vanhat + [nayte(200 + 8 * i, (0.0, -340.0), Bk=bk, poik=18.0) for i, bk in enumerate([(-10.0, -327.0), (-12.0, -326.0), (-13.0, -325.0)])], (-50.0, -281.0), True)
+    tarkista("toinen kandidaatti kaukana kivesta: ei vaihtoa", not hp._vaihda_kandidaatti(222, None) and not v)
+
+    liikkuva = [nayte(200 + 8 * i, (0.0, -340.0), Bk=bk, poik=18.0) for i, bk in enumerate([(-10.0, -327.0), (-25.0, -344.0), (-4.0, -354.0)])]
+    h, v = asetelma((0.0, -340.0), vanhat[:1] + liikkuva, (-15.0, -321.0), True)
+    tarkista("kivi ei lepaa (sovitukset hajallaan): ei keskipistetta", hp._kiven_keskipiste(h, 222) is None)
+    tarkista("todettu kivi, joka ei nay levossa: viritys pysyy", not hp._vaihda_kandidaatti(222, None) and not v)
+
+    h, v = asetelma((0.0, -340.0), [nayte(200, (0.0, -340.0))], (-15.0, -321.0), False)
+    tarkista("kahvan luona ei kivea eika todisteita: vaihto vakaaseen kandidaattiin", hp._vaihda_kandidaatti(222, None) and len(v) == 1)
 
 
 def main():
