@@ -37,11 +37,12 @@ def sopii(tulos, tk):
     return all(tk.arvioi(tulos[p])[0] is True for p in ("vasen", "oikea"))
 
 
-def valitse(video, projekti=KOHDE, luo=True, tulosta=print):
-    """(kansio, selitys): ensimmainen videoon sopiva kalibrointikansio; ellei sellaista ole, uusi automaattinen kalibrointi (luo = True) tai tulokset ja varoitus."""
+def valitse(video, projekti=KOHDE, luo=True, tulosta=print, n=24):
+    """(kansio, selitys): ensimmainen videoon sopiva kalibrointikansio; ellei sellaista ole, uusi automaattinen kalibrointi (luo = True) tai tulokset ja varoitus.
+    video: tiedosto tai virran osoite (YouTube, kun luo = False: ruutuja haetaan hakemalla n kohdasta, ei kalibroida virtaa); n: mediaanikuvan ruutujen maara."""
     import tarkista_kalibrointi as tk
     import kameran_heilunta as kh
-    ref = kh.referenssi(video, n=24)
+    ref = kh.referenssi(video, n=n)
     tulokset = {}
     for k in ehdokkaat(projekti):
         t = tk.siirtymat(video, k, ref_video=ref)

@@ -49,6 +49,9 @@ YOUTUBE_OLETUS = "hnTTLqHr5x8"
 YT_FORMAATTI = "bestvideo[protocol=https][vcodec^=avc1]/bestvideo[protocol=https]/bestvideo"       # oma testikoodi
 
 
+YT_VALINTA_RUUTUJA = 12       # kalibrointikansion automaattinen valinta virrasta: mediaanikuva tasmalleen taman monesta ruudusta (haku virrassa on hidas)
+
+
 def youtube_virta(ref, formaatti=YT_FORMAATTI):
     """YouTube-tunnus tai -osoite -> (virran URL, onko live). Sama kuin oma testikoodi: yt_dlp hakee virran osoitteen, OpenCV (FFmpeg) lukee sen."""
     try:
@@ -1108,7 +1111,7 @@ def main():
     ap.add_argument("--yt-formaatti", default=YT_FORMAATTI, help="yt_dlp-formaattivalitsin (oletus: oma testikoodi)")
     ap.add_argument("--lahde", help="videotiedosto")
     ap.add_argument("--url", help="suora virran osoite (http / https / rtsp / m3u8), luetaan kuten YouTube-virta")
-    ap.add_argument("--kansio", default=None, help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json). Oletus: tiedostolahteelle sopiva kansio valitaan automaattisesti "
+    ap.add_argument("--kansio", default=None, help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json). Oletus: tiedostolahteelle (ja YouTube / --url -virralle, ei live) sopiva kansio valitaan automaattisesti "
                     "(tulokset, tulokset_nettivideo2, ...) tai video kalibroidaan kansioon tulokset_auto_<nimi> (kalibrointi_valinta.py); muulle lahteelle tulokset")
     ap.add_argument("--viive", type=float, default=10.0, help="tulosteen viive analyysiin nahden (s); oletus 10: 97 %:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm) kun viiva ilmestyy (5 s: 12 %)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")
@@ -1158,6 +1161,24 @@ def main():
             if not a.hiljaa:
                 print(f"Kalibrointi: {selitys}", flush=True)
             a.ei_kalibrointitarkistusta = True         # valinta on jo tarkistus
+        elif (a.youtube or a.url) and not a.ei_kalibrointitarkistusta:
+            # virta (ei live): mediaanikuva haetaan virrasta hakemalla ruutuja videon yli (YT_VALINTA_RUUTUJA kpl), ja sopiva kansio valitaan kuten tiedostolle (ei kalibroida virtaa)
+            import kalibrointi_valinta as kval
+            try:
+                osoite, live = youtube_virta(a.youtube, a.yt_formaatti) if a.youtube else (a.url, False)
+                if live:
+                    print("Huom: live-virralle kalibrointikansiota ei voi valita automaattisesti: kaytetaan kansiota tulokset (anna --kansio)", flush=True)
+                else:
+                    print(f"Valitaan kalibrointikansio virrasta ({YT_VALINTA_RUUTUJA} ruutua, voi kestaa minuutin) ...", flush=True)
+                    a.kansio, selitys = kval.valitse(osoite, luo=False, n=YT_VALINTA_RUUTUJA)
+                    print(f"Kalibrointi: {selitys}", flush=True)
+                    if "ei sovi" in selitys:
+                        print("  Anna oikea kansio: --kansio tulokset_nettivideo3 (jne.) tai lataa video ja aja --lahde (silloin video kalibroidaan tarvittaessa)", flush=True)
+            except SystemExit:
+                raise
+            except Exception as e:                      # noqa: BLE001
+                print(f"Huom: kalibrointikansion automaattinen valinta virrasta epaonnistui ({e!r}): kaytetaan kansiota tulokset (anna --kansio)", flush=True)
+            a.ei_kalibrointitarkistusta = True
     if not os.path.isdir(a.kansio):                    # ajettu muualta kuin projektin kansiosta
         oma = os.path.join(os.path.dirname(os.path.abspath(__file__)), a.kansio)
         if os.path.isdir(oma):
