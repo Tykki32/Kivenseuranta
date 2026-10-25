@@ -1084,23 +1084,109 @@ def testaa_merkki():
     maali, ehd = etsi(kuva)
     tarkista("varjossa oleva, ruskeampi harjanpaa loytyy", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0)
     kuva = tausta()
-    suorakulmio(kuva, 60.0, -30.0, 3.0, 26, 12, oranssi)                                                        # pesassa ja kaukana pesasta (toinen pelaaja)
-    suorakulmio(kuva, -40.0, 330.0, 3.0, 26, 12, oranssi)
+    suorakulmio(kuva, 60.0, -30.0, 3.0, 22, 10, oranssi)                                                        # pesassa (pienempi) ja pesan takana lojuva harja (suurempi)
+    suorakulmio(kuva, -40.0, -260.0, 3.0, 26, 12, oranssi)
     maali, ehd = etsi(kuva)
-    tarkista("usea harjanpaa: pesan alueella oleva valitaan", maali is not None and abs(maali["Y"]) <= mk.MERKKI_Y_PESA_CM and abs(maali["X"] - 60.0) <= 6.0,
+    tarkista("pesan takana (Y' < TAKA_Y_MIN_CM) oleva harja ei ole maali, vaikka on suurempi", maali is not None and abs(maali["X"] - 60.0) <= 6.0 and maali["Y"] > mk.TAKA_Y_MIN_CM,
              "ei maalia" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f})")
     kuva = tausta()
     suorakulmio(kuva, -40.0, 330.0, 3.0, 26, 12, oranssi)
     maali, ehd = etsi(kuva)
-    tarkista("vain pesan ulkopuolella (vartijakivi-maali): kelpaa", maali is not None and abs(maali["Y"] - 330.0) <= 8.0, "ei maalia" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f})")
+    tarkista("pesan edessa (vartijakivi-maali): kelpaa", maali is not None and abs(maali["Y"] - 330.0) <= 8.0, "ei maalia" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f})")
+
+
+def testaa_merkki_konsensus():
+    print("maalimerkki, moniruutuhaku (merkki.konsensus, MerkkiSeuranta, Analyysi.merkki_alku / merkki_valmiit): epavakaa, myohemmin tuotu, lojuva ja pieni (kahva) harja")
+    import merkki as mk
+
+    def harja(X, Y, ala=330.0, pit=33.0, kulma=0.0):
+        return dict(X=X, Y=Y, ala_cm2=ala, pituus_cm=pit, kulma=kulma, kelvollinen=True)
+
+    ajat = [-10.0 + 0.5 * i for i in range(45)]                                    # -10 ... +12 s
+    def sarja(f):
+        return [(t, f(t)) for t in ajat]
+
+    k = mk.konsensus(sarja(lambda t: [harja(100.0, -30.0)]))
+    tarkista("vakaa harja: loytyy, esiintyma 1, yksiselitteinen", k is not None and abs(k["X"] - 100.0) < 1 and k["esiintyma"] == 1.0 and k["ehdokkaita"] == 1, str(k and (k["X"], k["esiintyma"], k["ehdokkaita"])))
+    k = mk.konsensus(sarja(lambda t: [harja(100.0 + 0.2 * (hash(t) % 3), -30.0)] if int(t * 2) % 5 in (0, 1) else []))                 # nakyy vain 40 % ruuduista (epavakaa havainto)
+    tarkista("epavakaa havainto (40 % ruuduista) loytyy", k is not None and abs(k["X"] - 100.0) < 1 and 0.3 <= k["esiintyma"] <= 0.6, str(k and k["esiintyma"]))
+    k = mk.konsensus(sarja(lambda t: [harja(60.0, -20.0)] if t >= 2.0 else []))
+    tarkista("heiton alkua myohemmin (+2 s) paikalle tuotu harja loytyy (yhden ruudun haku heiton alussa ei loytaisi)", k is not None and abs(k["X"] - 60.0) < 1 and k["esiintyma"] < 0.6, str(k and k["esiintyma"]))
+    k = mk.konsensus(sarja(lambda t: [harja(100.0, -30.0)] if t <= -3.0 else []))
+    tarkista("harja poistunut ennen tavoiteikkunaa: ei maalia", k is None)
+    k = mk.konsensus(sarja(lambda t: []))
+    tarkista("ei havaintoja: ei maalia", k is None)
+    k = mk.konsensus(sarja(lambda t: [harja(100.0, -30.0)] if 0.0 <= t <= 1.0 else []))
+    tarkista("liian lyhyt esiintyma (alle MIN_ESIINTYMA): ei maalia", k is None)
+    k = mk.konsensus(sarja(lambda t: [harja(40.0, -260.0, ala=420.0)] + ([harja(120.0, -25.0, ala=300.0)] if t <= 4.5 else [])))
+    tarkista("pesan takana lojuva (suurempi, pysyva) harja ei voita pesan harjaa", k is not None and abs(k["X"] - 120.0) < 1 and k["Y"] > mk.TAKA_Y_MIN_CM, str(k and (k["X"], k["Y"])))
+    k = mk.konsensus(sarja(lambda t: [harja(-170.0, -30.0, ala=330.0), harja(20.0, 10.0, ala=90.0, pit=13.0)]))
+    tarkista("pysyva pieni (kiven kahvan kokoinen) ehdokas ei voita harjanpaata", k is not None and abs(k["X"] + 170.0) < 1, str(k and k["X"]))
+    k = mk.konsensus(sarja(lambda t: [harja(-170.0, -30.0), harja(180.0, -30.0)]))
+    tarkista("kaksi yhta hyvaa harjaa: ehdokkaita 2", k is not None and k["ehdokkaita"] == 2, str(k and k["ehdokkaita"]))
+    k = mk.konsensus(sarja(lambda t: [harja(-50.0, 10.0, ala=400.0, pit=39.0), harja(-46.0, 138.0, ala=330.0, pit=38.0)]))
+    tarkista("harjanpaa + samalla linjalla yhtaikaa nakyva isompi varsi/kahvaosa (Video2 492): harjanpaa on heittajan puoleisin, yksiselitteinen",
+             k is not None and abs(k["Y"] - 138.0) < 1 and abs(k["X"] + 46.0) < 1 and k["ehdokkaita"] == 1, str(k and (k["X"], k["Y"], k["ehdokkaita"])))
+    k = mk.konsensus(sarja(lambda t: [harja(138.0, -30.0)] if t < 2.5 else [harja(136.0, 11.0)]))
+    tarkista("sama harjanpaa siirtyy toiseen paikkaan (ei yhtaikaa nakyvia): ei vaihdeta heittajan puoleisempaan, yksiselitteinen",
+             k is not None and abs(k["Y"] + 30.0) < 1 and k["ehdokkaita"] == 1, str(k and (k["Y"], k["ehdokkaita"])))
+    k = mk.konsensus(sarja(lambda t: [harja(-50.0, 10.0, ala=400.0), harja(-50.0, 300.0, ala=330.0)]))
+    tarkista("saman linjan osat yli LINJA_DY_CM:n paassa toisistaan ovat eri harjoja (ehdokkaita 2, isompi voittaa)", k is not None and k["ehdokkaita"] == 2 and abs(k["Y"] - 10.0) < 1, str(k and (k["Y"], k["ehdokkaita"])))
+    k = mk.konsensus(sarja(lambda t: [harja(100.0, -30.0)] if t < 0 else [harja(100.0, -30.0)]))
+    tarkista("tulos on aikaikkunan mediaani (ei ensimmaista havaintoa)", k is not None and abs(k["Y"] + 30.0) < 1e-6)
+
+    # skannaus: molempien puoliskojen sarjat, vali, puskurin rajaus
+    kutsut = []
+
+    def feikki(m, ruutu):
+        kutsut.append(m)
+        f = ruutu
+        return [dict(harja(100.0, -30.0), kelvollinen=True)] if m == "A" else ([dict(harja(-50.0, 10.0), kelvollinen=True)] if f >= 60 else [])
+    vanha = mk.ehdokkaat
+    mk.ehdokkaat = feikki
+    try:
+        ms = mk.MerkkiSeuranta({"vasen": "A", "oikea": "B"}, 30.0)
+        n = sum(ms.syota(f, f) for f in range(0, 1200))
+        tarkista("skannaus 0,5 s valein (30 r/s: 15 ruudun valein)", n == 80, str(n))
+        tarkista("molemmat puoliskot skannataan joka kerta", len(kutsut) == 160 and kutsut.count("A") == 80)
+        tarkista("puskuri rajautuu (ei kasva rajatta)", len(ms.sarjat["vasen"]) < 80 and ms.sarjat["vasen"][0][0] >= 1185 - ms.puskuri - 15)
+        k = ms.konsensus("vasen", 1000)
+        tarkista("MerkkiSeuranta.konsensus: heiton ymparilta (lahto ruudussa 1000)", k is not None and abs(k["X"] - 100.0) < 1)
+        k = ms.konsensus("oikea", 1000)
+        tarkista("MerkkiSeuranta.konsensus: toinen puolisko omilla havainnoillaan", k is not None and abs(k["X"] + 50.0) < 1)
+        tarkista("f_asti rajaa havainnot (ennen puskurin alkua ei mitaan)", ms.konsensus("vasen", 1000, f_asti=700) is None)
+    finally:
+        mk.ehdokkaat = vanha
+
+    # Analyysi: alustava merkki heiton lahdossa, lopullinen konsensusikkunan lopussa
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
     an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
-    an.M["vasen"] = mitta                                                                                         # heittopaa oikea -> kaukopaa vasen
-    kuva = tausta()
-    suorakulmio(kuva, X0, Y0, 3.0, 26, 12, oranssi)
-    r = an.hae_merkki("oikea", kuva)
-    tarkista("Analyysi.hae_merkki: loytyy, kelvollisia 1", "X" in r and r["kelvollisia"] == 1 and abs(r["X"] - X0) <= 6.0, f"X {r.get('X', 0):.0f}, Y {r.get('Y', 0):.0f}, kelvollisia {r['kelvollisia']}")
-    r = an.hae_merkki("oikea", tausta())
-    tarkista("Analyysi.hae_merkki: ei loytynyt -> kelvollisia 0", r == dict(kelvollisia=0), str(r))
+    mk.ehdokkaat = lambda m, ruutu: ([harja(80.0, -30.0)] if ruutu >= 100 else [])
+    try:
+        h = ns.Heitto(1, "vasen", "punainen", 0, (0.0, 0.0))
+        h.f_alku = 300
+        for f in range(0, 361, 3):                                             # (analyysin syotto: skannaus vain 15 ruudun valein)
+            an.merkit.syota(f, f)
+        an.merkki_alku(h, 360)
+        tarkista("heiton lahdossa alustava merkki skannauksista tahan asti", h.merkki is not None and "X" in h.merkki and abs(h.merkki["X"] - 80.0) < 1, str(h.merkki))
+        n_odottaa = len(an._merkki_odottavat)
+        an.merkki_valmiit(400)
+        tarkista("lopullista ei viela ole ennen konsensusikkunan loppua", len(an._merkki_odottavat) == n_odottaa == 1)
+        for f in range(363, 700, 3):
+            an.merkit.syota(f, f)
+        an.merkki_valmiit(300 + int(mk.KONSENSUS_LOPPU_S * 30) + 1)
+        tarkista("konsensusikkunan lopussa merkki viimeistellaan (kaikki ruudut mukana)", len(an._merkki_odottavat) == 0 and h.merkki["esiintyma"] == 1.0, str(h.merkki))
+        h2 = ns.Heitto(2, "oikea", "keltainen", 0, (0.0, 0.0))
+        h2.f_alku = 500
+        an.merkki_alku(h2, 505)                                                # kaukopaa = vasen: ruudut >= 100 nakevat harjan; oikean heiton kaukopaa on vasen
+        an.merkki_valmiit(None, kaikki=True)
+        tarkista("videon loppu viimeistelee kesken olevat", len(an._merkki_odottavat) == 0 and h2.merkki is not None)
+        an2 = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+        h3 = ns.Heitto(3, "vasen", "punainen", 0, (0.0, 0.0)); h3.f_alku = 100
+        an2.merkki_alku(h3, 110)
+        tarkista("ei skannauksia: merkki on dict(ehdokkaita=0), ei None eika poikkeus", h3.merkki == dict(ehdokkaita=0), str(h3.merkki))
+    finally:
+        mk.ehdokkaat = vanha
 
 
 def testaa_piirto_liuku():
@@ -1156,7 +1242,7 @@ def testaa_piirto_liuku():
 
 
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki, testaa_piirto_liuku):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki, testaa_merkki_konsensus, testaa_piirto_liuku):
         t()
     print()
     if VIRHEITA:
