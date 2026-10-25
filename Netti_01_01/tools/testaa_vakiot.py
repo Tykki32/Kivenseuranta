@@ -1104,7 +1104,7 @@ def testaa_merkki():
 
 
 def testaa_piirto_liuku():
-    print("piirto: liu'un pisteet (lahdosta irroitukseen) kaikki kerralla kun viivaestimaatti on valmis, irroituksen jalkeiset live, irroituksen kohdalla musta ympyra")
+    print("piirto: koko mitattu pistejono (liuku + irroituksen jalkeinen lento) kaikki kerralla heti kun heiton alku on tulosteessa, irroituksen kohdalla musta ympyra (kun viivaestimaatti on valmis)")
     import types
     import cv2
     import netti_piirto as npi
@@ -1125,27 +1125,34 @@ def testaa_piirto_liuku():
     def vihrea(img, i):
         return bool(np.abs(img[50 + 5 * i - 1: 50 + 5 * i + 2, 98:103].astype(int).reshape(-1, 3) - np.array(npi.VARI_PISTE)).sum(axis=1).min() <= 40)       # (reunapisteet on mediaanisilotettu: kayta sisapisteita)
 
+    def keltainen_rengas(img, i):
+        alue = img[50 + 5 * i - 1: 50 + 5 * i + 2, 100 + 5: 100 + 10].astype(int).reshape(-1, 3)
+        return bool(np.abs(alue - np.array(npi.VARI_NYKYINEN)).sum(axis=1).min() <= 90)
+
+    sisapisteet = (2, 3, 10, 15, 19, 20, 25, 30, 36)
     img = kuva(105)                                                            # kivi on pisteessa 5
-    tarkista("ilman estimaattia: vain jo nakyneet pisteet (2, 3), ei tulevia", all(vihrea(img, i) for i in (2, 3)) and not vihrea(img, 10) and not vihrea(img, 20))
+    tarkista("ilman estimaattia: koko pistejono kerralla (myos kivea edella olevat pisteet)", all(vihrea(img, i) for i in sisapisteet))
     tarkista("ilman estimaattia: ei mustaa ympyraa", int((img.sum(axis=2) <= 30).sum()) == 0)
+    tarkista("kivi (piste 5) on rengas nykyisessa paikassa, ei jonon lopussa", keltainen_rengas(img, 5) and not keltainen_rengas(img, 36))
     h.viivat = dict(irr_X=0.0, irr_Y=200.0)                                    # irroitus pisteen 20 kohdalla (v = 150)
     img = kuva(105)
-    tarkista("estimaatti valmis: liu'un pisteet (0-20) kaikki kerralla jo ennen kuin kivi on niiden kohdalla", all(vihrea(img, i) for i in (2, 3, 10, 15, 19, 20)))
-    tarkista("estimaatti valmis: irroituksen jalkeiset pisteet (> 20) eivat viela nay", not any(vihrea(img, i) for i in (22, 30, 38)))
+    tarkista("estimaatti valmis: koko pistejono kerralla, myos irroituksen jalkeiset pisteet (25, 30, 36) eivat lopu irroitukseen", all(vihrea(img, i) for i in sisapisteet))
     rengas = img[150, 100 + npi.IRROITUSPISTE_R - 1: 100 + npi.IRROITUSPISTE_R + 2]
     tarkista("irroituksen kohdalla musta ympyra (sade IRROITUSPISTE_R)", int(rengas.sum(axis=1).min()) <= 60, str(rengas.tolist()))
     tarkista("ympyran ulkopuolella (sade + 5 px) jaa valkoista", bool((img[150, 100 + npi.IRROITUSPISTE_R + 5] == 255).all()))
-    def keltainen_rengas(i):
-        alue = img[50 + 5 * i - 1: 50 + 5 * i + 2, 100 + 5: 100 + 10].astype(int).reshape(-1, 3)
-        return bool(np.abs(alue - np.array(npi.VARI_NYKYINEN)).sum(axis=1).min() <= 90)
-    tarkista("kivi (piste 5) piirtyy edelleen renkaana nykyiseen paikkaan, ei liu'un viimeiseen pisteeseen", keltainen_rengas(5) and not keltainen_rengas(20))
-    img = kuva(135)                                                            # kivi on pisteessa 35: irroituksen jalkeiset live
-    tarkista("irroituksen jalkeen pisteet ilmestyvat live (piste 30 nakyy, 38 ei)", vihrea(img, 30) and not vihrea(img, 38))
+    tarkista("kivi (piste 5) on edelleen rengas nykyisessa paikassa, ei irroituksessa", keltainen_rengas(img, 5) and not keltainen_rengas(img, 20))
+    img = kuva(135)                                                            # kivi on pisteessa 35, jonon loppuvaiheessa
+    tarkista("kivi seuraa jonoa: rengas pisteessa 35, aiemmat ja myohemmat pisteet edelleen nakyvissa", keltainen_rengas(img, 35) and all(vihrea(img, i) for i in (2, 10, 20, 30)))
     img = kuva(99)
     tarkista("ennen lahtoa (f_out < f_alku) ei piirreta mitaan", bool((img == 255).all()))
     h.viivat = dict(virhe="x")
     img = kuva(105)
-    tarkista("viivaestimaatin virhetulos (ei irr_X) ei riko piirtoa: live-pisteet", all(vihrea(img, i) for i in (2, 3)) and not vihrea(img, 20))
+    tarkista("viivaestimaatin virhetulos (ei irr_X) ei riko piirtoa: pistejono ilman ympyraa", all(vihrea(img, i) for i in sisapisteet) and int((img.sum(axis=2) <= 30).sum()) == 0)
+    h.viivat = dict(irr_X=0.0, irr_Y=200.0)
+    h.pisteet = lambda: [(100 + i, 0.0, 10.0 * i) for i in range(25)]          # analyysi on tulosteen perassa: vain 25 pistetta tiedossa
+    h.b_laskuri = 1                                                            # (pistejonon valimuistin avain muuttuu, kun aineisto muuttuu)
+    img = kuva(105)
+    tarkista("analyysi jaljessa: tiedossa olevat pisteet kerralla, tuntemattomia (>= 25) ei piirreta", all(vihrea(img, i) for i in (2, 10, 20)) and not vihrea(img, 30))
 
 
 def main():
