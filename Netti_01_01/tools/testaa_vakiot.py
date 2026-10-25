@@ -1027,8 +1027,84 @@ def testaa_esilataus_viive():
     tarkista("Piirtaja: ilman viive_nyt (toistotilat) ei piirreta Viive-riviä", int(kuva.max()) == 0)
 
 
+def testaa_merkki():
+    print("maalimerkki (merkki.py): harjanpaa (oikaistussa kuvassa vaakasuuntainen) loytyy, kiven kahva (pystysuuntainen), puulattia ja tyhja kuva eivat ole maali; harjanpaa + varsi, varjossa oleva harjanpaa, usea harja")
+    import types
+    import cv2
+    import merkki as mk
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+    m = ns.Mittari(kansio, "oikea")
+    kuvain = m.kuvain
+    mitta = types.SimpleNamespace(cam=m.cam, oikaistu_maahan=m.oikaistu_maahan, skaala=m.skaala,                      # oikaistu kuva suoraan (ei uudelleenkartoitusta lahdekuvasta)
+                                  kuvain=types.SimpleNamespace(leike=lambda r, x0, y0, x1, y1: (r[max(y0, 0):y1, max(x0, 0):x1], max(x0, 0), max(y0, 0))))
+
+    def bgr(h, s_, v):
+        return tuple(int(c) for c in cv2.cvtColor(np.array([[[h, s_, v]]], np.uint8), cv2.COLOR_HSV2BGR)[0, 0])
+
+    def suorakulmio(kuva, X, Y, z, leveys_px, korkeus_px, vari, siirto_u=0.0):
+        """Oikaistun kuvan suorakulmio maatason pisteen (X, Y, z) kohdalla (kuva on oikaistussa avaruudessa): leveys vaakasuunnassa (kentan suunta, jyrkasti lyhentynyt), korkeus pystysuunnassa."""
+        u, v = (float(q[0]) for q in m.maa_oikaistuun([X], [Y], z))
+        u += siirto_u
+        cv2.rectangle(kuva, (int(round(u - leveys_px / 2)), int(round(v - korkeus_px / 2))), (int(round(u + leveys_px / 2)), int(round(v + korkeus_px / 2))), vari, -1)
+
+    def tausta():
+        return np.full((kuvain.h, kuvain.w, 3), 232, np.uint8)
+
+    def etsi(kuva):
+        return mk.etsi(mitta, cv2.GaussianBlur(kuva, (0, 0), 0.8))
+
+    oranssi = bgr(14, 165, 190)
+    X0, Y0 = -150.0, -30.0
+    kuva = tausta()
+    suorakulmio(kuva, X0, Y0, 3.0, 26, 12, oranssi)
+    maali, ehd = etsi(kuva)
+    tarkista("harjanpaa loytyy (<= 6 cm akselista)", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0,
+             "ei maalia" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f})")
+    tarkista("harjanpaan pitka akseli on vaakasuuntainen (kulma <= 35 astetta)", maali is not None and maali["kulma"] <= mk.MERKKI_KULMA_MAX, "" if maali is None else f"{maali['kulma']:.0f} deg")
+    kuva = tausta()
+    suorakulmio(kuva, 20.0, 30.0, 12.0, 12, 26, oranssi)                                                       # kiven kahva: sama savy, pystysuuntainen
+    maali, ehd = etsi(kuva)
+    tarkista("kiven kahva (pystysuuntainen, sama savy) ei ole maali", maali is None and any(e["syy"] == "suunta" for e in ehd), str([(round(e["X"]), round(e["Y"]), e["syy"]) for e in ehd]))
+    kuva = tausta()
+    u, v = (float(q[0]) for q in m.maa_oikaistuun([0.0], [0.0], 3.0))
+    v_lattia = float(m.maa_oikaistuun([262.0], [0.0], 3.0)[1][0])
+    kuva[int(v_lattia):, :] = oranssi                                                                           # puulattia jaan reunan takana (|X'| > 245)
+    maali, ehd = etsi(kuva)
+    tarkista("puulattia (jaan ulkopuolella) ei ole maali", maali is None, "" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f})")
+    maali, ehd = etsi(tausta())
+    tarkista("tyhja kuva: ei maalia, ei ehdokkaita", maali is None and not ehd)
+    kuva = tausta()
+    suorakulmio(kuva, X0, Y0, 3.0, 26, 12, oranssi)
+    suorakulmio(kuva, X0, Y0, 3.0, 70, 5, oranssi, siirto_u=-48.0)                                              # puuvarsi harjanpaan vieressa (sama savy, kapea)
+    maali, ehd = etsi(kuva)
+    tarkista("harjanpaa + varsi: varsi irrotetaan, maali harjanpaan kohdalla (<= 10 cm)", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 10.0,
+             "ei maalia" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f}) ala {maali['ala_cm2']:.0f}")
+    kuva = tausta()
+    suorakulmio(kuva, X0, Y0, 3.0, 26, 12, bgr(10, 130, 135))                                                   # varjossa oleva ruskea harjanpaa
+    maali, ehd = etsi(kuva)
+    tarkista("varjossa oleva, ruskeampi harjanpaa loytyy", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0)
+    kuva = tausta()
+    suorakulmio(kuva, 60.0, -30.0, 3.0, 26, 12, oranssi)                                                        # pesassa ja kaukana pesasta (toinen pelaaja)
+    suorakulmio(kuva, -40.0, 330.0, 3.0, 26, 12, oranssi)
+    maali, ehd = etsi(kuva)
+    tarkista("usea harjanpaa: pesan alueella oleva valitaan", maali is not None and abs(maali["Y"]) <= mk.MERKKI_Y_PESA_CM and abs(maali["X"] - 60.0) <= 6.0,
+             "ei maalia" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f})")
+    kuva = tausta()
+    suorakulmio(kuva, -40.0, 330.0, 3.0, 26, 12, oranssi)
+    maali, ehd = etsi(kuva)
+    tarkista("vain pesan ulkopuolella (vartijakivi-maali): kelpaa", maali is not None and abs(maali["Y"] - 330.0) <= 8.0, "ei maalia" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f})")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+    an.M["vasen"] = mitta                                                                                         # heittopaa oikea -> kaukopaa vasen
+    kuva = tausta()
+    suorakulmio(kuva, X0, Y0, 3.0, 26, 12, oranssi)
+    r = an.hae_merkki("oikea", kuva)
+    tarkista("Analyysi.hae_merkki: loytyy, kelvollisia 1", "X" in r and r["kelvollisia"] == 1 and abs(r["X"] - X0) <= 6.0, f"X {r.get('X', 0):.0f}, Y {r.get('Y', 0):.0f}, kelvollisia {r['kelvollisia']}")
+    r = an.hae_merkki("oikea", tausta())
+    tarkista("Analyysi.hae_merkki: ei loytynyt -> kelvollisia 0", r == dict(kelvollisia=0), str(r))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki):
         t()
     print()
     if VIRHEITA:
