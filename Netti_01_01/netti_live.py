@@ -155,45 +155,75 @@ class Lahde:
             f += 1
 
 
-def esilataus(iteraattori, n=24):
-    """Ruutujen luku omassa saikeessa (enintaan n ruutua edella): dekoodaus ja verkko (cv2 vapauttaa GIL:n) kulkevat rinnakkain analyysin kanssa ja virran katkot tasoittuvat. Jarjestys ei muutu."""
-    if n <= 0:
-        yield from iteraattori
-        return
-    jono = queue.Queue(maxsize=n)
-    loppu, virhe, seis = object(), [], threading.Event()
+class Esilataus:
+    """Ruutujen luku omassa saikeessa: dekoodaus ja verkko (cv2 vapauttaa GIL:n) kulkevat rinnakkain analyysin kanssa ja virran katkot tasoittuvat. Jarjestys ei muutu.
 
-    def laita(x):
-        while not seis.is_set():
+    n: ruutuja luetaan enintaan taman verran analyysin edella raakana (BGR, 6 Mt / ruutu; 0 = ei erillista saiettta).
+    pitka_s > 0 (YouTube / virta): luku jatkuu jatkuvasti enintaan pitka_s sekuntia analyysin edelle; puskurin ruudut pakataan YUV 4:2:0 -muotoon (3,1 Mt / ruutu: 30 s = 2,8 Gt),
+    joten raskaan hetken (heitto) aikana luettua videota on jo valmiina, ja kevyella hetkella analyysi kirii myohastymisen kiinni. Pakkauksen kautta kulkevat kaikki ruudut (analyysin
+    syote ei riipu kuormasta). Kayttö: for f, ruutu in Esilataus(...); t_luettu = viimeksi annetun ruudun lukuhetki (time.time()), pituus_s = puskurissa oleva video (s)."""
+
+    def __init__(self, iteraattori, n=24, pitka_s=0.0, fps=30.0):
+        self.it = iteraattori
+        self.n = int(n)
+        self.fps = float(fps)
+        self.pakattu = pitka_s > 0 and n > 0
+        self.t_luettu = time.time()
+        self._kapasiteetti = max(self.n, int(round(pitka_s * self.fps))) if self.pakattu else self.n
+        self._loppu, self._virhe, self._seis = object(), [], threading.Event()
+        self._jono = None
+        if self.n > 0:
+            self._jono = queue.Queue(maxsize=self._kapasiteetti)
+            threading.Thread(target=self._lue, name="esilataus", daemon=True).start()
+
+    @property
+    def pituus_s(self):
+        return 0.0 if self._jono is None else self._jono.qsize() / self.fps
+
+    def _laita(self, x):
+        while not self._seis.is_set():
             try:
-                jono.put(x, timeout=0.2)
+                self._jono.put(x, timeout=0.2)
                 return True
             except queue.Full:
                 pass
         return False
 
-    def lue():
+    def _lue(self):
         try:
-            for x in iteraattori:
-                if not laita(x):
+            for f, fr in self.it:
+                x = (f, cv2.cvtColor(fr, cv2.COLOR_BGR2YUV_I420), True, time.time()) if self.pakattu else (f, fr, False, time.time())
+                if not self._laita(x):
                     return
         except Exception as e:                                # luku katkesi: annetaan poikkeus kuluttajalle
-            virhe.append(e)
+            self._virhe.append(e)
         finally:
-            laita(loppu)
+            self._laita(self._loppu)
 
-    saie = threading.Thread(target=lue, name="esilataus", daemon=True)
-    saie.start()
-    try:
-        while True:
-            x = jono.get()
-            if x is loppu:
-                break
-            yield x
-        if virhe:
-            raise virhe[0]
-    finally:
-        seis.set()
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._jono is None:                                # ei erillista saiettta
+            f, fr = next(self.it)
+            self.t_luettu = time.time()
+            return f, fr
+        x = self._jono.get()
+        if x is self._loppu:
+            self._seis.set()
+            if self._virhe:
+                raise self._virhe[0]
+            raise StopIteration
+        f, fr, pakattu, self.t_luettu = x
+        return f, (cv2.cvtColor(fr, cv2.COLOR_YUV2BGR_I420) if pakattu else fr)
+
+    def sulje(self):
+        self._seis.set()
+
+
+def esilataus(iteraattori, n=24, pitka_s=0.0, fps=30.0):
+    """Esilataus-iteraattori (ks. Esilataus)."""
+    return Esilataus(iteraattori, n, pitka_s, fps)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -908,7 +938,10 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     lopetettu = threading.Event()                    # lahde loppui
     pysayta = threading.Event()                      # kayttaja lopettaa tai virhe
     piirto_valmis = threading.Event()                # piirtosaie on antanut kaikki kuvat
-    tilasto = dict(analysoitu=0, ohitettu=0, virheita=0, piirretty=0, myohassa_max=0.0, luku_s=0.0, luku_max=0.0, pysahdyksia=0, syota_s=0.0, syota_ms=[])
+    tilasto = dict(analysoitu=0, ohitettu=0, virheita=0, piirretty=0, myohassa_max=0.0, luku_s=0.0, luku_max=0.0, pysahdyksia=0, syota_s=0.0, syota_ms=[], viive_max=0.0, puskuri_max=0.0)
+    jaettu = dict(puskuri_s=0.0)                     # analyysisaie -> piirtosaie: esilatauspuskurin pituus (s)
+    pitka_s = a.lataus if (a.youtube or a.url) and a.esilataus > 0 else 0.0              # virta: video ladataan jatkuvasti enintaan taman verran analyysin edelle
+    max_myohassa = a.max_myohassa if a.max_myohassa is not None else (0.8 if pitka_s <= 0 else min(6.0, max(0.8, a.viive - 3.0)))     # ruutu ohitetaan (ei analysoida), jos analyysi on taman verran myohassa
     piirtoa_tarvitaan = naytto is not None or kirjoittaja is not None
     pakkaus = concurrent.futures.ThreadPoolExecutor(2, thread_name_prefix="puskuri-pakkaus")     # cv2-kutsut vapauttavat GIL:n: rinnakkain analyysin kanssa
     purku = concurrent.futures.ThreadPoolExecutor(2, thread_name_prefix="puskuri-purku")
@@ -932,8 +965,9 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         f_ensin = None
         t_edell = time.perf_counter()
         ohitus_kaynnissa = False
+        it = None
         try:
-            it = esilataus(lahde.ruudut(), a.esilataus)
+            it = esilataus(lahde.ruudut(), a.esilataus, pitka_s, fps)
             while True:
                 t_luku0 = time.perf_counter()
                 try:
@@ -952,16 +986,24 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                 t_edell = time.perf_counter()
                 if f_ensin is None:
                     f_ensin = f
-                if not lahde.live and not a.ei_tahdistusta:           # tiedosto: tahdistus kuin live-virrassa
-                    odotus = t_alku + (f - f_ensin) / fps - time.time()
+                    t_alku = time.time()                              # tahdistuksen alku: ensimmaisen ruudun saapuminen (kaynnistyksen viive ei ole myohastymista)
+                jaettu["puskuri_s"] = it.pituus_s
+                tilasto["puskuri_max"] = max(tilasto["puskuri_max"], it.pituus_s)
+                if not lahde.live and not a.ei_tahdistusta:           # tiedosto / VOD-virta: tahdistus kuin live-virrassa
+                    erapaiva = t_alku + (f - f_ensin) / fps               # ruudun oma aika (hetki, jolloin se olisi reaaliajassa)
+                    odotus = erapaiva - time.time()
                     if odotus > 0:
                         time.sleep(odotus)
                     myohassa = -odotus
+                elif lahde.live:                                       # live: ruutu on myohassa sen verran kuin se on odottanut puskurissa
+                    erapaiva = it.t_luettu
+                    myohassa = max(0.0, time.time() - erapaiva)
                 else:
+                    erapaiva = time.time()
                     myohassa = 0.0
                 if piirtoa_tarvitaan:
-                    jono.append((f, time.time(), pakkaus.submit(pakkaa, fr, a.puskuri == "jpeg" or len(jono) > yuv_raja)))
-                if myohassa > 0.8 and not an.toistettava:           # analyysi myohassa: ruutu nakyy tulosteessa, mutta sita ei analysoida (toistettavassa ajossa analysoidaan kaikki ruudut ja kuva odottaa)
+                    jono.append((f, time.time(), pakkaus.submit(pakkaa, fr, a.puskuri == "jpeg" or len(jono) > yuv_raja), erapaiva))
+                if myohassa > max_myohassa and not an.toistettava:           # analyysi myohassa: ruutu nakyy tulosteessa, mutta sita ei analysoida (toistettavassa ajossa analysoidaan kaikki ruudut ja kuva odottaa)
                     tilasto["ohitettu"] += 1
                     if a.debug_viive and not ohitus_kaynnissa:
                         print(f"  [debug] ohitus alkaa: ruutu {f} ({f / fps:.1f} s), myohassa {myohassa:.2f} s", flush=True)
@@ -990,6 +1032,8 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
             print("Lahteen luku keskeytyi:", file=sys.stderr)
             traceback.print_exc()
         finally:
+            if it is not None:
+                it.sulje()
             lopetettu.set()
         # lahde loppui: taustatyot (B, estimaatit, kierre, kaukopaa) etenevat kunnes tuloste on piirretty
         try:
@@ -1009,12 +1053,15 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
             while not pysayta.is_set():
                 nyt = time.time()
                 while jono and len(odottaa) < 6 and jono[0][1] + a.viive - nyt < 0.4:       # purku etukateen (rinnakkain)
-                    f, t_s, tulevaisuus = jono.popleft()
-                    odottaa.append((f, t_s + a.viive, purku.submit(pura, tulevaisuus)))
+                    f, t_s, tulevaisuus, erapaiva_ruutu = jono.popleft()
+                    odottaa.append((f, t_s + a.viive, purku.submit(pura, tulevaisuus), erapaiva_ruutu))
                 if odottaa and odottaa[0][1] <= nyt and (not an.toistettava or lopetettu.is_set() or (getattr(an, "viim_f", None) or 0) >= odottaa[0][0] + D_ruutua - 3):   # toistettavassa ajossa kuva odottaa analyysia (piirrokset tulevat analyysista)
-                    f, erapaiva, tehtava = odottaa.popleft()
+                    f, erapaiva, tehtava, erapaiva_ruutu = odottaa.popleft()
                     kuva = tehtava.result()
                     myohassa = nyt - erapaiva
+                    piirtaja.viive_nyt = max(0.0, time.time() - (erapaiva_ruutu + a.viive))      # kuinka paljon myohemmin kuva nakyy kuin sen oma aika + viive (analyysin ja piirron myohastyminen)
+                    piirtaja.puskuri_s = jaettu["puskuri_s"] if pitka_s > 0 else None
+                    tilasto["viive_max"] = max(tilasto["viive_max"], piirtaja.viive_nyt)
                     tilasto["myohassa_max"] = max(tilasto["myohassa_max"], myohassa)
                     if myohassa > 3.0 and not varoitettu:
                         varoitettu = True
@@ -1085,6 +1132,8 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                   f"lahteen luku {tilasto['luku_s']:.0f} s (pisin {tilasto['luku_max']:.2f} s, yli 0,25 s: {tilasto['pysahdyksia']} kertaa); analyysin osuus videon kestosta {100.0 * tilasto['syota_s'] / kesto:.0f} %", flush=True)
             osat = sorted(an.aika.items(), key=lambda kv_: -kv_[1])
             print("  analyysin vaiheet: " + ", ".join(f"{k} {1e3 * v / len(ms):.1f} ms/ruutu" for k, v in osat), flush=True)
+        if not a.hiljaa and (pitka_s > 0 or tilasto["viive_max"] > 0.5):
+            print(f"viive: suurin myohastyminen {tilasto['viive_max']:.1f} s" + (f"; esilatauspuskuri enintaan {tilasto['puskuri_max']:.0f} s (tavoite {pitka_s:.0f} s)" if pitka_s > 0 else ""), flush=True)
         if not a.hiljaa:
             print(f"analysoitu {tilasto['analysoitu']} ruutua, ohitettu (myohassa) {tilasto['ohitettu']}, virheita {tilasto['virheita']}; piirretty {tilasto['piirretty']} ruutua"
                   + (f", ikkunassa {naytto.n_nayt}" if naytto is not None else "") + f", suurin viive piirrossa {tilasto['myohassa_max']:.1f} s", flush=True)
@@ -1149,6 +1198,10 @@ def main():
                     "kaikki ruudut analysoidaan ja tulos on toistettava (sama kuin --nopea), kuva odottaa analyysia")
     ap.add_argument("--aani", default="auto", help="aani tallenteeseen (--ulos): auto = YouTube: oma aanivirta (yt_dlp bestaudio), ladataan taustalla ajon aikana ja liitetaan lopuksi, tiedosto: tiedoston oma aani jos on, --url: sama osoite; ei = ei aanta; POLKU / URL = oma aanilahde "
                     "(sama aikajana kuin video). Aani on lahdevideon aikajanalla, joten se pysyy samassa kohdassa kuin viivastetty kuva; ikkuna on aaneton; live-virralla ei aanta")
+    ap.add_argument("--lataus", type=float, default=30.0, help="YouTube / --url: video ladataan jatkuvasti puskuriin enintaan taman verran (s) analyysin edelle, jolloin raskaiden hetkien (heitto) myohastyminen kirii kiinni kevyina hetkina; "
+                    "puskurin ruudut ovat pakattuja (3,1 Mt / ruutu: 30 s = 2,8 Gt muistia), 0 = pois. Ei vaikuta tiedostolahteeseen")
+    ap.add_argument("--max-myohassa", type=float, default=None, help="reaaliaika: ruutu ohitetaan (nakyy tulosteessa, mutta sita ei analysoida), jos analyysi on taman verran (s) myohassa. Oletus 0,8 s; kun --lataus on paalla "
+                    "min(6, viive - 3) s: myohastyminen saa kasvaa ja kirii kiinni puskurin avulla (kuvan 'Viive'-rivi nayttaa sen)")
     ap.add_argument("--esilataus", type=int, default=24, help="reaaliaika: ruutuja luetaan erillisessa saikeessa enintaan taman verran analyysin edella (0 = pois; yksi ruutu on 6 Mt)")
     ap.add_argument("--ei-tahdistusta", action="store_true", help="(testaus) reaaliaikarakenne mutta tiedostoa luetaan niin nopeasti kuin analyysi ehtii (ei reaaliaikatahdistusta)")
     ap.add_argument("--kello-loki", help="(testaus, vain --nopea) kirjoita kuvassa nakyvan kellon tila kerran sekunnissa CSV:hen: aika, kayva joukkue, kuluva aika, viimeisin heitto")
