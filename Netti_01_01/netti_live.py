@@ -577,8 +577,8 @@ class Kirjaaja:
                "lepo_lahde",
                # pesan kartasta (lepo_haku.py) loydetty lepopaikka kaikille heitoille, joiden kivi loytyi; ero seurannan pysahtymispaikkaan (cm), kuinka monta ehdokasta oli (1 = yksiselitteinen) ja matka seurannan viimeisesta paikasta (cm; iso matka = tunnistus epavarmempi)
                "lepo_kartta_X_cm", "lepo_kartta_Y_cm", "lepo_kartta_ero_cm", "lepo_kartta_ehdokkaita", "lepo_kartta_matka_cm",
-               # maalimerkki (merkki.py): kaukopaan harjanpaa heiton lahdossa, heittajan koordinaatistossa (X + = heittajan oikealle, Y = T-viivasta heittajaa kohti, + = ennen T-viivaa) ja kelvollisten ehdokkaiden maara (1 = yksiselitteinen, > 1 = useita yhta hyvia harjoja; 0 = ei loytynyt) ja osuus tavoiteikkunan (-2...+5 s heiton lahdosta) ruuduista, joissa harja nakyy
-               "merkki_X_cm", "merkki_Y_cm", "merkki_ehdokkaita", "merkki_esiintyma"]
+               # maalimerkki (merkki.py): kaukopaan harjanpaan ALIN KOHTA (heittajaa lahin paa) heiton ympariston konsensuksena, heittajan koordinaatistossa (X + = heittajan oikealle, Y = T-viivasta heittajaa kohti, + = ennen T-viivaa), kilpailevien harjojen maara (1 = yksiselitteinen, 2 = kaksi yhta hyvaa harjaa; 0 = ei loytynyt), osuus tavoiteikkunan (-2...+5 s heiton lahdosta) ruuduista, joissa harja nakyy, maalimerkin paikka kaukopaan T-viivalla (cm keskiviivasta, + = heittajan oikealle) kun suora viiva piirretaan heiton lahtohackista maalimerkin kautta, ja 1, kun kuvan reuna katkaisee harjanpaan (paikka likimaarainen)
+               "merkki_X_cm", "merkki_Y_cm", "merkki_ehdokkaita", "merkki_esiintyma", "merkki_T_cm", "merkki_reunalla"]
     OTSIKKO_KIVET = ["vari", "kivi_nro", "heittoja", "A_mediaani", "A_hajonta", "kappa_heittoja", "kappa_mediaani", "kappa_hajonta", "heitot"]
 
     def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False, radat_polku=None):
@@ -867,11 +867,11 @@ class Kirjaaja:
                 rivi += [""] * 5
         mk = h.merkki
         if mk is None:
-            rivi += [""] * 4
+            rivi += [""] * 6
         elif "X" in mk:
-            rivi += [N(-mk["X"], 1), N(mk["Y"], 1), mk["ehdokkaita"], N(mk["esiintyma"], 2)]
+            rivi += [N(-mk["X"], 1), N(mk["Y"], 1), mk["ehdokkaita"], N(mk["esiintyma"], 2), N(mk.get("T_cm"), 1), int(bool(mk.get("reunalla")))]
         else:
-            rivi += ["", "", 0, ""]
+            rivi += ["", "", 0, "", "", ""]
         return rivi
 
     def _kirjoita_csv(self, an):

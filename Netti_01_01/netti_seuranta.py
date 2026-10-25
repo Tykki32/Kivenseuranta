@@ -242,6 +242,7 @@ class Kuvain:
 
     def __init__(self, cam):
         x0, y0, w, h = kv.kn.PUOLET[cam.puoli]
+        self.puolisko = (x0, y0, w, h)                               # puoliskon suorakulmio alkuperaisessa ruudussa
         self.mx = (x0 + (w - 1) - cam.map2).astype(np.float32)       # oikaistun pikselin (u, v) lahde alkuperaisessa ruudussa
         self.my = (y0 + cam.map1).astype(np.float32)
         self.w, self.h = cam.w, cam.h
@@ -764,7 +765,7 @@ class Heitto:
         self.kierto_tila = None                # None | "kaynnissa" | "valmis" | "virhe"
         self.hog1_f = None                     # ruutu (murtoluku), jolla kivi ylitti heittopaan hog-viivan (vasemman puoliskon rata)
         self.hog2_f = None                     # ruutu, jolla kivi ylitti kaukopaan hog-viivan (oikean puoliskon kuva)
-        self.merkki = None                     # maalimerkki (merkki.py, kaukopaan koordinaatit): dict(X, Y, ala_cm2, esiintyma, ehdokkaita, ...) | dict(ehdokkaita=0) (ei loytynyt) | None (ei haettu); alustava heiton lahdossa, lopullinen konsensusikkunan paatyttya
+        self.merkki = None                     # maalimerkki (merkki.py, kaukopaan koordinaatit; X, Y = harjanpaan alin kohta): dict(X, Y, ala_cm2, esiintyma, ehdokkaita, reunalla, T_cm, ...) | dict(ehdokkaita=0) (ei loytynyt) | None (ei haettu); alustava heiton lahdossa, lopullinen konsensusikkunan paatyttya
         self.saapuminen = None                 # kaukopaan haku: None | "haku" | "loytyi" | "ei_loytynyt"
         self.kauko = None                      # kaukopaan seuranta (KaukoSeuranta._valmis): dict(tila, paikat, pysahtyminen, hog-ylitys ...) tai None
         self.vakiot = None                     # kiven vakiot (netti_vakiot.sovita): kitkataso A ja kaarto kappa kaukopaan radasta, tai dict(ok=False, syy=...)
@@ -2168,9 +2169,14 @@ class Analyysi:
         return h
 
     def _merkki_tulos(self, h, f_asti=None):
-        """Heiton maalimerkki kaukopaan skannauksista (merkki.konsensus): dict(X, Y, ala_cm2, esiintyma, ehdokkaita, ...) kaukopaan koordinaateissa, tai dict(ehdokkaita=0), ellei merkkia loydy."""
+        """Heiton maalimerkki kaukopaan skannauksista (merkki.konsensus): dict(X, Y, ala_cm2, esiintyma, ehdokkaita, reunalla, T_cm, ...) kaukopaan koordinaateissa (X, Y = harjanpaan alin kohta),
+        tai dict(ehdokkaita=0), ellei merkkia loydy. T_cm = maalimerkin paikka kaukopaan T-viivalla (cm keskiviivasta, + = heittajan oikealle), kun suora viiva piirretaan heiton lahtohackista
+        (h.lepo) maalimerkin kautta T-viivalle."""
         k = self.merkit.konsensus("oikea" if h.puoli == "vasen" else "vasen", h.f_alku, f_asti)
-        return k if k is not None else dict(ehdokkaita=0)
+        if k is None:
+            return dict(ehdokkaita=0)
+        k["T_cm"] = merkki.t_viivalle(k["X"], k["Y"], h.lepo[0], h.lepo[1], ETAISYYS_CM) if h.lepo is not None else None
+        return k
 
     def merkki_alku(self, h, f):
         """Heitto lahti (Heittopaa._lahto): alustava maalimerkki skannauksista tahan asti; lopullinen, kun konsensusikkunan loppu on tullut (merkki_valmiit)."""

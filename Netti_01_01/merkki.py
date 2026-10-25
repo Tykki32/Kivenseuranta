@@ -39,6 +39,7 @@ LATTIA_MIN_PX = 3000                     # yhtenainen lattia-alue vahintaan tama
 LATTIA_LAAJENNUS_PX = 7
 Y_RAJAT_CM = (-330.0, 520.0)
 Z_CM = 3.0                               # harjanpaa on jaalla
+Z_ALIN_CM = 0.0                          # harjanpaan alin kohta (heittajan puoleisen paan alareuna) on jaassa kiinni
 MERKKI_ALA_CM2 = (45.0, 900.0)           # mitattu: 70-880 cm2, mediaani 370 (isoimmissa harjanpaa + varsi tai punaisen renkaan halo; osittain peittyneena pienempi)
 MERKKI_SIVUSUHDE = (1.4, 7.0)
 SAVY_KAISTA = 3                          # savytarkennus: harjanpaan oman savyn (kyllaisyydella painotettu moodi) +-taman sisalla olevat pikselit; halo ja viereiset kahvat pois
@@ -46,6 +47,7 @@ PITUUS_MAX_CM = 42.0                     # pidempi alue sisaltaa todennakoisesti
 MERKKI_KULMA_MAX = 35.0                  # harjanpaan pitka akseli kentan suuntaan (mitattu 0-19 astetta, mediaani 0; kiven kahvat 60-90)
 TAKA_Y_MIN_CM = -190.0                   # pesan takaraja (12 jalan rengas 183 cm): harjanpaa on pesassa tai sen edessa; taempana olevat ovat lojuvia tai sivussa odottavien harjoja
 MIN_PX = 25
+REUNA_PX = 4                             # kuvan reunan katkaisema harjanpaa: alue koskettaa (laajennettua) kuvan ulkopuolta
 
 
 def _alue(mittari):
@@ -72,6 +74,22 @@ def _lattia(mittari):
     f = cv2.dilate(f, np.ones((2 * LATTIA_LAAJENNUS_PX + 1, 2 * LATTIA_LAAJENNUS_PX + 1), np.uint8))
     mittari._merkki_lattia = f
     return f
+
+
+def _reuna(mittari):
+    """Oikaistun kuvan reunavyohyke (uint8 0/1): pikselit, joiden lahde on kameran puoliskon ulkopuolella (tai kuvan reunalla), laajennettuna REUNA_PX:lla. Harjanpaa, joka koskettaa vyohykettaa, on
+    kuvan reunan katkaisema (nakyy vain osittain). Valimuistissa Mittarilla."""
+    v = getattr(mittari, "_merkki_reuna", None)
+    if v is not None:
+        return v
+    k = mittari.kuvain
+    x0, y0, w, h = k.puolisko
+    sisalla = (k.mx >= x0) & (k.mx <= x0 + w - 1) & (k.my >= y0) & (k.my <= y0 + h - 1)
+    sisalla[[0, -1], :] = False
+    sisalla[:, [0, -1]] = False
+    r = cv2.dilate((~sisalla).astype(np.uint8), np.ones((2 * REUNA_PX + 1, 2 * REUNA_PX + 1), np.uint8))
+    mittari._merkki_reuna = r
+    return r
 
 
 def _kaista(mittari, x0, y0, w, h, askel=8):
@@ -104,9 +122,26 @@ def _savytarkenna(kmask, H, S):
     return (m & (np.abs(H.astype(int) - moodi) <= SAVY_KAISTA)).astype(np.uint8)
 
 
+def _alin_kohta(mittari, u, v, X, Y):
+    """Alueen (oikaistun kuvan pikselit u, v; keskipiste maassa X, Y) alin kohta: kentan suunnassa heittajaa lahin paa (Y' suurin; kuvassa alin). Paa = 98. persentiilin ja 1,5 px:n sisalla olevat
+    pikselit (kestaa yksittaiset reunapikselit), sivusuunnassa niiden keskikohta. Alareuna on jaassa (z = Z_ALIN_CM): kamera katsoo kaukopaata matalassa kulmassa (~16 astetta), joten
+    harjanpaan paan pysty reuna nakyy ja sen alin pikseli on jaakosketuspiste. Palauttaa (X', Y') maassa."""
+    pu, pv = mittari.maa_oikaistuun([X, X], [Y - 10.0, Y + 10.0], Z_CM)
+    d = np.array([pu[1] - pu[0], pv[1] - pv[0]], float)
+    d /= max(float(np.hypot(d[0], d[1])), 1e-9)                            # Y':n kasvusuunta oikaistussa kuvassa
+    n = np.array([-d[1], d[0]])
+    pit = u * d[0] + v * d[1]
+    ala = pit >= np.percentile(pit, 98) - 1.5
+    ext = float(pit[ala].max()) + 0.5                                      # paan reuna (pikselin ulkoreuna)
+    lat = float(np.mean(u[ala] * n[0] + v[ala] * n[1]))
+    Xa, Ya = mittari.oikaistu_maahan(ext * d[0] + lat * n[0], ext * d[1] + lat * n[1], z=Z_ALIN_CM)
+    return float(Xa), float(Ya)
+
+
 def _arvioi(mittari, m, x0, y0, H, S):
     """Maskin (0/1) kukin yhtenainen alue ehdokkaaksi: [(dict, alueen maski)]."""
     n, lab, st, cen = cv2.connectedComponentsWithStats(m)
+    reuna = _reuna(mittari)[y0:y0 + m.shape[0], x0:x0 + m.shape[1]]
     out = []
     for k in range(1, n):
         a = int(st[k, cv2.CC_STAT_AREA])
@@ -131,8 +166,9 @@ def _arvioi(mittari, m, x0, y0, H, S):
             syy = "muoto"
         elif kulma > MERKKI_KULMA_MAX:
             syy = "suunta"
-        out.append((dict(X=float(X), Y=float(Y), u=u, v=v, ala_cm2=float(ala), sivusuhde=float(L / W), pituus_cm=float(L / s), leveys_cm=float(W / s), kulma=float(kulma),
-                         sävy=float(np.median(H[kmask])), kyllaisyys=float(np.median(S[kmask])), kelvollinen=(syy == ""), syy=syy), kmask.astype(np.uint8)))
+        Xa, Ya = _alin_kohta(mittari, xs + x0, ys + y0, X, Y)
+        out.append((dict(X=float(X), Y=float(Y), alin_X=Xa, alin_Y=Ya, u=u, v=v, ala_cm2=float(ala), sivusuhde=float(L / W), pituus_cm=float(L / s), leveys_cm=float(W / s), kulma=float(kulma),
+                         sävy=float(np.median(H[kmask])), kyllaisyys=float(np.median(S[kmask])), reunalla=bool(reuna[kmask].any()), kelvollinen=(syy == ""), syy=syy), kmask.astype(np.uint8)))
     return out
 
 
@@ -220,16 +256,19 @@ def klusteroi(sarja):
 def konsensus(sarja):
     """Maali usean ruudun perusteella. sarja: [(t, [ehdokas])], t = aika heiton lahdosta (s), tutkitut ruudut tasavalein. Klusterit (klusteroi) pisteytetaan: esiintyma = osuus
     tavoiteikkunan (TAVOITE_ALKU_S .. TAVOITE_LOPPU_S) ruuduista, joissa harja nakyy, kerrottuna kokopainolla min(ala, KOKO_VERTAILU_CM2) / KOKO_VERTAILU_CM2 (ala = 80. persentiili: osittain
-    peittynyt harja on valilla pienempi). Kelpaa vain klusteri, joka ei ole pesan takana (TAKA_Y_MIN_CM), esiintyy vahintaan MIN_ESIINTYMA ja on vahintaan MIN_ALA_CM2.
-    Palauttaa dict(X, Y, ala_cm2, esiintyma, ehdokkaita, pisteet, ...) (X, Y = mediaani tavoiteikkunan havainnoista) tai None. Kilpailevat klusterit (pisteet >= puolet parhaasta) ryhmitellaan
-    harjoiksi: samalla linjalla (LINJA_DX_CM, LINJA_DY_CM) yhtaikaa nakyvat klusterit ovat saman harjan osia (harjanpaa + varsi tai kahvaosa), ja niista harjanpaa on heittajan puoleisin (Y' suurin).
-    ehdokkaita = kilpailevien harjojen maara, 1 = yksiselitteinen."""
+    peittynyt harja on valilla pienempi). Kelpaa vain klusteri, joka ei ole pesan takana (TAKA_Y_MIN_CM), esiintyy vahintaan MIN_ESIINTYMA ja on vahintaan MIN_ALA_CM2. Ellei sellaista ole,
+    kelpaa kuvan reunan katkaisema harja (reunalla): se nakyy vain hetkittain, joten esiintyma lasketaan koko konsensusikkunan ruuduista.
+    Palauttaa dict(X, Y, keski_X, keski_Y, ala_cm2, esiintyma, ehdokkaita, pisteet, reunalla, ...) tai None. Maali (X, Y) on harjanpaan alin kohta (heittajaa lahin paa, jaassa; mediaani
+    tavoiteikkunan havainnoista), keski_X, keski_Y harjanpaan keskipiste. Kilpailevat klusterit (pisteet >= puolet parhaasta) ryhmitellaan harjoiksi: samalla linjalla (LINJA_DX_CM, LINJA_DY_CM)
+    yhtaikaa nakyvat klusterit ovat saman harjan osia (harjanpaa + varsi tai kahvaosa), ja niista harjanpaa on heittajan puoleisin (Y' suurin). ehdokkaita = kilpailevien harjojen maara,
+    1 = yksiselitteinen."""
     sarja = [(t, e) for t, e in sarja if KONSENSUS_ALKU_S <= t <= KONSENSUS_LOPPU_S]
     ikkuna = [t for t, _ in sarja if TAVOITE_ALKU_S <= t <= TAVOITE_LOPPU_S]
     if not ikkuna:
         return None
+    kl = klusteroi(sarja)
     ehdolla = []
-    for c in klusteroi(sarja):
+    for c in kl:
         jas = [(t, e) for t, e in c["jasenet"] if TAVOITE_ALKU_S <= t <= TAVOITE_LOPPU_S]
         esiintyma = len({t for t, _ in jas}) / len(ikkuna)
         ala = float(np.percentile([e["ala_cm2"] for _, e in (jas or c["jasenet"])], 80))
@@ -238,6 +277,17 @@ def konsensus(sarja):
             continue
         ehdolla.append(dict(c, jas=jas or c["jasenet"], ajat={t for t, _ in jas}, esiintyma=esiintyma, ala_cm2=ala, pisteet=esiintyma * min(ala, KOKO_VERTAILU_CM2) / KOKO_VERTAILU_CM2, Y=Y,
                             X=float(np.median([e["X"] for _, e in (jas or c["jasenet"])]))))
+    if not ehdolla:
+        ruudut = len({t for t, _ in sarja})
+        for c in kl:
+            jas = c["jasenet"]
+            ala = float(np.percentile([e["ala_cm2"] for _, e in jas], 80))
+            Y = float(np.median([e["Y"] for _, e in jas]))
+            if not any(e.get("reunalla") for _, e in jas) or Y < TAKA_Y_MIN_CM or ala < MIN_ALA_CM2:
+                continue
+            esiintyma = len({t for t, _ in jas}) / ruudut
+            ehdolla.append(dict(c, jas=jas, ajat={t for t, _ in jas if TAVOITE_ALKU_S <= t <= TAVOITE_LOPPU_S}, esiintyma=esiintyma, ala_cm2=ala,
+                                pisteet=esiintyma * min(ala, KOKO_VERTAILU_CM2) / KOKO_VERTAILU_CM2, Y=Y, X=float(np.median([e["X"] for _, e in jas]))))
     if not ehdolla:
         return None
     paras = max(ehdolla, key=lambda c: (c["pisteet"], c["ala_cm2"]))
@@ -253,8 +303,19 @@ def konsensus(sarja):
     # Harjanpaa on harjan heittajan puoleinen paa; takana samalla linjalla yhtaikaa nakyva on varsi tai kahvaosa (Video2:n harjoissa puunvarvinen ja yhta suuri kuin harjanpaa)
     ajat = paras["ajat"]
     paras = max([c for c in harjat[0] if c is paras or len(c["ajat"] & ajat) >= max(2, YHTAIKAA_OSUUS * min(len(c["ajat"]), len(ajat)))], key=lambda c: c["Y"])
-    return dict(X=paras["X"], Y=paras["Y"], ala_cm2=paras["ala_cm2"], esiintyma=paras["esiintyma"], pisteet=paras["pisteet"], ehdokkaita=len(harjat),
-                pituus_cm=float(np.percentile([e["pituus_cm"] for _, e in paras["jas"]], 80)), kulma=float(np.median([e["kulma"] for _, e in paras["jas"]])), n=len(paras["jasenet"]))
+    jas = paras["jas"]
+    return dict(X=float(np.median([e.get("alin_X", e["X"]) for _, e in jas])), Y=float(np.median([e.get("alin_Y", e["Y"]) for _, e in jas])), keski_X=paras["X"], keski_Y=paras["Y"],
+                ala_cm2=paras["ala_cm2"], esiintyma=paras["esiintyma"], pisteet=paras["pisteet"], ehdokkaita=len(harjat),
+                pituus_cm=float(np.percentile([e["pituus_cm"] for _, e in jas], 80)), kulma=float(np.median([e["kulma"] for _, e in jas])), n=len(paras["jasenet"]),
+                reunalla=bool(np.mean([bool(e.get("reunalla")) for _, e in jas]) >= 0.5))
+
+
+def t_viivalle(X_alin, Y_alin, hack_X, hack_Y, etaisyys_cm):
+    """Maalimerkin paikka kaukopaan T-viivalla (cm keskiviivasta, + = heittajan oikealle): suora viiva heiton lahtohackista (heittajan koordinaatisto: X + = oikealle, Y pitkin rataa lahipaan
+    T-viivasta kaukopaahan, hack Y < 0) maalimerkin kautta kaukopaan T-viivalle (Y = etaisyys_cm). Maalimerkki (X_alin, Y_alin) on kaukopaan koordinaateissa (X' peilikuva, Y' = etaisyys
+    kaukopaan T-viivaan heittajaa kohti), kuten konsensus palauttaa."""
+    X_m, Y_m = -X_alin, etaisyys_cm - Y_alin
+    return float(hack_X + (X_m - hack_X) * (etaisyys_cm - hack_Y) / (Y_m - hack_Y))
 
 
 class MerkkiSeuranta:
