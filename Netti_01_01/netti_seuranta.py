@@ -2051,7 +2051,9 @@ def kierron_merkki(h):
 def heiton_suureet(h):
     """Paneelin ja kirjauksen suureet heitolle (Heitto): None, jos viivaestimaattia ei ole. liuku / heitto = suorien osumat kaukopaan T-viivalla (cm keskiviivasta, + =
     heittajan oikealle), irroitus = (heitto - liuku) * kierron merkki (vastapaivaan +1: etumerkki +, kun irroitus on kaarron vastaiseen suuntaan), kierre = kierrokset
-    hog-hog-valilla (- = vastapaivaan), irr_hog_m = etaisyys irroituksesta hog-viivaan kiven etureunasta mitattuna."""
+    hog-hog-valilla (- = vastapaivaan), irr_hog_m = etaisyys irroituksesta hog-viivaan kiven etureunasta mitattuna. Kun heiton maalimerkki (h.merkki) tunnetaan: merkki_T_cm = merkin
+    paikka T-viivalla ja liuku_merkista_cm / heitto_merkista_cm = (suoran osuma - merkki_T_cm) * kierron merkki, eli + = kierteesta ulospain (myotapaivaan pyoriva kivi kaartaa
+    oikealle: + = merkista vasemmalle; vastapaivaan: + = oikealle); None, ellei merkkia tai kierron suuntaa tunneta."""
     v = h.viivat
     if v is None:
         return None
@@ -2064,7 +2066,11 @@ def heiton_suureet(h):
         kierre = -s * abs(h.kierre["N"])
         if h.kierre.get("N_koko") is not None:
             kierre_koko = -s * abs(h.kierre["N_koko"])
+    T_m = h.merkki.get("T_cm") if isinstance(h.merkki, dict) else None                 # maalimerkin paikka kaukopaan T-viivalla (cm keskiviivasta, + = heittajan oikealle)
     return dict(liuku_cm=float(XT_l), heitto_cm=float(XT_i), merkki=s, irroitus_cm=(float(XT_i - XT_l) * s if s else None), kierre=kierre,
+                merkki_T_cm=(float(T_m) if T_m is not None else None), merkki_reunalla=bool(isinstance(h.merkki, dict) and h.merkki.get("reunalla")),
+                merkki_ehdokkaita=(h.merkki.get("ehdokkaita") if isinstance(h.merkki, dict) else None),                          # None: merkkia ei haeta; 0: ei loytynyt
+                liuku_merkista_cm=(float(XT_l - T_m) * s if T_m is not None and s else None), heitto_merkista_cm=(float(XT_i - T_m) * s if T_m is not None and s else None),
                 kierre_mitattu=bool(h.kierre is not None and h.kierre["lahde"] == "mitattu"), T_hh=(h.kierre["T"] if h.kierre else None),
                 irr_hog_m=float((HOG_SISA_CM - (v["irr_Y"] + KIVI_R_CM)) / 100.0), v_ennen=float(v["nopeus_ennen"]), v_jalkeen=float(v["nopeus_jalkeen"]),
                 hidastuvuus=float(v["vapaa_hidastuvuus"]), vapaa_matka_cm=float(v["vapaa_matka_cm"]), virhe_cm=float((L - v["irr_Y"]) * np.tan(np.radians(v["irr_virhe_deg"]))), vakaa=bool(v.get("vakaa")),

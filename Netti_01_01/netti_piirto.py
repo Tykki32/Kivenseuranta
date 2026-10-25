@@ -10,7 +10,7 @@ linjat jaavat nakyviin seuraavaan heittoon tai VIIVAT_S sekuntiin asti.
 Linjat ovat suoria (liukulinja: heiton liu'un keskimaarainen suunta hackista irroituspisteeseen; irroituslinja: vapaan lennon suunta irroitushetkella) ja
 ne jatketaan toisen paan T-viivalle; todellinen rata kaartaa (kierre), joten kiven rata poikeaa irroituslinjasta sita enemman mita pidemmalle mennaan.
 
-Tietopaneeli (ylapalkin vapaa alue): kivi (vari ja numero), liuku, heitto, irroitus (heitto - liuku kierteen suunnan mukaan), kierre (kierrokset hog-hog-valilla),
+Tietopaneeli (ylapalkin vapaa alue): kivi (vari ja numero), merkki (T-viivalla keskiviivasta), liuku ja heitto (merkista, + = kierteesta ulospain; ilman merkkia keskiviivasta), irroitus (heitto - liuku kierteen suunnan mukaan), kierre (kierrokset hog-hog-valilla),
 irroituksen etaisyys hog-viivaan, nopeudet ja hidastuvuus (netti_seuranta.heiton_suureet).
 
 Piirto tapahtuu ruudun paalle (ruutu muuttuu); piirtaja lukee analyysin heittoja (netti_seuranta.Heitto) suoraan, joten sita kutsutaan yhdesta saikeesta.
@@ -39,7 +39,7 @@ Y_ALKU_KAUKO = -170.0                    # linjan piirto kaukopaassa: Y' tasta .
 Y_LOPPU_KAUKO = 1100.0                   # ... tahan (cm T-viivasta)
 IRROITUSPISTE_PAKSUUS = 3
 PANEELI_PAIKKA = (284, 6)                # ylapalkin vapaa alue (x, y): ei logoa eika tulostaulua
-PANEELI_KORKEUS_MAX = 184
+PANEELI_KORKEUS_MAX = 204                # 9 riviä (Merkki mukana): 12 + 21 * 9 = 201
 RIVI_PX = 21                             # paneelin riviväli
 PANEELI_KOKO = 0.56
 KELLO_Y = 200                            # joukkueiden kellon laatikko: kuvan keskella mainosgrafiikan (LeaseDeal / Hyvinkaan Liikenne, alareuna y ~ 193) alla (vaakasuunnassa keskitetty)
@@ -139,8 +139,10 @@ def _luku(x, des=1, merkki=False):
 
 def paneelin_rivit(h, s, kierre_paalla=True):
     """Paneelin rivit [(teksti, vari, lisateksti)] heitolle h (netti_seuranta.Heitto) ja sen suureille s (netti_seuranta.heiton_suureet tai None). Muoto kuten kayttajan
-    maaritelma: Kivi, Liuku, Heitto, Irroitus (heitto - liuku, + = kaarron vastaiseen suuntaan), Kierre (- = vastapaivaan), Irroitus (m ennen hog-viivaa, kiven etureunasta),
-    Nopeus, Hidastuvuus. lisateksti: pieni harmaa huomautus (alustava)."""
+    maaritelma: Kivi, Merkki (maalimerkin paikka T-viivalla keskiviivasta, + = heittajan oikealle; "ei", ellei merkkia loytynyt; harmaa teksti: "reunalla" = kuvan reuna katkaisee
+    harjanpaan, "2 harjaa" = kaksi kilpailevaa), Liuku, Heitto (suorien osumat kaukopaan T-viivalla MERKISTA, jos maalimerkki tunnetaan: + = kierteesta ulospain eli myotapaivaan pyorivalla kivella vasemmalle,
+    ? kunnes kierron suunta tiedetaan; muuten keskiviivasta, + = heittajan oikealle; viite nakyy Liuku-rivin harmaassa tekstissa), Irroitus (heitto - liuku, + = kaarron vastaiseen
+    suuntaan), Kierre (- = vastapaivaan), Irroitus (m ennen hog-viivaa, kiven etureunasta), Nopeus, Hidastuvuus. lisateksti: pieni harmaa huomautus (alustava)."""
     vari_nimi = h.vari.capitalize()
     nro = h.kivi_nro if h.kivi_nro is not None else h.tunnus
     rivit = [(f"Kivi: {vari_nimi} {nro}", VARI_VALKOINEN, "" if (s is not None and s["vakaa"]) else "alustava")]
@@ -160,9 +162,20 @@ def paneelin_rivit(h, s, kierre_paalla=True):
             kierre_lisa = "alustava"
         else:
             kierre_lisa = (sg + " epävarma").strip()
+    if s.get("merkki_T_cm") is not None:            # merkki tiedossa: liuku ja heitto merkista, + = kierteesta ulospain (myotapaivaan: vasemmalle); ? kunnes kierron suunta tiedetaan
+        liuku = f"{_luku(s['liuku_merkista_cm'], 0, True)}cm" if s["liuku_merkista_cm"] is not None else "?"
+        heitto = f"{_luku(s['heitto_merkista_cm'], 0, True)}cm" if s["heitto_merkista_cm"] is not None else "?"
+        viite = "merkistä, + ulos"
+    else:                                           # ei merkkia: keskiviivasta, + = heittajan oikealle
+        liuku, heitto, viite = f"{_luku(s['liuku_cm'], 0, True)}cm", f"{_luku(s['heitto_cm'], 0, True)}cm", "keskiviivasta"
+    if s.get("merkki_ehdokkaita") is not None:      # Merkki: maalimerkin paikka kaukopaan T-viivalla keskiviivasta (+ = heittajan oikealle); ei rivia, jos merkkia ei haeta
+        if s["merkki_T_cm"] is not None:
+            rivit.append((f"Merkki: {_luku(s['merkki_T_cm'], 0, True)}cm", VARI_VALKOINEN, "reunalla" if s["merkki_reunalla"] else ("2 harjaa" if s["merkki_ehdokkaita"] > 1 else "keskiviivasta")))
+        else:
+            rivit.append(("Merkki: ei", VARI_HARMAA, ""))
     rivit += [
-        (f"Liuku: {_luku(s['liuku_cm'], 0, True)}cm", VARI_LIUKU, ""),
-        (f"Heitto: {_luku(s['heitto_cm'], 0, True)}cm", VARI_IRROITUS, ""),
+        (f"Liuku: {liuku}", VARI_LIUKU, viite),
+        (f"Heitto: {heitto}", VARI_IRROITUS, ""),
         (f"Irroitus: {irr}", VARI_VALKOINEN, ""),
         (f"Kierre: {kierre}", VARI_KIERRE, kierre_lisa),
         (f"Irroitus: {_luku(s['irr_hog_m'], 1)}m", VARI_VALKOINEN, ""),

@@ -1231,6 +1231,57 @@ def testaa_merkki_konsensus():
         mk.ehdokkaat = vanha
 
 
+def testaa_paneeli_merkista():
+    print("paneeli: Merkki-rivi (T-viivapaikka); Liuku ja Heitto merkista (+ = kierteesta ulospain; myotapaivaan -> vasemmalle), ilman merkkia keskiviivasta, ? kunnes kierron suunta tiedetaan; Irroitus = Heitto - Liuku")
+    import types
+    import netti_piirto as npi
+
+    def heitto(merkki, omega):
+        viivat = dict(liuku_a=10.0, liuku_b=0.0, irr_X=0.0, irr_Y=400.0, irr_suunta_deg=0.0, irr_virhe_deg=0.1, nopeus_ennen=2.0, nopeus_jalkeen=2.0, vapaa_hidastuvuus=0.05,
+                      vapaa_matka_cm=300.0, vakaa=True)                                    # liuku osuu T-viivalle kohtaan +10 cm, irroitussuora kohtaan 0 cm
+        kierto = None if omega is None else dict(omega_deg_s=omega, varma=True)
+        return types.SimpleNamespace(viivat=viivat, merkki=merkki, kierto=kierto, kauko_kierto=None, kierre=None, kauko=None, vakiot=None, vari="punainen", kivi_nro=3, tunnus=1,
+                                     kierto_tila="valmis", saapuminen=None, kauko_kierto_tila=None)
+
+    def rivit(h):
+        s = ns.heiton_suureet(h)
+        d = {}
+        for t, _, lisa in npi.paneelin_rivit(h, s):
+            d.setdefault(t.split(":")[0], (t, lisa))                                   # (kaksi 'Irroitus'-riviä: ensimmäinen on heitto - liuku)
+        return s, d
+
+    s, r = rivit(heitto(dict(X=0.0, Y=0.0, ehdokkaita=1, T_cm=-15.0), +50.0))                 # vastapaivaan (kaartaa vasemmalle), merkki T-viivalla -15 cm: suorat ovat merkin oikealla puolella = ulkopuolella
+    tarkista("vastapaivaan, merkki -15 cm: liuku +25 cm, heitto +15 cm merkista (+ = ulos, tassa oikealle)", abs(s["liuku_merkista_cm"] - 25.0) < 1e-9 and abs(s["heitto_merkista_cm"] - 15.0) < 1e-9, str((s["liuku_merkista_cm"], s["heitto_merkista_cm"])))
+    tarkista("paneeli: 'Liuku: +25cm' ja viite 'merkistä, + ulos', 'Heitto: +15cm'", r["Liuku"] == ("Liuku: +25cm", "merkistä, + ulos") and r["Heitto"][0] == "Heitto: +15cm", str(r["Liuku"] + r["Heitto"]))
+    tarkista("Irroitus = Heitto - Liuku samalla etumerkilla (-10 cm)", r["Irroitus"][0] == "Irroitus: -10cm" and abs(s["irroitus_cm"] - (s["heitto_merkista_cm"] - s["liuku_merkista_cm"])) < 1e-9, r["Irroitus"][0])
+    s, r = rivit(heitto(dict(X=0.0, Y=0.0, ehdokkaita=1, T_cm=35.0), -50.0))                  # myotapaivaan (kaartaa oikealle), merkki +35 cm: suorat ovat merkin vasemmalla puolella = ulkopuolella
+    tarkista("myotapaivaan, merkki +35 cm: suorat merkin vasemmalla (ulkopuolella) -> liuku +25 cm, heitto +35 cm", abs(s["liuku_merkista_cm"] - 25.0) < 1e-9 and abs(s["heitto_merkista_cm"] - 35.0) < 1e-9, str((s["liuku_merkista_cm"], s["heitto_merkista_cm"])))
+    s, r = rivit(heitto(dict(X=0.0, Y=0.0, ehdokkaita=1, T_cm=-15.0), -50.0))                 # myotapaivaan (kaartaa oikealle), suorat merkin oikealla = kaarron suuntaan = sisapuolella
+    tarkista("myotapaivaan, suorat merkin oikealla (kaarron suuntaan): negatiivinen (-25, -15)", abs(s["liuku_merkista_cm"] + 25.0) < 1e-9 and abs(s["heitto_merkista_cm"] + 15.0) < 1e-9, str((s["liuku_merkista_cm"], s["heitto_merkista_cm"])))
+    s, r = rivit(heitto(dict(X=0.0, Y=0.0, ehdokkaita=1, T_cm=-15.0), None))
+    tarkista("merkki mutta kierron suunta tuntematon: ? (ei arvattua etumerkkia)", s["liuku_merkista_cm"] is None and r["Liuku"][0] == "Liuku: ?" and r["Heitto"][0] == "Heitto: ?" and s["merkki_T_cm"] == -15.0, str(r["Liuku"] + r["Heitto"]))
+    h = heitto(dict(X=0.0, Y=0.0, ehdokkaita=1, T_cm=-15.0), +50.0)
+    s, r = rivit(h)
+    nimet = [t.split(":")[0] for t, _, _ in npi.paneelin_rivit(h, s)]
+    tarkista("paneeli: Merkki-rivi (T-viivapaikka keskiviivasta) heti Kivi-rivin jalkeen, ennen Liukua", r["Merkki"] == ("Merkki: -15cm", "keskiviivasta") and nimet[:3] == ["Kivi", "Merkki", "Liuku"], str(r["Merkki"]) + str(nimet[:3]))
+    p = npi.Piirtaja(None, fps=30.0)
+    p._x = None
+    kuva, maski = p._paneeli_kuva([(t, v, l) for t, v, l in npi.paneelin_rivit(h, s)], vlk="_x")
+    tarkista("paneeli: yhdeksan riviä mahtuu laatikkoon (viimeinen rivi ei leikkaudu)", kuva.shape[0] >= 12 + npi.RIVI_PX * 9 and bool(maski[-24:].any()) and kuva.shape[0] <= npi.PANEELI_KORKEUS_MAX, f"korkeus {kuva.shape[0]}")
+    s, r = rivit(heitto(dict(X=0.0, Y=0.0, ehdokkaita=1, T_cm=257.6, reunalla=True), +50.0))
+    tarkista("Merkki-rivi: kuvan reunan katkaisema harja -> 'reunalla'", r["Merkki"] == ("Merkki: +258cm", "reunalla"), str(r["Merkki"]))
+    s, r = rivit(heitto(dict(X=0.0, Y=0.0, ehdokkaita=2, T_cm=-15.0), +50.0))
+    tarkista("Merkki-rivi: kaksi kilpailevaa harjaa -> '2 harjaa'", r["Merkki"] == ("Merkki: -15cm", "2 harjaa"), str(r["Merkki"]))
+    s, r = rivit(heitto(dict(ehdokkaita=0), +50.0))
+    tarkista("Merkki-rivi: merkkia ei loytynyt -> 'Merkki: ei', Liuku keskiviivasta", r["Merkki"][0] == "Merkki: ei" and r["Liuku"][1] == "keskiviivasta", str(r["Merkki"] + r["Liuku"]))
+    s, r = rivit(heitto(None, +50.0))
+    tarkista("ei Merkki-riviä, kun merkin hakua ei ole (h.merkki None): paneeli kuten ennen", "Merkki" not in r and r["Liuku"][1] == "keskiviivasta", str(list(r)))
+    for merkki in (None, dict(ehdokkaita=0), dict(X=0.0, Y=0.0, ehdokkaita=1, T_cm=None)):
+        s, r = rivit(heitto(merkki, +50.0))
+        tarkista(f"ei merkkia ({merkki}): luvut keskiviivasta (+10, +0 cm, + = heittajan oikealle), viite 'keskiviivasta'",
+                 s["merkki_T_cm"] is None and r["Liuku"] == ("Liuku: +10cm", "keskiviivasta") and r["Heitto"][0] == "Heitto: +0cm" and abs(s["liuku_cm"] - 10.0) < 1e-9, str(r["Liuku"] + r["Heitto"]))
+
+
 def testaa_piirto_liuku():
     print("piirto: koko mitattu pistejono (liuku + irroituksen jalkeinen lento) kaikki kerralla heti kun heiton alku on tulosteessa, irroituksen kohdalla musta ympyra (kun viivaestimaatti on valmis)")
     import types
@@ -1284,7 +1335,7 @@ def testaa_piirto_liuku():
 
 
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki, testaa_merkki_konsensus, testaa_piirto_liuku):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki, testaa_merkki_konsensus, testaa_paneeli_merkista, testaa_piirto_liuku):
         t()
     print()
     if VIRHEITA:
