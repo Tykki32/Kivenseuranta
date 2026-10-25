@@ -1,8 +1,11 @@
 """Piirrokset alkuperaiseen (1920 x 1080) videoruutuun, ei top-down-kuvaa.
 
-Heittopaa (vasen / oikea puolisko): kiven keskikohta pisteina jaan tasolla (kiven akselin kohta jaalla, z = PISTE_Z = 0), live: piste ilmestyy kun sen ruutu nayttyy tulosteessa; koko
-pistejoukko jaa nakyviin JALKI_S sekuntia heiton loputtua. Toinen paa: liukulinja ja irroituslinja heti heiton alusta (tulosteen kuva on analyysia VIIVE_S jäljessa,
-joten estimaatti ehtii valmistua ennen kuin kivi liikahtaa tulosteessa); linjat jaavat nakyviin seuraavaan heittoon tai VIIVAT_S sekuntiin asti.
+Heittopaa (vasen / oikea puolisko): kiven keskikohta pisteina jaan tasolla (kiven akselin kohta jaalla, z = PISTE_Z = 0). Koko tahan mennessa mitattu pistejono (liuku ja irroituksen
+jalkeinen lento puoliskon loppuun) piirretaan kaikki kerralla heti kun heiton alku on tulosteessa: tulosteen kuva on analyysia VIIVE_S jäljessa, joten pistejono on yleensa valmis ennen
+kuin kivi liikahtaa, ja kivi nakyy seuraavan valmiiksi piirrettya jonoa (nykyinen paikka on rengas). Jos analyysi on tulosteen perassa, pisteet ilmestyvat sita mukaa kuin ne valmistuvat.
+Irroituksen kohta (viivaestimaatin irroituspiste) merkitaan mustalla ympyralla. Pistejoukko jaa nakyviin JALKI_S sekuntia heiton loputtua.
+Toinen paa: liukulinja ja irroituslinja heti heiton alusta (tulosteen kuva on analyysia VIIVE_S jäljessa, joten estimaatti ehtii valmistua ennen kuin kivi liikahtaa tulosteessa);
+linjat jaavat nakyviin seuraavaan heittoon tai VIIVAT_S sekuntiin asti.
 
 Linjat ovat suoria (liukulinja: heiton liu'un keskimaarainen suunta hackista irroituspisteeseen; irroituslinja: vapaan lennon suunta irroitushetkella) ja
 ne jatketaan toisen paan T-viivalle; todellinen rata kaartaa (kierre), joten kiven rata poikeaa irroituslinjasta sita enemman mita pidemmalle mennaan.
@@ -25,6 +28,8 @@ VARI_NYKYINEN = (40, 220, 255)           # nykyinen paikka: keltainen rengas
 VARI_LIUKU = (0, 140, 255)               # oranssi
 VARI_IRROITUS = (255, 60, 220)           # magenta
 VARI_KIERRE = (255, 215, 110)            # vaalea sininen
+VARI_IRROITUSPISTE = (0, 0, 0)           # irroituksen kohdan ympyra: musta (valkoinen reuna nakyy tummallakin jaalla)
+IRROITUSPISTE_R = 11                     # ympyran sade (px) ja viivan paksuus
 VARI_PANEELI = (30, 30, 30)
 VARI_NIMI = {"keltainen": (60, 220, 255), "punainen": (120, 120, 255)}        # kiven nimen vari kuvassa (BGR)
 VARI_HARMAA = (170, 170, 170)
@@ -32,6 +37,7 @@ VARI_VALKOINEN = (255, 255, 255)
 FONTTI = cv2.FONT_HERSHEY_SIMPLEX
 Y_ALKU_KAUKO = -170.0                    # linjan piirto kaukopaassa: Y' tasta ...
 Y_LOPPU_KAUKO = 1100.0                   # ... tahan (cm T-viivasta)
+IRROITUSPISTE_PAKSUUS = 3
 PANEELI_PAIKKA = (284, 6)                # ylapalkin vapaa alue (x, y): ei logoa eika tulostaulua
 PANEELI_KORKEUS_MAX = 184
 RIVI_PX = 21                             # paneelin riviväli
@@ -217,7 +223,7 @@ class Piirtaja:
             return v[1:]
         pts = h.pisteet()
         if not pts:
-            r = (np.zeros(0), np.zeros((0, 2)), [])
+            r = (np.zeros(0), np.zeros((0, 2)), [], np.zeros((0, 2)))
         else:
             F = np.array([p[0] for p in pts])
             P = mediaani5(np.array([[p[1], p[2]] for p in pts]))
@@ -233,20 +239,44 @@ class Piirtaja:
                         interp.append(True)
                 Ff.append(F[i]); Pf.append(P[i]); interp.append(False)
             Pf = np.array(Pf)
-            r = (np.array(Ff), self.g[h.puoli].maa_kuvaan(Pf[:, 0], Pf[:, 1], self.z), interp)
+            r = (np.array(Ff), self.g[h.puoli].maa_kuvaan(Pf[:, 0], Pf[:, 1], self.z), interp, Pf)
         self._pisteet_vlk[h.tunnus] = (avain,) + r
         return r
 
+    @staticmethod
+    def _liuku_n(h, P):
+        """Liu'un pisteiden lukumaara pistejonossa: indeksit < n ovat liukua, n - 1 on viivaestimaatin irroituspistetta lahin piste. None, ellei estimaattia (viel) ole."""
+        v = h.viivat
+        if v is None or "irr_X" not in v or len(P) == 0:
+            return None
+        return int(np.argmin(np.hypot(P[:, 0] - v["irr_X"], P[:, 1] - v["irr_Y"]))) + 1
+
+    def _irroituspiste(self, img, h):
+        """Musta ympyra irroituksen kohtaan (viivaestimaatin irroituspiste jaan tasolla); valkoinen reuna, jotta se nakyy myos tummalla jaalla."""
+        v = h.viivat
+        u, w = (float(q[0]) for q in np.asarray(self.g[h.puoli].maa_kuvaan([v["irr_X"]], [v["irr_Y"]], self.z)).T)
+        c = (int(round(u)), int(round(w)))
+        cv2.circle(img, c, IRROITUSPISTE_R + IRROITUSPISTE_PAKSUUS // 2 + 1, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.circle(img, c, IRROITUSPISTE_R, VARI_IRROITUSPISTE, IRROITUSPISTE_PAKSUUS, cv2.LINE_AA)
+
     def _pisteet(self, img, h, f_out):
-        Ff, uv, interp = self._pistejono(h)
-        n = int(np.searchsorted(Ff, f_out, side="right"))
-        if n == 0:
-            return
-        c = np.round(uv[:n]).astype(np.int32)
-        for (u, v), ip in zip(c[:-1], interp[:n - 1]):
+        """Koko tahan mennessa mitattu pistejono (liuku + irroituksen jalkeinen lento) kaikki kerralla heti kun heiton alku on tulosteessa: kivi nakyy seuraavan valmiiksi piirrettya
+        jonoa (analyysi on tulosteen edella, joten jono on yleensa valmis; jos ei, pisteet ilmestyvat sita mukaa kuin ne valmistuvat). Nykyinen paikka (tulosteen ruutu) renkaana ja
+        irroituksen kohta mustalla ympyralla, kun viivaestimaatti on valmis."""
+        Ff, uv, interp, P = self._pistejono(h)
+        n_live = int(np.searchsorted(Ff, f_out, side="right"))
+        if n_live == 0:
+            return                                                          # heitto ei ole viela alkanut tulosteessa
+        c = np.round(uv).astype(np.int32)
+        for i in range(len(Ff)):
+            if i == n_live - 1:
+                continue                                                    # nykyinen paikka piirretaan viimeisena
+            (u, v), ip = c[i], interp[i]
             cv2.circle(img, (int(u), int(v)), 3 if not ip else 2, VARI_PISTE_REUNA, -1, cv2.LINE_AA)
             cv2.circle(img, (int(u), int(v)), 2 if not ip else 1, VARI_PISTE, -1, cv2.LINE_AA)
-        u, v = c[-1]
+        if self._liuku_n(h, P) is not None:
+            self._irroituspiste(img, h)
+        u, v = c[n_live - 1]
         if f_out <= (h.f_loppu if h.f_loppu is not None else 10 ** 9) + 2:       # kivi viela kuva-alalla: nykyinen paikka renkaana ja kiven nimi (vari + numero) vieressa
             cv2.circle(img, (int(u), int(v)), 7, VARI_PISTE_REUNA, 3, cv2.LINE_AA)
             cv2.circle(img, (int(u), int(v)), 7, VARI_NYKYINEN, 1, cv2.LINE_AA)

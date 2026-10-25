@@ -45,6 +45,7 @@ import kivi_netti as kv
 import kivi_tarkka as kt
 import kivimalli
 import lepo_haku
+import merkki
 import liuku_irroitus as li
 import netti_kierre as nk
 import netti_tausta
@@ -241,6 +242,7 @@ class Kuvain:
 
     def __init__(self, cam):
         x0, y0, w, h = kv.kn.PUOLET[cam.puoli]
+        self.puolisko = (x0, y0, w, h)                               # puoliskon suorakulmio alkuperaisessa ruudussa
         self.mx = (x0 + (w - 1) - cam.map2).astype(np.float32)       # oikaistun pikselin (u, v) lahde alkuperaisessa ruudussa
         self.my = (y0 + cam.map1).astype(np.float32)
         self.w, self.h = cam.w, cam.h
@@ -763,6 +765,7 @@ class Heitto:
         self.kierto_tila = None                # None | "kaynnissa" | "valmis" | "virhe"
         self.hog1_f = None                     # ruutu (murtoluku), jolla kivi ylitti heittopaan hog-viivan (vasemman puoliskon rata)
         self.hog2_f = None                     # ruutu, jolla kivi ylitti kaukopaan hog-viivan (oikean puoliskon kuva)
+        self.merkki = None                     # maalimerkki (merkki.py, kaukopaan koordinaatit; X, Y = harjanpaan alin kohta): dict(X, Y, ala_cm2, esiintyma, ehdokkaita, reunalla, T_cm, ...) | dict(ehdokkaita=0) (ei loytynyt) | None (ei haettu); alustava heiton lahdossa, lopullinen konsensusikkunan paatyttya
         self.saapuminen = None                 # kaukopaan haku: None | "haku" | "loytyi" | "ei_loytynyt"
         self.kauko = None                      # kaukopaan seuranta (KaukoSeuranta._valmis): dict(tila, paikat, pysahtyminen, hog-ylitys ...) tai None
         self.vakiot = None                     # kiven vakiot (netti_vakiot.sovita): kitkataso A ja kaarto kappa kaukopaan radasta, tai dict(ok=False, syy=...)
@@ -1303,6 +1306,7 @@ class Heittopaa(_Seuranta):
         while i > 0 and np.hypot(self.lepo[i - 1][1] - X0, self.lepo[i - 1][2] - Y0) > 2.0:
             i -= 1
         h.f_alku = self.lepo[i][0] if i < len(self.lepo) else f
+        self.an.merkki_alku(h, f)
         self.an.tapahtumat.append(("lahto", h.tunnus, f, f"f_alku {h.f_alku}"))
         # lahtoa edeltavat A-havainnot saavat B:n myohemmin (uusi pyynto ei onnistu ilman ruutuja): ne jaavat A-paikoiksi
 
@@ -2121,6 +2125,8 @@ class Analyysi:
         self.kaukoseurannat = []                     # tunnistetut kaukopaan kivet seurannassa (KaukoSeuranta)
         self.lepohaut = []                           # [(heitto, LepoHaku)]: hukassa-heittojen lepopaikan haku pesan kartasta (lepo_haku)
         self._lepo_kartat = {}                       # puoli -> PesaKartta
+        self.merkit = None if os.environ.get("NETTI_EI_MERKKIA") else merkki.MerkkiSeuranta({p: self.M[p] for p in paat}, self.fps)       # maalimerkin (kaukopaan harjanpaa) moniruutuhaku
+        self._merkki_odottavat = []                  # [(viimeistelyruutu, heitto)]: maalimerkki viimeistellaan, kun konsensusikkunan loppu (merkki.KONSENSUS_LOPPU_S) on tullut
         self.paat = {p: Heittopaa(self, p) for p in paat}
         self.heitot = []                             # vahvistetut heitot (piirtajalle)
         self.valmiit, self.hylatyt = [], []
@@ -2161,6 +2167,35 @@ class Analyysi:
         if h is None:
             h = self._haut[puoli] = kivi_haku.GraniittiHaku(self.M[puoli], X=(-SAAP_X_CM, SAAP_X_CM), Y=SAAP_Y_CM)
         return h
+
+    def _merkki_tulos(self, h, f_asti=None):
+        """Heiton maalimerkki kaukopaan skannauksista (merkki.konsensus): dict(X, Y, ala_cm2, esiintyma, ehdokkaita, reunalla, T_cm, ...) kaukopaan koordinaateissa (X, Y = harjanpaan alin kohta),
+        tai dict(ehdokkaita=0), ellei merkkia loydy. T_cm = maalimerkin paikka kaukopaan T-viivalla (cm keskiviivasta, + = heittajan oikealle), kun suora viiva piirretaan heiton lahtohackista
+        (h.lepo) maalimerkin kautta T-viivalle."""
+        k = self.merkit.konsensus("oikea" if h.puoli == "vasen" else "vasen", h.f_alku, f_asti)
+        if k is None:
+            return dict(ehdokkaita=0)
+        k["T_cm"] = merkki.t_viivalle(k["X"], k["Y"], h.lepo[0], h.lepo[1], ETAISYYS_CM) if h.lepo is not None else None
+        return k
+
+    def merkki_alku(self, h, f):
+        """Heitto lahti (Heittopaa._lahto): alustava maalimerkki skannauksista tahan asti; lopullinen, kun konsensusikkunan loppu on tullut (merkki_valmiit)."""
+        if self.merkit is None:
+            return
+        h.merkki = self._merkki_tulos(h, f)
+        self._merkki_odottavat.append((h.f_alku + int(round(merkki.KONSENSUS_LOPPU_S * self.fps)), h))
+
+    def merkki_valmiit(self, f, kaikki=False):
+        """Viimeistele niiden heittojen maalimerkki, joiden konsensusikkuna on kulunut (f >= viimeistelyruutu; kaikki: videon loppu, kaikki kesken olevat)."""
+        if not self._merkki_odottavat:
+            return
+        jaa = []
+        for f_val, h in self._merkki_odottavat:
+            if kaikki or f >= f_val:
+                h.merkki = self._merkki_tulos(h, None if kaikki else f)
+            else:
+                jaa.append((f_val, h))
+        self._merkki_odottavat = jaa
 
     def graniittihaku_hack(self, puoli):
         """Hack-alueen graniittihaku (valimuistissa): kivi levossa rungosta (viritys)."""
@@ -2735,6 +2770,7 @@ class Analyysi:
     def viimeistele(self):
         """Videon loputtua: paata keskenerat heitot, odota kesken olevat tyot (B, estimaatit, kierre)."""
         self.paata_kesken()
+        self.merkki_valmiit(None, kaikki=True)
         for ks in self.kaukoseurannat:
             ks.paata_kesken(self.viim_f)
         self.odota(f_asti=10 ** 12)
@@ -2797,6 +2833,8 @@ class Analyysi:
         self.viim_f = f
         if self._fps_auto and self.yksilollisia + self.kopioita >= 150:
             self._paata_fps_lahde()
+        if self.merkit is not None:
+            self.merkit.syota(f, ruutu)                  # kaukopaan harjanpaat 0,5 s valein (ennen heittopaita: heiton lahto saa alustavan merkin tamankin ruudun skannauksesta)
         for hp in self.paat.values():
             hp.kasittele(f, ruutu)
             h = hp.heitto
@@ -2817,6 +2855,7 @@ class Analyysi:
                 self._lepo_valmis(*hl)
         t3 = pc()
         self.aika["kaukopaa"] += t3 - t2
+        self.merkki_valmiit(f)
         self.odota(f - self.viive_b if (self.synkroninen or self.toistettava) else None)
         t4 = pc()
         self.aika["odota (B, taustatyot)"] += t4 - t3

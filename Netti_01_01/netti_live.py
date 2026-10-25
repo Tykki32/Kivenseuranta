@@ -576,7 +576,9 @@ class Kirjaaja:
                # lepopaikan lahde: seuranta (kivi pysahtyi nakyviin) | kartta (kivi hukattiin, lepopaikka loydettiin pesan kartasta, lepo_haku.py: pysahtymishetki tuntematon) | epaselva | ei_loytynyt
                "lepo_lahde",
                # pesan kartasta (lepo_haku.py) loydetty lepopaikka kaikille heitoille, joiden kivi loytyi; ero seurannan pysahtymispaikkaan (cm), kuinka monta ehdokasta oli (1 = yksiselitteinen) ja matka seurannan viimeisesta paikasta (cm; iso matka = tunnistus epavarmempi)
-               "lepo_kartta_X_cm", "lepo_kartta_Y_cm", "lepo_kartta_ero_cm", "lepo_kartta_ehdokkaita", "lepo_kartta_matka_cm"]
+               "lepo_kartta_X_cm", "lepo_kartta_Y_cm", "lepo_kartta_ero_cm", "lepo_kartta_ehdokkaita", "lepo_kartta_matka_cm",
+               # maalimerkki (merkki.py): kaukopaan harjanpaan ALIN KOHTA (heittajaa lahin paa) heiton ympariston konsensuksena, heittajan koordinaatistossa (X + = heittajan oikealle, Y = T-viivasta heittajaa kohti, + = ennen T-viivaa), kilpailevien harjojen maara (1 = yksiselitteinen, 2 = kaksi yhta hyvaa harjaa; 0 = ei loytynyt), osuus tavoiteikkunan (-2...+5 s heiton lahdosta) ruuduista, joissa harja nakyy, maalimerkin paikka kaukopaan T-viivalla (cm keskiviivasta, + = heittajan oikealle) kun suora viiva piirretaan heiton lahtohackista maalimerkin kautta, ja 1, kun kuvan reuna katkaisee harjanpaan (paikka likimaarainen)
+               "merkki_X_cm", "merkki_Y_cm", "merkki_ehdokkaita", "merkki_esiintyma", "merkki_T_cm", "merkki_reunalla"]
     OTSIKKO_KIVET = ["vari", "kivi_nro", "heittoja", "A_mediaani", "A_hajonta", "kappa_heittoja", "kappa_mediaani", "kappa_hajonta", "heitot"]
 
     def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False, radat_polku=None):
@@ -769,7 +771,7 @@ class Kirjaaja:
             ns_ = [n for n in h.naytteet if n.paikka() is not None and h.f_alku is not None and n.f >= h.f_alku]
             out.append(dict(tunnus=h.tunnus, vari=h.vari, puoli=h.puoli, kivi_nro=h.kivi_nro, f_alku=h.f_alku, f_loppu=h.f_loppu, hog1_f=h.hog1_f, hog2_f=h.hog2_f,
                             near=[(n.f, float(n.paikka()[0]), float(n.paikka()[1]), bool(n.kivi())) for n in ns_], viivat=h.viivat, kierto=h.kierto, kauko_kierto=h.kauko_kierto,
-                            kierre=h.kierre, kauko=h.kauko, vakiot=h.vakiot, saapuminen=h.saapuminen,
+                            kierre=h.kierre, kauko=h.kauko, vakiot=h.vakiot, saapuminen=h.saapuminen, merkki=h.merkki,
                             viivat_syote=[(n.f, float(n.B[0]), float(n.B[1])) for n in h.kelvolliset_b()],            # laske_viivat:n tarkka syote: irroituksen tunnistuksen voi ajaa uudelleen (tools/sovita_irroitus.py)
                             kahva_ala=[(n.f, float(n.ala), float(n.A[0]), float(n.A[1])) for n in h.naytteet if n.A is not None and n.ala]))
         with open(self.radat_polku, "wb") as fh:
@@ -863,6 +865,13 @@ class Kirjaaja:
                 rivi += [N(-lk["X"], 1), N(lk["Y"], 1), N(ero, 1), lk["ehdokkaita"], N(lk["ero_cm"], 0)]
             else:
                 rivi += [""] * 5
+        mk = h.merkki
+        if mk is None:
+            rivi += [""] * 6
+        elif "X" in mk:
+            rivi += [N(-mk["X"], 1), N(mk["Y"], 1), mk["ehdokkaita"], N(mk["esiintyma"], 2), N(mk.get("T_cm"), 1), int(bool(mk.get("reunalla")))]
+        else:
+            rivi += ["", "", 0, "", "", ""]
         return rivi
 
     def _kirjoita_csv(self, an):
@@ -1162,7 +1171,7 @@ def main():
     ap.add_argument("--url", help="suora virran osoite (http / https / rtsp / m3u8), luetaan kuten YouTube-virta")
     ap.add_argument("--kansio", default=None, help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json). Oletus: tiedostolahteelle (ja YouTube / --url -virralle, ei live) sopiva kansio valitaan automaattisesti "
                     "(tulokset, tulokset_nettivideo2, ...) tai video kalibroidaan kansioon tulokset_auto_<nimi> (kalibrointi_valinta.py); muulle lahteelle tulokset")
-    ap.add_argument("--viive", type=float, default=10.0, help="tulosteen viive analyysiin nahden (s); oletus 10: 97 %:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm) kun viiva ilmestyy (5 s: 12 %)")
+    ap.add_argument("--viive", type=float, default=10.0, help="tulosteen viive analyysiin nahden (s); oletus 10: 97 %%:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm) kun viiva ilmestyy (5 s: 12 %%)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")
     ap.add_argument("--viivat", type=float, default=60.0, help="linjat nakyvissa taman ajan heiton alusta, tai seuraavaan heittoon (s)")
     ap.add_argument("--ulos", nargs="?", const="auto", help="tallenna tuloste tiedostoon (mp4); ilman nimea: kivenseuranta_<paivays>_<aika>.mp4 nykyiseen kansioon")
