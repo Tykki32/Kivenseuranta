@@ -962,8 +962,73 @@ def testaa_lepo_haku():
     tarkista("videon loppu kesken odotuksen: jo vahvistettu ehdokas ratkaistaan", h.tulos is not None and "X" in h.tulos, str(h.tulos))
 
 
+def testaa_esilataus_viive():
+    """netti_live.Esilataus (pitka puskuri pakattuna) ja Piirtaja: 'Viive:' kellon ylapuolella."""
+    import time
+    import cv2
+    import netti_live as nl
+    import netti_piirto as npi
+    rng = np.random.default_rng(5)
+
+    def ruudut(n, viive_s=0.0):
+        for f in range(n):
+            if viive_s:
+                time.sleep(viive_s)
+            fr = np.full((64, 96, 3), 120, np.uint8)
+            fr[10:30, 20:60] = (f % 200, 60, 200 - f % 200)                         # tasainen vari: YUV 4:2:0 -pakkaus ei vaikuta lahes lainkaan
+            yield f, fr
+
+    ulos = list(nl.Esilataus(ruudut(20), 4, 2.0, 10.0))
+    tarkista("esilataus: jarjestys ja maara sailyvat (pakattu puskuri)", [f for f, _ in ulos] == list(range(20)), str([f for f, _ in ulos]))
+    f0, fr0 = ulos[3]
+    tarkista("esilataus: pakkauksen kautta kulkenut ruutu on lahes sama (tasainen kuva, virhe <= 2)", fr0.shape == (64, 96, 3) and int(np.abs(fr0[10:30, 20:60].astype(int) - np.array([f0 % 200, 60, 200 - f0 % 200])).max()) <= 2 and int(np.abs(fr0[40:60, 70:90].astype(int) - 120).max()) <= 2)
+    ulos = list(nl.Esilataus(ruudut(5), 4, 0.0, 10.0))
+    tarkista("esilataus: ilman pitkaa puskuria ruutu on raaka (tarkalleen sama)", np.array_equal(ulos[1][1][40:60, 70:90], np.full((20, 20, 3), 120, np.uint8)))
+    ulos = list(nl.Esilataus(ruudut(5), 0, 0.0, 10.0))
+    tarkista("esilataus: n = 0 -> ei erillista saiettta, kaikki ruudut", len(ulos) == 5)
+    e = nl.Esilataus(ruudut(40), 2, 3.0, 10.0)                                        # kapasiteetti 30 ruutua
+    time.sleep(0.5)
+    tarkista("esilataus: puskuri tayttyy lukijan edelle (kapasiteetti 3 s = 30 ruutua)", 2.5 <= e.pituus_s <= 3.0 + 1e-9, f"{e.pituus_s:.1f} s")
+    f, _ = next(e)
+    tarkista("esilataus: ruutu 0 ensin, lukuhetki kirjattu", f == 0 and e.t_luettu <= time.time())
+    e.sulje()
+
+    def rikkoutuva():
+        yield from ruudut(3)
+        raise RuntimeError("verkko katkesi")
+    sain = []
+    try:
+        for f, _ in nl.Esilataus(rikkoutuva(), 2, 1.0, 10.0):
+            sain.append(f)
+        virhe = False
+    except RuntimeError:
+        virhe = True
+    tarkista("esilataus: luvun poikkeus annetaan kuluttajalle ruutujen jalkeen", sain == [0, 1, 2] and virhe, str(sain))
+
+    class An:
+        heitot = []
+    for v, vari_pitaisi in ((0.3, "valkoinen"), (2.0, "keltainen"), (5.0, "punainen")):
+        p = npi.Piirtaja(None, fps=30.0)
+        p.viive_nyt, p.puskuri_s = v, 28.0
+        kuva = np.zeros((1080, 1920, 3), np.uint8)
+        p.piirra(kuva, 0, An())
+        y0 = npi.KELLO_Y - 4 - 33
+        alue = kuva[max(0, y0 - 10):npi.KELLO_Y, :]
+        tekstia = alue[:, (1920 - 270) // 2: (1920 + 270) // 2].reshape(-1, 3)
+        kirkkaat = tekstia[tekstia.max(axis=1) > 150]
+        tarkista(f"Piirtaja: 'Viive' piirtyy kellon ylapuolelle ({v:.1f} s: {vari_pitaisi})", len(kirkkaat) > 50, f"{len(kirkkaat)} kirkasta pikselia")
+        if len(kirkkaat) > 50:
+            kesk = kirkkaat.mean(axis=0)                       # BGR
+            ok = {"valkoinen": kesk.min() > 150, "keltainen": kesk[2] > 150 and kesk[0] < 100, "punainen": kesk[2] > 150 and kesk[1] < 120 and kesk[0] < 120}[vari_pitaisi]
+            tarkista(f"Piirtaja: 'Viive'-rivin vari ({vari_pitaisi})", bool(ok), f"BGR {kesk.astype(int).tolist()}")
+    p = npi.Piirtaja(None, fps=30.0)
+    kuva = np.zeros((1080, 1920, 3), np.uint8)
+    p.piirra(kuva, 0, An())
+    tarkista("Piirtaja: ilman viive_nyt (toistotilat) ei piirreta Viive-riviä", int(kuva.max()) == 0)
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive):
         t()
     print()
     if VIRHEITA:

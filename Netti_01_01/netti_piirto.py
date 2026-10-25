@@ -202,6 +202,9 @@ class Piirtaja:
         self._pisteet_vlk = {}                      # heiton tunnus -> (avain, F, uv, interp): siloteltu pistejono kuvapisteina (lasketaan kun aineisto muuttuu)
         self._paneeli_vlk = None                    # (avain, kuva, maski): valmiiksi piirretty paneeli
         self._kello_vlk = None                      # sama kellon laatikolle
+        self.viive_nyt = None                       # reaaliaika (netti_live): kuinka monta sekuntia myohemmin kuva nakyy kuin sen oma aika + viive (None = ei tietoa: toistotilat); piirtosaie asettaa ennen piirra()
+        self.puskuri_s = None                       # esilatauspuskurissa oleva video (s) tai None
+        self._viive_vlk = None                      # Viive-rivin laatikko
         self._viivat_vlk = None                     # (avain, dict): linjojen kuvapisteet
 
     # ---- pisteet heittopaassa ------------------------------------------------------------------------------------
@@ -353,6 +356,18 @@ class Piirtaja:
         kuva, maski = self._paneeli_kuva([(t, v, l) for t, v, l in rivit])
         self._laatikko(img, kuva, maski, PANEELI_PAIKKA)
 
+    def _viive(self, img, kello_leveys=None):
+        """'Viive: x,x s' kellon laatikon ylapuolelle: kuinka paljon ollaan myohassa (analyysi / piirto ei pysy reaaliajassa; puskuri kirii kiinni). Valkoinen < 1 s, keltainen < 3 s, punainen yli."""
+        v = float(self.viive_nyt)
+        vari = VARI_VALKOINEN if v < 1.0 else ((0, 200, 255) if v < 3.0 else (60, 60, 255))
+        lisa = f"puskuri {self.puskuri_s:.0f} s" if self.puskuri_s is not None else ""
+        kuva, maski = self._paneeli_kuva([(f"Viive: {v:.1f} s".replace(".", ","), vari, lisa)], "_viive_vlk", KELLO_LEVEYS)
+        if self.kello_paikka is not None:
+            x0, y0 = self.kello_paikka
+        else:
+            x0, y0 = (img.shape[1] - kuva.shape[1]) // 2, KELLO_Y
+        self._laatikko(img, kuva, maski, (x0, max(0, y0 - kuva.shape[0] - 4)))
+
     def _kello(self, img, kt):
         kuva, maski = self._paneeli_kuva(kello_rivit(kt), "_kello_vlk", KELLO_LEVEYS)
         paikka = self.kello_paikka if self.kello_paikka is not None else ((img.shape[1] - kuva.shape[1]) // 2, KELLO_Y)          # oletus: keskella mainosgrafiikan alla
@@ -364,6 +379,8 @@ class Piirtaja:
         jalki = int(self.jalki_s * self.fps)
         viivat_f = int(self.viivat_s * self.fps)
         voimassa = [h for h in list(an.heitot) if h.f_alku is not None and f_out >= h.f_alku]
+        if self.paneeli and self.viive_nyt is not None:
+            self._viive(ruutu)
         if self.paneeli and self.kello and hasattr(an, "kello_nyt") and any(h.f_alku is not None for h in list(an.heitot)):
             self._kello(ruutu, an.kello_nyt(f_out))
         if not voimassa:
