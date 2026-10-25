@@ -1103,8 +1103,53 @@ def testaa_merkki():
     tarkista("Analyysi.hae_merkki: ei loytynyt -> kelvollisia 0", r == dict(kelvollisia=0), str(r))
 
 
+def testaa_piirto_liuku():
+    print("piirto: liu'un pisteet (lahdosta irroitukseen) kaikki kerralla kun viivaestimaatti on valmis, irroituksen jalkeiset live, irroituksen kohdalla musta ympyra")
+    import types
+    import cv2
+    import netti_piirto as npi
+
+    class Geom:
+        @staticmethod
+        def maa_kuvaan(X, Y, z):
+            return np.column_stack([np.asarray(X, float) + 100.0, np.asarray(Y, float) * 0.5 + 50.0])
+    h = types.SimpleNamespace(tunnus=1, puoli="vasen", vari="punainen", kivi_nro=1, f_alku=100, f_loppu=400, naytteet=[], b_laskuri=0, viivat=None,
+                              pisteet=lambda: [(100 + i, 0.0, 10.0 * i) for i in range(40)])             # piste i: kuvassa (100, 50 + 5 i)
+    p = npi.Piirtaja({"vasen": Geom(), "oikea": Geom()}, fps=30.0)
+
+    def kuva(f_out):
+        img = np.full((300, 400, 3), 255, np.uint8)
+        p._pisteet(img, h, f_out)
+        return img
+
+    def vihrea(img, i):
+        return bool(np.abs(img[50 + 5 * i - 1: 50 + 5 * i + 2, 98:103].astype(int).reshape(-1, 3) - np.array(npi.VARI_PISTE)).sum(axis=1).min() <= 40)       # (reunapisteet on mediaanisilotettu: kayta sisapisteita)
+
+    img = kuva(105)                                                            # kivi on pisteessa 5
+    tarkista("ilman estimaattia: vain jo nakyneet pisteet (2, 3), ei tulevia", all(vihrea(img, i) for i in (2, 3)) and not vihrea(img, 10) and not vihrea(img, 20))
+    tarkista("ilman estimaattia: ei mustaa ympyraa", int((img.sum(axis=2) <= 30).sum()) == 0)
+    h.viivat = dict(irr_X=0.0, irr_Y=200.0)                                    # irroitus pisteen 20 kohdalla (v = 150)
+    img = kuva(105)
+    tarkista("estimaatti valmis: liu'un pisteet (0-20) kaikki kerralla jo ennen kuin kivi on niiden kohdalla", all(vihrea(img, i) for i in (2, 3, 10, 15, 19, 20)))
+    tarkista("estimaatti valmis: irroituksen jalkeiset pisteet (> 20) eivat viela nay", not any(vihrea(img, i) for i in (22, 30, 38)))
+    rengas = img[150, 100 + npi.IRROITUSPISTE_R - 1: 100 + npi.IRROITUSPISTE_R + 2]
+    tarkista("irroituksen kohdalla musta ympyra (sade IRROITUSPISTE_R)", int(rengas.sum(axis=1).min()) <= 60, str(rengas.tolist()))
+    tarkista("ympyran ulkopuolella (sade + 5 px) jaa valkoista", bool((img[150, 100 + npi.IRROITUSPISTE_R + 5] == 255).all()))
+    def keltainen_rengas(i):
+        alue = img[50 + 5 * i - 1: 50 + 5 * i + 2, 100 + 5: 100 + 10].astype(int).reshape(-1, 3)
+        return bool(np.abs(alue - np.array(npi.VARI_NYKYINEN)).sum(axis=1).min() <= 90)
+    tarkista("kivi (piste 5) piirtyy edelleen renkaana nykyiseen paikkaan, ei liu'un viimeiseen pisteeseen", keltainen_rengas(5) and not keltainen_rengas(20))
+    img = kuva(135)                                                            # kivi on pisteessa 35: irroituksen jalkeiset live
+    tarkista("irroituksen jalkeen pisteet ilmestyvat live (piste 30 nakyy, 38 ei)", vihrea(img, 30) and not vihrea(img, 38))
+    img = kuva(99)
+    tarkista("ennen lahtoa (f_out < f_alku) ei piirreta mitaan", bool((img == 255).all()))
+    h.viivat = dict(virhe="x")
+    img = kuva(105)
+    tarkista("viivaestimaatin virhetulos (ei irr_X) ei riko piirtoa: live-pisteet", all(vihrea(img, i) for i in (2, 3)) and not vihrea(img, 20))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki, testaa_piirto_liuku):
         t()
     print()
     if VIRHEITA:
