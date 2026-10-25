@@ -35,9 +35,11 @@ def moodikuva_puoliskoksi(kansio, puoli):
     return cv2.cvtColor(cv2.rotate(kuva, cv2.ROTATE_90_CLOCKWISE), cv2.COLOR_BGR2GRAY).astype(np.float32)
 
 
-def siirtymat(video, kansio, n=24, alku_s=30.0):
-    """{puoli: dict(dx, dy, vaste, ikkunat=[(x, y, dx, dy, vaste)])} videon mediaanikuvan siirtymasta kansion moodikuvaan nahden (+dx: videon sisalto oikealle, +dy: alas)."""
-    ref_video = kh.referenssi(video, n=n, alku_s=alku_s)
+def siirtymat(video, kansio, n=24, alku_s=30.0, ref_video=None):
+    """{puoli: dict(dx, dy, vaste, ikkunat=[(x, y, dx, dy, vaste)])} videon mediaanikuvan siirtymasta kansion moodikuvaan nahden (+dx: videon sisalto oikealle, +dy: alas).
+    ref_video: valmiiksi lasketut videon mediaanikuvat (kameran_heilunta.referenssi), kun useaa kansiota verrataan samaan videoon."""
+    if ref_video is None:
+        ref_video = kh.referenssi(video, n=n, alku_s=alku_s)
     hann = cv2.createHanningWindow((kh.IKKUNA, kh.IKKUNA), cv2.CV_32F)
     out = {}
     for puoli in ("vasen", "oikea"):

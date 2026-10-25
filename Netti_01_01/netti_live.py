@@ -539,7 +539,11 @@ class Kirjaaja:
                # pysahtymismatka (irr_matka_ero_m), kitkataso jolla malli osuu havaittuun matkaan (irr_A_matka; lahes vakio, jos nopeus on oikea), sivuero omalla kappalla (irr_sivu_ero_cm) ja johtopaatos
                "nopeus_hog1_m_s", "suunta_hog1_deg", "irr_matka_ero_m", "irr_A_matka", "irr_sivu_ero_cm", "irr_tarkistus",
                # heittopaan kierron mittauksen epavarmuus (posteriori): omegan hajonta (deg/s) ja valitun kiertosuunnan todennakoisyys
-               "omega_sd_deg_s", "suunta_p"]
+               "omega_sd_deg_s", "suunta_p",
+               # lepopaikan lahde: seuranta (kivi pysahtyi nakyviin) | kartta (kivi hukattiin, lepopaikka loydettiin pesan kartasta, lepo_haku.py: pysahtymishetki tuntematon) | epaselva | ei_loytynyt
+               "lepo_lahde",
+               # pesan kartasta (lepo_haku.py) loydetty lepopaikka kaikille heitoille, joiden kivi loytyi; ero seurannan pysahtymispaikkaan (cm), kuinka monta ehdokasta oli (1 = yksiselitteinen) ja matka seurannan viimeisesta paikasta (cm; iso matka = tunnistus epavarmempi)
+               "lepo_kartta_X_cm", "lepo_kartta_Y_cm", "lepo_kartta_ero_cm", "lepo_kartta_ehdokkaita", "lepo_kartta_matka_cm"]
     OTSIKKO_KIVET = ["vari", "kivi_nro", "heittoja", "A_mediaani", "A_hajonta", "kappa_heittoja", "kappa_mediaani", "kappa_hajonta", "heitot"]
 
     def __init__(self, csv_polku=None, hiljaa=False, fps=30.0, tapahtumat=False, radat_polku=None):
@@ -553,6 +557,7 @@ class Kirjaaja:
         self.muuttunut = False
         self.kauko_ilm = set()
         self.kello_ilm = set()
+        self.lepo_ilm = set()
         self.csv_sig = None
         self.kivet_polku = (os.path.splitext(csv_polku)[0] + "_kivet.csv") if csv_polku else None
         if csv_polku:
@@ -594,6 +599,24 @@ class Kirjaaja:
             if h.tunnus in self.kierre_ilm and h.tunnus not in self.kauko_ilm and self._kauko_valmis(an, h, n, lopuksi):
                 self.kauko_ilm.add(h.tunnus)
                 self.muuttunut = True
+        for h in list(an.heitot):
+            lk = None if h.kauko is None else h.kauko.get("lepo_kartta")
+            if lk is not None and h.tunnus not in self.lepo_ilm:
+                self.lepo_ilm.add(h.tunnus)
+                self.muuttunut = True
+                n = list(an.heitot).index(h) + 1
+                if "X" in lk and h.kauko["tila"] == "pysahtyi":
+                    ero = float(np.hypot(lk["X"] - h.kauko["X_pys"], lk["Y"] - h.kauko["Y_pys"]))
+                    if ero > 10.0:
+                        self._tulosta(f"          heitto {n} kaukopaa: seurannan lepopaikka (X' {h.kauko['X_pys']:.0f}, Y' {h.kauko['Y_pys']:.0f}) poikkeaa pesan kartasta loydetysta (X' {lk['X']:.0f}, Y' {lk['Y']:.0f}) {ero:.0f} cm")
+                elif "X" in lk:
+                    self._tulosta(f"          heitto {n} kaukopaa: kivi hukattiin, lepopaikka loytyi pesan kartasta: X' {lk['X']:.0f}, Y' {lk['Y']:.0f} cm ({lk['ero_cm']:.0f} cm viimeisesta tunnetusta paikasta; pysahtymishetkea ei tiedeta)")
+                elif h.kauko["tila"] == "pysahtyi":
+                    pass
+                elif lk.get("epaselva"):
+                    self._tulosta(f"          heitto {n} kaukopaa: kivi hukattiin, lepopaikka epaselva ({lk['ehdokkaita']} ehdokasta)")
+                else:
+                    self._tulosta(f"          heitto {n} kaukopaa: kivi hukattiin, lepopaikkaa ei loytynyt pesan kartasta")
         self._kello_ilmoita(an, lopuksi)
         if self.csv_polku:
             sig = self._allekirjoitus(an)
@@ -634,7 +657,8 @@ class Kirjaaja:
     def _allekirjoitus(an):
         """CSV:n sisaltoon vaikuttava tila: kirjoitetaan uusiksi vasta kun jokin heiton tulos (kierre, kaukopaa, vakiot, kello) on muuttunut."""
         return tuple((h.tunnus, h.tila, h.viivat_lopullinen, h.kierto_tila, h.kauko_kierto_tila, h.vakiot_tila, h.kauko is not None, h.hog2_f is not None,
-                      None if h.kierre is None else round(h.kierre["N"], 2), h.f_alku, None if h.tviiva_f() is None else round(h.tviiva_f(), 1)) for h in list(an.heitot))
+                      None if h.kierre is None else round(h.kierre["N"], 2), h.f_alku, None if h.tviiva_f() is None else round(h.tviiva_f(), 1),
+                      None if h.kauko is None else "lepo_kartta" in h.kauko) for h in list(an.heitot))
 
     def _kauko_valmis(self, an, h, n, lopuksi):
         """Kaukopaan seurannan, kaukopaan kierteen ja kiven vakioiden tulostus, kun ne ovat valmiit; True kun asia on hoidettu."""
@@ -772,8 +796,11 @@ class Kirjaaja:
                  N(None if s is None else s["omega_kauko_deg_s"], 1), N(None if s is None else s["kierre_koko"]), N(None if s is None or s["kierre_koko"] is None else s["kierre_koko_sigma"])]
         if k is not None:
             lepo = k["tila"] == "pysahtyi"                  # lepopaikka heittajan koordinaatistossa: X + = heittajan oikealle (kaukopaan X' on peilikuva), Y = T-viivasta heittajaa kohti (+ = ennen T-viivaa)
-            rivi += [k["tila"], N(k["f_pys"] / fps) if lepo else "", N(None if k.get("f_ulos") is None else k["f_ulos"] / fps), N(-k["X_pys"], 1) if lepo else "", N(k["Y_pys"], 1) if lepo else "",
-                     N(float(np.hypot(k["X_pys"], k["Y_pys"])), 1) if lepo else "", N(k["v_hog_cm_s"], 1), N(k["tormays"]["f"] / fps) if k.get("tormays") else ""]
+            lk = k.get("lepo_kartta")
+            kartasta = (not lepo) and lk is not None and "X" in lk                  # hukattu kivi, jonka lepopaikka loytyi pesan kartasta (aikaa ei tiedeta)
+            X_l, Y_l = (k["X_pys"], k["Y_pys"]) if lepo else ((lk["X"], lk["Y"]) if kartasta else (None, None))
+            rivi += [k["tila"], N(k["f_pys"] / fps) if lepo else "", N(None if k.get("f_ulos") is None else k["f_ulos"] / fps), N(-X_l, 1) if X_l is not None else "", N(Y_l, 1) if X_l is not None else "",
+                     N(float(np.hypot(X_l, Y_l)), 1) if X_l is not None else "", N(k["v_hog_cm_s"], 1), N(k["tormays"]["f"] / fps) if k.get("tormays") else ""]
         else:
             rivi += [""] * 8
         vk = h.vakiot
@@ -790,6 +817,19 @@ class Kirjaaja:
         else:
             rivi += [N(None if v is None else v.get("nopeus_hog1"), 3), N(None if v is None else v.get("suunta_hog1_deg"), 3), "", "", "", ""]
         rivi += [N(None if s is None else s["omega_sd_deg_s"], 1), N(None if s is None else s["suunta_p"], 4)]
+        if k is None:
+            rivi += [""] * 6
+        else:
+            lk = k.get("lepo_kartta")
+            if k["tila"] == "pysahtyi":
+                rivi.append("seuranta")
+            else:
+                rivi.append("" if lk is None else ("kartta" if "X" in lk else ("epaselva" if lk.get("epaselva") else "ei_loytynyt")))
+            if lk is not None and "X" in lk:
+                ero = float(np.hypot(lk["X"] - k["X_pys"], lk["Y"] - k["Y_pys"])) if k["tila"] == "pysahtyi" else None
+                rivi += [N(-lk["X"], 1), N(lk["Y"], 1), N(ero, 1), lk["ehdokkaita"], N(lk["ero_cm"], 0)]
+            else:
+                rivi += [""] * 5
         return rivi
 
     def _kirjoita_csv(self, an):
@@ -1068,7 +1108,8 @@ def main():
     ap.add_argument("--yt-formaatti", default=YT_FORMAATTI, help="yt_dlp-formaattivalitsin (oletus: oma testikoodi)")
     ap.add_argument("--lahde", help="videotiedosto")
     ap.add_argument("--url", help="suora virran osoite (http / https / rtsp / m3u8), luetaan kuten YouTube-virta")
-    ap.add_argument("--kansio", default="tulokset", help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json)")
+    ap.add_argument("--kansio", default=None, help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json). Oletus: tiedostolahteelle sopiva kansio valitaan automaattisesti "
+                    "(tulokset, tulokset_nettivideo2, ...) tai video kalibroidaan kansioon tulokset_auto_<nimi> (kalibrointi_valinta.py); muulle lahteelle tulokset")
     ap.add_argument("--viive", type=float, default=10.0, help="tulosteen viive analyysiin nahden (s); oletus 10: 97 %:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm) kun viiva ilmestyy (5 s: 12 %)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")
     ap.add_argument("--viivat", type=float, default=60.0, help="linjat nakyvissa taman ajan heiton alusta, tai seuraavaan heittoon (s)")
@@ -1109,6 +1150,14 @@ def main():
     ap.add_argument("--ei-tahdistusta", action="store_true", help="(testaus) reaaliaikarakenne mutta tiedostoa luetaan niin nopeasti kuin analyysi ehtii (ei reaaliaikatahdistusta)")
     ap.add_argument("--kello-loki", help="(testaus, vain --nopea) kirjoita kuvassa nakyvan kellon tila kerran sekunnissa CSV:hen: aika, kayva joukkue, kuluva aika, viimeisin heitto")
     a = ap.parse_args()
+    if a.kansio is None:
+        a.kansio = "tulokset"
+        if a.lahde and not a.ei_kalibrointitarkistusta:
+            import kalibrointi_valinta as kval
+            a.kansio, selitys = kval.valitse(a.lahde)
+            if not a.hiljaa:
+                print(f"Kalibrointi: {selitys}", flush=True)
+            a.ei_kalibrointitarkistusta = True         # valinta on jo tarkistus
     if not os.path.isdir(a.kansio):                    # ajettu muualta kuin projektin kansiosta
         oma = os.path.join(os.path.dirname(os.path.abspath(__file__)), a.kansio)
         if os.path.isdir(oma):

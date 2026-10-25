@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import netti_kierre as nk  # noqa: E402
 import netti_seuranta as ns  # noqa: E402
 import liuku_irroitus as li  # noqa: E402
+import lepo_haku as lh  # noqa: E402
 import netti_vakiot as nv  # noqa: E402
 import rata_malli as rm  # noqa: E402
 
@@ -106,6 +107,19 @@ def testaa_pysahtymishetki():
     tarkista("pysahtymishetki +-1,5 s", abs(f_pys / fps - t_s) <= 1.5, f"{f_pys / fps:.1f} s vs {t_s:.1f} s")
     tarkista("lepopaikka +-3 cm", abs(Y - y[-1]) <= 3.0 and abs(X - 60.0) <= 3.0)
     tarkista("ei kiihtymiskohtaa vapaassa liu'ussa", ns.kiihtymiskohta(F, P, fps) is None)
+    # harva rata levossa: hidas vaihe ja lepo naytteistetaan harvemmin (B ei tule joka ruudulle), joten 45 viimeista paikkaa kattaisi liikkeen: lepopaikka ajan mukaan
+    Ff = np.arange(0.0, 100.0)                                              # liike: tihea (joka ruutu), 330 -> 160 cm
+    yf = 160.0 + 170.0 * (1.0 - Ff / 99.0) ** 2
+    Fc = np.arange(100.0, 160.0, 5.0)                                       # hiipiminen: joka 5. ruutu (2 s), 160 -> 100 cm
+    yc = 160.0 - 60.0 * (Fc - 100.0) / 55.0
+    Fl = np.arange(160.0, 280.0, 6.0)                                       # lepo: joka 6. ruutu (4 s)
+    Fh = np.concatenate([Ff, Fc, Fl])
+    yh = np.concatenate([yf, np.minimum(yc, 160.0), np.full(len(Fl), 100.0)])
+    yh = np.maximum(yh, 100.0)
+    Ph = np.column_stack([60.0 + rng.normal(0, 1.0, len(Fh)), yh + rng.normal(0, 1.0, len(Fh))])
+    f_h, Xh, Yh = ns.pysahtymishetki(Fh, Ph, fps)
+    tarkista("harva lepo: lepopaikka +-3 cm (45 paikan ikkuna olisi sisaltanyt liikkeen)", abs(Yh - 100.0) <= 3.0 and abs(Xh - 60.0) <= 3.0, f"Y {Yh:.1f} X {Xh:.1f}")
+    tarkista("harva lepo: pysahtymishetki lepoon saapumisen (5 s) ja sen +3 s valilla", 5.0 <= f_h / fps <= 8.0, f"{f_h / fps:.1f} s")
     P2 = P.copy()
     i0 = int(np.searchsorted(t, 6.5))                                        # hidas kivi (~25 cm/s) -> 1 m/s: toinen kohde
     P2[i0:, 0] += 100.0 * (t[i0:] - t[i0])
@@ -546,8 +560,410 @@ def testaa_harva_rata():
             tarkista(f"{nimi}: ei poikkeusta", False, repr(e))
 
 
+def testaa_kalibroinnin_valinta():
+    print("kalibrointi_valinta: videoon sopiva kalibrointikansio valitaan automaattisesti (synteettinen video ja kansiot)")
+    import shutil
+    import tempfile
+    import cv2
+    import kalibrointi_valinta as kv
+    import tarkista_kalibrointi as tk
+    rng = np.random.default_rng(9)
+    pohja = cv2.GaussianBlur(rng.normal(128, 60, (1080, 1920)).astype(np.float32), (0, 0), 3.0)
+    pohja = np.clip(pohja + 40 * np.sin(np.arange(1920) / 37.0)[None, :], 0, 255).astype(np.uint8)
+
+    def kansio(polku, kuva):
+        os.makedirs(polku, exist_ok=True)
+        for puoli in ("vasen", "oikea"):
+            x, y, w, h = tk.kn.PUOLET[puoli]
+            cv2.imwrite(os.path.join(polku, f"moodikuva_{puoli}.png"), cv2.rotate(cv2.cvtColor(kuva[y:y + h, x:x + w], cv2.COLOR_GRAY2BGR), cv2.ROTATE_90_COUNTERCLOCKWISE))
+            open(os.path.join(polku, f"kalibrointi_{puoli}.json"), "w").write("{}")
+
+    def video(polku, kuva):
+        kirj = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (1920, 1080))
+        for _ in range(1860):                                                                      # referenssi() ohittaa 30 s alusta ja lopusta
+            kirj.write(cv2.cvtColor(kuva, cv2.COLOR_GRAY2BGR))
+        kirj.release()
+
+    tmp = tempfile.mkdtemp()
+    try:
+        siirretty = cv2.warpAffine(pohja, np.float32([[1, 0, 7.0], [0, 1, -5.0]]), (1920, 1080), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        kansio(os.path.join(tmp, "tulokset"), pohja)
+        kansio(os.path.join(tmp, "tulokset_toinen"), siirretty)
+        video(os.path.join(tmp, "a.avi"), pohja)
+        video(os.path.join(tmp, "b.avi"), siirretty)
+        k, sel = kv.valitse(os.path.join(tmp, "a.avi"), projekti=tmp, luo=False)
+        tarkista("video a: kansio tulokset", os.path.basename(k) == "tulokset", sel[:80])
+        k, sel = kv.valitse(os.path.join(tmp, "b.avi"), projekti=tmp, luo=False)
+        tarkista("video b (kamera siirtynyt 7, -5 px): kansio tulokset_toinen", os.path.basename(k) == "tulokset_toinen", sel[:80])
+        shutil.rmtree(os.path.join(tmp, "tulokset_toinen"))
+        k, sel = kv.valitse(os.path.join(tmp, "b.avi"), projekti=tmp, luo=False)
+        tarkista("ei sopivaa kansiota (luo = False): tulokset ja selitys", os.path.basename(k) == "tulokset" and "ei sovi" in sel, sel[:80])
+        tarkista("osat jakavat automaattisen kansion", kv.automaattinen_nimi("x/Matarmaa_osa_05.mp4") == kv.automaattinen_nimi("Matarmaa_osa_12.mp4") == "tulokset_auto_Matarmaa", kv.automaattinen_nimi("x/Matarmaa_osa_05.mp4"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def testaa_tarkista_kivet():
+    print("tarkista_kivet: puuttuva heitto havaitaan (ei totuusaineistoa)")
+    import tarkista_kivet as tkv
+
+    def rivit(jono, paa=1, alku=100.0, valit=None):
+        out = []
+        for i, c in enumerate(jono):
+            out.append(dict(paa=str(paa), vari="keltainen" if c == "k" else "punainen", kivi_nro="1", alku_s=str(alku + (valit[i] if valit else 50.0 * i))))
+        return out
+    hyva = rivit("kp" * 8) + rivit("pk" * 8, paa=2, alku=2000.0)
+    ong, _ = tkv.tarkista(hyva)
+    tarkista("32 heittoa, vuorottelu kunnossa: ei ongelmia", ong == [], str(ong))
+    ong, _ = tkv.tarkista(rivit("kp" * 8) + rivit("pk" * 8, paa=2, alku=2000.0) + rivit("kpkpkpkpkpkpkp", paa=3, alku=4000.0))
+    tarkista("viimeinen pää kesken (video loppuu): ei virhe", ong == [], str(ong))
+    ong, _ = tkv.tarkista(rivit("kp" * 8) + rivit("pkpkpkpkpkpkpk", paa=2, alku=2000.0) + rivit("kp" * 8, paa=3, alku=4000.0))
+    tarkista("keskimmäisen pään viimeinen heitto puuttuu: havaitaan", any("pää 2: 14 heittoa" in o for o in ong), str(ong))
+    ong, _ = tkv.tarkista(rivit("kpkpkkpkpkpkpkpk"))
+    tarkista("heitto puuttuu keskeltä (kaksi samaa väriä peräkkäin): havaitaan", any("eivät vuorottele" in o for o in ong), str(ong))
+
+
+def testaa_kahva_ala_mittakaava():
+    print("kahvan alaraja hack-alueella on maatason cm2 (px / skaala^2): videon 3 kamerassa (0,60 px/cm) punainen kahva on vain ~46-57 px, kiintea 50 px virittaa kiven vain sattumalta")
+    raja = {}
+    for kansio in ("tulokset", "tulokset_nettivideo2", "tulokset_nettivideo3"):
+        an = ns.Analyysi(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", kansio), fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+        for puoli, hp in an.paat.items():
+            raja[(kansio, puoli)] = ns.KAHVA_ALA_CM2[0] * hp.hack_skaala2
+    for (kansio, puoli), px in raja.items():
+        if kansio == "tulokset_nettivideo3":
+            tarkista(f"{kansio} {puoli}: videon 3 punaisen kahvan 46 px kelpaa, 25 px (kasi peittaa) ei", px <= 46.0 and px > 25.0, f"alaraja {px:.1f} px")
+        else:
+            tarkista(f"{kansio} {puoli}: alaraja ennallaan (~50 px)", abs(px - 50.0) < 1.5, f"alaraja {px:.1f} px")
+
+
+def testaa_tausta_maskit():
+    print("taustan luotettavuus (kivi_tarkka.tausta_maskit) ja graniitin vari (kivi_netti.graniitti_vari): kameran jaan mukaan, jatkuva virhemalli kiintean reunalaajennuksen sijaan")
+    import types
+    import cv2
+    import kivi_netti as kv
+    import kivi_tarkka as kt
+
+    def kamera(jaa_bgr, punainen_bgr):
+        h, w = 160, 160
+        mode = np.zeros((h, w, 3), np.uint8)
+        mode[:] = jaa_bgr
+        cv2.circle(mode, (80, 80), 40, punainen_bgr, -1)                              # terava, korkeakontrastinen reuna
+        cv2.line(mode, (10, 20), (150, 20), tuple(int(c) - 22 for c in jaa_bgr), 1)  # ohut, matalakontrastinen viiva (esim. tekstin pehmea reuna)
+        mode = cv2.GaussianBlur(mode, (0, 0), 0.8)
+        return types.SimpleNamespace(mode=mode, lane=np.ones((h, w), np.uint8))
+
+    k1 = kamera((236, 229, 227), (117, 93, 180))                                       # video 1: punainen on RGB-etaisyydella 56 graniitista (aiempi raja 60 hylkasi)
+    k3 = kamera((213, 209, 207), (81, 81, 222))
+    g1, g3 = kv.graniitti_vari(k1), kv.graniitti_vari(k3)
+    tarkista("graniitin vari seuraa kameran jaata (video 1 ~ 128, video 3 ~ 115 kanavalla B)", abs(g1[0] - 128.0) < 3.0 and abs(g3[0] - 115.7) < 3.0 and g3[0] < g1[0] - 8.0, f"{g1.round(0)} / {g3.round(0)}")
+    for nimi, k in (("video 1", k1), ("video 3", k3)):
+        jaa, vari = kt.tausta_maskit(k)
+        tarkista(f"{nimi}: punaisen ympyran sisus on luotettavaa varillista taustaa", float(vari[70:90, 70:90].mean()) > 0.95, f"{vari[70:90, 70:90].mean():.2f}")
+        tarkista(f"{nimi}: jaa luotettavaa jaata (kaukana reunoista)", float(jaa[100:150, 5:40].mean()) > 0.95, f"{jaa[100:150, 5:40].mean():.2f}")
+        tarkista(f"{nimi}: terava punainen reuna on epaluotettava (alfan virhe liian suuri)", float((jaa | vari)[78:83, 39:42].mean()) < 0.5, f"{(jaa | vari)[78:83, 39:42].mean():.2f}")
+        tarkista(f"{nimi}: ohut matalakontrastinen viiva ei hylkaa ymparistoaan (aiempi 7 x 7 -laajennus hylkasi)", float(jaa[17:24, 20:140].mean()) > 0.9, f"{jaa[17:24, 20:140].mean():.2f}")
+
+
+def testaa_vaihto_todennettu():
+    print("levossa olevan kiven viritys: tuore todiste ja kiven keskipiste ratkaisevat, mika kahva on kiven kahva (viereinen kenkapohja ei saa jaada virityksen kohteeksi)")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+    hp = an.paat["vasen"]
+
+    def nayte(f, kahva, B=None, Bk=None, poik=None):
+        n = ns.Naytteet(f, kahva, 200.0)
+        n.lepo = True
+        n.B, n.Bk = B, Bk
+        if B is not None or Bk is not None:
+            n.peitto, n.rms, n.kelv, n.poik = 0.8, 0.15, 0.5, poik
+        return n
+
+    def asetelma(kahva, naytteet, ehdokas, validoitu):
+        h = ns.Heitto(1, "vasen", "punainen", 0, kahva)
+        h.lepo = np.array(kahva, float)
+        h.naytteet = naytteet
+        h.validoitu = validoitu
+        hp.heitto, hp.vari = h, "punainen"
+        vaihdot = []
+        hp._vakaa_kandidaatti = lambda f, ruutu, pois=None: ("keltainen", [], ehdokas)
+        hp._virita_kandidaatista = lambda f, ruutu, vari, ikk, XY: vaihdot.append((vari, XY))
+        return h, vaihdot
+
+    # video 1, 3105 s: punainen kenkapohja (0, -343) virittyi, kun kivea kannettiin sen ohi (B <= 12 cm kahvasta); kivi asettui (-13, -325):n tienoille, keltainen kahva (-15, -321)
+    vanhat = [nayte(100, (0.0, -343.0), B=(-6.0, -338.0), poik=7.0), nayte(108, (0.0, -343.0), B=(-5.0, -336.0), poik=8.0)]
+    uudet = [nayte(200 + 8 * i, (0.0, -340.0), Bk=bk, poik=18.0) for i, bk in enumerate([(-10.0, -327.0), (-12.0, -326.0), (-13.0, -325.0)])]
+    h, v = asetelma((0.0, -340.0), vanhat + uudet, (-15.0, -321.0), True)
+    tarkista("vanha todiste ei pidata kenkapohjaa todennettuna, kun tuoreet sovitukset osoittavat kiven muualle", not hp._validoitu(h, 222))
+    tarkista("kiven keskipiste tuoreista sovituksista", np.allclose(hp._kiven_keskipiste(h, 222), (-12.0, -326.0)))
+    tarkista("kenkapohja virittyneena, keltainen kahva kiven keskella: vaihto", hp._vaihda_kandidaatti(222, None) and len(v) == 1)
+
+    uudet = [nayte(200 + 8 * i, (-10.0, -325.0), B=b, poik=3.0) for i, b in enumerate([(-12.0, -327.0), (-12.0, -328.0), (-11.0, -327.0)])]
+    h, v = asetelma((-10.0, -325.0), uudet, (-15.0, -321.0), False)
+    tarkista("kahvan kohdalla olevat sovitukset todentavat kahvan", hp._validoitu(h, 222))
+    tarkista("oikea kahva kiven keskella: ei vaihtoa", not hp._vaihda_kandidaatti(222, None) and not v)
+    h, v = asetelma((0.0, -340.0), vanhat + [nayte(200 + 8 * i, (0.0, -340.0), Bk=bk, poik=18.0) for i, bk in enumerate([(-10.0, -327.0), (-12.0, -326.0), (-13.0, -325.0)])], (-50.0, -281.0), True)
+    tarkista("toinen kandidaatti kaukana kivesta: ei vaihtoa", not hp._vaihda_kandidaatti(222, None) and not v)
+
+    liikkuva = [nayte(200 + 8 * i, (0.0, -340.0), Bk=bk, poik=18.0) for i, bk in enumerate([(-10.0, -327.0), (-25.0, -344.0), (-4.0, -354.0)])]
+    h, v = asetelma((0.0, -340.0), vanhat[:1] + liikkuva, (-15.0, -321.0), True)
+    tarkista("kivi ei lepaa (sovitukset hajallaan): ei keskipistetta", hp._kiven_keskipiste(h, 222) is None)
+    tarkista("todettu kivi, joka ei nay levossa: viritys pysyy", not hp._vaihda_kandidaatti(222, None) and not v)
+
+    h, v = asetelma((0.0, -340.0), [nayte(200, (0.0, -340.0))], (-15.0, -321.0), False)
+    tarkista("vaihtoa ei tehda ennen VAIHTO_S:aa viritysta", not hp._vaihda_kandidaatti(222, None) and not v)
+    tarkista("kahvan luona ei kivea eika todisteita: vaihto vakaaseen kandidaattiin", hp._vaihda_kandidaatti(240, None) and len(v) == 1)
+
+
+def testaa_kandidaatti_kivi():
+    print("kahvakandidaatti viriteaan vain, jos sen kohdalla on kivi (harjan paa ei saa estaa viereisen kiven viritysta)")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+    an.tarkka = True                                                                  # B-sovitus kaytossa (sovitus korvataan alla)
+    hp = an.paat["oikea"]
+
+    def blobi(X, Y, ala=70.0):
+        u, v = hp.m.maa_oikaistuun(X, Y)
+        return (float(u[0]), float(v[0]), ala, (int(u[0]) - 5, int(v[0]) - 5, 10, 11))
+
+    def aja(kahvat, kivet):
+        """kahvat: vari -> (X, Y); kivet: kohdat (X, Y), joissa on kivi (sovitus loytaa kiven siita, enintaan 3 cm kahvasta); muualla ei kivea (peitto 0,2)."""
+        hp.kandidaatit, hp._kivi_muisti = {}, {}
+        hp.m.valmistele = lambda ruutu, X0, Y0: ("roi", 0, 0)
+        def sovita(roi, x0, y0, X0, Y0):
+            for (X, Y) in kivet:
+                if np.hypot(X - X0, Y - Y0) <= 20.0:
+                    return dict(X=X + 2.0, Y=Y, rms=0.1, peitto=0.8, kelvolliset=0.5)
+            return dict(X=X0 + 20.0, Y=Y0 - 20.0, rms=0.13, peitto=0.2, kelvolliset=0.5)
+        hp.m.sovita_leike = sovita
+        hp.m.kahva = lambda ruutu, alue, vari, ennuste, min_ala=0, taustaero=False: [blobi(*kahvat[vari])] if vari in kahvat else []
+        r = None
+        for f in range(0, 60, 3):
+            r = hp._vakaa_kandidaatti(f, None) or r
+            if r:
+                break
+        return r
+
+    r = aja({"punainen": (-11.0, -316.0)}, [(-11.0, -316.0)])
+    tarkista("kahva kiven paalla: kandidaatti", r is not None and r[0] == "punainen")
+    r = aja({"keltainen": (-43.0, -286.0)}, [])
+    tarkista("harjan paa (ei kivea): ei kandidaattia", r is None)
+    r = aja({"keltainen": (-43.0, -286.0), "punainen": (-11.0, -316.0)}, [(-11.0, -316.0)])
+    tarkista("keltainen haamu ja punainen kivi: punainen virittyy (keltainen ei ole ensin vain varin takia)", r is not None and r[0] == "punainen")
+
+
+def testaa_graniittihaku():
+    print("graniittihaku (kivi_haku): kiven runko loytyy ilman kahvan varia; ihmisen vaatteet ja kahvan muovi eivat ole graniittia")
+    import kivi_haku as kh
+    import kivi_netti as kvn
+    import kivi_tarkka as ktt
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+    m = ns.Mittari(kansio, "oikea")
+    h = kh.GraniittiHaku(m, deci=3)
+    d, cam = h.deci, m.cam
+    g = kvn.graniitti_vari(cam)
+
+    def kuva(X, Y, kivi=True, vaate=None):
+        """Harvennettu ROI: tausta + graniittirunko (nakyva osa) kohdassa (X, Y) + valinnainen vaatekappale (BGR) kiven vierella."""
+        roi = h.tausta.astype(np.float32).copy()
+        win = (h.x0, h.y0, roi.shape[1] * d, roi.shape[0] * d)
+        if kivi:
+            c, wt = ktt.malli_kuva(cam, m.runko, win, X, Y)
+            a = (c * wt)[::d, ::d][:roi.shape[0], :roi.shape[1]]
+            roi = roi * (1 - a[..., None]) + g[None, None, :] * a[..., None]
+        if vaate is not None:
+            u, v = (np.asarray(q)[0] for q in m.maa_oikaistuun(X + 70.0, Y, 0.0))
+            i, j = int((v - h.y0) / d), int((u - h.x0) / d)
+            roi[max(i - 8, 0):i + 8, max(j - 6, 0):j + 6] = vaate
+        return np.clip(roi, 0, 255).astype(np.uint8)
+
+    X0, Y0 = 20.0, 560.0
+    c = [x for x in h.blobit(kuva(X0, Y0)) if kh.ALA_RAJAT[0] <= x["suhde"] <= kh.ALA_RAJAT[1]]
+    paras = min(c, key=lambda x: np.hypot(x["X"] - X0, x["Y"] - Y0)) if c else None
+    tarkista("kivi loytyy rungosta (keskipiste <= 8 cm akselista)", paras is not None and np.hypot(paras["X"] - X0, paras["Y"] - Y0) <= 8.0)
+    tarkista("alan suhde odotettuun jarkeva (0,35-1,9)", paras is not None and kh.ALA_RAJAT[0] <= paras["suhde"] <= kh.ALA_RAJAT[1])
+    for nimi, vari in (("sininen takki", (170, 60, 20)), ("musta housu", (15, 15, 15)), ("punainen harja", (40, 40, 200)), ("keltainen harja", (40, 190, 230))):
+        c = [x for x in h.blobit(kuva(X0, Y0, kivi=False, vaate=vari)) if kh.ALA_RAJAT[0] <= x["suhde"] <= kh.ALA_RAJAT[1]]
+        tarkista(f"{nimi} ei ole graniittia", not c)
+
+
+def testaa_saapuminen_graniitti():
+    print("kaukopaan saapuminen graniittikanavalla: kulkeva, B:lla todettu rata, jonka keskella on kiven varinen kahva, hyvaksytaan; paikallaan oleva kivi, B-tonta ja kahvaton (sweeperin paita) rata eivat")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+
+    def aja(ehdokkaat, b_ok, kahva=True):
+        an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+        an.tarkka = True
+        h = ns.Heitto(7, "vasen", "punainen", 0, (0.0, -330.0))
+        h.f_loppu, h.ala_med = 0, 30.0
+        sa = ns.Saapuminen(an, h)
+        sa._blobit = lambda r: []
+        sa._kartoita = lambda f, r: None
+        sa._kahva_lahella = lambda ruutu, X, Y: kahva
+        sa.f_alku = 0
+        sa.haku = type("H", (), {"ehdokkaat": lambda self, r: ehdokkaat(self.f)})()
+        pyynnot = []
+
+        def b(hp, heitto, naytteet, ruutu, X0, Y0, ennuste=None):
+            pyynnot.append(naytteet.f)
+            if b_ok:
+                naytteet.B = (X0, Y0)
+        an.pyyda_b = b
+        for f in range(0, 90):
+            sa.haku.f = f
+            if not sa.kasittele(f, None):
+                break
+        return h.saapuminen, len(an.kaukoseurannat), pyynnot
+
+    liikkuva = lambda f: [dict(X=40.0, Y=720.0 - 5.0 * f, ala=900, suhde=1.0)]                    # 5 cm / ruutu = 150 cm/s kohti pesaa
+    paikallaan = lambda f: [dict(X=110.0, Y=600.0, ala=900, suhde=1.0)]
+    tila, n, _ = aja(liikkuva, True)
+    tarkista("kulkeva graniittirata B-todistein hyvaksytaan", tila == "loytyi" and n == 1)
+    tila, n, _ = aja(liikkuva, False)
+    tarkista("kulkeva rata ilman B-todisteita ei kelpaa (ihmisen varuste)", tila != "loytyi" and n == 0)
+    tila, n, pyynnot = aja(liikkuva, True, kahva=False)
+    tarkista("kulkeva B:lla todettu rata ilman kiven varista kahvaa ei kelpaa (sweeperin kuviollinen paita on graniitin nakoinen)", tila != "loytyi" and n == 0 and pyynnot)
+    tila, n, pyynnot = aja(paikallaan, True)
+    tarkista("paikallaan oleva kivi ei ole saapuva kivi eika sille pyydeta B:ta", tila != "loytyi" and n == 0 and not pyynnot)
+
+
+def testaa_viritys_rungosta():
+    print("viritys kiven rungosta: vakaa graniittiblobi + B todentaa kiven + kahva kiven keskella maaraa varin; ilman kahvaa ei viritysta")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+    an.tarkka = True
+    hp = an.paat["vasen"]
+    ala_kahva = 1.2 * ns.KAHVA_ALA_CM2[0] * hp.hack_skaala2
+
+    def blobi(X, Y, ala):
+        u, v = hp.m.maa_oikaistuun(X, Y)
+        return (float(u[0]), float(v[0]), ala, (int(u[0]) - 5, int(v[0]) - 5, 10, 11))
+
+    def aja(runko, kahvat, b_ok=True, liike=0.0):
+        """runko: (X, Y) graniittiblobin keskipiste; kahvat: vari -> [(X, Y, ala)]; liike: blobin siirtyma cm / kutsu."""
+        hp.kandidaatit_g, hp._runko_muisti = [], {}
+        haku = type("H", (), {"ehdokkaat": lambda self, r: [dict(X=runko[0] + liike * self.n, Y=runko[1], ala=900, suhde=1.0)], "n": 0})()
+        an.graniittihaku_hack = lambda puoli: haku
+        hp._runko_b = lambda f, ruutu, X, Y: ((X + 1.0, Y - 1.0) if b_ok else None)
+        hp.m.kahva = lambda ruutu, alue, vari, ennuste, min_ala=0, taustaero=False: [blobi(*q) for q in kahvat.get(vari, [])]
+        r = None
+        for i, f in enumerate(range(0, 60, 3)):
+            haku.n = i
+            r = hp._vakaa_runko(f, None)
+            if r:
+                break
+        return r
+
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)]})
+    tarkista("vakaa runko + kahva kiven keskella: viritys keltaisena", r is not None and r[0] == "keltainen" and abs(r[2][0] + 4.0) < 1.5)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)], "punainen": [(30.0, -330.0, ala_kahva)]})
+    tarkista("toinen vari kauempana (kenkapohja 35 cm): vari kiven keskelta", r is not None and r[0] == "keltainen")
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)], "punainen": [(-2.0, -338.0, ala_kahva)]})
+    tarkista("molemmat varit kiven lahella: lahin keskipisteeseen (keltainen 2 cm, punainen 13 cm -> keltainen)", r is not None and r[0] == "keltainen")
+    r = aja((-5.0, -325.0), {"punainen": [(40.0, -300.0, ala_kahva)]})
+    tarkista("kahva yli 12 cm keskipisteesta (kenka, harjan paa): ei viritysta", r is None)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)]}, b_ok=False)
+    tarkista("B ei toteaa kivea: ei viritysta", r is None)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, ala_kahva)]}, liike=3.0)
+    tarkista("blobi liikkuu (kantaminen): ei viritysta", r is None)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, 0.6 * ns.KAHVA_ALA_CM2[0] * hp.hack_skaala2)]})
+    tarkista("osittain peitetty kahva (0,6 x alaraja) riittaa varin maaraamiseen", r is not None)
+    r = aja((-5.0, -325.0), {"keltainen": [(-4.0, -327.0, 0.3 * ns.KAHVA_ALA_CM2[0] * hp.hack_skaala2)]})
+    tarkista("liian pieni kahvan sirpale (0,3 x alaraja): ei viritysta", r is None)
+
+
+def testaa_ulottuma_vahvistettu():
+    print("B hyvaksytaan ulottuman perusteella myos vahvistetulla heitolla (siemen jaa nopean kiven jalkeen), mutta ei pitkan aukon jalkeen eika kaukopaassa")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+
+    def heitto(luokka=ns.Heitto, tila="vahvistettu", f_b=100):
+        h = luokka(1, "vasen", "punainen", 0, (0.0, -330.0)) if luokka is ns.Heitto else luokka(1, "vasen", "punainen")
+        h.tila = tila
+        n = ns.Naytteet(f_b)
+        n.B = (10.0, 100.0)
+        h.naytteet.append(n)
+        return h
+
+    def tulos(h, f, Y, seed_Y, peitto=0.7):
+        n = ns.Naytteet(f)
+        h.naytteet.append(n)
+        an._liita_b(h, n, dict(X=10.0, Y=Y, rms=0.1, kelvolliset=0.5, peitto=peitto), (10.0, seed_Y))
+        return n.B is not None
+
+    tarkista("siemen 24 cm jaljessa, sovitus 9 cm edellisesta B:sta (1 ruutu): hyvaksytaan", tulos(heitto(), 101, 109.0, 85.0))
+    tarkista("sama liikkuvalla (ei vahvistetulla) heitolla", tulos(heitto(tila="liikkuu"), 101, 109.0, 85.0))
+    tarkista("heikko peitto (0,3): ei ulottumahyvaksyntaa", not tulos(heitto(), 101, 109.0, 85.0, peitto=0.3))
+    tarkista("liian kaukana edellisesta B:sta (15 + 8 cm / ruutu: 40 cm 1 ruudussa): ei hyvaksyta", not tulos(heitto(), 101, 140.0, 85.0))
+    tarkista("vahvistetulla heitolla yli 12 ruudun aukko: ei ulottumahyvaksyntaa", not tulos(heitto(f_b=80), 101, 109.0, 85.0))
+    tarkista("kaukopaan seuranta (KaukoHeitto) ei kayta ulottumaa", not tulos(heitto(ns.KaukoHeitto), 101, 109.0, 85.0))
+
+
+def testaa_lepo_haku():
+    """Lepopaikan palautus (lepo_haku.LepoHaku): paikallaanolo ajan mukaan, vanhat kivet, kivi ei peruuta, valinta, odotus ennen valintaa, tyhjentyneet vanhat kivet."""
+    class Kartta:
+        def __init__(self, blobit):
+            self.blobit = blobit
+
+        def kahvat(self, ruutu, vari, ala_med):
+            return list(self.blobit)
+
+    class Haku(lh.LepoHaku):
+        def _b(self, ruutu, X, Y):
+            return (X, Y)                                            # B-todennus korvattu: kaikki paikallaan pysyvat ovat kivia
+
+    def uusi(blobit, ennen=(), viim=(0, 0.0, 100.0, 0.0, 0.0)):
+        return Haku(None, Kartta(blobit), "punainen", None, ennen, viim, 0, 30.0)
+
+    def aja(h, kesto_s, vali=lh.LEPO_VALI, f0=100):
+        f = f0
+        while f - f0 <= kesto_s * 30.0 and h.kasittele(f, None):
+            f += vali
+        return f
+
+    h = uusi([(50.0, 60.0, 400)])
+    f = aja(h, 12.0)
+    tarkista("paikallaan pysyva kahva (7 katselua / 3 s) loytyy odotuksen jalkeen", h.tulos is not None and "X" in h.tulos and abs(h.tulos["X"] - 50.0) < 1e-6, str(h.tulos))
+    tarkista("valinta odottaa LEPO_ODOTUS_S ensimmaisen vahvistuksen jalkeen", h.tulos is not None and h.tulos["f_vahv"] - h.f_vahv1 >= lh.LEPO_ODOTUS_S * 30.0, str(h.tulos))
+    h = uusi([(50.0, 60.0, 400)])
+    aja(h, 1.5)
+    tarkista("1,5 s ei riita paikallaanoloksi", h.tulos is None and all(h._paikallaan(c) is None for c in h.ehdokkaat))
+    h = uusi([])
+    for k in range(14):
+        h.kartta.blobit = [(50.0 + 2.0 * k, 60.0, 400)]                          # hiipiva kivi / kuljetettava esine: 2 cm per katselu (liittyy samaan ehdokkaaseen, mutta ei pysy paikallaan)
+        h.kasittele(100 + k * lh.LEPO_VALI, None)
+    tarkista("hiipiva blobi (2 cm / 0,5 s) ei ole paikallaanoloa", h.tulos is None and len(h.ehdokkaat) == 1 and all(h._paikallaan(c) is None for c in h.ehdokkaat))
+    h = uusi([(50.0, 60.0, 400)], ennen=[(51.0, 61.0)])
+    aja(h, 12.0)
+    tarkista("ennen heittoa paikallaan ollut kivi (kartta) ei ole ehdokas", not h.ehdokkaat)
+    h = uusi([(50.0, 160.0, 400)], viim=(0, 0.0, 100.0, 0.0, 0.0))
+    aja(h, 12.0)
+    tarkista("kivi ei peruuta: ehdokas yli 30 cm viimeisen paikan takana hylataan", not h.ehdokkaat)
+    h = uusi([(50.0, 60.0, 400), (-120.0, 20.0, 400)], viim=(0, 40.0, 110.0, 0.0, -0.5))
+    aja(h, 14.0)
+    tarkista("kaksi ehdokasta, toinen selvasti lahempana kuvitellulle pysahtymispisteelle: valitaan lahempi", h.tulos is not None and "X" in h.tulos and abs(h.tulos["X"] - 50.0) < 1e-6 and h.tulos["ehdokkaita"] == 2, str(h.tulos))
+    h = uusi([(40.0, 60.0, 400), (-40.0, 60.0, 400)], viim=(0, 0.0, 110.0, 0.0, -0.5))
+    aja(h, 14.0)
+    tarkista("kaksi yhta kaukana olevaa ehdokasta: epaselva, ei paikkaa", h.tulos is not None and h.tulos.get("epaselva") and "X" not in h.tulos, str(h.tulos))
+    h = uusi([(50.0, 60.0, 400)], ennen=[(-100.0, 0.0), (100.0, 0.0)])
+    aja(h, 12.0)
+    tarkista("molemmat vanhat kivet nakymattomia 3 katselun ajan: tyhjentyneita 2 tuloksessa", h.tulos is not None and h.tulos["tyhjentyneita"] == 2, str(h.tulos))
+    h = uusi([(50.0, 60.0, 400)])
+    aja(h, lh.LEPO_AIKARAJA_S + 5.0, f0=100)
+    tarkista("aikaraja: tulos on aina (loytyi tai ei_loytynyt)", h.tulos is not None)
+    import types
+    nk_ = types.SimpleNamespace(karttat=[(0, [(10.0, 10.0), (50.0, 60.0)]), (60, [(10.5, 10.2)]), (120, [(10.2, 9.9), (-80.0, 20.0)]), (400, [(10.0, 10.0), (99.0, 99.0)])])
+    kk_ = ns.Saapuminen.kartta_ennen(nk_, 200)
+    tarkista("kartta ennen: ennen rataa otettujen karttojen yhdiste (kiven pudottanut kartta ei jata sita pois), duplikaatit 3 cm:n sisalla yhdistetty, rataa myohemmin otettu kartta pois",
+             len(kk_) == 3 and any(abs(q[0] - 50.0) < 1e-6 for q in kk_) and any(abs(q[0] + 80.0) < 1e-6 for q in kk_) and not any(abs(q[0] - 99.0) < 1e-6 for q in kk_), str(kk_))
+    h = uusi([(50.0, 60.0, 400)])
+    aja(h, 4.0)
+    h.paata_kesken(10 ** 6)
+    tarkista("videon loppu kesken odotuksen: jo vahvistettu ehdokas ratkaistaan", h.tulos is not None and "X" in h.tulos, str(h.tulos))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku):
         t()
     print()
     if VIRHEITA:
