@@ -421,7 +421,7 @@ class Piirtaja:
         voimassa = [h for h in list(an.heitot) if h.f_alku is not None and f_out >= h.f_alku]
         if self.paneeli and self.viive_nyt is not None:
             self._viive(ruutu)
-        if self.paneeli and self.kello and hasattr(an, "kello_nyt") and any(h.f_alku is not None for h in list(an.heitot)):
+        if self.paneeli and self.kello and hasattr(an, "kello_nyt") and any(h.f_alku is not None and h.f_alku <= f_out for h in list(an.heitot)):       # (kuvan oma aika, ei analyysin etenemistae: kuva on sama kirissa ja 1x-ajossa)
             self._kello(ruutu, an.kello_nyt(f_out))
         if not voimassa:
             return ruutu
