@@ -2318,6 +2318,14 @@ class Analyysi:
         return True
 
     # ---- B-tyot ---------------------------------------------------------------------------------------------------
+    def viivat_kesken(self, f):
+        """True, jos jonkin heiton (lahtoruutu <= f) lopullinen viivaestimaatti on pyydetty mutta ei viela valmis: ruutu f piirrettaisiin alustavilla viivoilla. Piirtosaie kysyy tata, kun analyysi
+        on edennyt kuvaa nopeammin (netti_live: kiri), jolloin tyoprosessin laskema estimaatti voi olla viela tulossa; reaaliaikaisessa ajossa kuva viipyy ~viive s ja estimaatti on tavallisesti valmis."""
+        for h in list(self.heitot):
+            if h.f_alku is not None and h.f_alku <= f and h.lopullinen and not h.viivat_lopullinen:
+                return True
+        return False
+
     def matalaksi_b_tyoprosessit(self):
         """Live-virta (tulos saa riippua ajoituksesta, ruutuja ohitetaan myohassa): B-tyoprosessit alemmalle prioriteetille, jotta analyysi-, piirto- ja ikkunasaikeet saavat prosessorin ensin."""
         for p in list(getattr(self.pool, "_processes", {}).values()):

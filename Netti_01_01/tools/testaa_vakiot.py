@@ -1811,6 +1811,98 @@ def testaa_piirto_nopeutukset():
         npi._leikatut_segmentit = vanha
 
 
+def testaa_kiri():
+    print("kiri: analyysi etenee ilman tahdistusta, kuva 1x tasaisesti paitsi kun esilatauspuskurissa >= 10 s (jaljessa tai nauhoitus); kuva odottaa lopullisia viivoja")
+    import types
+    import netti_live as nl
+    import netti_seuranta as ns
+    fps = 30.0
+    k = nl.KuvanAikataulu(fps, 10.0)
+    tarkista("kiri_sallittu: puskuri >= raja tai lahde loppui", k.kiri_sallittu(10.0) and k.kiri_sallittu(25.0) and k.kiri_sallittu(0.0, loppu=True))
+    tarkista("kiri_sallittu: ei kun puskuri alle rajan tai raja 0 (pois)", not k.kiri_sallittu(9.9) and not nl.KuvanAikataulu(fps, 0.0).kiri_sallittu(30.0))
+    k.kiri = True
+    tarkista("kiri_sallittu: hystereesi (kiri jatkuu 1 s rajan alle, ettei tila vaihtele rajalla)", k.kiri_sallittu(9.1) and not k.kiri_sallittu(8.9))
+
+    k = nl.KuvanAikataulu(fps, 10.0)
+    e0, kiri0 = k.aika(100, 50.0, 3.0, 60.0)
+    e1, kiri1 = k.aika(130, 50.5, 3.0, 60.0)
+    tarkista("aikataulu: puskuri alle rajan -> kuva 1x: ensimmaisen ruudun aika = annettu (jonoon tulo + viive), seuraavat 1/fps valein", e0 == 60.0 and abs(e1 - 61.0) < 1e-9 and not kiri0 and not kiri1)
+    e, kiri = k.aika(131, 50.6, 12.0, 60.0)
+    tarkista("aikataulu: puskuri >= raja -> kiri: ruutu nyt (ei aikataulua)", e == 50.6 and kiri)
+    e, kiri = k.aika(160, 55.0, 12.0, 60.0)
+    tarkista("aikataulu: kiri jatkuu niin kauan kuin puskuri riittaa", e == 55.0 and kiri)
+    e, kiri = k.aika(200, 56.0, 8.0, 60.0)
+    tarkista("aikataulu: kiri paattyy -> 1x jatkuu tasta: ruutu nyt, seuraava 1/fps myohemmin (ei odotusta aiemmasta ankkurista)", e == 56.0 and not kiri and abs(k.aika(201, 56.1, 8.0, 60.0)[0] - (56.0 + 1 / 30)) < 1e-9)
+    e, kiri = k.aika(230, 100.0, 8.0, 60.0)
+    tarkista("aikataulu: myohassa oleva kuva (aikataulu mennyt) -> aika menneisyydessa, naytetaan heti", e < 100.0 and not kiri)
+    e, kiri = k.aika(231, 100.0, 0.0, 60.0, loppu=True)
+    tarkista("aikataulu: lahde loppui -> kiri vaikka puskuri tyhja (nauhoitus ajetaan nopeasti loppuun)", e == 100.0 and kiri)
+
+    def simuloi(lukunopeus, analyysin_kustannus_s, kuvan_kustannus_s, kesto_s=240.0, raja=10.0, puskuri_max=30.0, etumatka_ruutua=300):
+        """Esilatauspuskurin, analyysin ja kuvan simulaatio (aika-askel 1 ms): lukija lisaa puskuriin lukunopeus x reaaliaika (enintaan puskuri_max s); analyysi ei ole tahdistettu, vaan ottaa ruudun puskurista
+        heti kun dataa on, mutta ei ole kuvaa edella enempaa kuin D + etumatka_ruutua (vastapaine); kuva noudattaa KuvanAikataulua ja lahtoehtoa 'analyysi on edennyt D = 300 ruutua ruudun ohi'.
+        Palauttaa (kuvan keskinopeus, kirissa naytettyjen ruutujen osuus, suurin etumatka, 1x-vaiheiden ruutuvalien suhteellinen vaihtelu)."""
+        aikataulu = nl.KuvanAikataulu(fps, raja)
+        puskuri, f_a, f_k, t_a, t_k, nyt = 0.0, 0, 0, 0.0, 0.0, 0.0
+        kiri_ruutuja, max_etu, valit, viim = 0, 0, [], None
+        dt = 0.001
+        while nyt < kesto_s:
+            puskuri = min(puskuri_max, puskuri + lukunopeus * dt)
+            if t_a <= nyt and puskuri >= 1 / fps and f_a - f_k < 300 + etumatka_ruutua:
+                puskuri -= 1 / fps
+                f_a += 1
+                t_a = nyt + analyysin_kustannus_s
+            max_etu = max(max_etu, f_a - f_k)
+            if t_k <= nyt and f_a >= f_k + 300 - 3 + 3:
+                erapaiva, kiri = aikataulu.aika(f_k, nyt, puskuri, 10.0)
+                if erapaiva <= nyt:
+                    kiri_ruutuja += kiri
+                    if not kiri and viim is not None:
+                        valit.append(nyt - viim)
+                    viim = None if kiri else nyt
+                    f_k += 1
+                    t_k = nyt + kuvan_kustannus_s
+            nyt += dt
+        vaihtelu = (max(valit) - min(valit)) / (sum(valit) / len(valit)) if valit else 0.0
+        return f_k / fps / nyt, kiri_ruutuja / max(f_k, 1), max_etu, vaihtelu
+    nopeus, osuus, etu, vaihtelu = simuloi(3.0, 0.004, 0.005)
+    tarkista("kirisimulaatio: lukija 3x on pullonkaula (kone nopea) -> kuva etenee lukijan nopeudella (~3x), etumatka pysyy rajassa, kuva kiri ja 1x vuorotellen", 2.4 <= nopeus <= 3.1 and etu <= 600 and 0.0 < osuus < 1.0, f"{nopeus:.2f}x, kiria {100 * osuus:.0f} %, suurin etumatka {etu}")
+    nopeus, osuus, etu, vaihtelu = simuloi(3.0, 0.020, 0.005)
+    tarkista("kirisimulaatio: analyysi (1,67x) on pullonkaula -> puskuri tayttyy, kuva kiria jatkuvasti analyysin nopeudella", 1.4 <= nopeus <= 1.75 and osuus > 0.9 and etu <= 600, f"{nopeus:.2f}x, kiria {100 * osuus:.0f} %")
+    nopeus, osuus, etu, vaihtelu = simuloi(1.0, 0.004, 0.005)
+    tarkista("kirisimulaatio: lukija 1x -> kuva 1x tasaisesti (ei kiria), vaikka analyysi on nopea", 0.93 <= nopeus <= 1.03 and osuus < 0.05 and vaihtelu < 0.2, f"{nopeus:.2f}x, kiria {100 * osuus:.0f} %, vaihtelu {vaihtelu:.2f}")
+    nopeus, osuus, etu, vaihtelu = simuloi(3.0, 0.004, 0.005, raja=0.0)
+    tarkista("kirisimulaatio: --kiri 0 -> kuva aina 1x (analyysi saa silti olla kuvaa edella etumatkan verran)", 0.93 <= nopeus <= 1.03 and osuus == 0.0 and etu <= 600, f"{nopeus:.2f}x, suurin etumatka {etu}")
+    nopeus, osuus, etu, vaihtelu = simuloi(3.0, 0.004, 0.005, raja=0.1)
+    tarkista("kirisimulaatio: pieni raja (0,1 s) -> kuva kiria melkein aina (nauhoituksen nopea lapiajo)", nopeus > 2.4 and osuus > 0.7, f"{nopeus:.2f}x, kiria {100 * osuus:.0f} %")
+
+    import netti_piirto as npi
+
+    class KelloAn:
+        heitot = [types.SimpleNamespace(f_alku=900, f_loppu=None)]
+
+        @staticmethod
+        def kello_nyt(f):
+            return dict(yht={}, kay=None, juokseva_s=None, viim=None, viim_aika_s=None)
+    kutsut = []
+    pz = npi.Piirtaja(None, fps=30.0)
+    pz._kello = lambda ruutu, kt: kutsut.append(1)
+    pz._viivat = pz._pisteet = pz._paneeli = lambda *a, **k: None
+    kuva = np.zeros((1080, 1920, 3), np.uint8)
+    pz.piirra(kuva, 100, KelloAn())
+    tarkista("kellolaatikko piirtyy vasta kun ensimmainen heitto on alkanut kuvan ajassa (ei analyysin etenemisen mukaan: kuva sama kirissa ja 1x-ajossa)", not kutsut)
+    pz.piirra(kuva, 900, KelloAn())
+    tarkista("kellolaatikko piirtyy heiton lahdosta alkaen", len(kutsut) == 1)
+
+    def heitto(f_alku, lopullinen, valmis):
+        return types.SimpleNamespace(f_alku=f_alku, lopullinen=lopullinen, viivat_lopullinen=valmis)
+    an = types.SimpleNamespace(heitot=[heitto(100, True, True), heitto(900, True, False)])
+    tarkista("viivat_kesken: heiton lopullinen estimaatti pyydetty mutta ei valmis -> ruudut sen lahdosta alkaen odottavat", ns.Analyysi.viivat_kesken(an, 900) and ns.Analyysi.viivat_kesken(an, 1200))
+    tarkista("viivat_kesken: aiemmat ruudut ja valmiit estimaatit eivat odota", not ns.Analyysi.viivat_kesken(an, 899) and not ns.Analyysi.viivat_kesken(an, 100))
+    an = types.SimpleNamespace(heitot=[heitto(500, False, False), heitto(None, True, False)])
+    tarkista("viivat_kesken: kesken oleva heitto (lopullista ei viela pyydetty) tai ilman lahtoruutua ei estä", not ns.Analyysi.viivat_kesken(an, 5000))
+
+
 def testaa_mittaa_nopeus_lahde():
     print("tools/mittaa_nopeus.py: virran alkuun siirtyminen (haku tai ruutujen ohitus) ja lahteen valinta")
     import contextlib
@@ -1881,7 +1973,7 @@ def testaa_mittaa_nopeus_lahde():
 
 
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_mittaa_nopeus_lahde, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset):
         t()
     print()
     if VIRHEITA:
