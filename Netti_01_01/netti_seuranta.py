@@ -492,7 +492,7 @@ def pudota_prioriteetti(pid):
 def alusta_tyo(kansio, puolet):
     """B-mittauksen tyoprosessi. Normaali prioriteetti: toistettavassa ajossa (tiedosto, VOD) analyysi odottaa B-tulokset (viive_b), joten ne eivat saa jaada piirron, pakkauksen ja
     tallennuksen saikeiden jalkeen (prioriteettikaannos: matalaprioriteettinen B hidasti juuri sita, jota analyysi odottaa). Live-virrassa B-tulokset eivat ole odotettavia, ja siina
-    Analyysi.matalaksi_b_tyoprosessit pudottaa prioriteetin."""
+    Analyysi.matalaksi_taustaprosessit pudottaa prioriteetin."""
     cv2.setNumThreads(1)                                # pieniä kuvia: OpenCV:n oma saiepooli vain hidastaisi, kun tyoprosesseja on useita
     for p in puolet:
         _M[p] = Mittari(kansio, p)
@@ -2172,7 +2172,7 @@ class Analyysi:
         if self.tarkka and saikeet > 0:
             self.pool = tee_pool(saikeet, initializer=alusta_tyo, initargs=(kansio, tuple(paat)))
         if not synkroninen or saikeet > 0:
-            self.est_pool = tee_pool(1, initializer=matala_prioriteetti) if not synkroninen else None
+            self.est_pool = tee_pool(1) if not synkroninen else None          # normaali prioriteetti: toistettavassa ajossa kuva odottaa lopullista estimaattia (kiri); live: matalaksi_taustaprosessit
         if self.laske_kierre and not synkroninen:
             n_lahi, n_kauko = kierto_prosesseja()
             self.kierto_pool = tee_pool(n_lahi, initializer=alusta_kierto, initargs=(kansio, tuple(paat), False))       # heittopaan kierre (nakyy livekuvassa)
@@ -2326,10 +2326,20 @@ class Analyysi:
                 return True
         return False
 
-    def matalaksi_b_tyoprosessit(self):
-        """Live-virta (tulos saa riippua ajoituksesta, ruutuja ohitetaan myohassa): B-tyoprosessit alemmalle prioriteetille, jotta analyysi-, piirto- ja ikkunasaikeet saavat prosessorin ensin."""
-        for p in list(getattr(self.pool, "_processes", {}).values()):
-            pudota_prioriteetti(p.pid)
+    def matalaksi_taustaprosessit(self):
+        """Live-virta (tulos saa riippua ajoituksesta, ruutuja ohitetaan myohassa): B-tyoprosessit ja viivaestimaatin laskija alemmalle prioriteetille, jotta analyysi-, piirto- ja ikkunasaikeet saavat
+        prosessorin ensin. Toistettavassa ajossa (tiedosto, VOD) nama pysyvat normaalilla: analyysi odottaa B-tuloksia ja kuva (kiri) lopullista viivaestimaattia, joten matala prioriteetti kaantyisi
+        juuri niita vastaan, joita odotetaan (prioriteettikaannos: kuva odotti estimaattia 13,6 s seitseman heiton aikana, kun kone oli taynna)."""
+        for pool in (self.pool, self.est_pool):
+            for p in list((getattr(pool, "_processes", None) or {}).values()):
+                pudota_prioriteetti(p.pid)
+
+    def tyoprosessit(self):
+        """[(rooli, pid)] kaikista kaynnissa olevista tyoprosesseista (diagnostiikka: prosessorinkaytto rooleittain, netti_live.TyoprosessiKuorma)."""
+        tulos = []
+        for rooli, pool in (("B-sovitus", self.pool), ("viivaestimaatti", self.est_pool), ("kierre (heittopaa)", self.kierto_pool), ("kierre (kaukopaa)", self.kauko_pool), ("merkki", self.merkki_pool)):
+            tulos += [(rooli, p.pid) for p in list((getattr(pool, "_processes", None) or {}).values())]
+        return tulos
 
     def aseta_toistettava(self, paalla=True):
         """Toistettava reaaliaika: tulos ei riipu koneen nopeudesta eika tyoprosessien ajoituksesta, vaan on sama kuin sim-ajossa (--nopea). B-tulokset otetaan kayttoon kiintealla viiveella
