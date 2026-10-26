@@ -26,6 +26,7 @@ for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXP
     _os.environ.setdefault(_v, "1")                                                                       # (spawn-prosessit ovat kaynnistyneet vasta tama jalkeen); yksi saie myos toistettavampi
 import collections
 import concurrent.futures
+import contextlib
 import multiprocessing
 import os
 import sys
@@ -158,6 +159,7 @@ ESTIMAATTI_VALI = 10             # viivaestimaatti paivitetaan kun vahintaan n u
 ESTIMAATTI_MIN_Y_CM = 330.0      # vasta kun rata yltaa tahan (muuten ei irroitusta)
 ESTIMAATTI = dict(min_jalkeen=70.0, Y_r_min=200.0, kohinakatto=(0.8, 0.15), esitieto=True)   # osittaisen aineiston asetukset (liuku_irroitus.analysoi); esitieto: vapaan lennon fysiikka (hidastuvuus, kaarevuus) pehmeana esitietona
 KOPIO_KYNNYS = 15.0              # kopioruutu: harmaasavyero (suurin 0,1 % pikseleista) alle taman (aja_kivi.KOPIO_KYNNYS)
+KOPIO_KAISTOJA = 4               # kopioruututesti kay kuvan vaakakaistoissa ja lopettaa heti, kun ruutu todetaan erilliseksi (paatos on sama kuin koko kuvan vertailulla)
 
 # kierre, hog-viivat, numerointi
 KIERTO_Y_MIN_CM = 200.0          # kierteen mittauksen ruudut (leikkeet) kerataan kun kiven Y on taman ja KIERTO_Y_MAX_CM:n valilla (irroitus on tavallisesti Y = 360-610)
@@ -294,6 +296,7 @@ class Mittari:
         self.ast = _lataa_kahva_asetukset(kansio, puoli)            # kahvan muovilevyn malli (kierteen mittaus)
         self.kierto_muoto = nk.lataa_muoto(kansio, puoli)           # kahvan palkin muoto varille (kierteen mittaus)
         self._cpp = None
+        self._jaettu = None                                         # jaettu_leike: [ruutu, alue, leike | None] tai None
         if runko:
             kt.tausta_maskit(self.cam)                 # esilaskenta
             if _netti_fit is not None:
@@ -345,11 +348,26 @@ class Mittari:
         return (int(u - r_px), int(v - r_px), int(u + r_px) + 1, int(v + r_px) + 1)
 
     # ---- A: kahvan sentroidi ------------------------------------------------------------------------------------
+    @contextlib.contextmanager
+    def jaettu_leike(self, ruutu, alue):
+        """Saman ruudun saman alueen leike usealle kahva-kutsulle (esim. kahvan molemmat varit): remap vain kerran, with-lohkon ajan."""
+        self._jaettu = [ruutu, tuple(alue), None]
+        try:
+            yield
+        finally:
+            self._jaettu = None
+
     def kahva(self, ruutu, alue, vari, ennuste_uv=None, max_etaisyys_px=45.0, min_ala=12, taustaero=False, kaikki=False):
         """Kahvan vari leikkeessa -> kandidaatit [(u, v, ala, bbox)] oikaistussa kuvassa (kokonaiskoordinaatit). Jos taustaero: vain taustasta poikkeavat
         pikselit (rengas ei yhdisty punaiseen kahvaan). Jos ennuste_uv: lahin kandidaatti ennusteeseen (<= max_etaisyys_px); kaikki: kaikki sen portin sisalla
         olevat kandidaatit lahimmasta alkaen."""
-        roi, x0, y0 = self.kuvain.leike(ruutu, *alue)
+        j = self._jaettu
+        if j is not None and j[0] is ruutu and j[1] == tuple(alue):
+            if j[2] is None:
+                j[2] = self.kuvain.leike(ruutu, *alue)
+            roi, x0, y0 = j[2]
+        else:
+            roi, x0, y0 = self.kuvain.leike(ruutu, *alue)
         if roi is None:
             return []
         m = kv.kahva_maski(roi, vari)
@@ -455,8 +473,26 @@ def matala_prioriteetti():
         pass
 
 
+def pudota_prioriteetti(pid):
+    """Toisen (oman lapsi-) prosessin prioriteetti alemmaksi (kuten matala_prioriteetti itselle); virheet ohitetaan."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            k = ctypes.windll.kernel32
+            kahva = k.OpenProcess(0x0200 | 0x1000, False, int(pid))                      # PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION
+            if kahva:
+                k.SetPriorityClass(kahva, 0x00004000)                                      # BELOW_NORMAL_PRIORITY_CLASS
+                k.CloseHandle(kahva)
+        else:
+            os.setpriority(os.PRIO_PROCESS, int(pid), 5)
+    except Exception:
+        pass
+
+
 def alusta_tyo(kansio, puolet):
-    matala_prioriteetti()
+    """B-mittauksen tyoprosessi. Normaali prioriteetti: toistettavassa ajossa (tiedosto, VOD) analyysi odottaa B-tulokset (viive_b), joten ne eivat saa jaada piirron, pakkauksen ja
+    tallennuksen saikeiden jalkeen (prioriteettikaannos: matalaprioriteettinen B hidasti juuri sita, jota analyysi odottaa). Live-virrassa B-tulokset eivat ole odotettavia, ja siina
+    Analyysi.matalaksi_b_tyoprosessit pudottaa prioriteetin."""
     cv2.setNumThreads(1)                                # pieniä kuvia: OpenCV:n oma saiepooli vain hidastaisi, kun tyoprosesseja on useita
     for p in puolet:
         _M[p] = Mittari(kansio, p)
@@ -493,6 +529,22 @@ def alusta_kierto(kansio, puolet, matala=True):
     cv2.setNumThreads(1)
     for p in puolet:
         _MK[p] = Mittari(kansio, p, runko=False)
+
+
+_MM = {}
+
+
+def alusta_merkki(kansio, puolet):
+    """Maalimerkin skannauksen tyoprosessi (merkki.MerkkiSeuranta): vain kamerat. Normaali prioriteetti: toistettavassa ajossa konsensus odottaa skannaukset, joten niita ei saa jaada muun taustatyon jalkeen."""
+    cv2.setNumThreads(1)
+    for p in puolet:
+        _MM[p] = Mittari(kansio, p, runko=False)
+
+
+def tyo_merkki(args):
+    """Maalimerkin skannaus: (puoli, roi, x0, y0) -> kelvolliset ehdokkaat (merkki.ehdokkaat_leikkeesta)."""
+    puoli, roi, x0, y0 = args
+    return [e for e in merkki.ehdokkaat_leikkeesta(_MM[puoli], roi, x0, y0) if e["kelvollinen"]]
 
 
 def kierto_laske(m, args):
@@ -1081,16 +1133,17 @@ class Heittopaa(_Seuranta):
         if keski is None:
             return None
         paras = None
-        for vari in ("keltainen", "punainen"):
-            for c in self.m.kahva(ruutu, self.hack_alue, vari, None, min_ala=4, taustaero=False):
-                if not (RUNKO_KAHVA_ALA_SUHDE * KAHVA_ALA_CM2[0] * self.hack_skaala2 <= c[2] <= KAHVA_ALA_CM2[1] * self.hack_skaala2):
-                    continue
-                if not (0.35 <= c[3][2] / max(c[3][3], 1) <= 2.8):
-                    continue
-                Xh, Yh = self._a_maa(c)
-                d = float(np.hypot(Xh - keski[0], Yh - keski[1]))
-                if d <= B_LEPO_POIK_CM and self._hack_sisalla(Xh, Yh) and (paras is None or d < paras[0]):
-                    paras = (d, vari, (f, Xh, Yh, c[0], c[1], c[2]))
+        with self.m.jaettu_leike(ruutu, self.hack_alue):                      # sama alue molemmille vareille: yksi remap
+            for vari in ("keltainen", "punainen"):
+                for c in self.m.kahva(ruutu, self.hack_alue, vari, None, min_ala=4, taustaero=False):
+                    if not (RUNKO_KAHVA_ALA_SUHDE * KAHVA_ALA_CM2[0] * self.hack_skaala2 <= c[2] <= KAHVA_ALA_CM2[1] * self.hack_skaala2):
+                        continue
+                    if not (0.35 <= c[3][2] / max(c[3][3], 1) <= 2.8):
+                        continue
+                    Xh, Yh = self._a_maa(c)
+                    d = float(np.hypot(Xh - keski[0], Yh - keski[1]))
+                    if d <= B_LEPO_POIK_CM and self._hack_sisalla(Xh, Yh) and (paras is None or d < paras[0]):
+                        paras = (d, vari, (f, Xh, Yh, c[0], c[1], c[2]))
         if paras is None:
             return None
         return paras[1], [paras[2]], (paras[2][1], paras[2][2])
@@ -1119,19 +1172,20 @@ class Heittopaa(_Seuranta):
         """Kandidaattihaku hack-alueelta (kahvan vari, molemmat varit); palauttaa (vari, lista, (X, Y)) ensimmaiselle vakaalle, kiven paalla olevalle kandidaatille (keltainen ensin) tai None.
         pois = (vari, X, Y): taman varin ehdokkaat enintaan VAIHTO_ETAISYYS_CM paassa (X, Y):sta ohitetaan (jo viritetty kahva)."""
         loytyi = {}
-        for vari in ("keltainen", "punainen"):
-            for c in self.m.kahva(ruutu, self.hack_alue, vari, None, min_ala=max(int(KAHVA_ALA_CM2[0] * self.hack_skaala2) // 2, 4), taustaero=False):
-                if not (KAHVA_ALA_CM2[0] * self.hack_skaala2 <= c[2] <= KAHVA_ALA_CM2[1] * self.hack_skaala2):
-                    continue
-                bb = c[3]
-                if not (0.35 <= bb[2] / max(bb[3], 1) <= 2.8):
-                    continue
-                X, Y = self._a_maa(c)
-                if not self._hack_sisalla(X, Y):
-                    continue
-                if pois is not None and vari == pois[0] and np.hypot(X - pois[1], Y - pois[2]) <= VAIHTO_ETAISYYS_CM:
-                    continue
-                loytyi.setdefault(vari, []).append((f, X, Y, c[0], c[1], c[2]))
+        with self.m.jaettu_leike(ruutu, self.hack_alue):                      # sama alue molemmille vareille: yksi remap
+            for vari in ("keltainen", "punainen"):
+                for c in self.m.kahva(ruutu, self.hack_alue, vari, None, min_ala=max(int(KAHVA_ALA_CM2[0] * self.hack_skaala2) // 2, 4), taustaero=False):
+                    if not (KAHVA_ALA_CM2[0] * self.hack_skaala2 <= c[2] <= KAHVA_ALA_CM2[1] * self.hack_skaala2):
+                        continue
+                    bb = c[3]
+                    if not (0.35 <= bb[2] / max(bb[3], 1) <= 2.8):
+                        continue
+                    X, Y = self._a_maa(c)
+                    if not self._hack_sisalla(X, Y):
+                        continue
+                    if pois is not None and vari == pois[0] and np.hypot(X - pois[1], Y - pois[2]) <= VAIHTO_ETAISYYS_CM:
+                        continue
+                    loytyi.setdefault(vari, []).append((f, X, Y, c[0], c[1], c[2]))
         for vari in ("keltainen", "punainen"):
             lista = self.kandidaatit.setdefault(vari, [])
             uusi = loytyi.get(vari, [])
@@ -2103,6 +2157,7 @@ class Analyysi:
         self.fps_lahde = 25.0 if fps_lahde is None else float(fps_lahde)      # None: paatellaan kopioruutujen osuudesta (_paata_fps_lahde)
         self._fps_auto = fps_lahde is None
         self.synkroninen = synkroninen
+        self.saikeet = int(saikeet)                  # B-tyoprosessien maara (0 = ei tarkkaa sovitusta)
         self.aika = collections.defaultdict(float)  # analyysin ajankaytto (s) vaiheittain (syota): ks. netti_live.py loppuyhteenveto
         self._lykatyt = {}                           # toistettava ajo: kaukopaan kierron aloitus odottaa heittopaan kierron valmistumista
         self.toistettava = False                     # reaaliaikarakenne, mutta tulos ei riipu ajoituksesta: sama kuin sim-ajossa (ks. aseta_toistettava)
@@ -2131,7 +2186,10 @@ class Analyysi:
         self.kaukoseurannat = []                     # tunnistetut kaukopaan kivet seurannassa (KaukoSeuranta)
         self.lepohaut = []                           # [(heitto, LepoHaku)]: hukassa-heittojen lepopaikan haku pesan kartasta (lepo_haku)
         self._lepo_kartat = {}                       # puoli -> PesaKartta
-        self.merkit = None if os.environ.get("NETTI_EI_MERKKIA") else merkki.MerkkiSeuranta({p: self.M[p] for p in paat}, self.fps)       # maalimerkin (kaukopaan harjanpaa) moniruutuhaku
+        self.merkki_pool = None
+        if not os.environ.get("NETTI_EI_MERKKIA") and self.tarkka and saikeet > 0 and not os.environ.get("NETTI_EI_MERKKIPOOLIA"):
+            self.merkki_pool = tee_pool(1, initializer=alusta_merkki, initargs=(kansio, tuple(paat)))        # skannauksen raskas osa taustaprosessiin: analyysisaie tekee vain leikkeen
+        self.merkit = None if os.environ.get("NETTI_EI_MERKKIA") else merkki.MerkkiSeuranta({p: self.M[p] for p in paat}, self.fps, pool=self.merkki_pool, tyo=tyo_merkki)       # maalimerkin (kaukopaan harjanpaa) moniruutuhaku
         self._merkki_odottavat = []                  # [(viimeistelyruutu, heitto)]: maalimerkki viimeistellaan, kun konsensusikkunan loppu (merkki.KONSENSUS_LOPPU_S) on tullut
         self.paat = {p: Heittopaa(self, p) for p in paat}
         self.heitot = []                             # vahvistetut heitot (piirtajalle)
@@ -2139,7 +2197,9 @@ class Analyysi:
         self._tunnus = 0
         self._numerot = {}                           # (puoli, vari) -> viimeisin kiven numero
         self._viim_puoli = None
-        self.edellinen_harmaa = None
+        self._kopio_kaista = None                    # edellisen ruudun kopiotestin kaista (viite; ruutuja ei muokata syotön jalkeen) ...
+        self._kopio_harmaat = [None] * KOPIO_KAISTOJA        # ... ja sen kaistojen harmaasavyt, kun ne on jo laskettu
+        self._kopio_ensin = 0                        # kaista, jossa edellisen ruudun ero todettiin: tutkitaan ensin
         self.viim_f = None
         self.kopioita = 0
         self.yksilollisia = 0
@@ -2149,7 +2209,7 @@ class Analyysi:
         """Kaynnistaa tyoprosessit (spawn: tuonnit ja kameramallit, 5-15 s) ja odottaa niita, jotta ensimmaisen heiton B-mittaukset eivat myohastyisi (kivea ei
         muuten todettaisi heiton alussa). Palauttaa kaynnistettyjen prosessien maaran."""
         tehtavat = []
-        for pool, n in ((self.pool, getattr(self.pool, "_max_workers", 1)), (self.est_pool, 1), (self.kierto_pool, 1), (self.kauko_pool, getattr(self.kauko_pool, "_max_workers", 1))):
+        for pool, n in ((self.pool, getattr(self.pool, "_max_workers", 1)), (self.est_pool, 1), (self.kierto_pool, 1), (self.kauko_pool, getattr(self.kauko_pool, "_max_workers", 1)), (self.merkki_pool, 1)):
             if pool is not None:
                 tehtavat += [pool.submit(tyo_nop) for _ in range(n)]
         if odota and tehtavat:
@@ -2230,19 +2290,39 @@ class Analyysi:
     # ---- kopioruutu ------------------------------------------------------------------------------------------------
     def _kopio(self, ruutu):
         """Kopioruutu (edellisen tarkka kopio uudelleenkoodattuna): harmaasavyero alle KOPIO_KYNNYS lahes kaikissa pikseleissa (alle 0,1 %) MOLEMMISSA puoliskoissa.
-        (Vain toinen puolisko ei kelpaa: jos kivi liikkuu toisessa paassa, toinen puolisko voi olla lahes staattinen.)"""
-        y0, h = kv.kn.PUOLET["vasen"][1], kv.kn.PUOLET["vasen"][3]
-        g = cv2.cvtColor(ruutu[y0:y0 + h], cv2.COLOR_BGR2GRAY)
-        kopio = False
-        if self.edellinen_harmaa is not None:
-            d = cv2.absdiff(g, self.edellinen_harmaa)
-            puoli = d.shape[1] // 2
-            raja = 0.001 * d.shape[0] * puoli
-            kopio = np.count_nonzero(d[:, :puoli] > KOPIO_KYNNYS) < raja and np.count_nonzero(d[:, puoli:] > KOPIO_KYNNYS) < raja
-        self.edellinen_harmaa = g
-        return kopio
+        (Vain toinen puolisko ei kelpaa: jos kivi liikkuu toisessa paassa, toinen puolisko voi olla lahes staattinen.) Kuva kaydaan lapi KOPIO_KAISTOJA vaakakaistassa: muuttuneiden
+        pikseleiden laskuri vain kasvaa, joten ruutu on erillinen heti kun jommassakummassa puoliskossa raja ylittyy (tavallisesti ensimmaisessa kaistassa; kaista, jossa ero viimeksi
+        todettiin, tutkitaan ensin), ja kopioksi toteaminen vaatii kaikki kaistat. Harmaasavyt lasketaan vain tutkituista kaistoista ja pidetaan seuraavaa vertailua varten."""
+        y0, h0 = kv.kn.PUOLET["vasen"][1], kv.kn.PUOLET["vasen"][3]
+        kaista = ruutu[y0:y0 + h0]
+        ed, g_ed = self._kopio_kaista, self._kopio_harmaat
+        self._kopio_kaista, self._kopio_harmaat = kaista, [None] * KOPIO_KAISTOJA
+        if ed is None or ed.shape != kaista.shape:
+            return False
+        h = kaista.shape[0]
+        n = KOPIO_KAISTOJA if h >= 8 * KOPIO_KAISTOJA else 1                      # (pienet testikuvat: yksi kaista)
+        puoli = kaista.shape[1] // 2
+        raja = 0.001 * h * puoli
+        vasen = oikea = 0
+        for j in range(n):
+            i = (self._kopio_ensin + j) % n
+            a, b = h * i // n, h * (i + 1) // n
+            g = self._kopio_harmaat[i] = cv2.cvtColor(kaista[a:b], cv2.COLOR_BGR2GRAY)
+            g0 = g_ed[i] if g_ed[i] is not None else cv2.cvtColor(ed[a:b], cv2.COLOR_BGR2GRAY)
+            m = cv2.compare(cv2.absdiff(g, g0), KOPIO_KYNNYS, cv2.CMP_GT)
+            vasen += cv2.countNonZero(m[:, :puoli])
+            oikea += cv2.countNonZero(m[:, puoli:])
+            if vasen >= raja or oikea >= raja:
+                self._kopio_ensin = i
+                return False
+        return True
 
     # ---- B-tyot ---------------------------------------------------------------------------------------------------
+    def matalaksi_b_tyoprosessit(self):
+        """Live-virta (tulos saa riippua ajoituksesta, ruutuja ohitetaan myohassa): B-tyoprosessit alemmalle prioriteetille, jotta analyysi-, piirto- ja ikkunasaikeet saavat prosessorin ensin."""
+        for p in list(getattr(self.pool, "_processes", {}).values()):
+            pudota_prioriteetti(p.pid)
+
     def aseta_toistettava(self, paalla=True):
         """Toistettava reaaliaika: tulos ei riipu koneen nopeudesta eika tyoprosessien ajoituksesta, vaan on sama kuin sim-ajossa (--nopea). B-tulokset otetaan kayttoon kiintealla viiveella
         (ruutu f - viive_b odotetaan, B:ta ei pudoteta), estimaatit lasketaan kaikki jarjestyksessa ja heittopaan kierto odotetaan ennen kaukopaan kierron ennakkoa. Ruutuja ei ohiteta
@@ -2872,9 +2952,9 @@ class Analyysi:
 
     def ohita(self):
         """Ruutu nakyy tulosteessa mutta sita ei analysoida (analyysi myohassa): kopioruututesti ei saa verrata kahta eri ruutua."""
-        self.edellinen_harmaa = None
+        self._kopio_kaista, self._kopio_harmaat = None, [None] * KOPIO_KAISTOJA
 
     def sulje(self):
-        for p in (self.pool, self.est_pool, self.kierto_pool, self.kauko_pool):
+        for p in (self.pool, self.est_pool, self.kierto_pool, self.kauko_pool, self.merkki_pool):
             if p is not None:
                 p.shutdown(wait=False, cancel_futures=True)

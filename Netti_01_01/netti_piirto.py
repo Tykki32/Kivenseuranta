@@ -52,21 +52,29 @@ _KIRJAIN_PERUS = {"ä": "a", "ö": "o", "å": "a", "Ä": "A", "Ö": "O", "Å": "
 # ---------------------------------------------------------------------------------------------------------------------
 # PERUSPIIRROT
 # ---------------------------------------------------------------------------------------------------------------------
-def _viiva_kuvaan(img, pts, vari, paksuus, katkoviiva=False, taustavari=(255, 255, 255)):
-    """Murtoviiva pikselikoordinaateissa; valkoinen tausta + vari -> nakyy jaalla ja renkaiden paalla. katkoviiva: lyhyet patkat. Segmentit rajataan kuvaan (clipLine) ja
-    piirretaan yhdella polylines-kutsulla per kerros."""
+def _leikatut_segmentit(pts, h, w, katkoviiva=False):
+    """Murtoviivan segmentit rajattuna kuvaan (h x w): [2 x 2 int32 -taulukko]; katkoviiva: joka toinen segmentti. Riippuu vain pisteista ja kuvan koosta, joten Piirtaja valimuistittaa sen."""
     pts = np.round(pts).astype(np.int32)
-    h, w = img.shape[:2]
     segs = []
     for a, b in zip(pts[:-1], pts[1:]):
         ok, p, q = cv2.clipLine((0, 0, w, h), (int(a[0]), int(a[1])), (int(b[0]), int(b[1])))
         if ok:
             segs.append(np.array([p, q], np.int32))
-    if katkoviiva:
-        segs = segs[::2]
+    return segs[::2] if katkoviiva else segs
+
+
+def _piirra_segmentit(img, segs, vari, paksuus, taustavari=(255, 255, 255)):
+    """Valmiiksi rajatut segmentit (_leikatut_segmentit): valkoinen tausta + vari, yksi polylines-kutsu per kerros."""
     if segs:
         cv2.polylines(img, segs, False, taustavari, paksuus + 2, cv2.LINE_AA)
         cv2.polylines(img, segs, False, vari, paksuus, cv2.LINE_AA)
+
+
+def _viiva_kuvaan(img, pts, vari, paksuus, katkoviiva=False, taustavari=(255, 255, 255)):
+    """Murtoviiva pikselikoordinaateissa; valkoinen tausta + vari -> nakyy jaalla ja renkaiden paalla. katkoviiva: lyhyet patkat. Segmentit rajataan kuvaan (clipLine) ja
+    piirretaan yhdella polylines-kutsulla per kerros."""
+    h, w = img.shape[:2]
+    _piirra_segmentit(img, _leikatut_segmentit(pts, h, w, katkoviiva), vari, paksuus, taustavari)
 
 
 def teksti_fi(img, txt, org, koko=0.55, vari=VARI_VALKOINEN, paksuus=1):
@@ -333,30 +341,19 @@ class Piirtaja:
             return
         kauko = ng.Geometria.toinen(h.puoli)
         d = self._viivat_data(h, kauko)
-        _viiva_kuvaan(img, d["pts"], VARI_LIUKU, 3)
-        _viiva_kuvaan(img, d["pts2"], VARI_IRROITUS, 3, katkoviiva=d["alustava"])         # alustava = katkoviiva
-        # T-viivan leikkauspisteet; nimike viivan alkuun (ensimmainen nakyva piste), kun leikkauspiste on kuva-alan ulkopuolella
+        koko = img.shape[:2]
+        if d.get("segmentit_koko") != koko:                                                  # kuvaan rajatut segmentit lasketaan kerran per estimaatti (eivat muutu ruudusta toiseen)
+            d["segmentit"] = (_leikatut_segmentit(d["pts"], *koko), _leikatut_segmentit(d["pts2"], *koko, katkoviiva=d["alustava"]))
+            d["segmentit_koko"] = koko
+        _piirra_segmentit(img, d["segmentit"][0], VARI_LIUKU, 3)
+        _piirra_segmentit(img, d["segmentit"][1], VARI_IRROITUS, 3)                           # alustava = katkoviiva
+        # T-viivan leikkauspisteet (piste, kun se on kuva-alan sisalla); viivoilla ei ole tekstia: luvut ovat tietopaneelissa
         px0, py0, pw, ph = (ng.kn.PUOLET[kauko])
-        for XT, uv, vari, nimi, pts_ in ((d["XT_liuku"], d["uv_liuku"], VARI_LIUKU, "LIUKU", d["pts"]), (d["XT_irr"], d["uv_irr"], VARI_IRROITUS, "IRROITUS", d["pts2"])):
+        for uv, vari in ((d["uv_liuku"], VARI_LIUKU), (d["uv_irr"], VARI_IRROITUS)):
             c = (int(round(uv[0])), int(round(uv[1])))
-            sisalla = px0 + 6 <= c[0] < px0 + pw - 6 and py0 + 6 <= c[1] < py0 + ph - 6
-            if sisalla:
+            if px0 + 6 <= c[0] < px0 + pw - 6 and py0 + 6 <= c[1] < py0 + ph - 6:
                 cv2.circle(img, c, 9, (255, 255, 255), -1, cv2.LINE_AA)
                 cv2.circle(img, c, 7, vari, -1, cv2.LINE_AA)
-            sana = f"{nimi} {abs(XT):.0f} cm {'oik' if XT > 0 else 'vas'}"
-            if c[0] >= px0 + pw - 6:
-                sana += " >>"                             # leikkauspiste kuva-alan oikealla puolella
-            elif c[0] < px0 + 6:
-                sana = "<< " + sana
-            # ensimmainen puoliskon sisalla oleva piste (pienin Y'): tasta nimike lahelle
-            q_ = np.round(pts_).astype(int)
-            vis = q_[(q_[:, 0] >= px0 + 4) & (q_[:, 0] < px0 + pw - 4) & (q_[:, 1] >= py0 + 4) & (q_[:, 1] < py0 + ph - 4)]
-            if len(vis):
-                q = vis[0]
-                (tw, _), _ = cv2.getTextSize(sana, FONTTI, 0.5, 1)
-                x = int(np.clip(q[0] - tw // 2, px0 + 6, px0 + pw - tw - 10))
-                y = int(np.clip(q[1] + (30 if nimi == "IRROITUS" else 52), py0 + 24, py0 + ph - 8))
-                _teksti(img, sana, (x, y), 0.5, vari, 1)
 
     # ---- tietopaneeli -----------------------------------------------------------------------------------------------
     def _paneeli_kuva(self, rivit, vlk="_paneeli_vlk", leveys_min=330):
@@ -392,7 +389,7 @@ class Piirtaja:
         if roi.shape[:2] != (hh, ww):
             return
         cv2.addWeighted(kuva, 0.72, roi, 0.28, 0, roi)         # tausta puoliksi lapinakyva
-        np.copyto(roi, kuva, where=maski[:, :, None])           # teksti taysin peittavana
+        cv2.copyTo(kuva, maski.view(np.uint8), roi)             # teksti taysin peittavana (sama kuin np.copyto(roi, kuva, where=maski), ~50 x nopeampi)
 
     def _paneeli(self, img, h, kierre_paalla=True):
         rivit = paneelin_rivit(h, ns.heiton_suureet(h), kierre_paalla)
