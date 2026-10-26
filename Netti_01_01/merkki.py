@@ -21,8 +21,12 @@ kahvaosa, joka on joissakin harjoissa samaa savya ja yhta suuri kuin harjanpaa):
 montako harjaa sai vahintaan puolet parhaista pisteista (1 = yksiselitteinen, 2 = esim. kaksi pelaajaa pitaa harjaa pesassa: kumpi on kipparin, ei nay kuvasta). Maalia ei loydy (None), kun mikaan klusteri ei kelpaa: harjanpaata ei ole nakyvissa (kukaan ei pida harjaa pesassa, tai
 harjanpaa on valkomusta tms., jota vari ei erota).
 
+Skannauksen raskas osa (ehdokkaat_leikkeesta) voidaan ajaa taustaprosessissa (MerkkiSeuranta pool + tyo): analyysisaie tekee vain leikkeen (leike) eika jaa skannauksen ajaksi jalkeen (joka 15. ruutu
+tutkittiin ennen analyysisaikeessa, 30-100 ms), ja konsensus odottaa tarvitsemansa skannaukset, joten tulos on sama kuin suoraan skannattaessa.
+
 Koordinaatit kaukopaan koordinaateissa (X', Y', cm; origo pesan keskipiste, kuten kaukopaan seurannassa). Moduuli ei tunne seurantaa muuten kuin Mittarin (kuvain, kamera, koordinaatit) kautta."""
 import collections
+import math
 
 import cv2
 import numpy as np
@@ -51,10 +55,14 @@ REUNA_PX = 4                             # kuvan reunan katkaisema harjanpaa: al
 
 
 def _alue(mittari):
-    cam = mittari.cam
-    P = np.array([(x, y, z) for x in (-X_MAX_CM - 40.0, X_MAX_CM + 40.0) for y in Y_RAJAT_CM for z in (0.0, 30.0)])
-    u, v = kivimalli.project_3d(cam.K, cam.R, cam.t, P)
-    return (int(u.min()) - 6, int(v.min()) - 6, int(u.max()) + 6, int(v.max()) + 6)
+    """Skannattava alue oikaistussa kuvassa (x0, y0, x1, y1): kaista (|X'| <= X_MAX_CM + 40, Y_RAJAT_CM, z 0-30 cm) reunoineen. Valimuistissa Mittarilla."""
+    v = getattr(mittari, "_merkki_alue", None)
+    if v is None:
+        cam = mittari.cam
+        P = np.array([(x, y, z) for x in (-X_MAX_CM - 40.0, X_MAX_CM + 40.0) for y in Y_RAJAT_CM for z in (0.0, 30.0)])
+        u, v_ = kivimalli.project_3d(cam.K, cam.R, cam.t, P)
+        v = mittari._merkki_alue = (int(u.min()) - 6, int(v_.min()) - 6, int(u.max()) + 6, int(v_.max()) + 6)
+    return v
 
 
 def _lattia(mittari):
@@ -139,7 +147,7 @@ def _alin_kohta(mittari, u, v, X, Y):
 
 
 def _arvioi(mittari, m, x0, y0, H, S):
-    """Maskin (0/1) kukin yhtenainen alue ehdokkaaksi: [(dict, alueen maski)]."""
+    """Maskin (0/1) kukin yhtenainen alue ehdokkaaksi: [(dict, alueen maski)]. Alueen pikselit luetaan sen rajauslaatikosta (connectedComponentsWithStats), ei koko leikkeesta."""
     n, lab, st, cen = cv2.connectedComponentsWithStats(m)
     reuna = _reuna(mittari)[y0:y0 + m.shape[0], x0:x0 + m.shape[1]]
     out = []
@@ -147,9 +155,10 @@ def _arvioi(mittari, m, x0, y0, H, S):
         a = int(st[k, cv2.CC_STAT_AREA])
         if a < MIN_PX:
             continue
-        kmask = lab == k
-        ys, xs = np.nonzero(kmask)
-        (_, _), (w, h), ang = cv2.minAreaRect(np.column_stack([xs, ys]).astype(np.float32))
+        l, t, bw, bh = (int(st[k, c]) for c in (cv2.CC_STAT_LEFT, cv2.CC_STAT_TOP, cv2.CC_STAT_WIDTH, cv2.CC_STAT_HEIGHT))
+        sub = lab[t:t + bh, l:l + bw] == k
+        ys, xs = np.nonzero(sub)
+        (_, _), (w, h), ang = cv2.minAreaRect(np.column_stack([xs + l, ys + t]).astype(np.float32))
         L, W = max(w, h), max(min(w, h), 1.0)
         kulma = (ang if w >= h else ang + 90.0) % 180.0          # pitkan akselin kulma kuvan vaakasuuntaan (= kentan suunta), 0-90
         kulma = min(kulma, 180.0 - kulma)
@@ -166,21 +175,33 @@ def _arvioi(mittari, m, x0, y0, H, S):
             syy = "muoto"
         elif kulma > MERKKI_KULMA_MAX:
             syy = "suunta"
-        Xa, Ya = _alin_kohta(mittari, xs + x0, ys + y0, X, Y)
+        Xa, Ya = _alin_kohta(mittari, xs + (x0 + l), ys + (y0 + t), X, Y)
+        kmask = np.zeros(m.shape, np.uint8)
+        kmask[t:t + bh, l:l + bw] = sub
         out.append((dict(X=float(X), Y=float(Y), alin_X=Xa, alin_Y=Ya, u=u, v=v, ala_cm2=float(ala), sivusuhde=float(L / W), pituus_cm=float(L / s), leveys_cm=float(W / s), kulma=float(kulma),
-                         sävy=float(np.median(H[kmask])), kyllaisyys=float(np.median(S[kmask])), reunalla=bool(reuna[kmask].any()), kelvollinen=(syy == ""), syy=syy), kmask.astype(np.uint8)))
+                         sävy=float(np.median(H[t:t + bh, l:l + bw][sub])), kyllaisyys=float(np.median(S[t:t + bh, l:l + bw][sub])), reunalla=bool(reuna[t:t + bh, l:l + bw][sub].any()),
+                         kelvollinen=(syy == ""), syy=syy), kmask))
     return out
+
+
+def leike(mittari, ruutu):
+    """Skannattava leike kaukopaan kuvasta (Mittari.kuvain.leike): (roi | None, x0, y0). Erillaan ehdokkaista, jotta leikkeen voi tehda analyysisaikeessa ja tutkia taustaprosessissa."""
+    return mittari.kuvain.leike(ruutu, *_alue(mittari))
 
 
 def ehdokkaat(mittari, ruutu):
     """Kaikki harjanpaan nakoiset alueet kaukopaan kuvasta: [dict(X, Y, u, v, ala_cm2, sivusuhde, pituus_cm, leveys_cm, kulma, sävy, kyllaisyys, kelvollinen, syy)]. Ruutu: koko ruutu (BGR).
     Kaistalla oleva alue, jonka koko tai muoto ei kelpaa (harjanpaa + sen varsi samaa puunvarista), pilkotaan paksummilla avauksilla: varsi (~9 px) irtoaa, harjanpaa (>= 13 px) jaa."""
-    roi, x0, y0 = mittari.kuvain.leike(ruutu, *_alue(mittari))
+    return ehdokkaat_leikkeesta(mittari, *leike(mittari, ruutu))
+
+
+def ehdokkaat_leikkeesta(mittari, roi, x0, y0):
+    """ehdokkaat valmiista leikkeesta (leike: roi, x0, y0)."""
     if roi is None:
         return []
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    H, S, V = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    m = ((H >= H_MIN) & (H <= H_MAX) & (S >= S_MIN) & (V >= V_MIN)).astype(np.uint8)
+    H, S = hsv[..., 0], hsv[..., 1]
+    m = cv2.threshold(cv2.inRange(hsv, (H_MIN, S_MIN, V_MIN), (H_MAX, 255, 255)), 0, 1, cv2.THRESH_BINARY)[1]
     m = _avaa(cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)) & _kaista(mittari, x0, y0, roi.shape[1], roi.shape[0]), AVAUS_PX[0])
     out = []
     for e, kmask in _arvioi(mittari, m, x0, y0, H, S):
@@ -320,15 +341,50 @@ def t_viivalle(X_alin, Y_alin, hack_X, hack_Y, etaisyys_cm):
 
 class MerkkiSeuranta:
     """Kaukopaan harjanpaiden jatkuva skannaus (SKANNAUS_VALI_S valein, molemmat puoliskot: heittosuunta vaihtuu) ja konsensus heiton ymparilta. Analyysi syottaa ruudut (syota);
-    heiton lahdon jalkeen konsensus(puoli, f_alku) kertoo maalin kaukopaan koordinaateissa. Puskuri sailyttaa konsensusikkunan: ruudut heiton lahdosta -KONSENSUS_ALKU_S ... +KONSENSUS_LOPPU_S."""
+    heiton lahdon jalkeen konsensus(puoli, f_alku) kertoo maalin kaukopaan koordinaateissa. Puskuri sailyttaa konsensusikkunan: ruudut heiton lahdosta -KONSENSUS_ALKU_S ... +KONSENSUS_LOPPU_S.
 
-    def __init__(self, mittarit, fps, vali_s=SKANNAUS_VALI_S):
+    pool + tyo (valinnaiset): skannauksen raskas osa (ehdokkaat_leikkeesta) ajetaan taustaprosessissa (pool.submit(tyo, (puoli, roi, x0, y0)) -> kelvolliset ehdokkaat), jolloin analyysisaie
+    tekee vain leikkeen (remap) eika jaa skannauksen ajaksi jalkeen. Tulokset otetaan sarjoihin ruutujarjestyksessa, ja konsensus odottaa kaikki ruutuun f_asti mennessa lahetetyt skannaukset:
+    tulos on sama kuin skannattaessa suoraan, eika riipu taustaprosessin ajoituksesta."""
+
+    ODOTTAVIA_MAX = 60                                      # taustaprosessin jaljessa olevien skannausten (leikkeineen) enimmaismaara: sen jalkeen odotetaan vanhin
+
+    def __init__(self, mittarit, fps, vali_s=SKANNAUS_VALI_S, pool=None, tyo=None):
         self.mittarit = dict(mittarit)                      # puoli -> Mittari (kuvan puolisko, jonka koordinaateissa ehdokkaat annetaan)
         self.fps = float(fps)
         self.vali = max(1, int(round(vali_s * self.fps)))
         self.puskuri = int(round((KONSENSUS_LOPPU_S - KONSENSUS_ALKU_S + 8.0) * self.fps))
         self.sarjat = {p: collections.deque() for p in self.mittarit}      # puoli -> [(ruutu, [kelvolliset ehdokkaat])]
+        self.pool, self.tyo = pool, tyo
+        self._odottavat = collections.deque()               # (ruutu, puoli, leike, tulevaisuus | None): taustaprosessissa tutkittavat skannaukset
         self._viim = None
+
+    def _lisaa(self, puoli, f, ehd):
+        s = self.sarjat[puoli]
+        s.append((f, ehd))
+        while s and s[0][0] < f - self.puskuri:
+            s.popleft()
+
+    def _tulos(self, puoli, leike_, tulevaisuus):
+        """Taustaskannauksen kelvolliset ehdokkaat; jos taustaprosessi ei vastannut (kaatui, poikkeus), leike tutkitaan tassa."""
+        roi, x0, y0 = leike_
+        if roi is None:
+            return []
+        if tulevaisuus is not None:
+            try:
+                return tulevaisuus.result()
+            except Exception:
+                pass
+        return [e for e in ehdokkaat_leikkeesta(self.mittarit[puoli], roi, x0, y0) if e["kelvollinen"]]
+
+    def _kerää(self, odota_asti=-1):
+        """Siirtaa valmistuneet taustaskannaukset sarjoihin (ruutujarjestyksessa). Skannaukset, joiden ruutu on <= odota_asti, odotetaan valmiiksi (tyhja jono: ei tee mitaan)."""
+        while self._odottavat:
+            f, puoli, leike_, tulevaisuus = self._odottavat[0]
+            if tulevaisuus is not None and not tulevaisuus.done() and f > odota_asti and len(self._odottavat) <= self.ODOTTAVIA_MAX:
+                break
+            self._odottavat.popleft()
+            self._lisaa(puoli, f, self._tulos(puoli, leike_, tulevaisuus))
 
     def syota(self, f, ruutu):
         """Skannaa ruudun, jos edellisesta skannauksesta on kulunut SKANNAUS_VALI_S (ruutunumerot videon ruutunopeudella). True, jos skannattiin."""
@@ -336,13 +392,22 @@ class MerkkiSeuranta:
             return False
         self._viim = f
         for puoli, m in self.mittarit.items():
-            s = self.sarjat[puoli]
-            s.append((f, [e for e in ehdokkaat(m, ruutu) if e["kelvollinen"]]))
-            while s and s[0][0] < f - self.puskuri:
-                s.popleft()
+            if self.pool is None:
+                self._lisaa(puoli, f, [e for e in ehdokkaat(m, ruutu) if e["kelvollinen"]])
+                continue
+            leike_ = leike(m, ruutu)
+            tulevaisuus = None
+            if leike_[0] is not None:
+                try:
+                    tulevaisuus = self.pool.submit(self.tyo, (puoli,) + leike_)
+                except Exception:                           # pooli ei ole kaytossa: _tulos tutkii leikkeen itse
+                    tulevaisuus = None
+            self._odottavat.append((f, puoli, leike_, tulevaisuus))
+        self._kerää()
         return True
 
     def konsensus(self, puoli, f_alku, f_asti=None):
         """Heiton (lahtoruutu f_alku) maali puoliskolla `puoli` (kaukopaa): merkki.konsensus puskurin ruuduista (f_asti: vain tahan asti), tai None."""
+        self._kerää(min(math.inf if f_asti is None else f_asti, f_alku + KONSENSUS_LOPPU_S * self.fps))        # konsensusikkunan ulkopuolisia skannauksia ei tarvitse odottaa
         sarja = [((f - f_alku) / self.fps, e) for f, e in self.sarjat[puoli] if f_asti is None or f <= f_asti]
         return konsensus(sarja)

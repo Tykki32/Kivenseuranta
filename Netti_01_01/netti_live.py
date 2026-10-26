@@ -161,7 +161,9 @@ class Esilataus:
     n: ruutuja luetaan enintaan taman verran analyysin edella raakana (BGR, 6 Mt / ruutu; 0 = ei erillista saiettta).
     pitka_s > 0 (YouTube / virta): luku jatkuu jatkuvasti enintaan pitka_s sekuntia analyysin edelle; puskurin ruudut pakataan YUV 4:2:0 -muotoon (3,1 Mt / ruutu: 30 s = 2,8 Gt),
     joten raskaan hetken (heitto) aikana luettua videota on jo valmiina, ja kevyella hetkella analyysi kirii myohastymisen kiinni. Pakkauksen kautta kulkevat kaikki ruudut (analyysin
-    syote ei riipu kuormasta). Kayttö: for f, ruutu in Esilataus(...); t_luettu = viimeksi annetun ruudun lukuhetki (time.time()), pituus_s = puskurissa oleva video (s)."""
+    syote ei riipu kuormasta). Purku takaisin BGR:ksi tehdaan omassa saikeessa PURKU_ENNAKKO ruutua etukateen, joten analyysisaie ei kuluta aikaansa siihen (~1,4 ms / ruutu).
+    Kaytto: for f, ruutu in Esilataus(...); t_luettu = viimeksi annetun ruudun lukuhetki (time.time()), pituus_s = puskurissa oleva video (s)."""
+    PURKU_ENNAKKO = 4
 
     def __init__(self, iteraattori, n=24, pitka_s=0.0, fps=30.0):
         self.it = iteraattori
@@ -172,18 +174,26 @@ class Esilataus:
         self._kapasiteetti = max(self.n, int(round(pitka_s * self.fps))) if self.pakattu else self.n
         self._loppu, self._virhe, self._seis = object(), [], threading.Event()
         self._jono = None
+        self._purettu = None                                  # purettujen (BGR) ruutujen lyhyt jono (vain pakatussa tilassa)
         if self.n > 0:
-            self._jono = queue.Queue(maxsize=self._kapasiteetti)
+            if self.pakattu:
+                k = max(1, min(self.PURKU_ENNAKKO, self._kapasiteetti - 2))
+                self._purettu = queue.Queue(maxsize=k)
+                self._jono = queue.Queue(maxsize=max(1, self._kapasiteetti - k - 1))          # kokonaispuskuri (kapasiteetti) sisaltaa myos purkusaikeen kasissa olevan ruudun
+                threading.Thread(target=self._pura, name="esilataus-purku", daemon=True).start()
+            else:
+                self._jono = queue.Queue(maxsize=self._kapasiteetti)
             threading.Thread(target=self._lue, name="esilataus", daemon=True).start()
 
     @property
     def pituus_s(self):
-        return 0.0 if self._jono is None else self._jono.qsize() / self.fps
+        return 0.0 if self._jono is None else (self._jono.qsize() + (0 if self._purettu is None else self._purettu.qsize())) / self.fps
 
-    def _laita(self, x):
+    def _laita(self, x, jono=None):
+        jono = self._jono if jono is None else jono
         while not self._seis.is_set():
             try:
-                self._jono.put(x, timeout=0.2)
+                jono.put(x, timeout=0.2)
                 return True
             except queue.Full:
                 pass
@@ -200,6 +210,23 @@ class Esilataus:
         finally:
             self._laita(self._loppu)
 
+    def _pura(self):
+        """Pakatut ruudut (YUV) -> BGR lyhyeen jonoon analyysisaikeen edelle."""
+        try:
+            while not self._seis.is_set():
+                try:
+                    x = self._jono.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if x is not self._loppu:
+                    f, fr, _, t = x
+                    x = (f, cv2.cvtColor(fr, cv2.COLOR_YUV2BGR_I420), t)
+                if not self._laita(x, self._purettu) or x is self._loppu:
+                    return
+        except Exception as e:
+            self._virhe.append(e)
+            self._laita(self._loppu, self._purettu)
+
     def __iter__(self):
         return self
 
@@ -208,14 +235,17 @@ class Esilataus:
             f, fr = next(self.it)
             self.t_luettu = time.time()
             return f, fr
-        x = self._jono.get()
+        x = (self._purettu if self._purettu is not None else self._jono).get()
         if x is self._loppu:
             self._seis.set()
             if self._virhe:
                 raise self._virhe[0]
             raise StopIteration
+        if self._purettu is not None:
+            f, fr, self.t_luettu = x
+            return f, fr
         f, fr, pakattu, self.t_luettu = x
-        return f, (cv2.cvtColor(fr, cv2.COLOR_YUV2BGR_I420) if pakattu else fr)
+        return f, fr
 
     def sulje(self):
         self._seis.set()
@@ -950,27 +980,26 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     lopetettu = threading.Event()                    # lahde loppui
     pysayta = threading.Event()                      # kayttaja lopettaa tai virhe
     piirto_valmis = threading.Event()                # piirtosaie on antanut kaikki kuvat
-    tilasto = dict(analysoitu=0, ohitettu=0, virheita=0, piirretty=0, myohassa_max=0.0, luku_s=0.0, luku_max=0.0, pysahdyksia=0, syota_s=0.0, syota_ms=[], viive_max=0.0, puskuri_max=0.0)
+    tilasto = dict(analysoitu=0, ohitettu=0, virheita=0, piirretty=0, myohassa_max=0.0, luku_s=0.0, luku_max=0.0, pysahdyksia=0, syota_s=0.0, syota_ms=[], viive_max=0.0, puskuri_max=0.0, analyysia_odotettu_s=0.0)
     jaettu = dict(puskuri_s=0.0)                     # analyysisaie -> piirtosaie: esilatauspuskurin pituus (s)
     pitka_s = a.lataus if (a.youtube or a.url) and a.esilataus > 0 else 0.0              # virta: video ladataan jatkuvasti enintaan taman verran analyysin edelle
     max_myohassa = a.max_myohassa if a.max_myohassa is not None else (0.8 if pitka_s <= 0 else min(6.0, max(0.8, a.viive - 3.0)))     # ruutu ohitetaan (ei analysoida), jos analyysi on taman verran myohassa
     piirtoa_tarvitaan = naytto is not None or kirjoittaja is not None
     pakkaus = concurrent.futures.ThreadPoolExecutor(2, thread_name_prefix="puskuri-pakkaus")     # cv2-kutsut vapauttavat GIL:n: rinnakkain analyysin kanssa
     purku = concurrent.futures.ThreadPoolExecutor(2, thread_name_prefix="puskuri-purku")
-    laatu = [cv2.IMWRITE_JPEG_QUALITY, a.jpeg]
+    muisti_gt = fyysinen_muisti_gt()
+    puskuri_muoto = valitse_puskuri(a.puskuri, muisti_gt)                          # auto -> bgr (paljon muistia) tai yuv
+    if not a.hiljaa and piirtoa_tarvitaan:
+        print(f"Viivepuskuri: {puskuri_muoto}" + (f" (--puskuri auto, muistia {muisti_gt:.0f} Gt)" if a.puskuri == "auto" and muisti_gt is not None else ""), flush=True)
     D_ruutua = int(round(a.viive * fps))             # analyysi on taman verran kuvan edella
     yuv_raja = int((a.viive + 4.0) * fps)            # yuv-puskurin muistin suoja: tamän jonopituuden jalkeen uudet ruudut pakataan JPEG:ksi (kone ei jaksa: jono kasvaa)
+    bgr_raja = int((a.viive + 2.0) * fps)            # bgr-puskurin muistin suoja (6,2 Mt / ruutu): taman jalkeen uudet ruudut pakataan kevyemmin (yuv, myohemmin jpeg)
 
-    def pakkaa(fr, jpeg):
-        if jpeg:
-            return "jpeg", cv2.imencode(".jpg", fr, laatu)[1]
-        return "yuv", cv2.cvtColor(fr, cv2.COLOR_BGR2YUV_I420)
+    def pakkaa(fr, muoto):
+        return pakkaa_ruutu(fr, muoto, a.jpeg)
 
     def pura(tulevaisuus):
-        laji, data = tulevaisuus.result()
-        if laji == "jpeg":
-            return cv2.imdecode(data, cv2.IMREAD_COLOR)
-        return cv2.cvtColor(data, cv2.COLOR_YUV2BGR_I420)
+        return pura_ruutu(*tulevaisuus.result())
 
     def analyysi_saie():
         t_alku = time.time()
@@ -1014,7 +1043,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                     erapaiva = time.time()
                     myohassa = 0.0
                 if piirtoa_tarvitaan:
-                    jono.append((f, time.time(), pakkaus.submit(pakkaa, fr, a.puskuri == "jpeg" or len(jono) > yuv_raja), erapaiva))
+                    jono.append((f, time.time(), pakkaus.submit(pakkaa, fr, puskurin_muoto(puskuri_muoto, len(jono), bgr_raja, yuv_raja)), erapaiva))
                 if myohassa > max_myohassa and not an.toistettava:           # analyysi myohassa: ruutu nakyy tulosteessa, mutta sita ei analysoida (toistettavassa ajossa analysoidaan kaikki ruudut ja kuva odottaa)
                     tilasto["ohitettu"] += 1
                     if a.debug_viive and not ohitus_kaynnissa:
@@ -1061,9 +1090,11 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         odottaa = collections.deque()                # (f, erapaiva, purkutehtava)
         piirtovirhe = []
         varoitettu = False
+        t_silmukka = time.time()
         try:
             while not pysayta.is_set():
                 nyt = time.time()
+                dt_silmukka, t_silmukka = nyt - t_silmukka, nyt
                 while jono and len(odottaa) < 6 and jono[0][1] + a.viive - nyt < 0.4:       # purku etukateen (rinnakkain)
                     f, t_s, tulevaisuus, erapaiva_ruutu = jono.popleft()
                     odottaa.append((f, t_s + a.viive, purku.submit(pura, tulevaisuus), erapaiva_ruutu))
@@ -1077,8 +1108,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                     tilasto["myohassa_max"] = max(tilasto["myohassa_max"], myohassa)
                     if myohassa > 3.0 and not varoitettu:
                         varoitettu = True
-                        print(f"Huom: piirto / tallennus on {myohassa:.1f} s jaljessa reaaliajasta (kone ei jaksa); ikkuna ohittaa ruutuja, tallenteesta ei puutu ruutuja, "
-                              "mutta kuvan viive kasvaa. Kokeile --saikeet pienemmaksi tai --ulos ilman ikkunaa (--ei-ikkunaa).", file=sys.stderr)
+                        print(viive_varoitus(myohassa, tilasto, an, fps), file=sys.stderr)
                     try:
                         npi_kuva = piirtaja.piirra(kuva, f, an)
                     except Exception:                               # piirtovirhe: nayta ruutu ilman (loppuun asti piirrettyja) piirroksia
@@ -1093,6 +1123,8 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                         naytto.anna(npi_kuva)
                     tilasto["piirretty"] += 1
                     continue
+                if odottaa and odottaa[0][1] <= nyt and an.toistettava and not lopetettu.is_set():
+                    tilasto["analyysia_odotettu_s"] += dt_silmukka                # kuva olisi esitettavissa, mutta analyysi ei ole viela ehtinyt mukaan
                 if lopetettu.is_set() and not jono and not odottaa:
                     break
                 time.sleep(0.002)
@@ -1151,6 +1183,82 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                   + (f", ikkunassa {naytto.n_nayt}" if naytto is not None else "") + f", suurin viive piirrossa {tilasto['myohassa_max']:.1f} s", flush=True)
 
 
+BGR_PUSKURI_MIN_GT = 14                              # --puskuri auto: raaka BGR-puskuri (ei muunnoksia) kun fyysista muistia on vahintaan tama (Gt); nimellisesti 16 Gt:n kone ilmoittaa 14,9-15,9 Gt (laitteisto varaa osan)
+
+
+def fyysinen_muisti_gt():
+    """Koneen fyysinen muisti (Gt) tai None, jos sita ei saada selville (Windows: GlobalMemoryStatusEx; Linux: sysconf)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong), ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong), ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            m = MEMORYSTATUSEX()
+            m.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+                return m.ullTotalPhys / 2 ** 30
+            return None
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2 ** 30
+    except Exception:
+        return None
+
+
+def valitse_puskuri(pyydetty, muisti_gt):
+    """Viivepuskurin muoto: pyydetty (yuv / jpeg / bgr) sellaisenaan; auto = bgr, kun muistia on vahintaan BGR_PUSKURI_MIN_GT Gt (muunnoksia ei tarvita: ~3,5 ms / ruutu vahemman
+    prosessoria, puskuri ~1,9 GB 10 s:n viiveella), muuten yuv (myos kun muistia ei saada selville)."""
+    if pyydetty != "auto":
+        return pyydetty
+    return "bgr" if muisti_gt is not None and muisti_gt >= BGR_PUSKURI_MIN_GT else "yuv"
+
+
+def pakkaa_ruutu(fr, muoto, jpeg_laatu=92):
+    """Viivepuskurin ruutu: (muoto, data). bgr = ruutu sellaisenaan (ei muunnoksia; kopio tehdaan vasta puretaessa), jpeg, yuv = YUV 4:2:0."""
+    if muoto == "bgr":
+        return "bgr", fr
+    if muoto == "jpeg":
+        return "jpeg", cv2.imencode(".jpg", fr, [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_laatu)])[1]
+    return "yuv", cv2.cvtColor(fr, cv2.COLOR_BGR2YUV_I420)
+
+
+def pura_ruutu(laji, data):
+    """pakkaa_ruutu:n vastakohta: BGR-ruutu. bgr: kopio (~1 ms purkusaikeessa), koska piirto muokkaa ruutua paikallaan, eika se saa koskaan muuttaa ruutua, jonka analyysi voi viela lukea
+    (hyvin pieni --viive tai myohassa oleva analyysi live-virrassa)."""
+    if laji == "bgr":
+        return data.copy()
+    if laji == "jpeg":
+        return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    return cv2.cvtColor(data, cv2.COLOR_YUV2BGR_I420)
+
+
+def puskurin_muoto(valittu, jonon_pituus, bgr_raja, yuv_raja):
+    """Seuraavan ruudun puskurimuoto: valittu (--puskuri), mutta jonon kasvaessa (kone ei jaksa) raskaampi muisti vaihtuu kevyempaan: bgr -> yuv (jono > bgr_raja), yuv -> jpeg (jono > yuv_raja)."""
+    if valittu == "bgr" and jonon_pituus <= bgr_raja:
+        return "bgr"
+    if valittu == "jpeg" or jonon_pituus > yuv_raja:
+        return "jpeg"
+    return "yuv"
+
+
+def viive_varoitus(myohassa, tilasto, an, fps):
+    """Varoitusteksti, kun kuva on yli 3 s myohassa: syy (analyysi vai piirto / tallennus) ja keinot. Toistettavassa ajossa kuva odottaa analyysia (ks. Analyysi.aseta_toistettava): jos suurin
+    osa myohastymisesta on odotusta, analyysi ei ehdi mukaan -- ruudun analyysin aika (tilasto syota_ms) ja tarkan sovituksen toteutus (C++ vai Python) kertovat miksi."""
+    if tilasto["analyysia_odotettu_s"] > 0.5 * myohassa:
+        ms = tilasto["syota_ms"][-300:]
+        keski = sum(ms) / len(ms) if ms else 0.0
+        sovitin = next(iter(an.M.values())).sovitin
+        vihje = ""
+        if "C++" not in sovitin:
+            vihje = f" Tarkka sovitus ajetaan Pythonilla, joka on noin 6 kertaa hitaampi kuin C++ (netti_fit): {ns.netti_fit_selitys() or 'C++-moduuli ei ole kaytossa'}."
+        return (f"Huom: analyysi ei ehdi mukaan reaaliajassa: kuva on {myohassa:.1f} s myohassa, koska se odottaa analyysia (ruudulta keskim. {keski:.0f} ms, reaaliaikaan riittaa alle "
+                f"{1e3 / max(fps, 1.0):.0f} ms; tarkka sovitus: {sovitin}, B-tyoprosesseja --saikeet {an.saikeet}).{vihje} Tulos ei muutu, mutta kuvan viive kasvaa. "
+                "Kokeile suurempaa --saikeet-arvoa (enintaan ytimet - 1), sulje muita raskaita ohjelmia tai aja --ulos ilman ikkunaa (--ei-ikkunaa).")
+    return (f"Huom: piirto / tallennus on {myohassa:.1f} s jaljessa reaaliajasta (kone ei jaksa); ikkuna ohittaa ruutuja, tallenteesta ei puutu ruutuja, "
+            "mutta kuvan viive kasvaa. Kokeile --saikeet pienemmaksi tai --ulos ilman ikkunaa (--ei-ikkunaa).")
+
+
 def kalibrointitarkistus(video, kansio):
     """Varoitus, jos kansion kalibrointi ja moodikuva eivat sovi videon kamera-asentoon (toinen peli / kentta / pystytys): seuranta toimisi huonosti ja paikat olisivat vinossa (tools/tarkista_kalibrointi.py)."""
     try:
@@ -1199,8 +1307,9 @@ def main():
     ap.add_argument("--loppu", type=float, default=None, help="lopetus tiedostossa (s)")
     ap.add_argument("--saikeet", type=int, default=max(1, min(3, (os.cpu_count() or 2) - 1)), help="tarkan sovituksen tyoprosessit (0 = vain kahvan vari: epatarkempi)")
     ap.add_argument("--fps-lahde", type=float, default=None, help="erillisten ruutujen nimellistaajuus (25 tassa videossa; oletus: paatellaan kopioruutujen osuudesta)")
-    ap.add_argument("--puskuri", choices=("yuv", "jpeg"), default="yuv",
-                    help="viivepuskurin muoto: yuv = raaka YUV 4:2:0 (3,1 MB / ruutu, ~940 MB 10 s:n viiveella, kevyt prosessorille) tai jpeg (0,3 MB / ruutu, ~21 ms / ruutu prosessoria)")
+    ap.add_argument("--puskuri", choices=("auto", "yuv", "jpeg", "bgr"), default="auto",
+                    help="viivepuskurin muoto: auto (oletus) = bgr, kun koneessa on muistia vahintaan %d Gt, muuten yuv; yuv = raaka YUV 4:2:0 (3,1 MB / ruutu, ~940 MB 10 s:n viiveella, kevyt prosessorille); "
+                         "jpeg (0,3 MB / ruutu, ~21 ms / ruutu prosessoria); bgr = ruutu sellaisenaan (6,2 MB / ruutu, ~1,9 GB 10 s:n viiveella; ei muunnoksia: ~3,5 ms / ruutu vahemman prosessoria)" % BGR_PUSKURI_MIN_GT)
     ap.add_argument("--jpeg", type=int, default=92, help="JPEG-laatu (--puskuri jpeg ja yuv-puskurin ylivuoto)")
     ap.add_argument("--tapahtumat", action="store_true", help="tulosta seurannan kaikki tapahtumat (viritys, lahto, vahvistus, hylkays, ei kivea, valmis): nayttaa myos heittoyritykset, jotka jaavat tunnistamatta")
     ap.add_argument("--hiljaa", action="store_true")
@@ -1275,6 +1384,8 @@ def main():
     an.fps = lahde.fps
     if not sim and not lahde.live and not a.ohita_myohassa:
         an.aseta_toistettava(True)
+    elif not sim:
+        an.matalaksi_b_tyoprosessit()                    # tulos saa riippua ajoituksesta: B-tyo vaistaa analyysi-, piirto- ja ikkunasaikeita
     geom = ng.Geometria(a.kansio)
     kello_paikka = tuple(int(x) for x in a.kello_paikka.split(",")) if a.kello_paikka else None
     piirtaja = npi.Piirtaja(geom, fps=lahde.fps, jalki_s=a.jalki, viivat_s=a.viivat, viive_s=a.viive, kello=not a.ei_kelloa, kello_paikka=kello_paikka)

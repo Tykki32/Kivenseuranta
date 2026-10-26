@@ -10,7 +10,7 @@
 // Python-puoli: netti_seuranta.Mittari kayttaa tata automaattisesti, jos moduuli netti_fit on kaannetty (muuten Python-toteutus); ympariston muuttuja NETTI_EI_CPP=1 ohittaa.
 //
 // Kaannos: ks. CMakeLists.txt (kohde netti_fit) tai Linuxissa (yksi rivi):
-//   g++ -O2 -std=c++17 -shared -fPIC $(python3 -m pybind11 --includes) $(pkg-config --cflags opencv4) cpp/netti_fit.cpp -o netti_fit$(python3 -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))") $(pkg-config --libs opencv4)
+//   g++ -O3 -std=c++17 -shared -fPIC $(python3 -m pybind11 --includes) $(pkg-config --cflags opencv4) cpp/netti_fit.cpp -o netti_fit$(python3 -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))") $(pkg-config --libs opencv4)
 // ============================================================
 #define _USE_MATH_DEFINES
 #include <pybind11/numpy.h>
@@ -34,6 +34,7 @@ namespace {
 
 constexpr int SS = 4;                   // peiton ylinaytteistus (kivi_tarkka.SS)
 constexpr int NTH = 48;                 // renkaan pisteita (kivi_tarkka.NTH)
+constexpr double KUPERA_MARGINAALI = 0.25;   // kupera(): sisapuolisten pisteiden poisto vasta kun piste on tama monta px kahdeksankulmion reunasta sisapuolella
 
 struct Win {
     int x0 = 0, y0 = 0, w = 0, h = 0;
@@ -162,12 +163,73 @@ public:
         return out;
     }
 
+    // Testikoukut (tools/testaa_vakiot.py): nopeutettu laskenta antaa saman tuloksen kuin yleinen reitti.
+    // Siluetin kupera peite (kaikki tasot ja peitteen kulmatasot) paikassa (X, Y): kupera() antaa samat indeksit kuin cv::convexHull.
+    bool tarkista_kupera(double X, double Y) const
+    {
+        std::vector<cv::Point2f> pts;
+        pisteet(X, Y, pts, nullptr);
+        std::vector<int> a, b;
+        cv::convexHull(pts, a, false, false);
+        kupera(pts, b);
+        if (a != b)
+            return false;
+        std::vector<char> mukana((size_t)nz_, 0);
+        for (int i : a)
+            mukana[(size_t)(i / NTH)] = 1;
+        std::vector<int> tasot;
+        for (int k = 0; k < nz_; ++k)
+            if (mukana[(size_t)k])
+                tasot.push_back(k);
+        pisteet(X, Y, pts, &tasot);
+        cv::convexHull(pts, a, false, false);
+        kupera(pts, b);
+        return a == b;
+    }
+
+    // Reunakaista paikassa (X, Y) (siluetin peite ikkunassa, jonka marginaali 14 px): (nopea reitti kaytossa, tulos sama kuin dilate - erode).
+    py::tuple tarkista_kaista(double X, double Y, int kaista) const
+    {
+        std::vector<cv::Point2f> h;
+        hull(X, Y, h);
+        float minx = h[0].x, maxx = h[0].x, miny = h[0].y, maxy = h[0].y;
+        for (const auto& p : h) {
+            minx = std::min(minx, p.x);
+            maxx = std::max(maxx, p.x);
+            miny = std::min(miny, p.y);
+            maxy = std::max(maxy, p.y);
+        }
+        const int marg = 14;
+        Win w{(int)std::floor(minx) - marg, (int)std::floor(miny) - marg, 0, 0};
+        w.w = (int)std::ceil(maxx) + marg - w.x0;
+        w.h = (int)std::ceil(maxy) + marg - w.y0;
+        cv::Mat c0f;
+        peite(h, w, c0f);
+        const cv::Mat c0 = c0f > 0.5;
+        std::vector<int> nopea;
+        const bool kaytossa = reunakaista_valeista(c0, kaista, nopea);
+        const cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(2 * kaista + 1, 2 * kaista + 1));
+        cv::Mat d, e, band;
+        cv::dilate(c0, d, k);
+        cv::erode(c0, e, k);
+        cv::subtract(d, e, band);
+        std::vector<int> yleinen;
+        for (int y = 0; y < band.rows; ++y)
+            for (int x = 0; x < band.cols; ++x)
+                if (band.at<uint8_t>(y, x) > 0)
+                    yleinen.push_back(y * band.cols + x);
+        return py::make_tuple(kaytossa, !kaytossa || nopea == yleinen, (int)yleinen.size());
+    }
+
 private:
     struct Aika {
         double maskit_ms = 0.0, sovitus_ms = 0.0;
         int n_malli = 0, n_kaista1 = 0, n_kaista2 = 0;
     };
     mutable int malli_laskuri_ = 0;
+    mutable std::vector<cv::Point2f> pts_muisti_;               // kaikkien tasojen pisteet viimeisimmassa paikassa (kaikki_pisteet)
+    mutable double pts_muisti_X_ = std::nan(""), pts_muisti_Y_ = std::nan("");
+    mutable std::vector<int> elementit_[16];                    // ellipsielementin rivien puoliskot kaistan sateen mukaan (reunakaista_valeista)
     mutable cv::Mat wt_puskuri_;
     mutable cv::Mat mask_;                                  // ylinaytteistetun peittomaskin puskuri (ei ole saieturvallinen: yksi kutsu kerrallaan / olio)
 
@@ -187,14 +249,14 @@ private:
             c0[i] = R_[i * 3 + 0] * X + R_[i * 3 + 1] * Y + t_[i];
     }
 
-    // Siluetin kupera peite. tasot != null: vain nama profiilin tasot (pisteet = tasot x NTH): hullin kulmat tulevat muutamalta tasolta, jotka pysyvat samoina
+    // Siluetin rengaspisteet kuvassa. tasot != null: vain nama profiilin tasot (pisteet = tasot x NTH): hullin kulmat tulevat muutamalta tasolta, jotka pysyvat samoina
     // pienilla (alle ~2 cm) siirroilla; kokonaisen peitteen laskenta (1488 pistetta) on mallin laskennan kallein vaihe.
-    void hull(double X, double Y, std::vector<cv::Point2f>& out, const std::vector<int>* tasot = nullptr, std::vector<int>* kulmatasot = nullptr) const
+    void pisteet(double X, double Y, std::vector<cv::Point2f>& pts, const std::vector<int>* tasot) const
     {
         double c0[3];
         kehys0(X, Y, c0);
         const int n_tasoa = tasot ? (int)tasot->size() : nz_;
-        std::vector<cv::Point2f> pts((size_t)n_tasoa * NTH);
+        pts.resize((size_t)n_tasoa * NTH);
         for (int a = 0; a < n_tasoa; ++a) {
             const int k = tasot ? (*tasot)[a] : a;
             for (int j = 0; j < NTH; ++j) {
@@ -205,9 +267,93 @@ private:
                 pts[(size_t)a * NTH + j] = cv::Point2f((float)u, (float)v);
             }
         }
+    }
+
+    // Kaikkien tasojen pisteet paikassa (X, Y): viimeisin muistissa, koska saman paikan mahtuu-tarkistus, kehys ja malli tarvitsevat samat pisteet.
+    const std::vector<cv::Point2f>& kaikki_pisteet(double X, double Y) const
+    {
+        if (!(pts_muisti_X_ == X && pts_muisti_Y_ == Y) || pts_muisti_.empty()) {
+            pisteet(X, Y, pts_muisti_, nullptr);
+            pts_muisti_X_ = X;
+            pts_muisti_Y_ = Y;
+        }
+        return pts_muisti_;
+    }
+
+    // Pisteiden kupera peite (indeksit pisteisiin, kuten cv::convexHull(pts, idx, false, false)). Ennen laskentaa poistetaan pisteet, jotka ovat selvasti (KUPERA_MARGINAALI px)
+    // kahdeksan aariipisteen muodostaman monikulmion sisapuolella: ne eivat voi olla peitteen kulmia, joten tulos on sama kuin koko joukon peitteella, mutta jarjestettavia pisteita on
+    // murto-osa (jarjestys on peitteen kallein vaihe).
+    void kupera(const std::vector<cv::Point2f>& pts, std::vector<int>& idx_ulos) const
+    {
+        const int n = (int)pts.size();
+        if (n < 64) {
+            cv::convexHull(pts, idx_ulos, false, false);
+            return;
+        }
+        int ext[8] = {0, 0, 0, 0, 0, 0, 0, 0};                       // min u, min u+v, min v, max u-v, max u, max u+v, max v, min u-v
+        for (int i = 1; i < n; ++i) {
+            const float u = pts[i].x, v = pts[i].y;
+            if (u < pts[ext[0]].x) ext[0] = i;
+            if (u + v < pts[ext[1]].x + pts[ext[1]].y) ext[1] = i;
+            if (v < pts[ext[2]].y) ext[2] = i;
+            if (u - v > pts[ext[3]].x - pts[ext[3]].y) ext[3] = i;
+            if (u > pts[ext[4]].x) ext[4] = i;
+            if (u + v > pts[ext[5]].x + pts[ext[5]].y) ext[5] = i;
+            if (v > pts[ext[6]].y) ext[6] = i;
+            if (u - v < pts[ext[7]].x - pts[ext[7]].y) ext[7] = i;
+        }
+        // kahdeksankulmion sivut (a -> b) ja sisapuolisuuden kynnys: ristitulo / sivun pituus >= marginaali (sisapuoli on ristitulon etumerkin suunnassa)
+        double ax[8], ay[8], ex[8], ey[8], raja[8];
+        int m = 0;
+        double ala = 0.0;
+        for (int i = 0; i < 8; ++i) {
+            const cv::Point2f &a = pts[ext[i]], &b = pts[ext[(i + 1) % 8]];
+            const double dx = (double)b.x - a.x, dy = (double)b.y - a.y, len = std::hypot(dx, dy);
+            ala += (double)a.x * b.y - (double)b.x * a.y;
+            if (len < 1e-9)
+                continue;
+            ax[m] = a.x; ay[m] = a.y; ex[m] = dx; ey[m] = dy; raja[m] = KUPERA_MARGINAALI * len;
+            ++m;
+        }
+        if (m < 3 || std::fabs(ala) < 1e-6) {
+            cv::convexHull(pts, idx_ulos, false, false);
+            return;
+        }
+        const double merkki = ala > 0.0 ? 1.0 : -1.0;               // monikulmion kiertosuunta
+        std::vector<cv::Point2f> pr;
+        std::vector<int> alku;
+        pr.reserve(256);
+        alku.reserve(256);
+        for (int i = 0; i < n; ++i) {
+            bool sisalla = true;
+            for (int e = 0; e < m && sisalla; ++e) {
+                const double r = ex[e] * ((double)pts[i].y - ay[e]) - ey[e] * ((double)pts[i].x - ax[e]);
+                sisalla = merkki * r > raja[e];
+            }
+            if (!sisalla) {
+                pr.push_back(pts[i]);
+                alku.push_back(i);
+            }
+        }
+        std::vector<int> h;
+        cv::convexHull(pr, h, false, false);
+        idx_ulos.resize(h.size());
+        for (size_t i = 0; i < h.size(); ++i)
+            idx_ulos[i] = alku[(size_t)h[i]];
+    }
+
+    // Siluetin kupera peite (kulmat); kulmatasot: tasot, joilla peitteen kulmat ovat (+- 1 taso)
+    void hull(double X, double Y, std::vector<cv::Point2f>& out, const std::vector<int>* tasot = nullptr, std::vector<int>* kulmatasot = nullptr) const
+    {
+        std::vector<cv::Point2f> oma;
+        const std::vector<cv::Point2f>* pts = &oma;
+        if (tasot == nullptr)
+            pts = &kaikki_pisteet(X, Y);
+        else
+            pisteet(X, Y, oma, tasot);
+        std::vector<int> idx;
+        kupera(*pts, idx);
         if (kulmatasot != nullptr) {                         // mitka tasot antavat hullin kulmat (indeksit)
-            std::vector<int> idx;
-            cv::convexHull(pts, idx, false, false);
             std::vector<char> mukana((size_t)nz_, 0);
             for (int i : idx) {
                 const int a = i / NTH;
@@ -221,7 +367,9 @@ private:
                 if (mukana[(size_t)k])
                     kulmatasot->push_back(k);
         }
-        cv::convexHull(pts, out, false, true);
+        out.resize(idx.size());
+        for (size_t i = 0; i < idx.size(); ++i)
+            out[i] = (*pts)[(size_t)idx[i]];
     }
 
     void ylapinta(double X, double Y, std::vector<cv::Point2f>& out) const
@@ -324,6 +472,95 @@ private:
         std::vector<int> tasot;      // profiilin tasot, jotka antavat hullin kulmat alkupisteessa (+- 1 taso)
     };
 
+    // Ellipsirakenneelementin (2 kaista + 1)^2 rivien puoliskot: hw[j + kaista] = rivin j (-kaista..kaista) vasemman / oikean reunan etaisyys keskelta; false, jos rivit eivat ole
+    // yhtenaisia ja symmetrisia (silloin yleinen morfologia).
+    bool elementin_puoliskot(int kaista, std::vector<int>& hw) const
+    {
+        const cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(2 * kaista + 1, 2 * kaista + 1));
+        hw.assign((size_t)(2 * kaista + 1), -1);
+        for (int j = 0; j < k.rows; ++j) {
+            const uint8_t* p = k.ptr<uint8_t>(j);
+            int a = -1, b = -1, n = 0;
+            for (int x = 0; x < k.cols; ++x)
+                if (p[x]) {
+                    if (a < 0) a = x;
+                    b = x;
+                    ++n;
+                }
+            if (a < 0 || n != b - a + 1 || a + b != 2 * kaista)
+                return false;
+            hw[(size_t)j] = kaista - a;
+        }
+        return true;
+    }
+
+    // Reunakaista dilate(c0) - erode(c0) (ellipsielementti): jos maskin jokainen rivi on yksi yhtenainen jakso eika maski kosketa ikkunan reunaa (kaistan sateen + 1 px sisalla), dilaatio ja
+    // eroosio saadaan riveittaisista valeista (rivin y valiunioni / -leikkaus elementin rivien puoliskoilla) ilman kuvaoperaatioita; tulos on tasmalleen sama kuin yleisella reitilla.
+    bool reunakaista_valeista(const cv::Mat& c0, int kaista, std::vector<int>& idx) const
+    {
+        if (kaista < 1 || kaista > 15)
+            return false;
+        auto& hw = elementit_[(size_t)kaista];
+        if (hw.empty() && !elementin_puoliskot(kaista, hw))
+            hw.assign(1, -2);                                    // ei kayttokelpoinen: merkitaan, ettei yritetty uudelleen
+        if (hw.size() != (size_t)(2 * kaista + 1))
+            return false;
+        const int H = c0.rows, W = c0.cols, r = kaista;
+        std::vector<int> L((size_t)H, W), R((size_t)H, -1);
+        for (int y = 0; y < H; ++y) {
+            const uint8_t* p = c0.ptr<uint8_t>(y);
+            int a = -1, b = -1, n = 0;
+            for (int x = 0; x < W; ++x)
+                if (p[x]) {
+                    if (a < 0) a = x;
+                    b = x;
+                    ++n;
+                }
+            if (a < 0)
+                continue;
+            if (n != b - a + 1)
+                return false;                                    // rivissa aukko
+            if (y < r + 1 || y >= H - r - 1 || a < r + 1 || b >= W - r - 1)
+                return false;                                    // maski koskettaa ikkunan reunaa: reunaehdot (yleinen reitti)
+            L[(size_t)y] = a;
+            R[(size_t)y] = b;
+        }
+        idx.clear();
+        for (int y = 0; y < H; ++y) {
+            int dl = W, dr = -1, el = -(1 << 29), er = 1 << 29;
+            bool e_tyhja = false;
+            for (int j = -r; j <= r; ++j) {
+                const int yy = y + j;
+                if (yy < 0 || yy >= H)
+                    continue;
+                const int h = hw[(size_t)(j + r)];
+                if (R[(size_t)yy] < 0) {
+                    e_tyhja = true;                              // elementin rivilla ei maskia: eroosio tyhja
+                    continue;
+                }
+                dl = std::min(dl, L[(size_t)yy] - h);
+                dr = std::max(dr, R[(size_t)yy] + h);
+                el = std::max(el, L[(size_t)yy] + h);
+                er = std::min(er, R[(size_t)yy] - h);
+            }
+            if (dr < 0)
+                continue;                                        // dilaatiossa ei mitaan
+            dl = std::max(dl, 0);
+            dr = std::min(dr, W - 1);
+            const int base = y * W;
+            if (e_tyhja || el > er) {
+                for (int x = dl; x <= dr; ++x)
+                    idx.push_back(base + x);
+            } else {
+                for (int x = dl; x < el; ++x)
+                    idx.push_back(base + x);
+                for (int x = er + 1; x <= dr; ++x)
+                    idx.push_back(base + x);
+            }
+        }
+        return true;
+    }
+
     Kehys tee_kehys(const cv::Mat& alfa, const cv::Mat& ok8, int ox, int oy, double X0, double Y0, int kaista) const
     {
         const int marg = 14;
@@ -353,16 +590,19 @@ private:
         cv::Mat c0f;
         peite(h, f.win, c0f);
         cv::Mat c0 = c0f > 0.5;                                  // 0 / 255
-        cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(2 * kaista + 1, 2 * kaista + 1));
-        cv::Mat d, e, band;
-        cv::dilate(c0, d, k);
-        cv::erode(c0, e, k);
-        cv::subtract(d, e, band);
-        for (int y = 0; y < band.rows; ++y) {
-            const uint8_t* p = band.ptr<uint8_t>(y);
-            for (int x = 0; x < band.cols; ++x)
-                if (p[x] > 0)
-                    f.idx.push_back(y * band.cols + x);
+        if (!reunakaista_valeista(c0, kaista, f.idx)) {          // yleinen reitti: maski ei ole yhtenaisia rivivaleja tai koskettaa ikkunan reunaa
+            f.idx.clear();
+            cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(2 * kaista + 1, 2 * kaista + 1));
+            cv::Mat d, e, band;
+            cv::dilate(c0, d, k);
+            cv::erode(c0, e, k);
+            cv::subtract(d, e, band);
+            for (int y = 0; y < band.rows; ++y) {
+                const uint8_t* p = band.ptr<uint8_t>(y);
+                for (int x = 0; x < band.cols; ++x)
+                    if (p[x] > 0)
+                        f.idx.push_back(y * band.cols + x);
+            }
         }
         if (f.idx.empty())
             throw std::runtime_error("netti_fit: reunakaista tyhja");
@@ -647,12 +887,11 @@ private:
         return esi_kappa_ * std::min(t * t, esi_raja_ * esi_raja_);
     }
 
-    // siluetti mahtuu leikkeeseen (6 px reunaa jaa)
+    // siluetti mahtuu leikkeeseen (6 px reunaa jaa): kaikkien rengaspisteiden rajauslaatikko (peitteen kulmat ovat ääripisteita, joten sama kuin peitteen kulmille)
     bool mahtuu(double X, double Y, int ox, int oy, int w, int h) const
     {
-        std::vector<cv::Point2f> hl;
-        hull(X, Y, hl, nullptr, nullptr);
-        for (const auto& p : hl)
+        const std::vector<cv::Point2f>& pts = kaikki_pisteet(X, Y);
+        for (const auto& p : pts)
             if (p.x < ox + 6 || p.y < oy + 6 || p.x > ox + w - 6 || p.y > oy + h - 6)
                 return false;
         return true;
@@ -661,15 +900,25 @@ private:
     // skannaus (dy x dx) + kuviohaku (askeleet) rangaistun kustannuksen (+ esikustannus) minimille; false, jos mikaan ehdokas ei mahdu leikkeeseen
     bool moni_haku(const cv::Mat& alfa, const cv::Mat& ok, int ox, int oy, int w, int h, double X0, double Y0, double esi_x, double esi_y, double& Xo, double& Yo, double& co) const
     {
+        struct Muisti { double X, Y, c; bool ok; };
+        std::vector<Muisti> muisti;                                 // jo arvioidut paikat (kuviohaku palaa usein edelliseen paikkaan): sama paikka antaa saman kustannuksen
         auto kust = [&](double X, double Y, double& c) -> bool {
+            for (const auto& m : muisti)
+                if (m.X == X && m.Y == Y) {
+                    c = m.c;
+                    return m.ok;
+                }
+            bool onnistui = false;
             try {
-                if (!mahtuu(X, Y, ox, oy, w, h))
-                    return false;
-                c = rangaistu(alfa, ok, ox, oy, X, Y, moni_kaista_, nullptr) + esikustannus(X, Y, esi_x, esi_y);
-                return true;
+                if (mahtuu(X, Y, ox, oy, w, h)) {
+                    c = rangaistu(alfa, ok, ox, oy, X, Y, moni_kaista_, nullptr) + esikustannus(X, Y, esi_x, esi_y);
+                    onnistui = true;
+                }
             } catch (const std::exception&) {
-                return false;
+                onnistui = false;
             }
+            muisti.push_back(Muisti{X, Y, onnistui ? c : 0.0, onnistui});
+            return onnistui;
         };
         bool on = false;
         double bc = 0.0, bX = 0.0, bY = 0.0;
@@ -805,6 +1054,8 @@ PYBIND11_MODULE(netti_fit, m)
              py::arg("sigma_opt"), py::arg("b_cm"), py::arg("gamma"), py::arg("vakiot") = py::dict())
         .def("sovita", &BFit::sovita, py::arg("roi"), py::arg("x0"), py::arg("y0"), py::arg("X0"), py::arg("Y0"), py::arg("laaja") = false, py::arg("esi_x") = std::nan(""),
              py::arg("esi_y") = std::nan(""))
+        .def("tarkista_kupera", &BFit::tarkista_kupera, py::arg("X"), py::arg("Y"))
+        .def("tarkista_kaista", &BFit::tarkista_kaista, py::arg("X"), py::arg("Y"), py::arg("kaista"))
         .def_property_readonly("monialku", [](const BFit&) { return true; });
     m.def("saikeet", [](int n) { cv::setNumThreads(n); }, py::arg("n"), "OpenCV:n oma rinnakkaistus (tyoprosessissa 1)");
     m.def("versio", []() { return std::string("netti_fit ") + __DATE__ + " " + __TIME__ + " (OpenCV " + CV_VERSION + ")"; });

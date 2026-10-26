@@ -350,15 +350,15 @@ PUNAINEN_SMIN, PUNAINEN_VMIN, PUNAINEN_VMAX = 100, 55, 168   # kahva V ~75-156 (
 
 
 def kahva_maski(frame, vari="keltainen"):
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    """Kahvan varin maski (uint8 0/1): yksi varimuunnos ja cv2.inRange (kynnykset kuten ennen: keltainen b* - 128 >= 16 ja a* - 128 <= 10, punainen H <= 8 tai >= 170, S, V)."""
     if vari == "keltainen":
         # Lab: muovi on keltainen myos vaalealla/varjoisella reunalla (b* >= 16) mutta ei punertava (iho a* > 10): tayttaa
         # kaaren paat, joita HSV-kynnys (S >= 45, V >= 165) leikkasi pois
-        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.int16)
-        m = ((lab[..., 2] - 128) >= 16) & ((lab[..., 1] - 128) <= 10)
+        m = cv2.inRange(cv2.cvtColor(frame, cv2.COLOR_BGR2LAB), (0, 0, 128 + 16), (255, 128 + 10, 255))
     else:
-        m = ((hsv[..., 0] <= PUNAINEN_H[0]) | (hsv[..., 0] >= PUNAINEN_H[1])) & (hsv[..., 1] >= PUNAINEN_SMIN) & (hsv[..., 2] >= PUNAINEN_VMIN) & (hsv[..., 2] <= PUNAINEN_VMAX)
-    return m.astype(np.uint8)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        m = cv2.inRange(hsv, (0, PUNAINEN_SMIN, PUNAINEN_VMIN), (PUNAINEN_H[0], 255, PUNAINEN_VMAX)) | cv2.inRange(hsv, (PUNAINEN_H[1], PUNAINEN_SMIN, PUNAINEN_VMIN), (179, 255, PUNAINEN_VMAX))
+    return cv2.threshold(m, 0, 1, cv2.THRESH_BINARY)[1]
 
 
 def kahva_sentroidi(cam, frame, ennuste_uv, vari="keltainen", max_etaisyys_px=30.0, min_ala=15):

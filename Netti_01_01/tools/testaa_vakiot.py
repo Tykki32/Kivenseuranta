@@ -1356,8 +1356,424 @@ def testaa_piirto_liuku():
     tarkista("analyysi jaljessa: tiedossa olevat pisteet kerralla, tuntemattomia (>= 25) ei piirreta", all(vihrea(img, i) for i in (2, 10, 20)) and not vihrea(img, 30))
 
 
+def testaa_kopioruutu():
+    print("kopioruututesti (Analyysi._kopio): kaistoittainen varhainen lopetus antaa saman paatoksen kuin koko kuvan harmaasavyvertailu")
+    import cv2
+    import kivi_netti as kv
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+    an = ns.Analyysi(kansio, fps=30.0, saikeet=0, tarkka=False, synkroninen=True, fps_lahde=None, kierre=False)
+    y0, h = kv.kn.PUOLET["vasen"][1], kv.kn.PUOLET["vasen"][3]
+
+    class Vanha:
+        edellinen = None
+
+        def paatos(self, ruutu):
+            g = cv2.cvtColor(ruutu[y0:y0 + h], cv2.COLOR_BGR2GRAY)
+            kopio = False
+            if self.edellinen is not None:
+                d = cv2.absdiff(g, self.edellinen)
+                puoli = d.shape[1] // 2
+                raja = 0.001 * d.shape[0] * puoli
+                kopio = bool(np.count_nonzero(d[:, :puoli] > ns.KOPIO_KYNNYS) < raja and np.count_nonzero(d[:, puoli:] > ns.KOPIO_KYNNYS) < raja)
+            self.edellinen = g
+            return kopio
+    v = Vanha()
+    rng = np.random.default_rng(11)
+    kuva = rng.integers(0, 256, (1080, 1920, 3), dtype=np.uint8)
+    erot, kopioita, n = [], 0, 0
+
+    def vertaa(nimi, ruutu):
+        nonlocal kopioita, n
+        a, b = an._kopio(ruutu), v.paatos(ruutu)
+        n += 1
+        kopioita += b
+        if a != b:
+            erot.append(nimi)
+        return a
+    tarkista("ensimmainen ruutu: ei kopio", vertaa("eka", kuva) is False)
+    tarkista("tarkka kopio: kopio", vertaa("kopio", kuva.copy()) is True)
+    kohina = np.clip(kuva.astype(np.int16) + rng.integers(-3, 4, kuva.shape), 0, 255).astype(np.uint8)
+    tarkista("pieni kohina (< KOPIO_KYNNYS): kopio", vertaa("kohina", kohina) is True)
+    ed = kohina.copy()
+    ed[900:1000, 100:400] = 255 - ed[900:1000, 100:400]                                         # 30 000 px vasemmassa puoliskossa, alhaalla
+    tarkista("suuri muutos (alhaalla vasemmalla): ei kopio", vertaa("alas", ed) is False)
+    tarkista("sama ruutu uudelleen: kopio", vertaa("alas-kopio", ed.copy()) is True)
+    ed2 = ed.copy()
+    ed2[300:380, 1200:1400] = 255 - ed2[300:380, 1200:1400]                                   # ylhaalla oikealla (eri kaista kuin edellinen ero)
+    tarkista("muutos toisessa kaistassa ja puoliskossa: ei kopio", vertaa("ylos", ed2) is False)
+    # useita satunnaisia muutoksia: pienia (alle raja), isoja, kaistojen rajoilla, kummassakin puoliskossa
+    nykyinen = ed2
+    for i in range(60):
+        uusi = nykyinen.copy()
+        for _ in range(int(rng.integers(0, 3))):
+            ph, pw = int(rng.integers(1, 40)) * (1 if rng.random() < 0.5 else 8), int(rng.integers(1, 60)) * (1 if rng.random() < 0.5 else 8)
+            ry = int(rng.integers(y0 - 20, 1080 - ph)) if rng.random() < 0.3 else int(rng.integers(y0, y0 + h - ph))
+            rx = int(rng.integers(0, 1920 - pw))
+            uusi[max(ry, 0):ry + ph, rx:rx + pw] = rng.integers(0, 256, (uusi[max(ry, 0):ry + ph, rx:rx + pw].shape), dtype=np.uint8)
+        vertaa(f"satunnainen {i}", uusi)
+        nykyinen = uusi if rng.random() < 0.7 else nykyinen
+    tarkista(f"satunnaiset muutokset: sama paatos kuin vanhalla vertailulla ({n} ruutua, {kopioita} kopiota)", not erot and 5 < kopioita < n - 5, str(erot[:5]))
+    an.ohita()
+    tarkista("ohita(): seuraavaa ruutua ei verrata vanhaan (ei kopio, vaikka identtinen)", an._kopio(nykyinen) is False)
+    tarkista("ohituksen jalkeen vertailu jatkuu normaalisti", an._kopio(nykyinen.copy()) is True)
+
+
+def testaa_kahva_maski():
+    print("kahvan varimaski (kivi_netti.kahva_maski): inRange-toteutus antaa saman maskin kuin alkuperainen numpy-lauseke")
+    import cv2
+    import kivi_netti as kv
+
+    def vanha(frame, vari):
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        if vari == "keltainen":
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.int16)
+            m = ((lab[..., 2] - 128) >= 16) & ((lab[..., 1] - 128) <= 10)
+        else:
+            m = ((hsv[..., 0] <= kv.PUNAINEN_H[0]) | (hsv[..., 0] >= kv.PUNAINEN_H[1])) & (hsv[..., 1] >= kv.PUNAINEN_SMIN) & (hsv[..., 2] >= kv.PUNAINEN_VMIN) & (hsv[..., 2] <= kv.PUNAINEN_VMAX)
+        return m.astype(np.uint8)
+    rng = np.random.default_rng(2)
+    erot = 0
+    for _ in range(120):
+        kuva = rng.integers(0, 256, (int(rng.integers(8, 70)), int(rng.integers(8, 90)), 3), dtype=np.uint8)
+        for vari in ("keltainen", "punainen"):
+            a, b = kv.kahva_maski(kuva, vari), vanha(kuva, vari)
+            erot += int(a.dtype != b.dtype or a.shape != b.shape or not np.array_equal(a, b))
+    tarkista("satunnaiskuvat, molemmat varit: maskit identtiset (uint8 0/1)", erot == 0, f"{erot} erilaista")
+    kuva = np.zeros((20, 20, 3), np.uint8)
+    kuva[5:15, 5:15] = (0, 220, 235)                                                         # keltainen (BGR)
+    tarkista("keltainen alue: maskissa", int(kv.kahva_maski(kuva, "keltainen").sum()) > 50 and int(kv.kahva_maski(kuva, "punainen").sum()) == 0)
+
+
+def testaa_jaettu_leike():
+    print("A-tason haku: kahvan molemmat varit samasta leikkeesta (Mittari.jaettu_leike): yksi remap, sama tulos")
+    kansio = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3")
+    m = ns.Mittari(kansio, "vasen", runko=False)
+    kutsut = []
+    alkuperainen = m.kuvain.leike
+    m.kuvain.leike = lambda ruutu, *alue: kutsut.append(alue) or alkuperainen(ruutu, *alue)
+    ruutu = np.zeros((1080, 1920, 3), np.uint8)
+    ruutu[600:640, 300:340] = (0, 220, 235)
+    alue = (200, 450, 500, 700)
+    a = [m.kahva(ruutu, alue, v, None, min_ala=4) for v in ("keltainen", "punainen")]
+    tarkista("ilman jaettua leikett: remap kummallekin varille", len(kutsut) == 2, str(len(kutsut)))
+    kutsut.clear()
+    with m.jaettu_leike(ruutu, alue):
+        b = [m.kahva(ruutu, alue, v, None, min_ala=4) for v in ("keltainen", "punainen")]
+        m.kahva(ruutu, (200, 450, 480, 700), "keltainen", None, min_ala=4)                       # toinen alue: oma remap
+    tarkista("jaetulla leikkeella yksi remap kahdelle varille (+ yksi toiselle alueelle)", len(kutsut) == 2, str(len(kutsut)))
+    tarkista("tulos sama kuin ilman jakoa", a == b and len(a[0]) == 1, f"{a} {b}")
+    kutsut.clear()
+    m.kahva(ruutu, alue, "keltainen", None, min_ala=4)
+    tarkista("with-lohkon jalkeen muisti on tyhja (uusi remap)", len(kutsut) == 1 and m._jaettu is None)
+    ruutu2 = ruutu.copy()
+    with m.jaettu_leike(ruutu, alue):
+        m.kahva(ruutu, alue, "keltainen", None, min_ala=4)
+        kutsut.clear()
+        m.kahva(ruutu2, alue, "keltainen", None, min_ala=4)                                       # eri ruutu: ei kayteta muistia
+    tarkista("eri ruutu samassa lohkossa: oma remap", len(kutsut) == 1)
+
+
+def testaa_merkki_taustaskannaus():
+    print("maalimerkin taustaskannaus (MerkkiSeuranta pool + tyo): tulos sama kuin suoraan skannattaessa, vaikka tulokset valmistuvat eri jarjestyksessa; konsensus odottaa; epaonnistunut tyo tutkitaan paikan paalla")
+    import concurrent.futures
+    import threading
+    import time
+    import merkki as mk
+
+    def harja(X, Y, ala=330.0):
+        return dict(X=X, Y=Y, alin_X=X, alin_Y=Y + 20.0, ala_cm2=ala, pituus_cm=33.0, kulma=0.0, reunalla=False, kelvollinen=True)
+
+    def ehd(m, f):
+        return [harja(100.0, -30.0)] if m == "A" else ([harja(-50.0, 10.0)] if f >= 60 else []) + ([dict(harja(0.0, 0.0), kelvollinen=False)] if f % 7 == 0 else [])
+    vanha = (mk.ehdokkaat, mk.leike, mk.ehdokkaat_leikkeesta)
+    mk.ehdokkaat = lambda m, ruutu: ehd(m, ruutu)
+    mk.leike = lambda m, ruutu: (ruutu, 0, 0)
+    mk.ehdokkaat_leikkeesta = lambda m, roi, x0, y0: ehd(m, roi)
+    mittarit = {"vasen": "A", "oikea": "B"}
+
+    def tyo(args):
+        puoli, roi, x0, y0 = args
+        return [e for e in mk.ehdokkaat_leikkeesta(mittarit[puoli], roi, x0, y0) if e["kelvollinen"]]
+
+    class Pooli:
+        """submit palauttaa Future-olion, jonka tuloksen testi asettaa itse (mielivaltaisessa jarjestyksessa)."""
+        def __init__(self):
+            self.tyot = []
+
+        def submit(self, fn, arg):
+            fut = concurrent.futures.Future()
+            self.tyot.append((fut, fn, arg))
+            return fut
+
+        def valmista(self, jarjestys, virheet=()):
+            for i in jarjestys:
+                fut, fn, arg = self.tyot[i]
+                if i in virheet:
+                    fut.set_exception(RuntimeError("tyoprosessi kaatui"))
+                else:
+                    fut.set_result(fn(arg))
+    try:
+        suora = mk.MerkkiSeuranta(mittarit, 30.0)
+        for f in range(0, 1200):
+            suora.syota(f, f)
+        pooli = Pooli()
+        ms = mk.MerkkiSeuranta(mittarit, 30.0, pool=pooli, tyo=tyo)
+        ms.ODOTTAVIA_MAX = 10 ** 6                                                      # (tama testi pitaa kaikki skannaukset kesken)
+        for f in range(0, 1200):
+            ms.syota(f, f)
+        tarkista("taustalla: skannaukset jonossa, sarjoihin ei viela mitaan (tyot kesken)", len(ms._odottavat) == 160 and not ms.sarjat["vasen"], f"{len(ms._odottavat)} jonossa")
+        jarj = list(range(len(pooli.tyot)))
+        np.random.default_rng(4).shuffle(jarj)
+        sailiot = threading.Timer(0.3, lambda: pooli.valmista(jarj))                    # tulokset valmistuvat myohemmin ja sekajarjestyksessa
+        sailiot.start()
+        t0 = time.time()
+        k = ms.konsensus("vasen", 1000)
+        odotus = time.time() - t0
+        k0 = suora.konsensus("vasen", 1000)
+        tarkista("konsensus odottaa kesken olevat skannaukset ja antaa saman tuloksen kuin suora skannaus", odotus >= 0.2 and k is not None and k == k0, f"odotus {odotus:.2f} s")
+        tarkista("oikea puolisko ja f_asti samoin", ms.konsensus("oikea", 1000) == suora.konsensus("oikea", 1000) and ms.konsensus("vasen", 1000, f_asti=700) == suora.konsensus("vasen", 1000, f_asti=700))
+        tarkista("sarjat sisaltavat saman kuin suorassa skannauksessa (ruudut ja ehdokkaat, puskurin rajaus)", all(list(ms.sarjat[p]) == list(suora.sarjat[p]) for p in mittarit) or all(list(ms.sarjat[p]) == list(suora.sarjat[p])[-len(ms.sarjat[p]):] for p in mittarit))
+        # epaonnistunut tyo: tulos tutkitaan paikan paalla (ei havioa)
+        pooli2 = Pooli()
+        ms2 = mk.MerkkiSeuranta(mittarit, 30.0, pool=pooli2, tyo=tyo)
+        ms2.ODOTTAVIA_MAX = 10 ** 6
+        for f in range(0, 1200):
+            ms2.syota(f, f)
+        pooli2.valmista(range(len(pooli2.tyot)), virheet=set(range(0, len(pooli2.tyot), 3)))
+        tarkista("tyoprosessin virhe: leike tutkitaan paikan paalla, tulos sama", ms2.konsensus("vasen", 1000) == k0 and ms2.konsensus("oikea", 1000) == suora.konsensus("oikea", 1000))
+        # ei pooleja (pool = None) ja ruutu ilman leiketta
+        mk.leike = lambda m, ruutu: (None, 0, 0)
+        pooli3 = Pooli()
+        ms3 = mk.MerkkiSeuranta(mittarit, 30.0, pool=pooli3, tyo=tyo)
+        for f in range(0, 90):
+            ms3.syota(f, f)
+        ms3.konsensus("vasen", 30)
+        tarkista("ruutu ilman leiketta (kuvan ulkopuolella): ei tyota, tyhja sarja", not pooli3.tyot and all(e == [] for _, e in ms3.sarjat["vasen"]))
+        # odottavien enimmaismaara: liian jaljessa oleva tyoprosessi ei kasvata muistia rajatta (syotto odottaa vanhimman, kun jono on taynna)
+        mk.leike = lambda m, ruutu: (ruutu, 0, 0)
+        pooli4 = Pooli()
+        ms4 = mk.MerkkiSeuranta(mittarit, 30.0, pool=pooli4, tyo=tyo)
+        ms4.ODOTTAVIA_MAX = 6
+        seis = threading.Event()
+
+        def valmista_jatkuvasti():                                                      # hidas tyoprosessi: yksi tulos 10 ms:n valein
+            i = 0
+            while not seis.is_set():
+                if i < len(pooli4.tyot):
+                    pooli4.valmista([i])
+                    i += 1
+                    time.sleep(0.01)
+                else:
+                    time.sleep(0.002)
+        ajastin = threading.Thread(target=valmista_jatkuvasti, daemon=True)
+        ajastin.start()
+        suurin = 0
+        for f in range(0, 15 * 12):
+            ms4.syota(f, f)
+            suurin = max(suurin, len(ms4._odottavat))
+        seis.set()
+        ajastin.join()
+        tarkista("odottavien maara on rajattu (ODOTTAVIA_MAX), eika syotto jumiudu", suurin <= ms4.ODOTTAVIA_MAX and len(pooli4.tyot) == 24, f"suurin {suurin}, tyota {len(pooli4.tyot)}")
+    finally:
+        mk.ehdokkaat, mk.leike, mk.ehdokkaat_leikkeesta = vanha
+
+
+def testaa_netti_fit_nopeutukset():
+    print("netti_fit (C++): nopeutetut laskennat antavat saman tuloksen kuin yleinen reitti (kupera peite = cv::convexHull, reunakaista = dilate - erode)")
+    if ns._netti_fit is None:
+        print("  (netti_fit ei ole kaytossa: ohitetaan)")
+        return
+    rng = np.random.default_rng(3)
+    juuri = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+    n_kupera = n_kaista = n_nopea = 0
+    erot = []
+    for kansio in ("tulokset", "tulokset_nettivideo2", "tulokset_nettivideo3"):
+        for puoli in ("vasen", "oikea"):
+            if not os.path.exists(os.path.join(juuri, kansio, f"kalibrointi_{puoli}.json")):
+                continue
+            m = ns.Mittari(os.path.join(juuri, kansio), puoli)
+            b = m._cpp
+            if b is None or not hasattr(b, "tarkista_kupera"):
+                print("  (vanha netti_fit ilman testikoukkuja: ohitetaan)")
+                return
+            for X, Y in zip(rng.uniform(-260, 260, 250), rng.uniform(-420, 780, 250)):
+                n_kupera += 1
+                if not b.tarkista_kupera(float(X), float(Y)):
+                    erot.append(f"kupera {kansio} {puoli} ({X:.0f}, {Y:.0f})")
+                for kaista in (5, 6, 8):
+                    kaytossa, sama, _ = b.tarkista_kaista(float(X), float(Y), kaista)
+                    n_kaista += 1
+                    n_nopea += bool(kaytossa)
+                    if not sama:
+                        erot.append(f"kaista {kansio} {puoli} ({X:.0f}, {Y:.0f}) {kaista}")
+    tarkista(f"kupera peite: pisteiden karsinta antaa samat kulmat kuin cv::convexHull ({n_kupera} paikkaa, kaikki tasot ja kulmatasot)", n_kupera > 0 and not [e for e in erot if e.startswith("kupera")], str(erot[:3]))
+    tarkista(f"reunakaista: rivivalien laskenta = dilate - erode ({n_kaista} paikkaa, nopea reitti {n_nopea} kertaa)", n_kaista > 0 and not [e for e in erot if e.startswith("kaista")] and n_nopea > 0.9 * n_kaista, str(erot[:3]))
+
+
+def testaa_esilataus_purkusaie():
+    print("esilataus: pakattu puskuri puretaan omassa saikeessa (analyysisaie ei pura)")
+    import threading
+    import time
+    import netti_live as nl
+
+    def ruudut(n):
+        for f in range(n):
+            fr = np.full((64, 96, 3), 90, np.uint8)
+            fr[10:30, 20:60] = (f % 200, 60, 200 - f % 200)
+            yield f, fr
+
+    e = nl.Esilataus(ruudut(60), 4, 3.0, 10.0)
+    nimet = [t.name for t in threading.enumerate()]
+    tarkista("pakatussa tilassa purkusaie kaynnissa", "esilataus-purku" in nimet and "esilataus" in nimet, str(nimet))
+    time.sleep(0.3)
+    tarkista("purettuja ruutuja valmiina etukateen (lyhyt jono tayttyy)", e._purettu.qsize() == e._purettu.maxsize, f"{e._purettu.qsize()} / {e._purettu.maxsize}")
+    f, fr = next(e)
+    tarkista("annettu ruutu on BGR (3 kanavaa) ja oikea", f == 0 and fr.shape == (64, 96, 3) and int(np.abs(fr[10:30, 20:60].astype(int) - np.array([0, 60, 200])).max()) <= 2)
+    sain = [f] + [x for x, _ in e]
+    tarkista("jarjestys ja maara sailyvat hitaallekin kuluttajalle", sain == list(range(60)), str(sain[:8]))
+    ennen = set(threading.enumerate())
+    e2 = nl.Esilataus(ruudut(40), 4, 3.0, 10.0)
+    omat = [t for t in threading.enumerate() if t not in ennen]
+    next(e2)
+    e2.sulje()
+    time.sleep(0.8)
+    tarkista("sulje(): lukija- ja purkusaie loppuvat", len(omat) == 2 and not any(t.is_alive() for t in omat), str([(t.name, t.is_alive()) for t in omat]))
+    e3 = nl.Esilataus(ruudut(5), 4, 0.0, 10.0)
+    tarkista("raakatilassa (ei pitkaa puskuria) ei purkusaietta", e3._purettu is None)
+    list(e3)
+
+
+def testaa_b_prioriteetti():
+    print("B-tyoprosessit: normaali prioriteetti toistettavassa ajossa; live-virrassa pudotetaan (ns.pudota_prioriteetti, Analyysi.matalaksi_b_tyoprosessit)")
+    import subprocess
+    import types
+    if os.name == "nt":
+        print("  (Windows: prioriteettiluokka asetetaan ctypesilla, ei testata tassa)")
+        return
+    lapsi = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        ennen = os.getpriority(os.PRIO_PROCESS, lapsi.pid)
+        ns.pudota_prioriteetti(lapsi.pid)
+        jalkeen = os.getpriority(os.PRIO_PROCESS, lapsi.pid)
+        tarkista("pudota_prioriteetti: lapsiprosessin nice nousee (5)", jalkeen >= ennen + 5 or jalkeen >= 5, f"{ennen} -> {jalkeen}")
+        lapsi2 = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            an = ns.Analyysi.__new__(ns.Analyysi)
+            an.pool = types.SimpleNamespace(_processes={0: types.SimpleNamespace(pid=lapsi2.pid)})
+            an.matalaksi_b_tyoprosessit()
+            tarkista("Analyysi.matalaksi_b_tyoprosessit: poolin tyoprosessit alemmalle prioriteetille", os.getpriority(os.PRIO_PROCESS, lapsi2.pid) >= 5)
+            an.pool = None
+            an.matalaksi_b_tyoprosessit()
+            tarkista("ilman poolia ei tee mitaan (ei poikkeusta)", True)
+        finally:
+            lapsi2.kill()
+    finally:
+        lapsi.kill()
+    import inspect
+    tarkista("alusta_tyo ei laske B-tyoprosessin prioriteettia (prioriteettikaannos: analyysi odottaa B-tulokset)", "matala_prioriteetti()" not in inspect.getsource(ns.alusta_tyo).split('"""')[-1])
+
+
+def testaa_puskuri_ja_viivevaroitus():
+    print("viivepuskurin muodot (yuv / jpeg / bgr), ylivuotosuoja ja viivevaroituksen syy (analyysi vai piirto)")
+    import types
+    import netti_live as nl
+    kuva = np.full((64, 96, 3), 100, np.uint8)
+    kuva[10:30, 20:60] = (30, 140, 200)
+    laji, data = nl.pakkaa_ruutu(kuva, "bgr")
+    tarkista("bgr: pakkaus ei kopioi eika muunna (ruutu sellaisenaan)", laji == "bgr" and data is kuva)
+    purettu = nl.pura_ruutu(laji, data)
+    alkuperainen = kuva.copy()
+    purettu[:] = 0                                                                # (piirto muokkaa purettua ruutua paikallaan)
+    tarkista("bgr: purettu ruutu on kopio (piirto ei muuta ruutua, jonka analyysi voi viela lukea)", purettu is not kuva and not np.shares_memory(purettu, kuva) and np.array_equal(kuva, alkuperainen))
+    tarkista("bgr: purku antaa saman sisallon", np.array_equal(nl.pura_ruutu(laji, data), kuva))
+    for muoto in ("yuv", "jpeg"):
+        laji, data = nl.pakkaa_ruutu(kuva, muoto)
+        takaisin = nl.pura_ruutu(laji, data)
+        sisa = (slice(14, 26), slice(28, 52))                                     # (terava vareja reuna sumenee JPEG:n ja YUV 4:2:0:n varikanavissa: verrataan tasaisia alueita)
+        ero = max(int(np.abs(takaisin[sisa].astype(int) - kuva[sisa]).max()), int(np.abs(takaisin[40:60, 70:90].astype(int) - kuva[40:60, 70:90]).max()))
+        tarkista(f"{muoto}: pakkaus ja purku antavat lahes saman ruudun (tasaiset alueet)", laji == muoto and takaisin.shape == kuva.shape and ero <= (3 if muoto == "yuv" else 14), f"max ero {ero}")
+    tarkista("jpeg: laatu-argumentti vaikuttaa kokoon", len(nl.pakkaa_ruutu(kuva, "jpeg", 20)[1]) < len(nl.pakkaa_ruutu(kuva, "jpeg", 98)[1]))
+    tarkista("muodon valinta: yuv oletuksena, jpeg pyydettaessa", nl.puskurin_muoto("yuv", 10, 360, 420) == "yuv" and nl.puskurin_muoto("jpeg", 10, 360, 420) == "jpeg")
+    tarkista("--puskuri auto: bgr kun muistia on vahintaan 14 Gt (nimellisesti 16 Gt:n kone ilmoittaa 14,9-15,9), muuten yuv (myos kun muisti ei ole tiedossa); nimetty muoto sellaisenaan",
+             nl.valitse_puskuri("auto", 32.0) == "bgr" and nl.valitse_puskuri("auto", 15.6) == "bgr" and nl.valitse_puskuri("auto", 14.0) == "bgr" and nl.valitse_puskuri("auto", 11.9) == "yuv"
+             and nl.valitse_puskuri("auto", 7.8) == "yuv" and nl.valitse_puskuri("auto", None) == "yuv"
+             and nl.valitse_puskuri("yuv", 64.0) == "yuv" and nl.valitse_puskuri("jpeg", 64.0) == "jpeg" and nl.valitse_puskuri("bgr", 4.0) == "bgr")
+    gt = nl.fyysinen_muisti_gt()
+    tarkista("fyysinen muisti: luku (Gt) tai None", gt is None or 0.5 < gt < 100000, str(gt))
+    tarkista("bgr: raskas muoto vain kun jono on lyhyt, sen jalkeen yuv, sen jalkeen jpeg (muistin suoja)",
+             nl.puskurin_muoto("bgr", 100, 360, 420) == "bgr" and nl.puskurin_muoto("bgr", 361, 360, 420) == "yuv" and nl.puskurin_muoto("bgr", 421, 360, 420) == "jpeg" and nl.puskurin_muoto("yuv", 421, 360, 420) == "jpeg")
+
+    class Sovitin:
+        def __init__(self, nimi):
+            self.sovitin = nimi
+    an = types.SimpleNamespace(M={"vasen": Sovitin("C++ (netti_fit)")}, saikeet=3)
+    t = nl.viive_varoitus(5.0, dict(analyysia_odotettu_s=4.0, syota_ms=[44.0] * 20), an, 30.0)
+    tarkista("analyysia odotettu: varoitus nimeaa analyysin ja ruudun ajan", "analyysi ei ehdi" in t and "44 ms" in t and "alle 33 ms" in t and "Pythonilla" not in t, t[:120])
+    an.M["vasen"] = Sovitin("Python (kivi_tarkka)")
+    t = nl.viive_varoitus(5.0, dict(analyysia_odotettu_s=4.0, syota_ms=[44.0] * 20), an, 30.0)
+    tarkista("Python-sovitus: varoitus neuvoo kaantamaan C++-moduulin", "Pythonilla" in t and "netti_fit" in t)
+    t = nl.viive_varoitus(5.0, dict(analyysia_odotettu_s=0.2, syota_ms=[5.0] * 20), an, 30.0)
+    tarkista("piirto / tallennus jaljessa: vanha varoitus", "piirto / tallennus" in t and "analyysi ei ehdi" not in t)
+
+
+def testaa_piirto_nopeutukset():
+    print("piirto: peittavan laatikon cv2.copyTo = np.copyto, kuvaan rajatut viivasegmentit valimuistissa (sama kuva kuin ennen, koon vaihtuessa lasketaan uudelleen)")
+    import types
+    import cv2
+    import netti_piirto as npi
+    rng = np.random.default_rng(5)
+    pohja = rng.integers(0, 256, (400, 600, 3), dtype=np.uint8)
+    kuva = rng.integers(0, 256, (40, 100, 3), dtype=np.uint8)
+    maski = rng.random((40, 100)) > 0.7
+    a = pohja.copy()
+    npi.Piirtaja._laatikko(a, kuva, maski, (30, 20))
+    b = pohja.copy()
+    roi = b[20:60, 30:130]
+    cv2.addWeighted(kuva, 0.72, roi, 0.28, 0, roi)
+    np.copyto(roi, kuva, where=maski[:, :, None])
+    tarkista("laatikko: sama kuva kuin np.copyto-toteutuksella", np.array_equal(a, b))
+    c = pohja.copy()
+    npi.Piirtaja._laatikko(c, kuva, maski, (560, 20))
+    tarkista("laatikko kuvan ulkopuolella: kuva ei muutu", np.array_equal(c, pohja))
+    pts = np.array([[-50.0, 10.0], [20.0, 30.0], [700.0, 40.0], [300.0, 500.0], [310.0, 520.0]])
+    segs = npi._leikatut_segmentit(pts, 400, 600)
+    tarkista("segmentit rajataan kuvaan (kaikki paat kuvassa), kokonaan ulkona oleva pois", len(segs) == 3 and all((0 <= q[:, 0]).all() and (q[:, 0] <= 599).all() and (0 <= q[:, 1]).all() and (q[:, 1] <= 399).all() for q in segs), str(len(segs)))
+    tarkista("katkoviiva: joka toinen segmentti", len(npi._leikatut_segmentit(pts, 400, 600, katkoviiva=True)) == 2)
+    x = pohja.copy()
+    npi._viiva_kuvaan(x, pts, npi.VARI_LIUKU, 3)
+    y = pohja.copy()
+    npi._piirra_segmentit(y, segs, npi.VARI_LIUKU, 3)
+    tarkista("_viiva_kuvaan = rajaus + piirto", np.array_equal(x, y) and not np.array_equal(x, pohja))
+
+    p = npi.Piirtaja({"vasen": object(), "oikea": object()}, fps=30.0)
+    laskuri = []
+    data = dict(pts=np.array([[1100.0, 300.0], [1120.0, 700.0]]), pts2=np.array([[1160.0, 300.0], [1180.0, 700.0]]), XT_liuku=10.0, XT_irr=-5.0, alustava=True, uv_liuku=(1140.0, 420.0), uv_irr=(1300.0, 450.0))
+    p._viivat_data = lambda h, kauko: data
+    vanha = npi._leikatut_segmentit
+    npi._leikatut_segmentit = lambda *a, **k: laskuri.append(a[1:3]) or vanha(*a, **k)
+    try:
+        h = types.SimpleNamespace(viivat=dict(x=1), puoli="vasen")
+        kuvat = []
+        for _ in range(3):
+            img = np.zeros((1080, 1920, 3), np.uint8)
+            p._viivat(img, h)
+            kuvat.append(img)
+        tarkista("rajatut segmentit lasketaan kerran (kaksi viivaa), ei joka ruudulle", len(laskuri) == 2, str(laskuri))
+        tarkista("valimuistista piirretty kuva on sama joka ruudulla", np.array_equal(kuvat[0], kuvat[1]) and np.array_equal(kuvat[1], kuvat[2]) and int(kuvat[0].max()) > 0)
+        img = np.zeros((900, 1600, 3), np.uint8)
+        p._viivat(img, h)
+        tarkista("kuvan koon vaihtuessa segmentit lasketaan uudelleen", len(laskuri) == 4 and laskuri[-1] == (900, 1600))
+        data["alustava"] = False
+        data["segmentit_koko"] = None
+        img = np.zeros((1080, 1920, 3), np.uint8)
+        p._viivat(img, h)
+        tarkista("katkoviiva (alustava) ja yhtenainen viiva eroavat", int((img[500, 1150:1210] != 0).any(axis=1).sum()) >= int((kuvat[0][500, 1150:1210] != 0).any(axis=1).sum()))
+    finally:
+        npi._leikatut_segmentit = vanha
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki, testaa_merkki_konsensus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset):
         t()
     print()
     if VIRHEITA:
