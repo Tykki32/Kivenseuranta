@@ -335,28 +335,13 @@ class Piirtaja:
         d = self._viivat_data(h, kauko)
         _viiva_kuvaan(img, d["pts"], VARI_LIUKU, 3)
         _viiva_kuvaan(img, d["pts2"], VARI_IRROITUS, 3, katkoviiva=d["alustava"])         # alustava = katkoviiva
-        # T-viivan leikkauspisteet; nimike viivan alkuun (ensimmainen nakyva piste), kun leikkauspiste on kuva-alan ulkopuolella
+        # T-viivan leikkauspisteet (piste, kun se on kuva-alan sisalla); viivoilla ei ole tekstia: luvut ovat tietopaneelissa
         px0, py0, pw, ph = (ng.kn.PUOLET[kauko])
-        for XT, uv, vari, nimi, pts_ in ((d["XT_liuku"], d["uv_liuku"], VARI_LIUKU, "LIUKU", d["pts"]), (d["XT_irr"], d["uv_irr"], VARI_IRROITUS, "IRROITUS", d["pts2"])):
+        for uv, vari in ((d["uv_liuku"], VARI_LIUKU), (d["uv_irr"], VARI_IRROITUS)):
             c = (int(round(uv[0])), int(round(uv[1])))
-            sisalla = px0 + 6 <= c[0] < px0 + pw - 6 and py0 + 6 <= c[1] < py0 + ph - 6
-            if sisalla:
+            if px0 + 6 <= c[0] < px0 + pw - 6 and py0 + 6 <= c[1] < py0 + ph - 6:
                 cv2.circle(img, c, 9, (255, 255, 255), -1, cv2.LINE_AA)
                 cv2.circle(img, c, 7, vari, -1, cv2.LINE_AA)
-            sana = f"{nimi} {abs(XT):.0f} cm {'oik' if XT > 0 else 'vas'}"
-            if c[0] >= px0 + pw - 6:
-                sana += " >>"                             # leikkauspiste kuva-alan oikealla puolella
-            elif c[0] < px0 + 6:
-                sana = "<< " + sana
-            # ensimmainen puoliskon sisalla oleva piste (pienin Y'): tasta nimike lahelle
-            q_ = np.round(pts_).astype(int)
-            vis = q_[(q_[:, 0] >= px0 + 4) & (q_[:, 0] < px0 + pw - 4) & (q_[:, 1] >= py0 + 4) & (q_[:, 1] < py0 + ph - 4)]
-            if len(vis):
-                q = vis[0]
-                (tw, _), _ = cv2.getTextSize(sana, FONTTI, 0.5, 1)
-                x = int(np.clip(q[0] - tw // 2, px0 + 6, px0 + pw - tw - 10))
-                y = int(np.clip(q[1] + (30 if nimi == "IRROITUS" else 52), py0 + 24, py0 + ph - 8))
-                _teksti(img, sana, (x, y), 0.5, vari, 1)
 
     # ---- tietopaneeli -----------------------------------------------------------------------------------------------
     def _paneeli_kuva(self, rivit, vlk="_paneeli_vlk", leveys_min=330):

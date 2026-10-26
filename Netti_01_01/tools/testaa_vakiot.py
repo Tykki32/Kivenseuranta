@@ -1282,6 +1282,28 @@ def testaa_paneeli_merkista():
                  s["merkki_T_cm"] is None and r["Liuku"] == ("Liuku: +10cm", "keskiviivasta") and r["Heitto"][0] == "Heitto: +0cm" and abs(s["liuku_cm"] - 10.0) < 1e-9, str(r["Liuku"] + r["Heitto"]))
 
 
+def testaa_viivat_ilman_tekstia():
+    print("piirto: liuku- ja irroituslinjoilla ei ole tekstia (luvut ovat tietopaneelissa), T-viivan leikkauspisteet ja viivat piirretaan")
+    import types
+    import netti_piirto as npi
+
+    p = npi.Piirtaja({"vasen": object(), "oikea": object()}, fps=30.0)
+    p._viivat_data = lambda h, kauko: dict(pts=np.array([[1100.0, 300.0], [1120.0, 700.0]]), pts2=np.array([[1160.0, 300.0], [1180.0, 700.0]]), XT_liuku=10.0, XT_irr=-5.0, alustava=False,
+                                           uv_liuku=(1140.0, 420.0), uv_irr=(1300.0, 450.0))
+    h = types.SimpleNamespace(viivat=dict(x=1), puoli="vasen")                          # kaukopaa = oikea puolisko
+    kutsut = []
+    vanha = npi._teksti
+    npi._teksti = lambda *a, **k: kutsut.append(a) or (0, 0)
+    try:
+        img = np.zeros((1080, 1920, 3), np.uint8)
+        p._viivat(img, h)
+    finally:
+        npi._teksti = vanha
+    tarkista("viivoilla ei tekstia (ei LIUKU- eika IRROITUS-nimikkeita)", not kutsut, str(kutsut))
+    tarkista("T-viivan leikkauspisteet piirretaan (liuku oranssi, irroitus magenta)", tuple(img[420, 1140]) == npi.VARI_LIUKU and tuple(img[450, 1300]) == npi.VARI_IRROITUS, f"{img[420, 1140].tolist()} {img[450, 1300].tolist()}")
+    tarkista("viivat piirretaan", int((img[500, 1090:1150] != 0).any(axis=1).sum()) > 0 and int((img[500, 1150:1210] != 0).any(axis=1).sum()) > 0)
+
+
 def testaa_piirto_liuku():
     print("piirto: koko mitattu pistejono (liuku + irroituksen jalkeinen lento) kaikki kerralla heti kun heiton alku on tulosteessa, irroituksen kohdalla musta ympyra (kun viivaestimaatti on valmis)")
     import types
@@ -1335,7 +1357,7 @@ def testaa_piirto_liuku():
 
 
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki, testaa_merkki_konsensus, testaa_paneeli_merkista, testaa_piirto_liuku):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_merkki, testaa_merkki_konsensus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku):
         t()
     print()
     if VIRHEITA:
