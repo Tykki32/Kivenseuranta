@@ -1700,6 +1700,13 @@ def testaa_puskuri_ja_viivevaroitus():
              and nl.valitse_puskuri("yuv", 64.0) == "yuv" and nl.valitse_puskuri("jpeg", 64.0) == "jpeg" and nl.valitse_puskuri("bgr", 4.0) == "bgr")
     gt = nl.fyysinen_muisti_gt()
     tarkista("fyysinen muisti: luku (Gt) tai None", gt is None or 0.5 < gt < 100000, str(gt))
+    r16 = nl.puskuri_rajat(10.0, 30.0, 20.0)
+    tarkista("puskurirajat: 20 Gt:n koneessa bgr-jono sallitaan 660 ruutuun (22 s) ja yuv-jono 1320 ruutuun ennen jpegia (jpeg kuormittaisi ruuhkaista konetta lisaa)", r16 == (660, 1320), str(r16))
+    tarkista("puskurirajat: muisti ei tiedossa tai pieni -> vahintaan viive + 2 s / viive + 4 s",
+             nl.puskuri_rajat(10.0, 30.0, None) == (360, 420) and nl.puskuri_rajat(10.0, 30.0, 4.0)[0] == 360 and nl.puskuri_rajat(10.0, 30.0, 4.0)[1] >= 420)
+    ala, ylä = nl.puskuri_rajat(10.0, 30.0, 8.0)
+    tarkista("puskurirajat: yuv-raja aina bgr-rajan ylapuolella ja kasvaa muistin mukana", ylä > ala and nl.puskuri_rajat(10.0, 30.0, 32.0)[1] > r16[1])
+    tarkista("tallennusjono: 90 ruutua kun muistia on vahintaan 14 Gt, muuten 30", nl.kirjoitusjonon_koko(20.0) == 90 and nl.kirjoitusjonon_koko(14.0) == 90 and nl.kirjoitusjonon_koko(8.0) == 30 and nl.kirjoitusjonon_koko(None) == 30)
     tarkista("bgr: raskas muoto vain kun jono on lyhyt, sen jalkeen yuv, sen jalkeen jpeg (muistin suoja)",
              nl.puskurin_muoto("bgr", 100, 360, 420) == "bgr" and nl.puskurin_muoto("bgr", 361, 360, 420) == "yuv" and nl.puskurin_muoto("bgr", 421, 360, 420) == "jpeg" and nl.puskurin_muoto("yuv", 421, 360, 420) == "jpeg")
 
@@ -1720,19 +1727,32 @@ def testaa_puskuri_ja_viivevaroitus():
              "tallennus ei ehdi" in t and "ffmpeg (libx264, superfast)" in t and "ultrafast" in t and "--koodekki gpu" in t and "analyysi ei ehdi" not in t, t[:160])
     t = nl.viive_varoitus(5.0, dict(tila, analyysia_odotettu_s=3.0), an, 30.0)
     tarkista("analyysin odotus ja tallennusjonon odotus: suurempi (yli puolet myohastymisesta) voittaa", "analyysi ei ehdi" in t)
+    t = nl.viive_varoitus(5.0, dict(tila, tallennus="ffmpeg (h264_qsv)", kirj_s=9.0, kirj_cpu_s=3.0, kirj_n=300.0), an, 30.0)
+    tarkista("laitteistokooderi (QSV): varoitus ei neuvo laitteistokooderiin vaan syottoon ja ruuhkaan, kertoo tallennussaikeen ajan",
+             "tallennus ei ehdi" in t and "Laitteistokooderi on jo kaytossa" in t and "--koodekki gpu" not in t and "30 ms/ruutu" in t and "prosessoria 10 ms" in t and "h264_qsv" in t, t[:200])
     t = nl.viive_varoitus(5.0, dict(analyysia_odotettu_s=0.2, luku_s=4.5, luku_max=2.5, pysahdyksia=3, syota_ms=[5.0] * 20), an, 30.0)
     tarkista("lahde viipyy: varoitus nimeaa luvun (verkko / dekoodaus) ja pisimman katkon", "videon luku takkuaa" in t and "2.5 s" in t and "3 kertaa" in t and "analyysi ehtii" in t, t[:160])
     t = nl.viive_varoitus(5.0, dict(analyysia_odotettu_s=0.2, luku_s=4.5, luku_max=0.1, pysahdyksia=0, syota_ms=[5.0] * 20), an, 30.0)
     tarkista("luvun odotus ilman katkoja ei ole syy (analyysisaie odottaa luvun valissa tahdistuksen vuoksi)", "videon luku takkuaa" not in t)
     otos = nl.tilasto_otos(dict(analyysia_odotettu_s=1.0, kirjoitus_odotus_s=2.0, purku_odotus_s=0.5, piirto_s=3.0, luku_s=0.25, syota_s=6.0, analysoitu=1000, piirretty=500, syota_ms=[1.0], tallennus="x"))
-    tarkista("tilasto_otos: vain kertyvat luvut", set(otos) == {"analyysia_odotettu_s", "kirjoitus_odotus_s", "purku_odotus_s", "piirto_s", "luku_s", "syota_s", "analysoitu", "piirretty"} and otos["piirretty"] == 500.0)
-    nyt = dict(analyysia_odotettu_s=1.5, kirjoitus_odotus_s=14.2, purku_odotus_s=0.5, piirto_s=3.0, luku_s=0.75, syota_s=8.0, analysoitu=1500, piirretty=600)
-    alku = dict(analyysia_odotettu_s=1.0, kirjoitus_odotus_s=2.0, purku_odotus_s=0.5, piirto_s=1.8, luku_s=0.25, syota_s=2.0, analysoitu=1000, piirretty=400)
-    rivi = nl.viive_tilarivi(95.0, 4.2, nyt, nl.tilasto_otos(alku), 30, 28.0)
-    tarkista("tilarivi: ajon aika, myohastyminen ja erotus edelliseen otokseen (odotukset, jono, ruudun ajat)",
-             "[    95 s]" in rivi and "kuva 4.2 s myohassa" in rivi and "tallennusjonoa odotettu 12.2 s (jono 30/30)" in rivi and "analyysia odotettu 0.5 s" in rivi and "lahteen lukua odotettu 0.5 s (esilatauspuskuri 28 s)" in rivi
-             and "piirto 6.0 ms" in rivi and "analyysi 12.0 ms" in rivi, rivi)
-    tarkista("tilarivi: ilman tallennusta ja esilatauspuskuria ei jonoa eika puskuria", "(jono" not in nl.viive_tilarivi(10.0, 1.5, nyt, nl.tilasto_otos(alku)) and "esilatauspuskuri" not in nl.viive_tilarivi(10.0, 1.5, nyt, nl.tilasto_otos(alku)))
+    tarkista("tilasto_otos: vain kertyvat luvut (puuttuvat nollana)", set(otos) == {"analyysia_odotettu_s", "kirjoitus_odotus_s", "purku_odotus_s", "piirto_s", "piirto_cpu_s", "luku_s", "syota_s", "syota_cpu_s",
+                                                                                   "analysoitu", "piirretty", "kirj_s", "kirj_cpu_s", "kirj_n"} and otos["piirretty"] == 500.0 and otos["kirj_n"] == 0.0)
+    nyt = dict(analyysia_odotettu_s=1.5, kirjoitus_odotus_s=14.2, purku_odotus_s=0.5, piirto_s=3.0, piirto_cpu_s=1.2, luku_s=0.75, syota_s=8.0, syota_cpu_s=3.0, analysoitu=1500, piirretty=600,
+               kirj_s=9.0, kirj_cpu_s=3.0, kirj_n=600)
+    alku = dict(analyysia_odotettu_s=1.0, kirjoitus_odotus_s=2.0, purku_odotus_s=0.5, piirto_s=1.8, piirto_cpu_s=0.6, luku_s=0.25, syota_s=2.0, syota_cpu_s=1.0, analysoitu=1000, piirretty=400,
+                kirj_s=3.0, kirj_cpu_s=1.0, kirj_n=400)
+    rivi = nl.viive_tilarivi(95.0, 4.2, nyt, nl.tilasto_otos(alku), (30, 90), 28.0, "kone 97 % kaytossa (8 loogista ydinta), paaprosessi 2.4 ydinta")
+    tarkista("tilarivi: ajon aika, myohastyminen ja erotus edelliseen otokseen (odotukset, jono, ruudun ajat seinakellolla ja CPU:lla, tallennussaie, koneen kuorma)",
+             "[    95 s]" in rivi and "kuva 4.2 s myohassa" in rivi and "tallennusjonoa odotettu 12.2 s (jono 30/90)" in rivi and "analyysia odotettu 0.5 s" in rivi and "lahteen lukua odotettu 0.5 s (esilatauspuskuri 28 s)" in rivi
+             and "piirto 6.0 ms (CPU 3.0)" in rivi and "analyysi 12.0 ms (CPU 4.0)" in rivi and "syotto kooderille 30.0 ms/ruutu (CPU 10.0)" in rivi and "kone 97 % kaytossa" in rivi, rivi)
+    tarkista("tilarivi: ilman tallennusta ja esilatauspuskuria ei jonoa eika puskuria eika tallennussaiettta",
+             "(jono" not in nl.viive_tilarivi(10.0, 1.5, nyt, nl.tilasto_otos(nyt)) and "esilatauspuskuri" not in nl.viive_tilarivi(10.0, 1.5, nyt, nl.tilasto_otos(nyt)) and "tallennussaie" not in nl.viive_tilarivi(10.0, 1.5, nyt, nl.tilasto_otos(nyt)))
+    k = nl.KoneenKuorma()
+    sum(i * i for i in range(2_000_000))                                           # (kuormaa, jotta mitattavaa on)
+    teksti = k.erittely()
+    tarkista("KoneenKuorma: koneen kuorma (jos saatavilla) ja paaprosessin ytimet", "paaprosessi" in teksti and ("kone " in teksti or nl.KoneenKuorma._lue_kone() is None), teksti)
+    lue = nl.KoneenKuorma._lue_kone()
+    tarkista("KoneenKuorma._lue_kone: (kuormitettu <= yhteensa) tai None", lue is None or (0 <= lue[0] <= lue[1] and lue[1] > 0), str(lue))
 
 
 def testaa_piirto_nopeutukset():

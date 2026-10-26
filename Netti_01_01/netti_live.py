@@ -23,7 +23,6 @@ import concurrent.futures
 import csv
 import os
 import queue
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -462,10 +461,9 @@ class _FfmpegTiedosto:
         cmd = [exe, "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", f"{RUUTU_W}x{RUUTU_H}", "-r", f"{fps:.4f}", "-i", "-",      # I420: puolet BGR:n datasta putkessa
                "-an", *koodaus, "-pix_fmt", "yuv420p", "-movflags", "+faststart", polku]
         lisa = {}
-        if os.name == "nt":                               # koodaus ei saa viedda prosessoria analyysilta: alempi prioriteetti
-            lisa = dict(creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | 0x00004000)       # BELOW_NORMAL_PRIORITY_CLASS
-        elif shutil.which("nice"):                        # (preexec_fn ei ole turvallinen monisaikeisessa prosessissa)
-            cmd = ["nice", "-n", "5"] + cmd
+        if os.name == "nt":                               # kuva odottaa kooderia (tallennusjono): matalaprioriteettinen kooderi nalkiintyisi ruuhkassa muiden saikeiden taakse ja viivastyttaisi kuvaa
+            laitteisto = nimi.startswith("h264_")         # (prioriteettikaannos). Laitteistokooderi vie vain vahan prosessoria mutta tarvitsee nopean vuoronsa: yli normaalin; prosessorikooderi: normaali
+            lisa = dict(creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | (0x00008000 if laitteisto else 0))      # ABOVE_NORMAL_PRIORITY_CLASS
         self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=self.loki, **lisa)
         self.nimi = f"ffmpeg ({nimi})"
 
@@ -503,9 +501,11 @@ class Kirjoittaja:
     'auto' = ffmpeg (PATH tai imageio-ffmpeg): laitteistokooderi (NVENC / QSV / AMF, kokeillaan ensin) tai H.264 prosessorilla, muuten OpenCV mp4v; 'cpu' / 'h264' = vain
     libx264; 'gpu' = laitteistokooderi (muuten libx264); muu = OpenCV:n fourcc (mp4v, avc1, MJPG ...)."""
 
-    def __init__(self, polku, fps=30.0, koodekki="auto", ffmpeg=None, preset="superfast", aani=None):
+    def __init__(self, polku, fps=30.0, koodekki="auto", ffmpeg=None, preset="superfast", aani=None, jono_koko=30):
         self.polku = polku
         self.n = 0
+        self.kirjoitus_s = 0.0                            # tallennussaikeen ajankaytto (seinakello / CPU) kooderille syottoon: muunnos + putkeen kirjoitus
+        self.kirjoitus_cpu_s = 0.0
         self.virhe = None
         kansio = os.path.dirname(os.path.abspath(polku))
         os.makedirs(kansio, exist_ok=True)
@@ -526,7 +526,8 @@ class Kirjoittaja:
         self.exe = exe
         if self.aani is not None:
             self.aani.kaynnista(os.path.splitext(os.path.abspath(polku))[0] + ".aani", exe)       # YouTube: lataus taustalle heti (analyysin aikana)
-        self.q = queue.Queue(maxsize=30)
+        self.jono_koko = max(1, int(jono_koko))
+        self.q = queue.Queue(maxsize=self.jono_koko)         # taynna oleva jono hidastaa piirtoa: iso jono tasoittaa kooderin hetkelliset hidastelut (ei kuvan viivetta)
         self.t = threading.Thread(target=self._silmukka, name="tallennus", daemon=True)
         self.t.start()
 
@@ -538,7 +539,10 @@ class Kirjoittaja:
             if self.virhe is not None:
                 continue                                  # virheen jalkeen jono vain tyhjennetaan (tuottaja ei jaa jumiin)
             try:
+                t0, c0 = time.perf_counter(), time.thread_time()
                 self.taustaosa.kirjoita(kuva)
+                self.kirjoitus_s += time.perf_counter() - t0
+                self.kirjoitus_cpu_s += time.thread_time() - c0
                 self.n += 1
             except Exception as e:
                 self.virhe = e
@@ -982,7 +986,8 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     pysayta = threading.Event()                      # kayttaja lopettaa tai virhe
     piirto_valmis = threading.Event()                # piirtosaie on antanut kaikki kuvat
     tilasto = dict(analysoitu=0, ohitettu=0, virheita=0, piirretty=0, myohassa_max=0.0, luku_s=0.0, luku_max=0.0, pysahdyksia=0, syota_s=0.0, syota_ms=[], viive_max=0.0, puskuri_max=0.0, analyysia_odotettu_s=0.0,
-                  piirto_s=0.0, purku_odotus_s=0.0, kirjoitus_odotus_s=0.0, tallennus=(kirjoittaja.nimi if kirjoittaja is not None else None))      # piirtosaikeen ajankaytto: piirto, pakkauksen odotus, tallennusjonon odotus
+                  piirto_s=0.0, purku_odotus_s=0.0, kirjoitus_odotus_s=0.0, tallennus=(kirjoittaja.nimi if kirjoittaja is not None else None),      # piirtosaikeen ajankaytto: piirto, pakkauksen odotus, tallennusjonon odotus
+                  syota_cpu_s=0.0, piirto_cpu_s=0.0, kirj_s=0.0, kirj_cpu_s=0.0, kirj_n=0.0)       # saikeiden prosessoriaika (verrattuna seinakelloon: odottaako saie vai laskeeko se) ja tallennussaikeen syotto kooderille
     jaettu = dict(puskuri_s=0.0)                     # analyysisaie -> piirtosaie: esilatauspuskurin pituus (s)
     pitka_s = a.lataus if (a.youtube or a.url) and a.esilataus > 0 else 0.0              # virta: video ladataan jatkuvasti enintaan taman verran analyysin edelle
     max_myohassa = a.max_myohassa if a.max_myohassa is not None else (0.8 if pitka_s <= 0 else min(6.0, max(0.8, a.viive - 3.0)))     # ruutu ohitetaan (ei analysoida), jos analyysi on taman verran myohassa
@@ -994,8 +999,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     if not a.hiljaa and piirtoa_tarvitaan:
         print(f"Viivepuskuri: {puskuri_muoto}" + (f" (--puskuri auto, muistia {muisti_gt:.0f} Gt)" if a.puskuri == "auto" and muisti_gt is not None else ""), flush=True)
     D_ruutua = int(round(a.viive * fps))             # analyysi on taman verran kuvan edella
-    yuv_raja = int((a.viive + 4.0) * fps)            # yuv-puskurin muistin suoja: tamän jonopituuden jalkeen uudet ruudut pakataan JPEG:ksi (kone ei jaksa: jono kasvaa)
-    bgr_raja = int((a.viive + 2.0) * fps)            # bgr-puskurin muistin suoja (6,2 Mt / ruutu): taman jalkeen uudet ruudut pakataan kevyemmin (yuv, myohemmin jpeg)
+    bgr_raja, yuv_raja = puskuri_rajat(a.viive, fps, muisti_gt)       # muistin suoja: jonon kasvaessa (kone ei jaksa) uudet ruudut pakataan kevyemmin (bgr -> yuv -> jpeg)
 
     def pakkaa(fr, muoto):
         return pakkaa_ruutu(fr, muoto, a.jpeg)
@@ -1057,9 +1061,10 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                     print(f"  [debug] ohitus loppuu: ruutu {f} ({f / fps:.1f} s), myohassa {myohassa:.2f} s", flush=True)
                 ohitus_kaynnissa = False
                 try:
-                    t_syota = time.perf_counter()
+                    t_syota, c_syota = time.perf_counter(), time.thread_time()
                     an.syota(f, fr)
                     dt_syota = time.perf_counter() - t_syota
+                    tilasto["syota_cpu_s"] += time.thread_time() - c_syota
                     tilasto["syota_s"] += dt_syota
                     tilasto["syota_ms"].append(1e3 * dt_syota)
                     tilasto["analysoitu"] += 1
@@ -1094,6 +1099,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         varoitettu = False
         t_silmukka = time.time()
         t_tila, edellinen = time.time(), tilasto_otos(tilasto)           # viive-tilarivi: viimeisin tulostus ja silloinen tilasto
+        kuorma = KoneenKuorma()                                          # koko koneen ja tamän ohjelman prosessorinkaytto tilariveille
         try:
             while not pysayta.is_set():
                 nyt = time.time()
@@ -1114,7 +1120,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                     if myohassa > 3.0 and not varoitettu:
                         varoitettu = True
                         print(viive_varoitus(myohassa, tilasto, an, fps), file=sys.stderr)
-                    t_a = time.perf_counter()
+                    t_a, c_a = time.perf_counter(), time.thread_time()
                     try:
                         npi_kuva = piirtaja.piirra(kuva, f, an)
                     except Exception:                               # piirtovirhe: nayta ruutu ilman (loppuun asti piirrettyja) piirroksia
@@ -1124,16 +1130,18 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                             traceback.print_exc()
                             piirtovirhe.append(1)
                     tilasto["piirto_s"] += time.perf_counter() - t_a
+                    tilasto["piirto_cpu_s"] += time.thread_time() - c_a
+                    if naytto is not None:
+                        naytto.anna(npi_kuva)                          # ikkuna ensin: tallennusjonon odotus ei viivasta jo valmista kuvaa
                     if kirjoittaja is not None:
                         t_a = time.perf_counter()
-                        kirjoittaja.kirjoita(npi_kuva)                 # (blokkaa, kun tallennusjono on taynna: ffmpeg ei ehdi)
+                        kirjoittaja.kirjoita(npi_kuva)                 # (blokkaa, kun tallennusjono on taynna: kooderi ei ehdi)
                         tilasto["kirjoitus_odotus_s"] += time.perf_counter() - t_a
-                    if naytto is not None:
-                        naytto.anna(npi_kuva)
+                        tilasto["kirj_s"], tilasto["kirj_cpu_s"], tilasto["kirj_n"] = kirjoittaja.kirjoitus_s, kirjoittaja.kirjoitus_cpu_s, float(kirjoittaja.n)
                     tilasto["piirretty"] += 1
                     if not a.hiljaa and piirtaja.viive_nyt > 1.0 and time.time() - t_tila >= TILARIVI_VALI_S:
-                        print(viive_tilarivi(time.time() - t_ajo, piirtaja.viive_nyt, tilasto, edellinen, kirjoittaja.jonossa() if kirjoittaja is not None else None, jaettu["puskuri_s"] if pitka_s > 0 else None),
-                              file=sys.stderr, flush=True)
+                        print(viive_tilarivi(time.time() - t_ajo, piirtaja.viive_nyt, tilasto, edellinen, (kirjoittaja.jonossa(), kirjoittaja.jono_koko) if kirjoittaja is not None else None, jaettu["puskuri_s"] if pitka_s > 0 else None,
+                                             kuorma.erittely()), file=sys.stderr, flush=True)
                         t_tila, edellinen = time.time(), tilasto_otos(tilasto)
                     continue
                 if odottaa and odottaa[0][1] <= nyt and an.toistettava and not lopetettu.is_set():
@@ -1192,7 +1200,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         if not a.hiljaa and (pitka_s > 0 or tilasto["viive_max"] > 0.5):
             print(f"viive: suurin myohastyminen {tilasto['viive_max']:.1f} s" + (f"; esilatauspuskuri enintaan {tilasto['puskuri_max']:.0f} s (tavoite {pitka_s:.0f} s)" if pitka_s > 0 else ""), flush=True)
             if tilasto["viive_max"] > 1.0:
-                print("  koko ajalta: " + viive_erittely(tilasto, tilasto_otos(dict()), kirjoittaja.jonossa() if kirjoittaja is not None else None, None), flush=True)
+                print("  koko ajalta: " + viive_erittely(tilasto, tilasto_otos(dict()), (kirjoittaja.jonossa(), kirjoittaja.jono_koko) if kirjoittaja is not None else None, None), flush=True)
         if not a.hiljaa:
             print(f"analysoitu {tilasto['analysoitu']} ruutua, ohitettu (myohassa) {tilasto['ohitettu']}, virheita {tilasto['virheita']}; piirretty {tilasto['piirretty']} ruutua"
                   + (f", ikkunassa {naytto.n_nayt}" if naytto is not None else "") + f", suurin viive piirrossa {tilasto['myohassa_max']:.1f} s", flush=True)
@@ -1248,6 +1256,23 @@ def pura_ruutu(laji, data):
     return cv2.cvtColor(data, cv2.COLOR_YUV2BGR_I420)
 
 
+def kirjoitusjonon_koko(muisti_gt):
+    """Tallennusjonon pituus (ruutua): 30 (1 s); kun muistia on vahintaan BGR_PUSKURI_MIN_GT Gt, 90 (3 s, ~0,56 Gt): kooderin hetkellinen hidastelu (ruuhka heiton aikana) ei silloin pysayta piirtoa
+    eika viivasta kuvaa. Pysyva ylivoima ei tasoitu jonolla -- silloin viive_varoitus kertoo, ettei kooderi ehdi."""
+    return 90 if muisti_gt is not None and muisti_gt >= BGR_PUSKURI_MIN_GT else 30
+
+
+def puskuri_rajat(viive, fps, muisti_gt):
+    """(bgr_raja, yuv_raja): viivepuskurin jonon pituudet (ruutua), joiden jalkeen uudet ruudut pakataan kevyemmin muistille (bgr -> yuv, yuv -> jpeg). Pakkaus maksaa prosessoria (yuv ~6 ms,
+    jpeg ~21 ms / ruutu) juuri silloin, kun kone on jo ruuhkassa ja kuva myohassa, ja kuormittaisi sita lisaa (myohastyminen -> jpeg -> lisakuorma -> myohastyminen), joten muistia kaytetaan
+    ensin: rajat ovat vahintaan viive + 2 s / viive + 4 s ja kasvavat koneen muistin mukaan (bgr-jonolle 20 %, yuv-jonolle lisaksi 10 % muistista; ruutu 6,2 / 3,1 Mt)."""
+    bgr, yuv = int((viive + 2.0) * fps), int((viive + 4.0) * fps)
+    if muisti_gt is not None and muisti_gt > 0:
+        bgr = max(bgr, int(0.20 * muisti_gt * 1024 / 6.2))
+        yuv = max(yuv, bgr + int(0.10 * muisti_gt * 1024 / 3.1))
+    return bgr, yuv
+
+
 def puskurin_muoto(valittu, jonon_pituus, bgr_raja, yuv_raja):
     """Seuraavan ruudun puskurimuoto: valittu (--puskuri), mutta jonon kasvaessa (kone ei jaksa) raskaampi muisti vaihtuu kevyempaan: bgr -> yuv (jono > bgr_raja), yuv -> jpeg (jono > yuv_raja)."""
     if valittu == "bgr" and jonon_pituus <= bgr_raja:
@@ -1260,25 +1285,70 @@ def puskurin_muoto(valittu, jonon_pituus, bgr_raja, yuv_raja):
 TILARIVI_VALI_S = 20.0                               # viive-tilarivi (stderr): enintaan taman valein, kun kuva on yli 1 s myohassa
 
 
+class KoneenKuorma:
+    """Koko koneen ja tamän ohjelman pääprosessin prosessorinkaytto tilariveille: koneen kuorma (Windows: GetSystemTimes, Linux: /proc/stat) ja paaprosessin ytimet (process_time; ei sisalla
+    ffmpegia eika tyoprosesseja). Jos kone on lahes taynna (>= 90 %), kaikki saikeet ja prosessit hidastuvat (analyysi, piirto, tallennus); jos ei, odotus on muualla (esim. GIL, kooderi, verkko)."""
+
+    def __init__(self):
+        self._kone = self._lue_kone()
+        self._t, self._p = time.time(), time.process_time()
+
+    @staticmethod
+    def _lue_kone():
+        """(kuormitettu, yhteensa) kertyvat ajat tai None, jos niita ei saada."""
+        try:
+            if os.name == "nt":
+                import ctypes
+                from ctypes import wintypes
+                tyhja, ydin, kayttaja = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+                if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(tyhja), ctypes.byref(ydin), ctypes.byref(kayttaja)):
+                    return None
+                aika = lambda x: (x.dwHighDateTime << 32) | x.dwLowDateTime          # noqa: E731
+                yht = aika(ydin) + aika(kayttaja)                                     # (ydinaika sisaltaa tyhjakaynnin)
+                return yht - aika(tyhja), yht
+            with open("/proc/stat") as fh:
+                v = [int(x) for x in fh.readline().split()[1:9]]
+            tyhja = v[3] + v[4]                                                       # idle + iowait
+            return sum(v) - tyhja, sum(v)
+        except Exception:
+            return None
+
+    def erittely(self):
+        """Teksti edellisen kutsun (tai luonnin) jalkeen: koneen kuorma ja pääprosessin ytimet; nollaa vertailukohdan."""
+        kone, t, p = self._lue_kone(), time.time(), time.process_time()
+        osat = []
+        if kone is not None and self._kone is not None and kone[1] > self._kone[1]:
+            osat.append(f"kone {100.0 * (kone[0] - self._kone[0]) / (kone[1] - self._kone[1]):.0f} % kaytossa ({os.cpu_count()} loogista ydinta)")
+        if t > self._t:
+            osat.append(f"paaprosessi {(p - self._p) / (t - self._t):.1f} ydinta")
+        self._kone, self._t, self._p = kone, t, p
+        return ", ".join(osat)
+
+
 def tilasto_otos(tilasto):
     """Tilaston kertyvat luvut (s / kpl) erotuksen laskemista varten."""
-    return {k: float(tilasto.get(k, 0.0)) for k in ("analyysia_odotettu_s", "kirjoitus_odotus_s", "purku_odotus_s", "piirto_s", "luku_s", "syota_s", "analysoitu", "piirretty")}
+    return {k: float(tilasto.get(k, 0.0)) for k in ("analyysia_odotettu_s", "kirjoitus_odotus_s", "purku_odotus_s", "piirto_s", "piirto_cpu_s", "luku_s", "syota_s", "syota_cpu_s", "analysoitu", "piirretty",
+                                                    "kirj_s", "kirj_cpu_s", "kirj_n")}
 
 
 def viive_erittely(tilasto, edellinen, kirjoitusjono=None, puskuri_s=None):
-    """Mihin aika on mennyt edellisen otoksen jalkeen (tilasto_otos): analyysin odotus, tallennusjonon odotus, pakkauksen purun odotus, lahteen luvun odotus ja piirron / analyysin ruutuaika.
-    Piirtosaie odottaa analyysia (toistettava ajo) tai tallennusjonoa (ffmpeg ei ehdi); analyysisaie odottaa lukua (verkko / dekoodaus)."""
+    """Mihin aika on mennyt edellisen otoksen jalkeen (tilasto_otos; kirjoitusjono = (pituus, enimmaiskoko) tai None): analyysin odotus, tallennusjonon odotus, pakkauksen purun odotus, lahteen luvun odotus ja piirron / analyysin ruutuaika
+    (seinakello ja saikeen oma prosessoriaika: jos seinakello on paljon suurempi kuin CPU, saie on odottanut prosessoria tai lukkoa), tallennussaikeen syotto kooderille (muunnos + putki).
+    Piirtosaie odottaa analyysia (toistettava ajo) tai tallennusjonoa (kooderi ei ehdi); analyysisaie odottaa lukua (verkko / dekoodaus)."""
     nyt = tilasto_otos(tilasto)
     d = {k: nyt[k] - edellinen.get(k, 0.0) for k in nyt}
     piirretty, analysoitu = max(d["piirretty"], 1.0), max(d["analysoitu"], 1.0)
-    return (f"analyysia odotettu {d['analyysia_odotettu_s']:.1f} s, tallennusjonoa odotettu {d['kirjoitus_odotus_s']:.1f} s" + (f" (jono {kirjoitusjono}/30)" if kirjoitusjono is not None else "")
-            + f", pakkauksen purkua odotettu {d['purku_odotus_s']:.1f} s, lahteen lukua odotettu {d['luku_s']:.1f} s" + (f" (esilatauspuskuri {puskuri_s:.0f} s)" if puskuri_s is not None else "")
-            + f"; ruudun aika: piirto {1e3 * d['piirto_s'] / piirretty:.1f} ms, analyysi {1e3 * d['syota_s'] / analysoitu:.1f} ms")
+    teksti = (f"analyysia odotettu {d['analyysia_odotettu_s']:.1f} s, tallennusjonoa odotettu {d['kirjoitus_odotus_s']:.1f} s" + (f" (jono {kirjoitusjono[0]}/{kirjoitusjono[1]})" if kirjoitusjono is not None else "")
+              + f", pakkauksen purkua odotettu {d['purku_odotus_s']:.1f} s, lahteen lukua odotettu {d['luku_s']:.1f} s" + (f" (esilatauspuskuri {puskuri_s:.0f} s)" if puskuri_s is not None else "")
+              + f"; ruudun aika: piirto {1e3 * d['piirto_s'] / piirretty:.1f} ms (CPU {1e3 * d['piirto_cpu_s'] / piirretty:.1f}), analyysi {1e3 * d['syota_s'] / analysoitu:.1f} ms (CPU {1e3 * d['syota_cpu_s'] / analysoitu:.1f})")
+    if d["kirj_n"] > 0:
+        teksti += f"; tallennussaie: syotto kooderille {1e3 * d['kirj_s'] / d['kirj_n']:.1f} ms/ruutu (CPU {1e3 * d['kirj_cpu_s'] / d['kirj_n']:.1f})"
+    return teksti
 
 
-def viive_tilarivi(t_s, viive, tilasto, edellinen, kirjoitusjono=None, puskuri_s=None):
-    """Yksi tilarivi (stderr), kun kuva on yli 1 s myohassa: ajon aika, myohastyminen ja viime tilarivin jalkeinen erittely (viive_erittely)."""
-    return f"[{t_s:6.0f} s] kuva {viive:.1f} s myohassa; viime ajalta: " + viive_erittely(tilasto, edellinen, kirjoitusjono, puskuri_s)
+def viive_tilarivi(t_s, viive, tilasto, edellinen, kirjoitusjono=None, puskuri_s=None, kuorma=""):
+    """Yksi tilarivi (stderr), kun kuva on yli 1 s myohassa: ajon aika, myohastyminen ja viime tilarivin jalkeinen erittely (viive_erittely) sekä koneen kuorma (KoneenKuorma.erittely)."""
+    return f"[{t_s:6.0f} s] kuva {viive:.1f} s myohassa; viime ajalta: " + viive_erittely(tilasto, edellinen, kirjoitusjono, puskuri_s) + (f"; {kuorma}" if kuorma else "")
 
 
 def viive_varoitus(myohassa, tilasto, an, fps):
@@ -1296,9 +1366,16 @@ def viive_varoitus(myohassa, tilasto, an, fps):
                 f"{1e3 / max(fps, 1.0):.0f} ms; tarkka sovitus: {sovitin}, B-tyoprosesseja --saikeet {an.saikeet}).{vihje} Tulos ei muutu, mutta kuvan viive kasvaa. "
                 "Kokeile suurempaa --saikeet-arvoa (enintaan ytimet - 1), sulje muita raskaita ohjelmia tai aja --ulos ilman ikkunaa (--ei-ikkunaa).")
     if tilasto.get("kirjoitus_odotus_s", 0.0) > 0.5 * myohassa:
+        nimi = tilasto.get("tallennus") or "tallennus"
+        n = tilasto.get("kirj_n", 0.0)
+        syotto = f" Tallennussaie syottaa kooderille keskimaarin {1e3 * tilasto.get('kirj_s', 0.0) / n:.0f} ms/ruutu (prosessoria {1e3 * tilasto.get('kirj_cpu_s', 0.0) / n:.0f} ms)." if n > 0 else ""
+        if "h264_" in nimi:                                  # laitteistokooderi (NVENC / QSV / AMF): koodaus on jo naytonohjaimella, jaljella on kuvien valmistelu ja siirto ffmpegille
+            keinot = ("Laitteistokooderi on jo kaytossa, joten hidastaa kuvien syotto kooderille (varimuunnos ja siirto ffmpegille) tai koneen ruuhka: sulje muita raskaita ohjelmia, "
+                      "kokeile pienempaa --saikeet-arvoa tai aja ilman ikkunaa (--ei-ikkunaa).")
+        else:
+            keinot = "Kokeile --x264-preset ultrafast, --koodekki gpu (laitteistokoodaus: NVENC / QSV / AMF), sulje muita raskaita ohjelmia tai aja ilman --ulos."
         return (f"Huom: tallennus ei ehdi mukaan reaaliajassa: kuva on {myohassa:.1f} s myohassa, koska piirtosaie on odottanut tallennusjonoa yhteensa {tilasto['kirjoitus_odotus_s']:.1f} s "
-                f"({tilasto.get('tallennus') or 'tallennus'} ei koodaa 30 ruutua sekunnissa; analyysi ehtii: ruudulta keskim. {keski:.0f} ms). Tallenteesta ei puutu ruutuja, mutta kuvan viive kasvaa. "
-                "Kokeile --x264-preset ultrafast, --koodekki gpu (laitteistokoodaus: NVENC / QSV / AMF), sulje muita raskaita ohjelmia tai aja ilman --ulos.")
+                f"({nimi} ei saa 30 ruutua sekunnissa; analyysi ehtii: ruudulta keskim. {keski:.0f} ms).{syotto} Tallenteesta ei puutu ruutuja, mutta kuvan viive kasvaa. {keinot}")
     if tilasto.get("pysahdyksia", 0) > 0 and tilasto.get("luku_s", 0.0) > 0.5 * myohassa:
         return (f"Huom: videon luku takkuaa: kuva on {myohassa:.1f} s myohassa, koska lahde viipyi yhteensa {tilasto['luku_s']:.1f} s (pisin {tilasto.get('luku_max', 0.0):.1f} s, "
                 f"{tilasto['pysahdyksia']} kertaa yli 0,25 s). Verkko tai dekoodaus ei pysy mukana; analyysi ehtii (ruudulta keskim. {keski:.0f} ms). "
@@ -1438,7 +1515,7 @@ def main():
     geom = ng.Geometria(a.kansio)
     kello_paikka = tuple(int(x) for x in a.kello_paikka.split(",")) if a.kello_paikka else None
     piirtaja = npi.Piirtaja(geom, fps=lahde.fps, jalki_s=a.jalki, viivat_s=a.viivat, viive_s=a.viive, kello=not a.ei_kelloa, kello_paikka=kello_paikka)
-    kirjoittaja = Kirjoittaja(a.ulos, lahde.fps, a.koodekki, a.ffmpeg, a.x264_preset, valitse_aani(a, lahde) if a.ulos else None) if a.ulos else None
+    kirjoittaja = Kirjoittaja(a.ulos, lahde.fps, a.koodekki, a.ffmpeg, a.x264_preset, valitse_aani(a, lahde) if a.ulos else None, jono_koko=kirjoitusjonon_koko(fyysinen_muisti_gt())) if a.ulos else None
     naytto = None if a.ei_ikkunaa else Naytto(a.nayttotila, a.ikkuna_leveys)
     if not a.hiljaa:
         print(f"Kuva tulee {a.viive:.0f} s viiveella. " + ("Ikkuna: 'q' tai ESC (tai ikkunan sulkeminen) lopettaa, 'f' vaihtaa kokoruudun. " if naytto else "")
