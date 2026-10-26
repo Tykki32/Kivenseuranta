@@ -1713,7 +1713,26 @@ def testaa_puskuri_ja_viivevaroitus():
     t = nl.viive_varoitus(5.0, dict(analyysia_odotettu_s=4.0, syota_ms=[44.0] * 20), an, 30.0)
     tarkista("Python-sovitus: varoitus neuvoo kaantamaan C++-moduulin", "Pythonilla" in t and "netti_fit" in t)
     t = nl.viive_varoitus(5.0, dict(analyysia_odotettu_s=0.2, syota_ms=[5.0] * 20), an, 30.0)
-    tarkista("piirto / tallennus jaljessa: vanha varoitus", "piirto / tallennus" in t and "analyysi ei ehdi" not in t)
+    tarkista("ei tunnettua pullonkaulaa: piirto / ikkuna -varoitus kertoo piirron ja purun ajat, analyysin ruudun ajan", "piirto / ikkuna" in t and "analyysi ei ehdi" not in t and "5 ms" in t and "tallennus ei ehdi" not in t, t[:160])
+    tila = dict(analyysia_odotettu_s=0.2, kirjoitus_odotus_s=4.1, tallennus="ffmpeg (libx264, superfast)", syota_ms=[5.0] * 20)
+    t = nl.viive_varoitus(5.0, tila, an, 30.0)
+    tarkista("tallennusjonoa odotettu: varoitus nimeaa tallennuksen, kooderin ja neuvoo ultrafast / gpu / ilman --ulos",
+             "tallennus ei ehdi" in t and "ffmpeg (libx264, superfast)" in t and "ultrafast" in t and "--koodekki gpu" in t and "analyysi ei ehdi" not in t, t[:160])
+    t = nl.viive_varoitus(5.0, dict(tila, analyysia_odotettu_s=3.0), an, 30.0)
+    tarkista("analyysin odotus ja tallennusjonon odotus: suurempi (yli puolet myohastymisesta) voittaa", "analyysi ei ehdi" in t)
+    t = nl.viive_varoitus(5.0, dict(analyysia_odotettu_s=0.2, luku_s=4.5, luku_max=2.5, pysahdyksia=3, syota_ms=[5.0] * 20), an, 30.0)
+    tarkista("lahde viipyy: varoitus nimeaa luvun (verkko / dekoodaus) ja pisimman katkon", "videon luku takkuaa" in t and "2.5 s" in t and "3 kertaa" in t and "analyysi ehtii" in t, t[:160])
+    t = nl.viive_varoitus(5.0, dict(analyysia_odotettu_s=0.2, luku_s=4.5, luku_max=0.1, pysahdyksia=0, syota_ms=[5.0] * 20), an, 30.0)
+    tarkista("luvun odotus ilman katkoja ei ole syy (analyysisaie odottaa luvun valissa tahdistuksen vuoksi)", "videon luku takkuaa" not in t)
+    otos = nl.tilasto_otos(dict(analyysia_odotettu_s=1.0, kirjoitus_odotus_s=2.0, purku_odotus_s=0.5, piirto_s=3.0, luku_s=0.25, syota_s=6.0, analysoitu=1000, piirretty=500, syota_ms=[1.0], tallennus="x"))
+    tarkista("tilasto_otos: vain kertyvat luvut", set(otos) == {"analyysia_odotettu_s", "kirjoitus_odotus_s", "purku_odotus_s", "piirto_s", "luku_s", "syota_s", "analysoitu", "piirretty"} and otos["piirretty"] == 500.0)
+    nyt = dict(analyysia_odotettu_s=1.5, kirjoitus_odotus_s=14.2, purku_odotus_s=0.5, piirto_s=3.0, luku_s=0.75, syota_s=8.0, analysoitu=1500, piirretty=600)
+    alku = dict(analyysia_odotettu_s=1.0, kirjoitus_odotus_s=2.0, purku_odotus_s=0.5, piirto_s=1.8, luku_s=0.25, syota_s=2.0, analysoitu=1000, piirretty=400)
+    rivi = nl.viive_tilarivi(95.0, 4.2, nyt, nl.tilasto_otos(alku), 30, 28.0)
+    tarkista("tilarivi: ajon aika, myohastyminen ja erotus edelliseen otokseen (odotukset, jono, ruudun ajat)",
+             "[    95 s]" in rivi and "kuva 4.2 s myohassa" in rivi and "tallennusjonoa odotettu 12.2 s (jono 30/30)" in rivi and "analyysia odotettu 0.5 s" in rivi and "lahteen lukua odotettu 0.5 s (esilatauspuskuri 28 s)" in rivi
+             and "piirto 6.0 ms" in rivi and "analyysi 12.0 ms" in rivi, rivi)
+    tarkista("tilarivi: ilman tallennusta ja esilatauspuskuria ei jonoa eika puskuria", "(jono" not in nl.viive_tilarivi(10.0, 1.5, nyt, nl.tilasto_otos(alku)) and "esilatauspuskuri" not in nl.viive_tilarivi(10.0, 1.5, nyt, nl.tilasto_otos(alku)))
 
 
 def testaa_piirto_nopeutukset():

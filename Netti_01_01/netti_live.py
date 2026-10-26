@@ -976,11 +976,13 @@ def aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
 # ---------------------------------------------------------------------------------------------------------------------
 def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     fps = lahde.fps
+    t_ajo = time.time()
     jono = collections.deque()                       # (f, saapumisaika, pakkauksen tulevaisuus (laji, data))
     lopetettu = threading.Event()                    # lahde loppui
     pysayta = threading.Event()                      # kayttaja lopettaa tai virhe
     piirto_valmis = threading.Event()                # piirtosaie on antanut kaikki kuvat
-    tilasto = dict(analysoitu=0, ohitettu=0, virheita=0, piirretty=0, myohassa_max=0.0, luku_s=0.0, luku_max=0.0, pysahdyksia=0, syota_s=0.0, syota_ms=[], viive_max=0.0, puskuri_max=0.0, analyysia_odotettu_s=0.0)
+    tilasto = dict(analysoitu=0, ohitettu=0, virheita=0, piirretty=0, myohassa_max=0.0, luku_s=0.0, luku_max=0.0, pysahdyksia=0, syota_s=0.0, syota_ms=[], viive_max=0.0, puskuri_max=0.0, analyysia_odotettu_s=0.0,
+                  piirto_s=0.0, purku_odotus_s=0.0, kirjoitus_odotus_s=0.0, tallennus=(kirjoittaja.nimi if kirjoittaja is not None else None))      # piirtosaikeen ajankaytto: piirto, pakkauksen odotus, tallennusjonon odotus
     jaettu = dict(puskuri_s=0.0)                     # analyysisaie -> piirtosaie: esilatauspuskurin pituus (s)
     pitka_s = a.lataus if (a.youtube or a.url) and a.esilataus > 0 else 0.0              # virta: video ladataan jatkuvasti enintaan taman verran analyysin edelle
     max_myohassa = a.max_myohassa if a.max_myohassa is not None else (0.8 if pitka_s <= 0 else min(6.0, max(0.8, a.viive - 3.0)))     # ruutu ohitetaan (ei analysoida), jos analyysi on taman verran myohassa
@@ -1091,6 +1093,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         piirtovirhe = []
         varoitettu = False
         t_silmukka = time.time()
+        t_tila, edellinen = time.time(), tilasto_otos(tilasto)           # viive-tilarivi: viimeisin tulostus ja silloinen tilasto
         try:
             while not pysayta.is_set():
                 nyt = time.time()
@@ -1100,7 +1103,9 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                     odottaa.append((f, t_s + a.viive, purku.submit(pura, tulevaisuus), erapaiva_ruutu))
                 if odottaa and odottaa[0][1] <= nyt and (not an.toistettava or lopetettu.is_set() or (getattr(an, "viim_f", None) or 0) >= odottaa[0][0] + D_ruutua - 3):   # toistettavassa ajossa kuva odottaa analyysia (piirrokset tulevat analyysista)
                     f, erapaiva, tehtava, erapaiva_ruutu = odottaa.popleft()
+                    t_a = time.perf_counter()
                     kuva = tehtava.result()
+                    tilasto["purku_odotus_s"] += time.perf_counter() - t_a
                     myohassa = nyt - erapaiva
                     piirtaja.viive_nyt = max(0.0, time.time() - (erapaiva_ruutu + a.viive))      # kuinka paljon myohemmin kuva nakyy kuin sen oma aika + viive (analyysin ja piirron myohastyminen)
                     piirtaja.puskuri_s = jaettu["puskuri_s"] if pitka_s > 0 else None
@@ -1109,6 +1114,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                     if myohassa > 3.0 and not varoitettu:
                         varoitettu = True
                         print(viive_varoitus(myohassa, tilasto, an, fps), file=sys.stderr)
+                    t_a = time.perf_counter()
                     try:
                         npi_kuva = piirtaja.piirra(kuva, f, an)
                     except Exception:                               # piirtovirhe: nayta ruutu ilman (loppuun asti piirrettyja) piirroksia
@@ -1117,11 +1123,18 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                             print("Piirtovirhe, jatketaan ilman piirroksia:", file=sys.stderr)
                             traceback.print_exc()
                             piirtovirhe.append(1)
+                    tilasto["piirto_s"] += time.perf_counter() - t_a
                     if kirjoittaja is not None:
-                        kirjoittaja.kirjoita(npi_kuva)
+                        t_a = time.perf_counter()
+                        kirjoittaja.kirjoita(npi_kuva)                 # (blokkaa, kun tallennusjono on taynna: ffmpeg ei ehdi)
+                        tilasto["kirjoitus_odotus_s"] += time.perf_counter() - t_a
                     if naytto is not None:
                         naytto.anna(npi_kuva)
                     tilasto["piirretty"] += 1
+                    if not a.hiljaa and piirtaja.viive_nyt > 1.0 and time.time() - t_tila >= TILARIVI_VALI_S:
+                        print(viive_tilarivi(time.time() - t_ajo, piirtaja.viive_nyt, tilasto, edellinen, kirjoittaja.jonossa() if kirjoittaja is not None else None, jaettu["puskuri_s"] if pitka_s > 0 else None),
+                              file=sys.stderr, flush=True)
+                        t_tila, edellinen = time.time(), tilasto_otos(tilasto)
                     continue
                 if odottaa and odottaa[0][1] <= nyt and an.toistettava and not lopetettu.is_set():
                     tilasto["analyysia_odotettu_s"] += dt_silmukka                # kuva olisi esitettavissa, mutta analyysi ei ole viela ehtinyt mukaan
@@ -1178,6 +1191,8 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
             print("  analyysin vaiheet: " + ", ".join(f"{k} {1e3 * v / len(ms):.1f} ms/ruutu" for k, v in osat), flush=True)
         if not a.hiljaa and (pitka_s > 0 or tilasto["viive_max"] > 0.5):
             print(f"viive: suurin myohastyminen {tilasto['viive_max']:.1f} s" + (f"; esilatauspuskuri enintaan {tilasto['puskuri_max']:.0f} s (tavoite {pitka_s:.0f} s)" if pitka_s > 0 else ""), flush=True)
+            if tilasto["viive_max"] > 1.0:
+                print("  koko ajalta: " + viive_erittely(tilasto, tilasto_otos(dict()), kirjoittaja.jonossa() if kirjoittaja is not None else None, None), flush=True)
         if not a.hiljaa:
             print(f"analysoitu {tilasto['analysoitu']} ruutua, ohitettu (myohassa) {tilasto['ohitettu']}, virheita {tilasto['virheita']}; piirretty {tilasto['piirretty']} ruutua"
                   + (f", ikkunassa {naytto.n_nayt}" if naytto is not None else "") + f", suurin viive piirrossa {tilasto['myohassa_max']:.1f} s", flush=True)
@@ -1242,12 +1257,37 @@ def puskurin_muoto(valittu, jonon_pituus, bgr_raja, yuv_raja):
     return "yuv"
 
 
+TILARIVI_VALI_S = 20.0                               # viive-tilarivi (stderr): enintaan taman valein, kun kuva on yli 1 s myohassa
+
+
+def tilasto_otos(tilasto):
+    """Tilaston kertyvat luvut (s / kpl) erotuksen laskemista varten."""
+    return {k: float(tilasto.get(k, 0.0)) for k in ("analyysia_odotettu_s", "kirjoitus_odotus_s", "purku_odotus_s", "piirto_s", "luku_s", "syota_s", "analysoitu", "piirretty")}
+
+
+def viive_erittely(tilasto, edellinen, kirjoitusjono=None, puskuri_s=None):
+    """Mihin aika on mennyt edellisen otoksen jalkeen (tilasto_otos): analyysin odotus, tallennusjonon odotus, pakkauksen purun odotus, lahteen luvun odotus ja piirron / analyysin ruutuaika.
+    Piirtosaie odottaa analyysia (toistettava ajo) tai tallennusjonoa (ffmpeg ei ehdi); analyysisaie odottaa lukua (verkko / dekoodaus)."""
+    nyt = tilasto_otos(tilasto)
+    d = {k: nyt[k] - edellinen.get(k, 0.0) for k in nyt}
+    piirretty, analysoitu = max(d["piirretty"], 1.0), max(d["analysoitu"], 1.0)
+    return (f"analyysia odotettu {d['analyysia_odotettu_s']:.1f} s, tallennusjonoa odotettu {d['kirjoitus_odotus_s']:.1f} s" + (f" (jono {kirjoitusjono}/30)" if kirjoitusjono is not None else "")
+            + f", pakkauksen purkua odotettu {d['purku_odotus_s']:.1f} s, lahteen lukua odotettu {d['luku_s']:.1f} s" + (f" (esilatauspuskuri {puskuri_s:.0f} s)" if puskuri_s is not None else "")
+            + f"; ruudun aika: piirto {1e3 * d['piirto_s'] / piirretty:.1f} ms, analyysi {1e3 * d['syota_s'] / analysoitu:.1f} ms")
+
+
+def viive_tilarivi(t_s, viive, tilasto, edellinen, kirjoitusjono=None, puskuri_s=None):
+    """Yksi tilarivi (stderr), kun kuva on yli 1 s myohassa: ajon aika, myohastyminen ja viime tilarivin jalkeinen erittely (viive_erittely)."""
+    return f"[{t_s:6.0f} s] kuva {viive:.1f} s myohassa; viime ajalta: " + viive_erittely(tilasto, edellinen, kirjoitusjono, puskuri_s)
+
+
 def viive_varoitus(myohassa, tilasto, an, fps):
-    """Varoitusteksti, kun kuva on yli 3 s myohassa: syy (analyysi vai piirto / tallennus) ja keinot. Toistettavassa ajossa kuva odottaa analyysia (ks. Analyysi.aseta_toistettava): jos suurin
-    osa myohastymisesta on odotusta, analyysi ei ehdi mukaan -- ruudun analyysin aika (tilasto syota_ms) ja tarkan sovituksen toteutus (C++ vai Python) kertovat miksi."""
+    """Varoitusteksti, kun kuva on yli 3 s myohassa: syy ja keinot. Toistettavassa ajossa kuva odottaa analyysia (ks. Analyysi.aseta_toistettava): jos suurin osa myohastymisesta on odotusta,
+    analyysi ei ehdi mukaan -- ruudun analyysin aika (tilasto syota_ms) ja tarkan sovituksen toteutus (C++ vai Python) kertovat miksi. Muuten syy on piirtosaikeen odotuksissa: tallennusjono
+    (ffmpeg ei ehdi), lahteen luku (verkko / dekoodaus) tai piirto itse."""
+    ms = tilasto["syota_ms"][-300:]
+    keski = sum(ms) / len(ms) if ms else 0.0
     if tilasto["analyysia_odotettu_s"] > 0.5 * myohassa:
-        ms = tilasto["syota_ms"][-300:]
-        keski = sum(ms) / len(ms) if ms else 0.0
         sovitin = next(iter(an.M.values())).sovitin
         vihje = ""
         if "C++" not in sovitin:
@@ -1255,8 +1295,17 @@ def viive_varoitus(myohassa, tilasto, an, fps):
         return (f"Huom: analyysi ei ehdi mukaan reaaliajassa: kuva on {myohassa:.1f} s myohassa, koska se odottaa analyysia (ruudulta keskim. {keski:.0f} ms, reaaliaikaan riittaa alle "
                 f"{1e3 / max(fps, 1.0):.0f} ms; tarkka sovitus: {sovitin}, B-tyoprosesseja --saikeet {an.saikeet}).{vihje} Tulos ei muutu, mutta kuvan viive kasvaa. "
                 "Kokeile suurempaa --saikeet-arvoa (enintaan ytimet - 1), sulje muita raskaita ohjelmia tai aja --ulos ilman ikkunaa (--ei-ikkunaa).")
-    return (f"Huom: piirto / tallennus on {myohassa:.1f} s jaljessa reaaliajasta (kone ei jaksa); ikkuna ohittaa ruutuja, tallenteesta ei puutu ruutuja, "
-            "mutta kuvan viive kasvaa. Kokeile --saikeet pienemmaksi tai --ulos ilman ikkunaa (--ei-ikkunaa).")
+    if tilasto.get("kirjoitus_odotus_s", 0.0) > 0.5 * myohassa:
+        return (f"Huom: tallennus ei ehdi mukaan reaaliajassa: kuva on {myohassa:.1f} s myohassa, koska piirtosaie on odottanut tallennusjonoa yhteensa {tilasto['kirjoitus_odotus_s']:.1f} s "
+                f"({tilasto.get('tallennus') or 'tallennus'} ei koodaa 30 ruutua sekunnissa; analyysi ehtii: ruudulta keskim. {keski:.0f} ms). Tallenteesta ei puutu ruutuja, mutta kuvan viive kasvaa. "
+                "Kokeile --x264-preset ultrafast, --koodekki gpu (laitteistokoodaus: NVENC / QSV / AMF), sulje muita raskaita ohjelmia tai aja ilman --ulos.")
+    if tilasto.get("pysahdyksia", 0) > 0 and tilasto.get("luku_s", 0.0) > 0.5 * myohassa:
+        return (f"Huom: videon luku takkuaa: kuva on {myohassa:.1f} s myohassa, koska lahde viipyi yhteensa {tilasto['luku_s']:.1f} s (pisin {tilasto.get('luku_max', 0.0):.1f} s, "
+                f"{tilasto['pysahdyksia']} kertaa yli 0,25 s). Verkko tai dekoodaus ei pysy mukana; analyysi ehtii (ruudulta keskim. {keski:.0f} ms). "
+                "Kokeile matalampaa resoluutiota (--yt-formaatti 'bestvideo[height<=1080][vcodec^=avc1]'), tarkista verkko tai lataa video tiedostoksi (yt-dlp) ja aja --lahde.")
+    return (f"Huom: piirto / ikkuna on {myohassa:.1f} s jaljessa reaaliajasta (piirto {1e3 * tilasto.get('piirto_s', 0.0) / max(tilasto.get('piirretty', 0), 1):.0f} ms/ruutu, pakkauksen purkua odotettu "
+            f"{tilasto.get('purku_odotus_s', 0.0):.1f} s; analyysi ehtii: ruudulta keskim. {keski:.0f} ms); ikkuna ohittaa ruutuja, tallenteesta ei puutu ruutuja, mutta kuvan viive kasvaa. "
+            "Kokeile --saikeet pienemmaksi tai --ulos ilman ikkunaa (--ei-ikkunaa).")
 
 
 def kalibrointitarkistus(video, kansio):
