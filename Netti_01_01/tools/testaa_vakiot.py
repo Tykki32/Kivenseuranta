@@ -1772,8 +1772,77 @@ def testaa_piirto_nopeutukset():
         npi._leikatut_segmentit = vanha
 
 
+def testaa_mittaa_nopeus_lahde():
+    print("tools/mittaa_nopeus.py: virran alkuun siirtyminen (haku tai ruutujen ohitus) ja lahteen valinta")
+    import contextlib
+    import io
+    import tempfile
+    import cv2
+    import mittaa_nopeus as mn
+    fps, n = 10.0, 100
+    polku = os.path.join(tempfile.mkdtemp(), "koodattu.avi")
+    kirj = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*"MJPG"), fps, (64, 48))
+    for i in range(n):
+        kirj.write(np.full((48, 64, 3), 20 + 2 * i, np.uint8))                  # ruudun jarjestysnumero harmaasavynä
+    kirj.release()
+    cap = cv2.VideoCapture(polku)
+    viestit = []
+    kohta = mn.siirry(cap, 5.0, fps, tulosta=viestit.append)
+    ok, kuva = cap.read()
+    numero = (float(kuva.mean()) - 20.0) / 2.0 if ok else None
+    tarkista("siirry: virta, jossa haku toimii -> luku jatkuu tavoitekohdasta, ei ohiteta lukemalla", abs(kohta - 50) <= fps and numero is not None and abs(numero - 50) <= 3 and not viestit, f"kohta {kohta}, ruutu {numero}")
+    cap.release()
+
+    class EiHakua:
+        """Virta, joka ei salli hakua: set ei tee mitaan, grab lukee eteenpain."""
+        def __init__(self, ruutuja):
+            self.kohta, self.ruutuja = 0, ruutuja
+
+        def set(self, *_):
+            return False
+
+        def get(self, *_):
+            return float(self.kohta)
+
+        def grab(self):
+            if self.kohta >= self.ruutuja:
+                return False
+            self.kohta += 1
+            return True
+
+    class Ylihyppy(EiHakua):
+        def set(self, tunnus, arvo):
+            self.kohta = int(arvo) + 40
+            return True
+
+    c, viestit = EiHakua(100), []
+    kohta = mn.siirry(c, 5.0, fps, tulosta=viestit.append)
+    tarkista("siirry: virta ilman hakua -> ruudut luetaan ohi (50 ruutua) ja siita kerrotaan", kohta == 50 and c.kohta == 50 and any("ohitetaan" in v for v in viestit), f"kohta {kohta}")
+    c = EiHakua(30)
+    tarkista("siirry: virta loppuu ennen tavoitetta -> palautetaan ohitettujen maara", mn.siirry(c, 5.0, fps, tulosta=lambda *_: None) == 30 and c.kohta == 30 and mn.ohita_ruudut(EiHakua(7), 20) == 7)
+    c, viestit = Ylihyppy(200), []
+    kohta = mn.siirry(c, 5.0, fps, tulosta=viestit.append)
+    tarkista("siirry: haku meni yli -> ei lueta taaksepain, ilmoitetaan", kohta == 90 and c.kohta == 90 and any("yli" in v for v in viestit), f"kohta {kohta}")
+    c = EiHakua(10)
+    tarkista("siirry: alku 0 -> ei hakua eika ohitusta", mn.siirry(c, 0.0, fps) == 0 and c.kohta == 0)
+
+    vanha = sys.argv
+    try:
+        for argv in ([], ["a.mp4", "--url", "http://x"], ["--youtube", "abc", "--url", "http://x"], ["a.mp4", "--alku", "10", "--loppu", "5"]):
+            sys.argv = ["mittaa_nopeus.py"] + argv
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    mn.main()
+                koodi = None
+            except SystemExit as e:
+                koodi = e.code
+            tarkista(f"lahteen ja jakson tarkistus: {' '.join(argv) or '(ei lahdetta)'} -> kayttovirhe", koodi == 2, f"poistumiskoodi {koodi}")
+    finally:
+        sys.argv = vanha
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_mittaa_nopeus_lahde, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset):
         t()
     print()
     if VIRHEITA:
