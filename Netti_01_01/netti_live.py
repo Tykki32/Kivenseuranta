@@ -101,22 +101,32 @@ def valitse_aani(a, lahde):
 class Lahde:
     """Ruutujen lahde (tiedosto / YouTube) yhtena iteraattorina (ruutunumero, BGR-ruutu 1920 x 1080). Live-virrassa katkon jalkeen yritetaan avata uudelleen."""
 
-    def __init__(self, tiedosto=None, youtube=None, alku_s=0.0, loppu_s=None, yt_formaatti=YT_FORMAATTI, url=None):
+    def __init__(self, tiedosto=None, youtube=None, alku_s=0.0, loppu_s=None, yt_formaatti=YT_FORMAATTI, url=None, dekoodaus_saikeet=None):
         self.tiedosto, self.youtube, self.yt_formaatti, self.url = tiedosto, youtube, yt_formaatti, url
+        self.dekoodaus_saikeet = dekoodaus_saikeet            # FFmpegin dekoodaussaikeiden maara (None = FFmpegin oma: loogiset ytimet)
         self.alku_s, self.loppu_s = alku_s, loppu_s
         self.live = False
         self.cap = None
         self.fps = 30.0
         self._avaa()
 
+    def _avaa_cap(self, osoite, api):
+        """VideoCapture; dekoodaus_saikeet rajaa FFmpegin dekoodaussaikeet (CAP_PROP_N_THREADS; vanhemmassa OpenCV:ssa tai jos avaus ei onnistu sillä, avataan oletuksilla)."""
+        if self.dekoodaus_saikeet and hasattr(cv2, "CAP_PROP_N_THREADS"):
+            cap = cv2.VideoCapture(osoite, api, [cv2.CAP_PROP_N_THREADS, int(self.dekoodaus_saikeet)])
+            if cap.isOpened():
+                return cap
+            cap.release()
+        return cv2.VideoCapture(osoite, api) if api != cv2.CAP_ANY else cv2.VideoCapture(osoite)
+
     def _avaa(self):
         if self.youtube:
             osoite, self.live = youtube_virta(self.youtube, self.yt_formaatti)
-            self.cap = cv2.VideoCapture(osoite, cv2.CAP_FFMPEG)
+            self.cap = self._avaa_cap(osoite, cv2.CAP_FFMPEG)
         elif self.url:                                    # suora virran osoite (http / https / rtsp / m3u8): sama OpenCV-polku kuin YouTubessa
-            self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
+            self.cap = self._avaa_cap(self.url, cv2.CAP_FFMPEG)
         else:
-            self.cap = cv2.VideoCapture(self.tiedosto)
+            self.cap = self._avaa_cap(self.tiedosto, cv2.CAP_ANY)
         if not self.cap.isOpened():
             raise SystemExit("Videolahdetta ei voitu avata")
         fps = self.cap.get(cv2.CAP_PROP_FPS)
@@ -270,6 +280,27 @@ def versio_teksti():
     except Exception:
         pass
     return f"{git or 'ei git-tietoa'}; Python {sys.version.split()[0]} ({sys.platform})"
+
+
+def cv_saikeet_valinta(pyydetty, sim):
+    """OpenCV:n saiemaara paaprosessissa: (maara tai None = OpenCV:n oma, selitys). Reaaliaikaajossa paaprosessissa kutsuu OpenCV:ta rinnakkain monta Python-saiettaa (analyysi, piirto, pakkaus, purku, esilataus,
+    tallennus), joten OpenCV:n oma saiepooli ei lisaa tehoa vaan kuluttaa prosessoria (saikeiden herattely ja odotus): hiekkalaatikossa (4 ydinta) pooli vei 0,35-0,4 ydinta (40 % paaprosessin kuormasta
+    1x-ajossa, 0,9 -> 0,7 ydinta) ja kirissa se oli 13 % hitaampi kuin yksi saie. Siksi oletus on 1. Simulaatiossa (--nopea) ajetaan yhdella saikeella ilman muita saikeita, joten OpenCV:n oma pooli saa jaada
+    paalle. pyydetty: --cv-saikeet (None = oletus, negatiivinen = OpenCV:n oma, 0 / 1 = ei rinnakkaisuutta)."""
+    if pyydetty is not None:
+        return (None, "--cv-saikeet: OpenCV:n oma") if pyydetty < 0 else (pyydetty, "--cv-saikeet")
+    if sim:
+        return None, "simulaatio: OpenCV:n oma"
+    return CV_SAIKEET_OLETUS, "oletus reaaliaikaajossa"
+
+
+def opencv_rinnakkaisuus():
+    """OpenCV-versio, rinnakkaisuuden toteutus (Concurrency / pthreads / TBB ...) ja saikeiden enimmaismaara paaprosessissa: auttaa selvittamaan, kuluttaako OpenCV:n oma saiepooli prosessoria (--cv-saikeet)."""
+    try:
+        toteutus = next((r.split(":", 1)[1].strip() for r in cv2.getBuildInformation().splitlines() if r.strip().startswith("Parallel framework:")), "?")
+    except Exception:
+        toteutus = "?"
+    return f"OpenCV {cv2.__version__}: rinnakkaisuus {toteutus}, {cv2.getNumThreads()} saietta paaprosessissa"
 
 
 def _nayton_koko():
@@ -981,6 +1012,10 @@ def aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
 def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     fps = lahde.fps
     t_ajo = time.time()
+    saikeet_kuorma = SaieKuorma()                    # saiekohtainen prosessorinkaytto (diagnostiikka): tilarivit ja loppuyhteenveto
+    kuorma_ajo = KoneenKuorma(saikeet_kuorma)        # koko ajon kuorma loppuyhteenvetoon
+    ffmpeg_prosessi = getattr(getattr(kirjoittaja, "taustaosa", None), "p", None)
+    tyo_kuorma = TyoprosessiKuorma(an.tyoprosessit() + ([("ffmpeg", ffmpeg_prosessi.pid)] if ffmpeg_prosessi is not None else []))      # tyoprosessien ja ffmpegin kuorma loppuyhteenvetoon
     jono = collections.deque()                       # (f, saapumisaika, pakkauksen tulevaisuus (laji, data))
     lopetettu = threading.Event()                    # lahde loppui
     pysayta = threading.Event()                      # kayttaja lopettaa tai virhe
@@ -1117,7 +1152,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         varoitettu = False
         t_silmukka = time.time()
         t_tila, edellinen = time.time(), tilasto_otos(tilasto)           # viive-tilarivi: viimeisin tulostus ja silloinen tilasto
-        kuorma = KoneenKuorma()                                          # koko koneen ja tamän ohjelman prosessorinkaytto tilariveille
+        kuorma = KoneenKuorma(saikeet_kuorma)                            # koko koneen ja tamän ohjelman prosessorinkaytto (saie saikeelta) tilariveille
         t_viivat = None                                                  # kiri: hetki, jolloin jonon ensimmainen kuva alkoi odottaa lopullista viivaestimaattia
         try:
             while not pysayta.is_set():
@@ -1244,6 +1279,12 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
             print(f"kiri (esilatauspuskuri >= {kiri_raja_s:.0f} s): kuva eteni etuajassa {tilasto['kiri_ruutuja']} / {tilasto['piirretty']} ruudulla ({100.0 * tilasto['kiri_ruutuja'] / max(tilasto['piirretty'], 1):.0f} %), muuten 1x; "
                   f"analyysi eteni {tilasto['video_s'] / tilasto['ajo_s']:.2f}x reaaliajasta (videota {tilasto['video_s']:.0f} s, ajoa {tilasto['ajo_s']:.0f} s)"
                   + (f"; kuva odotti lopullisia viivoja {tilasto['kiri_odotus_s']:.1f} s" if tilasto["kiri_odotus_s"] > 0.05 else ""), flush=True)
+        if not a.hiljaa:
+            print("prosessorinkaytto koko ajon ajan: " + "; ".join(x for x in (kuorma_ajo.erittely(tuore=True), tyo_kuorma.teksti()) if x), flush=True)
+            if kuorma_ajo.natiivit >= NATIIVIT_VIHJE_YDINTA:
+                print(f"  Natiivit saikeet (FFmpegin dekoodaus, OpenCV:n pooli, kirjastot) vievat {kuorma_ajo.natiivit:.1f} ydinta: kokeile --dekoodaus-saikeet 2 (videon dekoodaus)"
+                      + ("" if cv2.getNumThreads() <= 1 else " ja --cv-saikeet 1 (OpenCV:n oma rinnakkaisuus)") + " ja vertaa 'analyysi eteni' -lukuun.", flush=True)
+        saikeet_kuorma.sulje()
         if not a.hiljaa and (pitka_s > 0 or tilasto["viive_max"] > 0.5):
             print(f"viive: suurin myohastyminen {tilasto['viive_max']:.1f} s" + (f"; esilatauspuskuri enintaan {tilasto['puskuri_max']:.0f} s (tavoite {pitka_s:.0f} s)" if pitka_s > 0 else ""), flush=True)
             if tilasto["viive_max"] > 1.0:
@@ -1360,16 +1401,251 @@ def puskurin_muoto(valittu, jonon_pituus, bgr_raja, yuv_raja):
     return "yuv"
 
 
+NATIIVIT_VIHJE_YDINTA = 1.0                          # loppuyhteenvedon vihje --cv-saikeet / --dekoodaus-saikeet, kun natiivit saikeet vievat vahintaan nain monta ydinta
+CV_SAIKEET_OLETUS = 1                                # OpenCV:n saiemaara paaprosessissa reaaliaikaajossa (--cv-saikeet): katso cv_saikeet_valinta
 TILARIVI_VALI_S = 20.0                               # viive-tilarivi (stderr): enintaan taman valein, kun kuva on yli 1 s myohassa
+
+
+class SaieKuorma:
+    """Paaprosessin saikeiden prosessoriaika: kertoo mihin paaprosessin ytimet menevat. Omat saikeet (analyysi, piirto, tallennus, pakkaus, ikkuna ...) nimillaan ja kaikki muut saikeet (OpenCV:n
+    rinnakkaisuus, FFmpegin dekoodaus, kirjastojen saikeet) yhteensa nimella 'natiivit'. Taustasaie lukee ajat VALI_S valein (lopetetun saikeen viimeisin arvo sailyy); muut saikeet kayttavat vain
+    taustasaikeen viimeisinta lukua (otos), joten mittaus ei viivasta niita. Lukija: Linux /proc/self/task; Windows NtQuerySystemInformation (kaikkien prosessien saietiedot yhdella kutsulla;
+    ToolHelp-saielista + GetThreadTimes olisi tuhansia ctypes-kutsuja, joista jokainen vapauttaa ja hakee GIL:n uudelleen), varana ToolHelp. Lukija otetaan kayttoon vain, jos se nakee
+    kutsujan oman saikeen (itsetarkistus); muuten mittaus on pois (kaytossa = False)."""
+    NATIIVIT = "natiivit"
+    VALI_S = 3.0
+
+    def __init__(self, vali_s=VALI_S):
+        self._lukko = threading.Lock()
+        self._aika = {}                                    # saie-id -> (viimeisin prosessoriaika (s), ryhma)
+        self._elossa = set()                               # saie-idt viimeisimmalla lukukerralla
+        self._viim = (time.time(), {})                     # viimeisin otos: (hetki, {ryhma: (cpu_s, elossa olevia saikeita)})
+        self._seis = threading.Event()
+        self._saie = None
+        self._puskuri = None
+        self.lukija = None
+        self.kaytossa = False
+        try:
+            for nimi, lukija in self._lukijat():
+                try:
+                    if threading.get_native_id() in lukija():
+                        self.lukija, self.kaytossa = nimi, True
+                        self._lue = lukija
+                        break
+                except Exception:
+                    continue
+            if self.kaytossa:
+                self.paivita()
+        except Exception:
+            self.kaytossa = False
+        if self.kaytossa:
+            self._saie = threading.Thread(target=self._silmukka, args=(vali_s if self.lukija != "toolhelp" else max(vali_s, 10.0),), name="saikeiden-mittaus", daemon=True)
+            self._saie.start()
+
+    def _lukijat(self):
+        """Kayttojarjestelman lukijat tarkeysjarjestyksessa: [(nimi, funktio -> {saie-id: prosessoriaika s})]."""
+        if os.name != "nt":
+            return [("proc", self._lue_proc)] if os.path.isdir("/proc/self/task") else []
+        import struct
+        return ([("nt", self._lue_nt)] if struct.calcsize("P") == 8 else []) + [("toolhelp", self._lue_toolhelp)]
+
+    @staticmethod
+    def _lue_proc():
+        """Linux: /proc/self/task/<tid>/stat (utime + stime kellonlyonteina)."""
+        tck = os.sysconf("SC_CLK_TCK")
+        tulos = {}
+        for x in os.listdir("/proc/self/task"):
+            try:
+                with open(f"/proc/self/task/{x}/stat") as fh:
+                    r = fh.read().rsplit(")", 1)[1].split()
+                tulos[int(x)] = (int(r[11]) + int(r[12])) / tck
+            except (OSError, IndexError, ValueError):
+                continue                                   # saie ehti loppua
+        return tulos
+
+    def _lue_nt(self):
+        """Windows (64-bittinen): NtQuerySystemInformation(SystemProcessInformation) palauttaa kaikkien prosessien kaikkien saikeiden ajat yhdella kutsulla; puretaan oman prosessin osuus.
+        SYSTEM_PROCESS_INFORMATION (x64): NextEntryOffset @0, NumberOfThreads @4, UniqueProcessId @0x50, saietaulukko @0x100; SYSTEM_THREAD_INFORMATION (0x50 tavua): KernelTime @0, UserTime @8
+        (100 ns), ClientId.UniqueThread @0x30."""
+        import ctypes
+        if self._puskuri is None:
+            ntdll = ctypes.WinDLL("ntdll")
+            ntdll.NtQuerySystemInformation.argtypes = [ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+            ntdll.NtQuerySystemInformation.restype = ctypes.c_long
+            self._puskuri = [ntdll.NtQuerySystemInformation, ctypes.create_string_buffer(1 << 20)]
+        kutsu, puskuri = self._puskuri
+        for _ in range(6):
+            tarve = ctypes.c_ulong(0)
+            tila = kutsu(5, puskuri, len(puskuri), ctypes.byref(tarve))                 # SystemProcessInformation
+            if tila == 0:
+                break
+            if (tila & 0xFFFFFFFF) != 0xC0000004:                                         # STATUS_INFO_LENGTH_MISMATCH: puskuri liian pieni -> isompi
+                raise OSError(f"NtQuerySystemInformation {tila & 0xFFFFFFFF:#x}")
+            self._puskuri[1] = puskuri = ctypes.create_string_buffer(max(tarve.value, len(puskuri)) + (1 << 16))
+        else:
+            raise OSError("NtQuerySystemInformation: puskuri ei riita")
+        return self._pura_nt(puskuri, os.getpid())
+
+    @staticmethod
+    def _pura_nt(puskuri, oma):
+        """Oman prosessin saikeiden ajat (s) SystemProcessInformation-puskurista (rakenteet: _lue_nt); virheellinen rakenne -> OSError, jolloin lukijaa ei oteta kayttoon."""
+        import struct
+        kohta, tulos = 0, {}
+        try:
+            while True:
+                seuraava, saikeita = struct.unpack_from("<II", puskuri, kohta)
+                if struct.unpack_from("<Q", puskuri, kohta + 0x50)[0] == oma:
+                    if not 0 < saikeita < 10000:
+                        raise OSError("odottamaton saiemaara")
+                    for i in range(saikeita):
+                        t = kohta + 0x100 + 0x50 * i
+                        ydin, kayttaja = struct.unpack_from("<qq", puskuri, t)
+                        prosessi, saie = struct.unpack_from("<QQ", puskuri, t + 0x28)
+                        if prosessi != oma or ydin < 0 or kayttaja < 0:
+                            raise OSError("odottamaton saietieto")
+                        tulos[saie] = (ydin + kayttaja) * 1e-7
+                    return tulos
+                if seuraava == 0:
+                    raise OSError("oma prosessi puuttuu")
+                kohta += seuraava
+        except struct.error as e:                          # puskuri loppui kesken (rakenne ei ole odotettu)
+            raise OSError(f"odottamaton puskuri: {e}") from e
+
+    @staticmethod
+    def _lue_toolhelp():
+        """Windows, vara: ToolHelp-saielista (koko jarjestelman saikeet; kymmenia tuhansia ctypes-kutsuja, siksi harvoin) + OpenThread / GetThreadTimes jokaiselle oman prosessin saikeelle. Kernel32-funktiot
+        omalla WinDLL-oliolla (argtypes / restype eivat vaikuta muuhun koodiin); 64-bittisessa Windowsissa kahvat vaativat restype HANDLE (oletus c_int katkaisisi ne)."""
+        import ctypes
+        from ctypes import wintypes
+        rakenne = SaieKuorma._saie_rakenne()
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        k.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(rakenne)]
+        k.Thread32First.restype = wintypes.BOOL
+        k.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(rakenne)]
+        k.Thread32Next.restype = wintypes.BOOL
+        k.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k.OpenThread.restype = wintypes.HANDLE
+        k.GetThreadTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        k.GetThreadTimes.restype = wintypes.BOOL
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.CloseHandle.restype = wintypes.BOOL
+        kuva = k.CreateToolhelp32Snapshot(0x00000004, 0)                                  # TH32CS_SNAPTHREAD
+        if kuva is None or kuva == ctypes.c_void_p(-1).value:
+            raise OSError("CreateToolhelp32Snapshot")
+        tunnukset, oma = [], os.getpid()
+        try:
+            e = rakenne()
+            e.dwSize = ctypes.sizeof(rakenne)
+            ok = k.Thread32First(kuva, ctypes.byref(e))
+            while ok:
+                if e.th32OwnerProcessID == oma:
+                    tunnukset.append(int(e.th32ThreadID))
+                ok = k.Thread32Next(kuva, ctypes.byref(e))
+        finally:
+            k.CloseHandle(kuva)
+        tulos = {}
+        for tid in tunnukset:
+            kahva = k.OpenThread(0x0800, False, tid)                                      # THREAD_QUERY_LIMITED_INFORMATION
+            if not kahva:
+                continue
+            try:
+                luotu, lopetettu, ydin, kayttaja = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+                if k.GetThreadTimes(kahva, ctypes.byref(luotu), ctypes.byref(lopetettu), ctypes.byref(ydin), ctypes.byref(kayttaja)):
+                    sekunteina = lambda x: ((x.dwHighDateTime << 32) | x.dwLowDateTime) * 1e-7          # noqa: E731  (100 ns)
+                    tulos[tid] = sekunteina(ydin) + sekunteina(kayttaja)
+            finally:
+                k.CloseHandle(kahva)
+        return tulos
+
+    @staticmethod
+    def _saie_rakenne():
+        """Windowsin THREADENTRY32 (28 tavua)."""
+        import ctypes
+        from ctypes import wintypes
+
+        class THREADENTRY32(ctypes.Structure):
+            _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD),
+                        ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG), ("dwFlags", wintypes.DWORD)]
+        return THREADENTRY32
+
+    @staticmethod
+    def ryhma(nimi):
+        """Saikeen nimi ryhman nimeksi: pooli-saikeet (puskuri-pakkaus_0 ...) yhteen, Pythonin oletusnimi 'Thread-3 (kohde)' -> kohde, paasaie -> paasaie."""
+        if nimi == "MainThread":
+            return "paasaie"
+        if nimi.startswith("Thread-") and nimi.endswith(")") and " (" in nimi:
+            nimi = nimi.split(" (", 1)[1][:-1]
+        alku, _, loppu = nimi.rpartition("_")
+        return alku if alku and loppu.isdigit() else nimi
+
+    def paivita(self):
+        """Lukee kaikkien saikeiden prosessoriajan nyt (lopetettujen saikeiden viimeisin arvo sailyy) ja paivittaa otoksen. Kutsu taustasaikeesta tai kerran lopuksi, ei kuumilta saikeilta."""
+        if not self.kaytossa:
+            return
+        nimet = {t.native_id: self.ryhma(t.name) for t in threading.enumerate() if t.native_id is not None}
+        ajat = self._lue()
+        with self._lukko:
+            for tid, cpu in ajat.items():
+                vanha = self._aika.get(tid)
+                self._aika[tid] = (max(cpu, vanha[0]) if vanha else cpu, nimet.get(tid) or (vanha[1] if vanha else self.NATIIVIT))
+            self._elossa = set(ajat)
+            tulos = {}
+            for tid, (cpu, ryhma) in self._aika.items():
+                c, n = tulos.get(ryhma, (0.0, 0))
+                tulos[ryhma] = (c + cpu, n + (1 if tid in self._elossa else 0))
+            self._viim = (time.time(), tulos)
+
+    def _silmukka(self, vali_s):
+        while not self._seis.wait(vali_s):
+            try:
+                self.paivita()
+            except Exception:
+                return
+
+    def otos(self, tuore=False):
+        """Kertynyt prosessoriaika ryhmittain: (hetki, {ryhma: (cpu_s, saikeita nyt elossa)}); tyhja, jos mittaus ei ole kaytossa. Oletuksena taustasaikeen viimeisin luku (enintaan VALI_S vanha:
+        kutsuja ei odota lukua eika GIL:aa); tuore = lue nyt (kerran lopuksi, kun kuumia saikeita ei enaa ole)."""
+        if not self.kaytossa:
+            return time.time(), {}
+        if tuore:
+            self.paivita()
+        with self._lukko:
+            return self._viim
+
+    @staticmethod
+    def teksti(nyt, vanha, kesto_s, raja=0.05):
+        """Ryhmien ytimet (prosessoriaika / seinakello) kahden otoksen valilta suuruusjarjestyksessa, esim. 'natiivit 1.4 (23 saietta), analyysi 1.0, piirto 0.6'; alle rajan olevat jatetaan pois."""
+        if kesto_s <= 0:
+            return ""
+        osat = sorted(((cpu - vanha.get(r, (0.0, 0))[0]) / kesto_s, r, n) for r, (cpu, n) in nyt.items())
+        return ", ".join(f"{r} {y:.1f}" + (f" ({n} saietta)" if r == SaieKuorma.NATIIVIT else "") for y, r, n in reversed(osat) if y >= raja)
+
+    @staticmethod
+    def natiivit_ydinta(nyt, vanha, kesto_s):
+        """Natiivien saikeiden (OpenCV / FFmpeg / kirjastot) ytimet kahden otoksen valilla."""
+        if kesto_s <= 0 or SaieKuorma.NATIIVIT not in nyt:
+            return 0.0
+        return (nyt[SaieKuorma.NATIIVIT][0] - vanha.get(SaieKuorma.NATIIVIT, (0.0, 0))[0]) / kesto_s
+
+    def sulje(self):
+        self._seis.set()
+        if self._saie is not None:
+            self._saie.join(timeout=2.0)
 
 
 class KoneenKuorma:
     """Koko koneen ja tamän ohjelman pääprosessin prosessorinkaytto tilariveille: koneen kuorma (Windows: GetSystemTimes, Linux: /proc/stat) ja paaprosessin ytimet (process_time; ei sisalla
-    ffmpegia eika tyoprosesseja). Jos kone on lahes taynna (>= 90 %), kaikki saikeet ja prosessit hidastuvat (analyysi, piirto, tallennus); jos ei, odotus on muualla (esim. GIL, kooderi, verkko)."""
+    ffmpegia eika tyoprosesseja), saie saikeelta jos SaieKuorma on annettu. Jos kone on lahes taynna (>= 90 %), kaikki saikeet ja prosessit hidastuvat (analyysi, piirto, tallennus); jos ei,
+    odotus on muualla (esim. GIL, kooderi, verkko). Saiejaottelu kertoo, onko paaprosessin kuorma omaa koodia (analyysi, piirto, ikkuna) vai OpenCV:n / FFmpegin omia saikeita (natiivit)."""
 
-    def __init__(self):
+    def __init__(self, saikeet=None):
         self._kone = self._lue_kone()
         self._t, self._p = time.time(), time.process_time()
+        self._saikeet = saikeet if saikeet is not None and saikeet.kaytossa else None
+        self._s = self._saikeet.otos() if self._saikeet is not None else (self._t, {})
+        self.natiivit = 0.0                                # viimeisimman erittelyn natiivien saikeiden ytimet
 
     @staticmethod
     def _lue_kone():
@@ -1391,16 +1667,94 @@ class KoneenKuorma:
         except Exception:
             return None
 
-    def erittely(self):
-        """Teksti edellisen kutsun (tai luonnin) jalkeen: koneen kuorma ja pääprosessin ytimet; nollaa vertailukohdan."""
+    def erittely(self, tuore=False):
+        """Teksti edellisen kutsun (tai luonnin) jalkeen: koneen kuorma ja pääprosessin ytimet (saiejaottelu, jos mitataan); nollaa vertailukohdan. tuore: lue saiejaottelun luvut nyt (muuten SaieKuorman
+        viimeisin otos, jolloin kutsuja ei odota GIL:aa); jaottelun ytimet lasketaan otosten omien hetkien valilta."""
         kone, t, p = self._lue_kone(), time.time(), time.process_time()
         osat = []
         if kone is not None and self._kone is not None and kone[1] > self._kone[1]:
             osat.append(f"kone {100.0 * (kone[0] - self._kone[0]) / (kone[1] - self._kone[1]):.0f} % kaytossa ({os.cpu_count()} loogista ydinta)")
         if t > self._t:
-            osat.append(f"paaprosessi {(p - self._p) / (t - self._t):.1f} ydinta")
+            teksti = f"paaprosessi {(p - self._p) / (t - self._t):.1f} ydinta"
+            if self._saikeet is not None:
+                s_t, s = self._saikeet.otos(tuore)
+                kesto = s_t - self._s[0]
+                jaottelu = SaieKuorma.teksti(s, self._s[1], kesto)
+                self.natiivit = SaieKuorma.natiivit_ydinta(s, self._s[1], kesto)
+                if kesto > 0:
+                    self._s = (s_t, s)
+                if jaottelu:
+                    teksti += f" ({jaottelu})"
+            osat.append(teksti)
         self._kone, self._t, self._p = kone, t, p
         return ", ".join(osat)
+
+
+def _kernel32_prosessi():
+    """kernel32-funktiot prosessin ajan lukuun omalla WinDLL-oliolla (argtypes / restype eivat vaikuta muuhun koodiin; 64-bittisessa Windowsissa kahvat vaativat restype HANDLE)."""
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    k.GetProcessTimes.restype = wintypes.BOOL
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.CloseHandle.restype = wintypes.BOOL
+    return k
+
+
+def prosessin_cpu_s(pid):
+    """Toisen (oman lapsi-) prosessin kertynyt prosessoriaika (s, kayttaja + ydin) tai None. Windows: GetProcessTimes, Linux: /proc/<pid>/stat."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            k = prosessin_cpu_s.k = getattr(prosessin_cpu_s, "k", None) or _kernel32_prosessi()
+            kahva = k.OpenProcess(0x1000, False, int(pid))                                # PROCESS_QUERY_LIMITED_INFORMATION
+            if not kahva:
+                return None
+            try:
+                luotu, lopetettu, ydin, kayttaja = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+                if not k.GetProcessTimes(kahva, ctypes.byref(luotu), ctypes.byref(lopetettu), ctypes.byref(ydin), ctypes.byref(kayttaja)):
+                    return None
+                return sum(((x.dwHighDateTime << 32) | x.dwLowDateTime) * 1e-7 for x in (ydin, kayttaja))          # (100 ns)
+            finally:
+                k.CloseHandle(kahva)
+        with open(f"/proc/{int(pid)}/stat") as fh:
+            r = fh.read().rsplit(")", 1)[1].split()
+        return (int(r[11]) + int(r[12])) / os.sysconf("SC_CLK_TCK")
+    except Exception:
+        return None
+
+
+class TyoprosessiKuorma:
+    """Muiden prosessien (B-sovituksen, viivaestimaatin, kierteen ja merkin tyoprosessit, ffmpeg) prosessorinkaytto rooleittain luontihetkesta: yhdessa paaprosessin (KoneenKuorma, SaieKuorma) kanssa nakyy,
+    mihin koneen ytimet menevat. prosessit = [(rooli, pid)]."""
+
+    def __init__(self, prosessit):
+        self.prosessit = list(prosessit)
+        self._alku = {pid: prosessin_cpu_s(pid) for _, pid in self.prosessit}
+        self._t = time.time()
+
+    def ydinta(self):
+        """({rooli: (ytimet keskimaarin luonnista, prosesseja)}, yhteensa)"""
+        kesto = max(time.time() - self._t, 1e-9)
+        tulos = {}
+        for rooli, pid in self.prosessit:
+            a, b = self._alku.get(pid), prosessin_cpu_s(pid)
+            if a is None or b is None:
+                continue
+            c, n = tulos.get(rooli, (0.0, 0))
+            tulos[rooli] = (c + (b - a) / kesto, n + 1)
+        return tulos, sum(c for c, _ in tulos.values())
+
+    def teksti(self, raja=0.05):
+        tulos, yht = self.ydinta()
+        if not tulos:
+            return ""
+        osat = sorted(((c, r, n) for r, (c, n) in tulos.items()), reverse=True)
+        return f"muut prosessit {yht:.1f} ydinta (" + ", ".join(f"{r} {c:.1f}" + (f" ({n} kpl)" if n > 1 else "") for c, r, n in osat if c >= raja) + ")"
 
 
 def tilasto_otos(tilasto):
@@ -1528,6 +1882,10 @@ def main():
     ap.add_argument("--kiri", type=float, default=10.0, help="YouTube / --url (VOD): analyysi etenee ilman reaaliaikaan sidontaa niin nopeasti kuin ehtii (etuajassa), mutta kuva etenee reaaliajassa (1x, tasaisesti) "
                     "paitsi kun esilatauspuskurissa on vahintaan taman verran (s) videota (olemme jaljessa tai kyse on nauhoituksesta): silloin kuva (ikkuna ja tallenne) saa myos kiria niin nopeasti kuin ehtii; "
                     "tallenteen aikajana ja aani pysyvat oikeina. Oletus 10 s, 0 = ei kiria (aina 1x). Live-virrassa ei vaikutusta")
+    ap.add_argument("--cv-saikeet", type=int, default=None, help="OpenCV:n rinnakkaisuus paaprosessissa: saikeiden enimmaismaara (cv2.setNumThreads; 0 tai 1 = ei rinnakkaisuutta, negatiivinen = OpenCV:n oma). "
+                    "Oletus reaaliaikaajossa %d (paaprosessin monta saiettta kutsuu OpenCV:ta jo rinnakkain, joten OpenCV:n oma saiepooli vain kuluttaa prosessoria), simulaatiossa (--nopea) OpenCV:n oma. "
+                    "Kaynnistysrivi kertoo toteutuksen ja saiemaaran" % CV_SAIKEET_OLETUS)
+    ap.add_argument("--dekoodaus-saikeet", type=int, default=None, help="videon dekoodauksen (FFmpeg) saikeiden enimmaismaara (CAP_PROP_N_THREADS). Oletus: FFmpegin oma (loogiset ytimet). Kokeile 2, jos 'natiivit' vievat monta ydinta")
     ap.add_argument("--etumatka", type=float, default=10.0, help="kiri: analyysi saa olla kuvaa edella viiveen lisaksi enintaan taman verran (s); sen jalkeen se odottaa kuvaa (viivepuskurin muisti). Oletus 10 s")
     ap.add_argument("--max-myohassa", type=float, default=None, help="reaaliaika: ruutu ohitetaan (nakyy tulosteessa, mutta sita ei analysoida), jos analyysi on taman verran (s) myohassa. Oletus 0,8 s; kun --lataus on paalla "
                     "min(6, viive - 3) s: myohastyminen saa kasvaa ja kirii kiinni puskurin avulla (kuvan 'Viive'-rivi nayttaa sen)")
@@ -1535,6 +1893,9 @@ def main():
     ap.add_argument("--ei-tahdistusta", action="store_true", help="(testaus) reaaliaikarakenne mutta tiedostoa luetaan niin nopeasti kuin analyysi ehtii (ei reaaliaikatahdistusta)")
     ap.add_argument("--kello-loki", help="(testaus, vain --nopea) kirjoita kuvassa nakyvan kellon tila kerran sekunnissa CSV:hen: aika, kayva joukkue, kuluva aika, viimeisin heitto")
     a = ap.parse_args()
+    cv_saikeet, cv_selitys = cv_saikeet_valinta(a.cv_saikeet, bool(a.nopea and a.lahde))
+    if cv_saikeet is not None:
+        cv2.setNumThreads(cv_saikeet)
     if a.kansio is None:
         a.kansio = "tulokset"
         if a.lahde and not a.ei_kalibrointitarkistusta:
@@ -1581,6 +1942,7 @@ def main():
     an = ns.Analyysi(a.kansio, fps=30.0, saikeet=a.saikeet, tarkka=a.saikeet > 0, synkroninen=sim, fps_lahde=a.fps_lahde, kierre=not a.ei_kierretta)
     if not a.hiljaa:
         print(f"netti_live: {versio_teksti()}", flush=True)
+        print(f"  {opencv_rinnakkaisuus()} ({cv_selitys})" + (f"; videon dekoodaus {a.dekoodaus_saikeet} saietta (--dekoodaus-saikeet)" if a.dekoodaus_saikeet else ""), flush=True)
         print("Kaynnistetaan laskentaprosessit ...", flush=True)
     t_lampea = time.time()
     n_prosessia = an.lampea()
@@ -1588,12 +1950,12 @@ def main():
         sovitin = next(iter(an.M.values())).sovitin
         print(f"  {n_prosessia} tyoprosessia valmiina ({time.time() - t_lampea:.0f} s); tarkka sovitus: {sovitin}"
               + ("" if "C++" in sovitin else f" ({ns.netti_fit_selitys()})"), flush=True)
-    lahde = Lahde(tiedosto=a.lahde, youtube=a.youtube, alku_s=a.alku, loppu_s=a.loppu, yt_formaatti=a.yt_formaatti, url=a.url)
+    lahde = Lahde(tiedosto=a.lahde, youtube=a.youtube, alku_s=a.alku, loppu_s=a.loppu, yt_formaatti=a.yt_formaatti, url=a.url, dekoodaus_saikeet=a.dekoodaus_saikeet)
     an.fps = lahde.fps
     if not sim and not lahde.live and not a.ohita_myohassa:
         an.aseta_toistettava(True)
     elif not sim:
-        an.matalaksi_b_tyoprosessit()                    # tulos saa riippua ajoituksesta: B-tyo vaistaa analyysi-, piirto- ja ikkunasaikeita
+        an.matalaksi_taustaprosessit()                   # tulos saa riippua ajoituksesta: B-tyo ja viivaestimaatti vaistavat analyysi-, piirto- ja ikkunasaikeita
     geom = ng.Geometria(a.kansio)
     kello_paikka = tuple(int(x) for x in a.kello_paikka.split(",")) if a.kello_paikka else None
     piirtaja = npi.Piirtaja(geom, fps=lahde.fps, jalki_s=a.jalki, viivat_s=a.viivat, viive_s=a.viive, kello=not a.ei_kelloa, kello_paikka=kello_paikka)

@@ -1644,7 +1644,7 @@ def testaa_esilataus_purkusaie():
 
 
 def testaa_b_prioriteetti():
-    print("B-tyoprosessit: normaali prioriteetti toistettavassa ajossa; live-virrassa pudotetaan (ns.pudota_prioriteetti, Analyysi.matalaksi_b_tyoprosessit)")
+    print("B-tyoprosessit ja viivaestimaatin laskija: normaali prioriteetti toistettavassa ajossa; live-virrassa pudotetaan (ns.pudota_prioriteetti, Analyysi.matalaksi_taustaprosessit)")
     import subprocess
     import types
     if os.name == "nt":
@@ -1658,19 +1658,31 @@ def testaa_b_prioriteetti():
         tarkista("pudota_prioriteetti: lapsiprosessin nice nousee (5)", jalkeen >= ennen + 5 or jalkeen >= 5, f"{ennen} -> {jalkeen}")
         lapsi2 = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
-            an = ns.Analyysi.__new__(ns.Analyysi)
-            an.pool = types.SimpleNamespace(_processes={0: types.SimpleNamespace(pid=lapsi2.pid)})
-            an.matalaksi_b_tyoprosessit()
-            tarkista("Analyysi.matalaksi_b_tyoprosessit: poolin tyoprosessit alemmalle prioriteetille", os.getpriority(os.PRIO_PROCESS, lapsi2.pid) >= 5)
-            an.pool = None
-            an.matalaksi_b_tyoprosessit()
-            tarkista("ilman poolia ei tee mitaan (ei poikkeusta)", True)
+            lapsi3 = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            try:
+                an = ns.Analyysi.__new__(ns.Analyysi)
+                an.pool = types.SimpleNamespace(_processes={0: types.SimpleNamespace(pid=lapsi2.pid)})
+                an.est_pool = types.SimpleNamespace(_processes={0: types.SimpleNamespace(pid=lapsi3.pid)})
+                an.matalaksi_taustaprosessit()
+                tarkista("Analyysi.matalaksi_taustaprosessit: B-poolin tyoprosessit alemmalle prioriteetille", os.getpriority(os.PRIO_PROCESS, lapsi2.pid) >= 5)
+                tarkista("... ja viivaestimaatin laskija (kuva odottaa sita kirissa)", os.getpriority(os.PRIO_PROCESS, lapsi3.pid) >= 5)
+                an.pool = an.est_pool = None
+                an.matalaksi_taustaprosessit()
+                an.pool = types.SimpleNamespace(_processes=None)                  # (suljettu pooli)
+                an.est_pool = types.SimpleNamespace()
+                an.matalaksi_taustaprosessit()
+                tarkista("ilman poolia tai suljetulla poolilla ei tee mitaan (ei poikkeusta)", True)
+            finally:
+                lapsi3.kill()
         finally:
             lapsi2.kill()
     finally:
         lapsi.kill()
     import inspect
     tarkista("alusta_tyo ei laske B-tyoprosessin prioriteettia (prioriteettikaannos: analyysi odottaa B-tulokset)", "matala_prioriteetti()" not in inspect.getsource(ns.alusta_tyo).split('"""')[-1])
+    lahde = inspect.getsource(ns.Analyysi.__init__)
+    tarkista("viivaestimaatin laskija luodaan normaalilla prioriteetilla (prioriteettikaannos: kuva odottaa lopullista estimaattia kirissa)",
+             "est_pool = tee_pool(1)" in lahde and "initializer=matala_prioriteetti" not in lahde.split("est_pool = tee_pool(1)")[1].split("\n")[0])
 
 
 def testaa_puskuri_ja_viivevaroitus():
@@ -1903,6 +1915,128 @@ def testaa_kiri():
     tarkista("viivat_kesken: kesken oleva heitto (lopullista ei viela pyydetty) tai ilman lahtoruutua ei estä", not ns.Analyysi.viivat_kesken(an, 5000))
 
 
+def testaa_saiekuorma():
+    print("saiekohtainen prosessorinkaytto (SaieKuorma), OpenCV-rinnakkaisuuden raportti ja dekoodaussaikeet")
+    import inspect
+    import tempfile
+    import threading
+    import time
+    import cv2
+    import netti_live as nl
+    S = nl.SaieKuorma
+    tarkista("ryhma: paasaie, pooli-saikeet yhteen, Pythonin oletusnimi -> kohde, oma nimi sellaisenaan",
+             [S.ryhma(n) for n in ("MainThread", "puskuri-pakkaus_0", "puskuri-pakkaus_1", "Thread-7 (_silmukka)", "analyysi", "esilataus-purku")]
+             == ["paasaie", "puskuri-pakkaus", "puskuri-pakkaus", "_silmukka", "analyysi", "esilataus-purku"])
+    vanha = {"analyysi": (10.0, 1), "natiivit": (4.0, 20)}
+    nyt = {"analyysi": (20.0, 1), "piirto": (13.0, 1), "natiivit": (34.0, 23), "pieni": (0.2, 1)}
+    teksti = S.teksti(nyt, vanha, 10.0)
+    tarkista("teksti: ytimet suuruusjarjestyksessa (cpu-ero / seinakello), natiivien saiemaara, alle 0.05 pois",
+             teksti == "natiivit 3.0 (23 saietta), piirto 1.3, analyysi 1.0", teksti)
+    tarkista("natiivit_ydinta: natiivien ero / seinakello, 0 jos ei natiiveja tai ei kestoa", abs(S.natiivit_ydinta(nyt, vanha, 10.0) - 3.0) < 1e-9 and S.natiivit_ydinta({}, vanha, 10.0) == 0.0 and S.natiivit_ydinta(nyt, vanha, 0.0) == 0.0)
+    tarkista("teksti: kesto 0 -> tyhja", S.teksti(nyt, vanha, 0.0) == "")
+    kentat = [k for k, _ in S._saie_rakenne()._fields_]
+    tarkista("Windowsin THREADENTRY32: kentat jarjestyksessa" + (" ja koko 28 tavua" if os.name == "nt" else " (koko tarkistetaan vain Windowsissa)"),
+             kentat == ["dwSize", "cntUsage", "th32ThreadID", "th32OwnerProcessID", "tpBasePri", "tpDeltaPri", "dwFlags"] and (os.name != "nt" or __import__("ctypes").sizeof(S._saie_rakenne()) == 28), str(kentat))
+    import struct
+
+    def nt_prosessi(pid, saikeet, seuraava_ylim=None):
+        """Synteettinen SYSTEM_PROCESS_INFORMATION (x64): 0x100 tavua + 0x50 tavua per saie."""
+        koko = 0x100 + 0x50 * len(saikeet)
+        b = bytearray(koko)
+        struct.pack_into("<II", b, 0, koko if seuraava_ylim is None else seuraava_ylim, len(saikeet))
+        struct.pack_into("<Q", b, 0x50, pid)
+        for i, (tid, ydin_s, kayttaja_s) in enumerate(saikeet):
+            o = 0x100 + 0x50 * i
+            struct.pack_into("<qq", b, o, int(ydin_s * 1e7), int(kayttaja_s * 1e7))
+            struct.pack_into("<QQ", b, o + 0x28, pid, tid)
+        return b
+
+    muu, oma = nt_prosessi(4321, [(11, 1.0, 1.0), (12, 0.5, 0.5)]), nt_prosessi(os.getpid(), [(21, 1.5, 0.5), (22, 0.25, 0.0), (23, 0.0, 0.0)], 0)
+    nt = S._pura_nt(bytes(muu) + bytes(oma), os.getpid())
+    tarkista("Windowsin NtQuerySystemInformation-puru (synteettinen puskuri): oman prosessin saikeet ja ajat (ydin + kayttaja, 100 ns)", nt == {21: 2.0, 22: 0.25, 23: 0.0}, str(nt))
+    viimeinen = nt_prosessi(4321, [(11, 1.0, 1.0)], 0)
+    virheet = 0
+    for huono in (bytes(viimeinen), bytes(muu), bytes(muu) + bytes(nt_prosessi(os.getpid(), [(21, -1.0, 0.0)], 0)), bytes(muu) + bytes(nt_prosessi(os.getpid(), [], 0))):
+        try:
+            S._pura_nt(huono, os.getpid())
+        except OSError:
+            virheet += 1
+    tarkista("NT-puru: puuttuva prosessi, katkennut puskuri, negatiivinen aika ja tyhja saielista -> OSError (lukijaa ei oteta kayttoon)", virheet == 4, str(virheet))
+    sk = S(vali_s=0.2)
+    try:
+        if not sk.kaytossa:
+            print("  (saiekohtaista mittausta ei ole tassa kayttojarjestelmassa: ohitetaan mittaustestit)")
+        else:
+            lopeta = threading.Event()
+
+            def kuormitus():
+                x = 0
+                while not lopeta.is_set():
+                    x += 1
+            _, ennen = sk.otos(tuore=True)
+            t0 = time.time()
+            kuormittaja = threading.Thread(target=kuormitus, name="kuormittaja_3", daemon=True)
+            kuormittaja.start()
+            time.sleep(0.8)
+            k = nl.KoneenKuorma(sk)
+            time.sleep(0.4)
+            raportti = k.erittely()
+            _, kesken = sk.otos(tuore=True)
+            tarkista("otos: oma saie nimellaan (pooli-numero pois) ja prosessoriaika kertyy", "kuormittaja" in kesken and kesken["kuormittaja"][0] - ennen.get("kuormittaja", (0.0, 0))[0] > 0.2 and kesken["kuormittaja"][1] == 1, str(kesken.get("kuormittaja")))
+            tarkista("otos: paasaie ja natiivit saikeet mukana", "paasaie" in kesken and kesken["paasaie"][1] == 1, str(sorted(kesken)))
+            tarkista("KoneenKuorma: paaprosessin ytimet saiejaotteluna", "paaprosessi" in raportti and "kuormittaja" in raportti and "(" in raportti, raportti)
+            lopeta.set()
+            kuormittaja.join()
+            time.sleep(0.5)
+            _, jalkeen = sk.otos(tuore=True)
+            tarkista("lopetetun saikeen aika sailyy (viimeisin luku), saie ei ole enaa elossa", jalkeen["kuormittaja"][0] >= kesken["kuormittaja"][0] - 1e-9 and jalkeen["kuormittaja"][1] == 0, str(jalkeen.get("kuormittaja")))
+            tarkista("taustasaie paivittaa mittausta itse", any(t.name == "saikeiden-mittaus" and t.is_alive() for t in threading.enumerate()))
+            tarkista("yhteensa-aika on jarkeva: ryhmien summa ei ylita prosessin aikaa", sum(c for c, _ in jalkeen.values()) <= time.process_time() + 0.5, f"{sum(c for c, _ in jalkeen.values()):.2f} s vs {time.process_time():.2f} s")
+    finally:
+        sk.sulje()
+    tarkista("sulje(): taustasaie loppuu", not any(t.name == "saikeiden-mittaus" and t.is_alive() for t in threading.enumerate()) or not sk.kaytossa)
+    tarkista("KoneenKuorma ilman SaieKuormaa: ei saiejaottelua (vanha muoto)", "(" not in nl.KoneenKuorma().erittely().split("paaprosessi")[-1])
+    import subprocess
+    import types
+    tarkista("prosessin_cpu_s: oma prosessi vastaa process_time():a (+-0.5 s)", abs((nl.prosessin_cpu_s(os.getpid()) or -9.0) - time.process_time()) < 0.5, f"{nl.prosessin_cpu_s(os.getpid())} vs {time.process_time():.2f}")
+    tarkista("prosessin_cpu_s: olematon prosessi -> None", nl.prosessin_cpu_s(2 ** 22 + 12345) is None)
+    lapsi = subprocess.Popen([sys.executable, "-c", "import time\nt = time.time()\nwhile time.time() - t < 30:\n    pass"])
+    try:
+        tk = nl.TyoprosessiKuorma([("B-sovitus", lapsi.pid), ("B-sovitus", lapsi.pid), ("kuollut", 2 ** 22 + 12345)])
+        time.sleep(0.6)
+        ydinta, yht = tk.ydinta()
+        teksti = tk.teksti()
+        tarkista("TyoprosessiKuorma: prosessin ytimet rooleittain luonnista (kuollut prosessi ohitetaan)", set(ydinta) == {"B-sovitus"} and ydinta["B-sovitus"][1] == 2 and 1.0 < yht < 3.0 and teksti.startswith("muut prosessit ") and "B-sovitus" in teksti and "(2 kpl)" in teksti and "kuollut" not in teksti, teksti)
+        tarkista("TyoprosessiKuorma: ei prosesseja -> tyhja teksti", nl.TyoprosessiKuorma([]).teksti() == "")
+    finally:
+        lapsi.kill()
+        lapsi.wait()
+    an = ns.Analyysi.__new__(ns.Analyysi)
+    an.pool, an.est_pool = types.SimpleNamespace(_processes={1: types.SimpleNamespace(pid=11), 2: types.SimpleNamespace(pid=12)}), types.SimpleNamespace(_processes={3: types.SimpleNamespace(pid=13)})
+    an.kierto_pool, an.kauko_pool, an.merkki_pool = None, types.SimpleNamespace(_processes=None), types.SimpleNamespace()
+    tarkista("Analyysi.tyoprosessit: (rooli, pid) elossa olevista tyoprosesseista, puuttuva / suljettu pooli ohitetaan",
+             sorted(an.tyoprosessit()) == [("B-sovitus", 11), ("B-sovitus", 12), ("viivaestimaatti", 13)], str(an.tyoprosessit()))
+    rinn = nl.opencv_rinnakkaisuus()
+    tarkista("opencv_rinnakkaisuus: versio, toteutus ja saiemaara", rinn.startswith("OpenCV ") and "rinnakkaisuus " in rinn and rinn.rstrip().endswith("saietta paaprosessissa"), rinn)
+    lahde = inspect.getsource(nl.main)
+    tarkista("--cv-saikeet asettaa OpenCV:n saiemaaran paaprosessissa ja --dekoodaus-saikeet menee lahteelle",
+             "--cv-saikeet" in lahde and "cv_saikeet_valinta(a.cv_saikeet" in lahde and "cv2.setNumThreads(cv_saikeet)" in lahde and "--dekoodaus-saikeet" in lahde and "dekoodaus_saikeet=a.dekoodaus_saikeet" in lahde)
+    cv = nl.cv_saikeet_valinta
+    tarkista("cv_saikeet_valinta: reaaliaikaajossa oletus 1 (monta Python-saiettaa kutsuu OpenCV:ta rinnakkain), simulaatiossa OpenCV:n oma, pyydetty voittaa, negatiivinen = OpenCV:n oma",
+             cv(None, False)[0] == nl.CV_SAIKEET_OLETUS == 1 and cv(None, True)[0] is None and cv(3, False)[0] == 3 and cv(0, True)[0] == 0 and cv(-1, False)[0] is None and cv(2, True)[0] == 2,
+             str([cv(None, False), cv(None, True), cv(3, False), cv(-1, False)]))
+    polku = os.path.join(tempfile.mkdtemp(), "dekoodaus.avi")
+    kirj = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (64, 48))
+    for i in range(12):
+        kirj.write(np.full((48, 64, 3), 30 + 5 * i, np.uint8))
+    kirj.release()
+    for n in (None, 1, 2):
+        ls = nl.Lahde(tiedosto=polku, dekoodaus_saikeet=n)
+        ok, kuva = ls.cap.read()
+        tarkista(f"Lahde: dekoodaus_saikeet={n} -> video aukeaa ja ruutu luetaan (tarvittaessa oletuksilla)", ls.cap.isOpened() and ok and kuva.shape[:2] == (48, 64) and abs(ls.fps - 10.0) < 0.5, f"{ok}, fps {ls.fps}")
+        ls.cap.release()
+
+
 def testaa_mittaa_nopeus_lahde():
     print("tools/mittaa_nopeus.py: virran alkuun siirtyminen (haku tai ruutujen ohitus) ja lahteen valinta")
     import contextlib
@@ -1973,7 +2107,7 @@ def testaa_mittaa_nopeus_lahde():
 
 
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset):
         t()
     print()
     if VIRHEITA:
