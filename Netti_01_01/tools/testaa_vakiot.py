@@ -1981,6 +1981,11 @@ def testaa_saiekuorma():
             k = nl.KoneenKuorma(sk)
             time.sleep(0.4)
             raportti = k.erittely()
+            for _ in range(15):                    # erittely lukee taustasaikeen viimeisimman otoksen: kuormitetussa testiajossa se paivittyy hitaammin, joten odotetaan uutta otosta (enintaan 3 s)
+                if "kuormittaja" in raportti:
+                    break
+                time.sleep(0.2)
+                raportti = k.erittely()
             _, kesken = sk.otos(tuore=True)
             tarkista("otos: oma saie nimellaan (pooli-numero pois) ja prosessoriaika kertyy", "kuormittaja" in kesken and kesken["kuormittaja"][0] - ennen.get("kuormittaja", (0.0, 0))[0] > 0.2 and kesken["kuormittaja"][1] == 1, str(kesken.get("kuormittaja")))
             tarkista("otos: paasaie ja natiivit saikeet mukana", "paasaie" in kesken and kesken["paasaie"][1] == 1, str(sorted(kesken)))
@@ -2106,8 +2111,200 @@ def testaa_mittaa_nopeus_lahde():
         sys.argv = vanha
 
 
+def testaa_kierre_leikkeet():
+    print("kierteen opetusdata: topdown-leike, homografia ja valinta (tools/kierre_leikkeet.py)")
+    import cv2
+    import kierre_leikkeet as kl
+    import netti_geom as ng
+    G = ng.Geometria(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset_nettivideo3"))
+
+    def ero(a, b):
+        return abs((a - b + 90.0) % 180.0 - 90.0)
+    for puoli in ("vasen", "oikea"):
+        P = G[puoli]
+        X, Y = -60.0, 600.0
+        sg = kl.suunta_merkit(P, X, Y, kl.BAR_Z_CM)
+        tarkista(f"{puoli}: topdown-ruudukon suunta loytyy (kamera akselien suuntainen)", sg is not None and abs(sg[0]) == 1 and abs(sg[1]) == 1, str(sg))
+        sx, sy = sg
+        mx, my, A, N = kl.topdown_kartat(P, X, Y)
+        c = (N - 1) / 2.0
+        keski = np.array([mx[int(c), int(c)] + mx[int(c) + 1, int(c)] + mx[int(c), int(c) + 1] + mx[int(c) + 1, int(c) + 1],
+                          my[int(c), int(c)] + my[int(c) + 1, int(c)] + my[int(c), int(c) + 1] + my[int(c) + 1, int(c) + 1]]) / 4.0
+        tarkista(f"{puoli}: leikkeen keskipiste on palkin tason piste (X, Y, z)", np.hypot(*(keski - P.maa_kuvaan([X], [Y], kl.BAR_Z_CM)[0])) < 0.05, str(keski))
+        h_, w_ = P.y0 + P.h, P.x0 + P.w
+        puutteet = []
+        uc, vc = P.maa_kuvaan([X], [Y], kl.BAR_Z_CM)[0]
+        gx, gy = np.meshgrid(np.arange(int(uc) - 90, int(uc) + 90), np.arange(int(vc) - 90, int(vc) + 90))
+        for th in (20.0, 75.0, 125.0):
+            kate = np.zeros(gx.shape)                                            # palkki maan tasolla (12 x 1,6 cm), peitto 4 x 4 aliruudulla / pikseli
+            for ox in (0.125, 0.375, 0.625, 0.875):
+                for oy in (0.125, 0.375, 0.625, 0.875):
+                    Xg, Yg = P.kuva_maahan((gx + ox - 0.5).ravel(), (gy + oy - 0.5).ravel(), kl.BAR_Z_CM)
+                    dx, dy = Xg - X, Yg - Y
+                    ct, st = np.cos(np.radians(th)), np.sin(np.radians(th))
+                    kate += ((np.abs(dx * ct + dy * st) < 6.0) & (np.abs(-dx * st + dy * ct) < 0.8)).reshape(gx.shape) / 16.0
+            fr = np.zeros((h_, w_, 3), np.uint8)
+            fr[gy, gx] = (255 * kate)[..., None].astype(np.uint8)
+            td, A = kl.topdown_leike(fr, P, X, Y)
+            ys, xs = np.nonzero(td[..., 0] > 100)
+            vx, vy, _, _ = cv2.fitLine(np.column_stack([xs, ys]).astype(np.float32), cv2.DIST_L2, 0, 0.01, 0.01).ravel()
+            odotus = np.degrees(np.arctan2(-sy * np.sin(np.radians(th)), sx * np.cos(np.radians(th)))) % 180.0      # kulma kuvassa vastapaivaan (0 = oikealle)
+            mitattu = np.degrees(np.arctan2(-vy, vx)) % 180.0
+            puutteet.append(round(float(ero(mitattu, odotus)), 2))
+        tarkista(f"{puoli}: maan tason palkki (20, 75, 125 astetta) nakyy topdown-leikkeessa samassa kulmassa (kuvassa vastapaivaan)", max(puutteet) < 1.5, f"virheet {puutteet} astetta")
+        raa_x0, raa_y0 = 604, 742
+        H, hv = kl.homografia_td_raaka(P, X, Y, raa_x0, raa_y0)
+        pts = np.array([[30.0, 50.0], [80.0, 60.0], [55.0, 20.0]])
+        suora = np.column_stack([(mx[pts[:, 1].astype(int), pts[:, 0].astype(int)] - raa_x0 + 0.5) * kl.RAW_SKAALA - 0.5, (my[pts[:, 1].astype(int), pts[:, 0].astype(int)] - raa_y0 + 0.5) * kl.RAW_SKAALA - 0.5])
+        hom = cv2.perspectiveTransform(pts[None], H)[0]
+        tarkista(f"{puoli}: homografia vie topdown-pikselin alkuperaisen leikkeen pikseliksi (virhe alle 0,1 px)", np.abs(hom - suora).max() < 0.1 and hv < 0.1, f"{np.abs(hom - suora).max():.3f} / {hv:.3f}")
+
+    tarkista("tasavalein: ensimmainen ja viimeinen mukana, n kpl", kl.tasavalein(list(range(20)), 4) == [0, 6, 13, 19], str(kl.tasavalein(list(range(20)), 4)))
+    tarkista("tasavalein: lyhyt lista sellaisenaan", kl.tasavalein([1, 2, 3], 4) == [1, 2, 3])
+
+    # valinta: kerrokset, siemen
+    rivit = [dict(omega_deg_s=str(om), kierre_varma=v) for om, v in zip([-150, -90, -40, 40, 90, 150] * 8, ["True", "False"] * 24)]
+    heitot = [dict(vari="punainen" if i % 2 else "keltainen") for i in range(48)]
+    a1, a2, a3 = kl.valitse_heitot(rivit, heitot, 8, 3), kl.valitse_heitot(rivit, heitot, 8, 3), kl.valitse_heitot(rivit, heitot, 8, 4)
+    tarkista("valitse_heitot: n eri heittoa, sama siemen -> sama valinta, eri siemen -> eri valinta", len(set(a1)) == 8 and a1 == a2 and a1 != a3)
+    tarkista("valitse_heitot: pieni n kattaa sekaisin eri kerroksia (molemmat varit, molemmat kiertosuunnat)",
+             len({heitot[i]["vari"] for i in a1}) == 2 and {float(rivit[i]["omega_deg_s"]) > 0 for i in a1} == {True, False})
+
+    # ehdokasruudut ja kasi-vapaa alku synteettisella kuvalla
+    P = G["vasen"]
+    h_, w_ = P.y0 + P.h, P.x0 + P.w
+    syote = [(f, -60.0, 400.0 + 6.5 * f) for f in range(40)]
+    h = dict(viivat=dict(irr_Y=300.0), viivat_syote=syote, vari="punainen", puoli="vasen", kivi_nro=3, kierto=dict(omega_sd_deg_s=20.0, p_suunta=0.9, varma=True))
+    eh = kl.heiton_ehdokasruudut(h)
+    tarkista("heiton_ehdokasruudut: vain irroituksen jalkeen (Y >= irr_Y + marginaali), kuvan reunaan (Y <= 700), yksilolliset, ajan mukaan", len(eh) > 20 and all(360.0 <= e[2] <= kl.Y_MAX_CM for e in eh)
+             and [e[0] for e in eh] == sorted({e[0] for e in eh}) and all(b[3] > a[3] for a, b in zip(eh, eh[1:])), f"{len(eh)} ruutua")
+
+    class KuvaVirta:
+        def __init__(self):
+            self.f = 0
+
+        def set(self, prop, f):
+            self.f = int(f)
+
+        def read(self):
+            fr = np.full((h_, w_, 3), 255, np.uint8)
+            if self.f < 16:                                                   # kasi (musta) kahvan ylapuolella kunnes ruutu 16
+                uc, vc = P.maa_kuvaan([-60.0], [400.0 + 6.5 * self.f], kl.LEVY_Z_CM)[0]
+                fr[int(vc) - 30:int(vc) - 5, int(uc) - 30:int(uc) + 30] = 0
+            return True, fr
+    cap = KuvaVirta()
+    vap = kl.kasi_vapaat_ruudut(cap, h, P)
+    tarkista("kasi_vapaat_ruudut: ruudut alkavat ensimmaisesta kasi-vapaasta ruudusta (ruutu 16), kasi-mitta tallennetaan", vap and vap[0][0] == 16 and all(r[4] <= kl.KASI_ALKU_PX for r in vap[:1]), str(vap[:1]))
+    luettelo, tds, raas = kl.tee_heitto(cap, "Testi", 4, h, dict(omega_deg_s="55.5", kierre_lahde="koe"), P, 4)
+    tarkista("tee_heitto: 4 naytetta, id, indeksi ja kuvakoosteen tiedosto", len(luettelo) == 4 and luettelo[0]["id"] == "Testi_h5_f%d" % luettelo[0]["f"] and [n["k"] for n in luettelo] == [0, 1, 2, 3]
+             and luettelo[0]["sprite"] == "s/Testi_h5.jpg" and luettelo[0]["n"] == 4, str(luettelo[0]["id"]))
+    tarkista("tee_heitto: leikkeiden koot (topdown TD_N, alkuperainen RAW_N) ja homografian tarkkuus", tds[0].shape == (kl.TD_N, kl.TD_N, 3) and raas[0].shape == (kl.RAW_N, kl.RAW_N, 3) and max(n["H_virhe_px"] for n in luettelo) < 0.1)
+    arkki = kl.kuvakooste(tds, raas)
+    tarkista("kuvakooste: korkeus TD_N + RAW_N, leveys ruutuja * RAW_N, topdown ylarivilla ja alkuperainen alarivilla", arkki.shape == (kl.TD_N + kl.RAW_N, 4 * kl.RAW_N, 3) and np.array_equal(arkki[:kl.TD_N, kl.RAW_N:kl.RAW_N + kl.TD_N], tds[1])
+             and np.array_equal(arkki[kl.TD_N:, 2 * kl.RAW_N:3 * kl.RAW_N], raas[2]))
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        pol = os.path.join(tmp, "a.jpg")
+        koko = kl.kirjoita_jpeg(pol, arkki)
+        lue = cv2.imread(pol)
+        tarkista("kirjoita_jpeg: kuva luetaan takaisin samankokoisena", lue is not None and lue.shape == arkki.shape and koko == os.path.getsize(pol))
+        tarkista("yhdista_luettelo: saman videon naytteet korvataan, muiden sailyvat", len(kl.yhdista_luettelo(os.path.join(tmp, "n.json"), [dict(nimi="A", id="1")])) == 1
+                 and len(kl.yhdista_luettelo(os.path.join(tmp, "n.json"), [dict(nimi="B", id="2")])) == 2 and len(kl.yhdista_luettelo(os.path.join(tmp, "n.json"), [dict(nimi="A", id="3")])) == 2)
+
+
+def testaa_kahvamerkitsin():
+    print("kahvan kulman merkintasivu: heittojen poiminta, sekoitus ja sivun kokoaminen (tools/luo_kahvamerkitsin.py)")
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+    import cv2
+    import kierre_leikkeet as kl
+    import luo_kahvamerkitsin as lk
+    naytteet = []
+    for v, nimi in enumerate(("Video1", "Matarmaa", "Ahrenberg")):
+        for hh in range(1, 6):
+            for k in range(4):
+                naytteet.append(dict(id=f"{nimi}_h{hh}_f{100 * hh + k}", nimi=nimi, heitto=hh, vari="punainen", puoli="vasen", kivi_nro=hh, f=100 * hh + k, t_s=1.0 + 0.1 * k, X=-50.0, Y=500.0 + 50 * k,
+                                     kasi_px=0, A=[-1.0, 1.0], H=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], k=k, n=4, sprite=f"s/{nimi}_h{hh}.jpg", kone=dict(omega_deg_s="55.0")))
+    a = lk.poimi_heitot(naytteet, 12, 50, siemen=2)
+    heitot = {(n["nimi"], n["heitto"]) for n in a}
+    tarkista("poimi_heitot: 12 heittoa, 48 kuvaa (enintaan 50), kaikki kolme videota mukana", len(heitot) == 12 and len(a) == 48 and {n["nimi"] for n in a} == {"Video1", "Matarmaa", "Ahrenberg"}, f"{len(heitot)} heittoa, {len(a)} kuvaa")
+    tarkista("poimi_heitot: videoita vuorotellen (vahintaan 3 heittoa kustakin 12:sta, kun heittoja on 5 per video)", all(sum(1 for x in heitot if x[0] == nimi) >= 3 for nimi in ("Video1", "Matarmaa", "Ahrenberg")))
+    tarkista("poimi_heitot: kuvia enintaan --kuvia (rajoitus voittaa heittomaaran)", len(lk.poimi_heitot(naytteet, 12, 30, siemen=2)) <= 30 and len(lk.poimi_heitot(naytteet, 12, 50, siemen=2)) == 48)
+    tarkista("poimi_heitot: sama siemen sama valinta, eri siemen eri valinta", a == lk.poimi_heitot(naytteet, 12, 50, siemen=2) and a != lk.poimi_heitot(naytteet, 12, 50, siemen=3))
+    j = lk.sekoita(a, 5)
+    tarkista("sekoita: kaikki kuvat mukana, ei kahta saman heiton ruutua perakkain, sama siemen sama jarjestys, ei ajan mukaan jarjestyksessa",
+             sorted(n["id"] for n in j) == sorted(n["id"] for n in a) and all((x["nimi"], x["heitto"]) != (y["nimi"], y["heitto"]) for x, y in zip(j, j[1:])) and j == lk.sekoita(a, 5) and j != a and j != lk.sekoita(a, 6))
+    with tempfile.TemporaryDirectory() as tmp:
+        lei, ulos = os.path.join(tmp, "lei"), os.path.join(tmp, "ulos")
+        os.makedirs(os.path.join(lei, "s"))
+        for sp in {n["sprite"] for n in naytteet}:
+            cv2.imwrite(os.path.join(lei, sp), np.full((kl.TD_N + kl.RAW_N, 4 * kl.RAW_N, 3), 128, np.uint8))
+        json.dump(naytteet, open(os.path.join(lei, "naytteet.json"), "w"))
+        jarj, polku = lk.kirjoita_sivu(lei, ulos, 12, 50, 7)
+        html = open(polku, encoding="utf-8").read()
+        tarkista("kirjoita_sivu: paikkamerkit korvattu, kuvakoosteet data-osoitteina, otsikko Kahvan kulma", "/*__" not in html and html.count("data:image/jpeg;base64,") == 12 and "<title>Kahvan kulma</title>" in html)
+        m = html.split("var SAMPLES = ", 1)[1].split(";\n", 1)[0]
+        sivulla = json.loads(m)
+        tarkista("kirjoita_sivu: sivun luettelossa kuvat valinnan jarjestyksessa, koneen arviota ei sivulla", [n["id"] for n in sivulla] == [n["id"] for n in jarj] and "omega" not in m and "kone" not in m and "kasi_px" not in m)
+        valinta = json.load(open(os.path.join(ulos, "valinta.json")))
+        tarkista("valinta.json: koneen arvio mukana merkintojen vertailuun, samassa jarjestyksessa", all("kone" in n for n in valinta) and [n["id"] for n in valinta] == [n["id"] for n in jarj])
+        tarkista("kirjoita_sivu: sama siemen tuottaa saman sivun", lk.kirjoita_sivu(lei, os.path.join(tmp, "ulos2"), 12, 50, 7)[0] == jarj)
+        solmu = shutil.which("node")
+        if solmu:
+            js = html.rsplit("<script>", 1)[1].split("</script>", 1)[0]
+            pol = os.path.join(tmp, "sivu.js")
+            open(pol, "w", encoding="utf-8").write(js)
+            r = subprocess.run([solmu, "--check", pol], capture_output=True, text=True)
+            tarkista("merkintasivun JavaScript on kelvollista (node --check)", r.returncode == 0, r.stderr[:200])
+
+
+def testaa_kierre_etiketit():
+    print("kahvan kulman merkintojen luku ja heittokohtainen omega (tools/kierre_etiketit.py)")
+    import json
+    import tempfile
+    import kierre_etiketit as ke
+    u, hyppy = ke.pura_kulmat([170.0, 175.0, 2.0, 8.0, 15.0])
+    tarkista("pura_kulmat: kulma ylittaa 180 asteen rajan -> jatkuva kayra", np.allclose(u, [170, 175, 182, 188, 195]) and hyppy < 10, str(u))
+    u, hyppy = ke.pura_kulmat([10.0, 3.0, 175.0, 168.0])
+    tarkista("pura_kulmat: myotapaivaan kiertava ylittaa 0:n", np.allclose(u, [10, 3, -5, -12]), str(u))
+    rng = np.random.default_rng(3)
+    t = np.arange(5) * 0.18
+    om, se, sd, h = ke.sovita_omega(t, (160.0 - 55.0 * t + rng.normal(0, 1.0, 5)) % 180.0)
+    tarkista("sovita_omega: -55 aste/s palautuu 180 asteen rajan yli (kohina 1 aste), keskivirhe kohtuullinen", abs(om + 55.0) < 8.0 and se < 6.0, f"{om:.1f} +- {se:.1f}")
+    valinta, merk = [], {}
+    heitot = [("A", 1, -55.0, "-48.0", 160.0), ("A", 2, 90.0, "-20.0", 10.0), ("B", 3, 0.0, "30.0", 80.0)]
+    for nimi, hh, omega, kone, a0 in heitot:
+        for k in range(5):
+            tt = 0.2 * k
+            id_ = f"{nimi}_h{hh}_f{k}"
+            valinta.append(dict(id=id_, nimi=nimi, heitto=hh, vari="punainen", puoli="vasen", t_s=tt, kasi_px=(300 if k == 0 else 10), kone=dict(omega_deg_s=kone)))
+            if hh == 3:
+                merk[id_] = dict(id=id_, tila="ei_nay" if k < 3 else "kasi")
+            else:
+                merk[id_] = dict(id=id_, tila="ok", kulma_deg=(a0 + omega * tt + rng.normal(0, 1.0)) % 180.0)
+    merk["A_h1_f0"]["tila"] = "ei_nay"
+    del merk["A_h1_f0"]["kulma_deg"]
+    rivit, yht = ke.arvioi(valinta, merk)
+    r = {(x["nimi"], x["heitto"]): x for x in rivit}
+    tarkista("arvioi: heiton omega merkinnoista (vastapaivaan +)", abs(r[("A", 1)]["omega"] + 55.0) < 10.0 and abs(r[("A", 2)]["omega"] - 90.0) < 10.0, f"{r[('A', 1)]['omega']:.1f}, {r[('A', 2)]['omega']:.1f}")
+    tarkista("arvioi: suunta sama / eri kuin koneella (heitto 1 sama, heitto 2 eri), ilman viivoja ei omegaa", r[("A", 1)]["suunta_sama"] is True and r[("A", 2)]["suunta_sama"] is False and "omega" not in r[("B", 3)])
+    tarkista("arvioi: yhteenveto (suunta 1 / 2, tilat)", yht["suunta_vertailtu"] == 2 and yht["suunta_sama"] == 1 and yht["tilat"] == dict(ok=9, epavarma=0, ei_nay=4, kasi=2), str(yht["tilat"]))
+    vs = yht["vanha_suodatin"]
+    tarkista("arvioi: vanhan kasi-suodattimen vertailu (viivalliset 9, joista 1 hylattaisiin ilman viivaa; piilossa 6)", vs["viivallisia"] == 9 and vs["viiva_mutta_hylattaisiin"] == 1 and vs["ei_nakyvia"] == 6 and vs["ei_nay_mutta_hyvaksyttaisiin"] == 4, str(vs))
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = os.path.join(tmp, "a.json"), os.path.join(tmp, "b.json")
+        json.dump(list(merk.values()), open(a, "w"))
+        json.dump([dict(id=k, data=v, version=1) for k, v in merk.items()] + [dict(id="koe", data=dict(id="koe", tila="koe"))], open(b, "w"))
+        tarkista("lue_merkinnat: asiakirjalista ja ArtifactData-listaus (data-kentta), tuntemattomat tilat pois", ke.lue_merkinnat(a) == merk and set(ke.lue_merkinnat(b)) == set(merk))
+    rivit_ulos = []
+    ke.tulosta_raportti(rivit, yht, rivit_ulos.append)
+    tarkista("raportti tulostuu (otsikko, heitot, suunta, vanha suodatin)", len(rivit_ulos) == len(rivit) + 5 and "Suunta" in rivit_ulos[-3] and "Vanha kasi-suodatin" in rivit_ulos[-1], rivit_ulos[-1][:60])
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit):
         t()
     print()
     if VIRHEITA:

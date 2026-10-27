@@ -621,6 +621,27 @@ Rajoitukset (rehellisesti): omega on keskiarvo näkyvältä vapaan lennon jaksol
 suuntaa antava (+-15-25 %); malli on yksinkertaistus (suora palkki, ei jalkoja/hakaa) mutta sen ääriviivat seuraavat havaittua kahvaa kaikissa kolmessa heitossa (`kierto_vasen_sovitus.png`); kierron suunta on vastapäivään kaikilla heitoilla, mikä sopii radan vasemmalle kaartuvaan
 kaarevuuteen (heitto 1: -0,63e-4 /cm). Kierto mitataan palkin suunnasta, ei kiven pinnasta, joten tulos riippuu siitä, että palkki on kiinteä kiveen.
 
+### Kierteen opetusdata: topdown-kuvat ja kahvan kulman merkintätyökalu (`tools/kierre_leikkeet.py`, `tools/luo_kahvamerkitsin.py`, `tools/kierre_etiketit.py`)
+
+Tarkoitus: totuusaineisto kahvan palkin kulmasta, jotta kierteen tunnistuksen virhe (ruutukohtainen kulma, suunta, omega) voidaan mitata eikä vain arvioida. Ihminen piirtää viivan palkin päälle, ja viivoista lasketaan kulma ja heittokohtainen omega.
+
+1. `python netti_live.py VIDEO --radat r_X/radat.pkl --csv ...` tuottaa heitto-CSV:n ja `radat.pkl`:n (B-radat, viivaestimaatin syöte, koneen kierto).
+2. `python tools/kierre_leikkeet.py --ulos leikkeet --heittoja 4 --ajo Matarmaa Matarmaa.mp4 r_M/radat.pkl r_M/h.csv --ajo ...` poimii kustakin videosta kerrostetusti (nopeus x kierron suunta x koneen varmuus x väri, satunnainen siemen) heittoja ja jokaisesta
+   `NAYTTEITA_HEITOSSA` = 4 ruutua tasavälein ajassa: ensimmäisestä ruudusta, jossa käsi ei enää ole kahvan yläpuolella (`kasi_pikselit` <= 250), kuvan reunaan (Y <= 700 cm). Ruutuja ei suodateta tämän jälkeen, koska palkki näkyy usein kädenkin vierellä
+   (Matarmaa heitto 12: vanha suodatin, `kierto_netti.KASI_RAJA_PX` = 60, hylkäisi 15 ruutua 24:stä, vaikka palkki näkyy silmämääräisesti kaikissa); merkitsijä voi merkitä ruudun "ei näy" tai "käsi kahvassa". Kustakin ruudusta tehdään
+   **topdown-leike**: kameramallilla (`netti_geom.Puoli.maa_kuvaan`, linssikorjaus mukana) ylhäältä katsottu näkymä palkin korkeudelle z = 20 cm (muovilevy 15 + palkki ~5), 32 x 32 cm, 3,5 px / cm (112 px), suunta kuten videossa (kivi liikkuu alaspäin), ei peilattu,
+   ja **alkuperäinen leike** (56 px suurennettuna 4-kertaiseksi); homografia H yhdistää ne. Kamera katsoo rataa viistosti (Y-suunnassa ~0,6 px / cm, X-suunnassa ~1,4 px / cm), joten topdown-kuvassa liikesumeus ja kahvan jalka venyvät Y-suuntaan: alkuperäinen leike on rinnalla.
+   Testi (`testaa_vakiot.py`, `testaa_kierre_leikkeet`): maan tasolla piirretty 12 x 1,6 cm palkki 20 / 75 / 125 asteen kulmassa näkyy topdown-leikkeessä samassa kulmassa (virhe alle 0,6 astetta molemmilla puoliskoilla), homografia on tarkka 0,01 px.
+3. `python tools/luo_kahvamerkitsin.py --leikkeet leikkeet --ulos sivu --heittoja 12 --kuvia 50 --siemen 1` poimii satunnaiset heitot (videoita vuorotellen), sekoittaa niiden ruudut satunnaiseen järjestykseen (ei kahta saman heiton ruutua peräkkäin; sivu ei näytä heittoa, aikaa tai koneen
+   arviota, joten edellinen kuva ei ohjaa seuraavaa merkintää) ja kirjoittaa `sivu/kahvamerkitsin.html` (Artifact; kuvakoosteet upotettuina) ja `sivu/valinta.json` (valitut ruudut koneen arvioineen). Sivu julkaistaan Artifact-työkalulla (`capabilities`: `db`, `downloads`).
+   Sivulla viiva vedetään palkin päästä päähän (vedä tai napauta kaksi kertaa), päitä ja koko viivaa voi siirtää, `Q` / `E` kiertävät viivaa, `U` = epävarma, `N` = ei näy, `K` = käsi kahvassa, `Enter` = seuraava; viiva näkyy sekä topdown- että alkuperäisessä kuvassa.
+   Merkinnät tallentuvat sivun tietokantaan (kokoelma `viivat`, asiakirjan tunnus = ruudun tunnus): `tila` (ok / epavarma / ei_nay / kasi), `x1, y1, x2, y2` (topdown-leikkeen pikseleitä, keskipiste kokonaisluvussa, y alaspäin), `kulma_deg` (0 = vaakasuora, kasvaa vastapäivään, 0...180) ja `pituus_cm`.
+4. `python tools/kierre_etiketit.py --valinta sivu/valinta.json --merkinnat merkinnat.json` (sivun JSON-vienti tai ArtifactData-listaus): heiton ruutujen kulmat puretaan 180 asteen jaksosta ja niihin sovitetaan suora, jolloin saadaan omega (+ = vastapäivään ylhäältä katsoen) ja sen keskivirhe;
+   vertaa koneen omegaan (suunta ja suuruus) ja vanhaan käsisuodattimeen (kuinka monessa ruudussa, johon ihminen sai viivan, vanha suodatin olisi hylännyt ruudun, ja kuinka monessa palkki ei näkynyt vaikka suodatin hyväksyisi).
+   Ruutukohtainen kulmavirhe saadaan ajamalla koneen kulma-arvio samoille ruuduille (`valinta.json`: heitto, ruutu f, paikka X, Y).
+
+Testit: `python tools/testaa_vakiot.py` (`testaa_kierre_leikkeet`, `testaa_kahvamerkitsin`, `testaa_kierre_etiketit`; node-asennuksella myös sivun JavaScriptin syntaksitarkistus). Sivun toiminta (piirto, siirto, kierto, tila, tallennus, varakopio, puhelinleveys) on tarkistettu Playwrightilla tietokantaa matkivalla sijaisella.
+
 ### Suunnat toisen päädyn pesäkuvaan (`suunnat_pesakuvaan.py`)
 
 `python suunnat_pesakuvaan.py tulokset vasen [--alkuperainen]` -> `tulokset/suunnat_pesakuva.png` (heittäjän näkökulma: kaukopää ylhäällä, + = heittäjän oikealle) ja `tulokset/suunnat_pesakuva_alkuperainen.png` (toisen pään oma top-down, hog ylhäällä; kuvassa oikea = heittäjän vasen).
