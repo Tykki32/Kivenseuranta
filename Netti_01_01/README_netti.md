@@ -741,6 +741,119 @@ Kysymys: kannattaako opettaa verkko, joka saa yhden top-down-leikkeen kivestä j
 
 **Suositus:** kyllä, kannattaa, mutta ihmisen merkinnöillä eikä koneen pseudomerkinnöillä. Merkitse noin 60 heittoa x 4 ruutua (`tools/kierre_leikkeet.py --heittoja 12` videota kohti ja `tools/luo_kahvamerkitsin.py`; ruudut tasavälein koko käsi-vapaalta ajalta, eri kivet, värit, puolet ja videot, noin 10 heitolle 8 ruutua radan tarkkuuden tarkistamiseksi).
 Verkko opetetaan ihmisen vakiokiertoradoilla ja koneen pseudomerkinnöillä esiopetettuna (550 heittoa), arvioidaan heitto kerrallaan pois -testillä ihmisen viivoilla (ja ankkuroiduilla ruuduilla), suoruus- ja kaukopää-tarkistuksella; ulostulo korvaa kustannuskäyrän saranamallissa, ja koneen oma käyrä jää rinnalle (yhteinen posteriori).
+*Päivitys:* käyttäjän linjauksen mukaan (koneen tunnistamat kulmat voivat olla virheellisiä) verkko opetettiin lopulta ilman koneen pseudomerkintöjä, vain ihmisen kulmilla ja heiton vakiokierrolla: ks. seuraava osio.
+
+### Kulmaverkko: syvempi ja pidempään opetettu neuroverkko kahvan kulmalle, opetettu vain ihmisen kulmilla ja vakiokierrolla (`kulmaverkko.py`, `tools/kulmaverkko_opeta.py`, `tools/testaa_kulmaverkko.py`, `kulmaverkko_paino_*.npz`)
+
+Esiselvityksen suositus (yllä) oli opettaa verkko ihmisen merkinnöillä eikä koneen pseudomerkinnöillä. Tässä se on tehty niin, että verkko ei näe yhtäkään vanhan koodin tunnistamaa kulmaa: opetuksessa ovat vain ihmisen viivat (39 viivaa 12 heitolta) ja tieto, että kierteen nopeus on käytännössä vakio, eli kulma on heiton aikana suora ajan funktiona
+(kierteen vaimeneminen `K_KIERRE` mukana: theta(t) = theta_ref + omega g(t - t_ref), g(s) = (1 - exp(-K s)) / K). Vanhasta koodista käytetään vain kiven paikkaa (leikkeen keskipiste), ruudun aikaa ja käden / irroituksen perusteella valittua ruutujoukkoa, ei kulmia, kulmakäyriä eikä omegaa;
+leikkeisiin tallennetut vanhan koodin ja kaukopään omegat (`vertailu_vain`) ovat vain raportointia: ne eivät ole opetuksessa, ruutujen karsinnassa eivätkä asetusten valinnassa.
+
+Vakiokiertoa käytetään kolmessa kohdassa:
+* **Ihmisen viivojen monistus** (`lue_viivat`). Heiton 3-4 viivasta sovitetaan rata theta(t); kun suoran jäännös on enintään 3° ja viivojen aikaikkuna vähintään 0,39 s (6 heittoa 12:sta, "ankkuroidut"), rata antaa kulman kaikille ikkunan ja sen ± 0,2 s ympäristön ruuduille: 124 ruutua ihmisen tarkkuudella
+  (tavoitteen hajonta sqrt(2,5² + radan epävarmuus²)). Muiden kuuden heiton 19 viivaa otetaan sellaisinaan (hajonta 2,5°, otantapaino 4). Ihmisen aineistoa on siis kaikkiaan 143 ruutua.
+* **Itseopetus** (`pseudo`, `oppilas`). Verkon (aluksi pelkillä ihmisen ruuduilla opetetun opettajan) ennusteet (TTA) kaikille 516 merkitsemättömän heiton ruuduille sovitetaan heittokohtaisesti yhteen vakiokiertoratana (posteriori (theta0, omega); omegalle leveä lognormaali ennakko, mediaani 100 ja log-hajonta 1,0 aste/s;
+  ihmisen viivoista sovitettujen 10 omegan |omega| on 61-141 aste/s). Sovitettu rata on ruudun pseudomerkintä ja ruudun jakauman etäisyys radasta (residuaali) kertoo luotettavuuden: heitto hyväksytään, kun kiertosuunta on varma (p ≥ 0,9) ja keskiresiduaali ≤ 15°, ruutu pidetään, kun residuaali ≤ 25°;
+  tavoitteen hajonta sqrt(4,5² + (15 (1 - R))²), paino R². Uusi verkko (oppilas) opetetaan ihmisen ruuduilla (30 % otannasta) ja pseudoruuduilla (70 %). Suora toimii seulana: yksittäinen väärä ruutu ei vie rataa (testi `testaa_vakiokierto`), ja heitot, joiden ruudut eivät sovi suoralle, jäävät pois. Kierroksen voi toistaa: oppilas -> pseudo -> oppilas.
+* **Ennustus** (`kulmaverkko.sovita_heitto`). Heiton ruutujen jakaumat sovitetaan samaan rataan; tulos on ruutukohtainen kulma (radan posteriorin keskiarvo), omega, suunnan varmuus ja ruudun residuaali.
+
+Verkko ja opetus:
+* **Verkko.** Syöte 56 x 56 x 3 (top-down-leike 3,5 px / cm pienennettynä 1,75 px / cm:iin), ulos 60 lokeroa (3°, jakso 180°) eli kulman jakauma, joka kelpaa kustannuskäyräksi (`pen = -log p`). Kaksi rakennetta: `pieni` (6 konvoluutiota + 2 tiheää kerrosta, 0,48 M parametria) ja `resf` (14 kerrosta, jäännösverkko ilman normalisointikerroksia,
+  jäännöslohkon toinen konvoluutio alustettu nollaksi; (24, 48, 96) kanavaa 1,7 M parametria, (32, 64, 128) 2,5 M). Normalisoiva jäännösverkko (GroupNorm) ei oppinut lainkaan (tappio pysyi arvossa ln 60 = 4,09 koko seuratun 600 askeleen ajan); nollalla alustettu normalisoimaton jäännöslohko oppii heti.
+* **Tavoite ja laajennus.** Tavoite on kulman ympärille keskitetty von Mises -jakauma (jakso 180°, kappa = 1 / (4 sigma²); sigma ruudun mukaan), tappio ristientropia. Kuvaa kierretään (kulma + a), peilataan (kulma -> -kulma), siirretään ± 3 px ja häiritään kirkkaudella, väreillä, kohinalla ja peitolla.
+  Kuvan kierto on tärkein keino pienelle ihmisaineistolle (124-143 ruutua); sen konventio on testattu (0,39° virhe, `testaa_kierto_ja_peilaus`).
+* **Opetus.** JAX / optax, AdamW (lr 1e-3, paino-hajoaminen 1e-4), lämmitys + kosinilasku, painojen liukuva keskiarvo (EMA 0,995), pudotus 0,3. Pelkällä prosessorilla (yksi ydin per ajo, neljä ajoa rinnakkain): opettaja `pieni` 4000 askelta 29 min, oppilas `pieni` 4000 askelta 38-41 min, oppilas `resf` (24, 48, 96) 6000 askelta 94-96 min.
+
+Ketju (alikomennot `tools/kulmaverkko_opeta.py`; opetus vaatii `pip install jax optax`, ennustus (`kulmaverkko.py`) vain NumPyn ja OpenCV:n):
+```
+leikkeet    --ajo Video1 video1.mp4 r_Video1/radat.pkl --ajo ... --ulos leikkeet.pkl      # käsi-vapaat ruudut top-down-leikkeinä (528 heittoa, 11 540 ruutua 5 videolta)
+opettaja    --leikkeet leikkeet.pkl --ulos opettaja.pkl                                    # pelkät ihmisen ruudut, 4000 askelta
+pseudo      --leikkeet leikkeet.pkl --verkot opettaja.pkl --ulos pseudo1.pkl               # merkitsemättömien heittojen vakiokiertosovitus
+oppilas     --leikkeet leikkeet.pkl --pseudo pseudo1.pkl --ulos oppilas1.pkl               # 1. sukupolvi (pieni, 4000 askelta)
+oppilas     --leikkeet leikkeet.pkl --pseudo pseudo1.pkl --verkko resf --kw '{"ch": [24, 48, 96], "blocks": 2}' --askelta 6000 --p-kierto 0.3 --kierto-max 30 --ulos oppilas1_resf.pkl
+pseudo      --leikkeet leikkeet.pkl --verkot oppilas1.pkl --ulos pseudo2.pkl               # 2. sukupolvi: oppilas on opettaja
+oppilas     --leikkeet leikkeet.pkl --pseudo pseudo2.pkl --ulos oppilas2.pkl
+arvioi      --leikkeet leikkeet.pkl --verkot oppilas2.pkl --pois Matarmaa:69,Saarelainen:68,Saarelainen:88,Video1:25,Video1:102,Video2:11
+vie         --verkko oppilas2.pkl --ulos kulmaverkko_paino_pieni.npz
+ihmisruudut --leikkeet leikkeet.pkl --ulos kierre_validointi/kulmaverkko_ihmisen_ruudut.npz   # testiaineisto toimitettujen painojen tarkistukseen
+```
+Protokolla-ajossa `--pois` annetaan myös alikomennoille `opettaja`, `pseudo` ja `oppilas`; silloin pois jätetyt heitot eivät ole missään opetusvaiheessa (ei ihmisen ruutuina eikä pseudomerkittyinä), ja `arvioi --pois` mittaa niiden viivat.
+`leikkeet` toistaa kokeissa käytetyn aineiston täsmälleen (Video2: 86 heittoa, 1 951 ruutua; jokainen leike, ruutunumero ja aika identtinen).
+
+**Tulokset (protokolla).** Virhe ihmisen viivaan asteina 19 pois jätetyllä viivalla (6 heittoa: Matarmaa 69, Saarelainen 68 ja 88, Video1 25 ja 102, Video2 11); yhtäkään niiden ruutua tai viivaa ei ole missään opetuksessa. Ihmisen aineistoa on tällöin 124 ruutua (6 heittoa); merkitsemättömiä heittoja on 516, joista pseudomerkinnät hyväksyttiin 465-497 heitolle (10 256-11 075 ruutua) sukupolvesta riippuen.
+**Yhteenveto:** parhaimmillaan (2. sukupolvi) verkko + vakiokierto poikkeaa pois jätetyistä ihmisen viivoista keskimäärin 5,2° (mediaani 4,5°, suurin 17-19°, yli 30°: 0), kun vanha koodi poikkeaa 8,8° (7,7°, 18,3°, 0); ero syntyy ei-pystysuorissa kulmissa (3,6-3,8° vs 8,2°), pystysuorissa palkeissa verkko on vain vähän parempi (6,9-7,0° vs 9,4°).
+"Yksi ruutu" = ruudun jakauman ympyräkeskiarvo (TTA), "+ vakiokierto" = heiton kaikkien käsi-vapaiden ruutujen yhteinen vakiokiertosovitus, kulma ruudun hetkellä (sama tapa kuin vanhan koodin ohjelman antama mallin kulma: heiton posteriori).
+
+| kulman lähde | keski | mediaani | p90 | suurin | ≤ 5° | ≤ 10° | yli 30° |
+|---|---|---|---|---|---|---|---|
+| vanha koodi (mallin kulma, ohjelman antama) | 8,8 | 7,7 | 14,8 | 18,3 | 11 % | 68 % | 0 |
+| opettaja (vain ihmisen ruudut, `pieni` 4000 askelta): yksi ruutu | 12,9 | 3,3 | 40,6 | 82,1 | 53 % | 79 % | 3 |
+| opettaja + vakiokierto | 6,3 | 3,7 | 16,1 | 23,6 | 53 % | 79 % | 0 |
+| 1. sukupolvi `pieni` 4000: yksi ruutu | 7,1 | 3,2 | 17,2 | 46,3 | 58 % | 84 % | 1 |
+| 1. sukupolvi `pieni` + vakiokierto | 6,3 | 4,1 | 13,9 | 26,1 | 58 % | 79 % | 0 |
+| 1. sukupolvi `resf` (24, 48, 96) 6000: yksi ruutu | 6,1 | 3,7 | 13,1 | 28,9 | 53 % | 84 % | 0 |
+| 1. sukupolvi `resf` + vakiokierto | 5,9 | 4,8 | 13,9 | 24,0 | 53 % | 84 % | 0 |
+| 1. sukupolvi `pieni` + `resf` (yhdistelmä) + vakiokierto | 6,1 | 4,2 | 13,9 | 24,8 | 58 % | 84 % | 0 |
+| 2. sukupolvi `pieni` 4000: yksi ruutu | 5,6 | 2,9 | 14,4 | 32,1 | 63 % | 84 % | 1 |
+| **2. sukupolvi `pieni` + vakiokierto** | **5,2** | **4,5** | **15,0** | **18,6** | 58 % | 84 % | **0** |
+| 2. sukupolvi `pieni` (2. siemen): yksi ruutu | 5,7 | 3,6 | 16,5 | 22,5 | 58 % | 84 % | 0 |
+| 2. sukupolvi `pieni` (2. siemen) + vakiokierto | 5,2 | 4,3 | 13,4 | 17,4 | 58 % | 84 % | 0 |
+| 3. sukupolvi `pieni` 4000: yksi ruutu | 5,6 | 4,5 | 11,8 | 28,0 | 63 % | 84 % | 0 |
+| 3. sukupolvi `pieni` + vakiokierto | 5,4 | 3,9 | 15,2 | 23,1 | 63 % | 84 % | 0 |
+
+Jaoteltuna (verkko + vakiokierto; asteina):
+
+| kulman lähde | kaikki 19 | heittokohtaisten keskiarvojen keskiarvo | palkki lähes pysty, 60-130° (9 viivaa) | muut kulmat (10) | ihmisen viivat johdonmukaisia (9) | epäjohdonmukaisia (7) |
+|---|---|---|---|---|---|---|
+| vanha koodi | 8,8 | 8,4 | 9,4 | 8,2 | 9,2 | 8,9 |
+| opettaja | 6,3 | 8,7 | 8,8 | 4,1 | 3,1 | 7,1 |
+| 1. sukupolvi `pieni` | 6,3 | 7,2 | 8,4 | 4,4 | 3,4 | 8,6 |
+| 1. sukupolvi `resf` | 5,9 | 6,2 | 7,5 | 4,5 | 3,3 | 8,5 |
+| 2. sukupolvi `pieni` | 5,2 | 5,6 | 7,0 | 3,6 | 2,9 | 7,3 |
+| 2. sukupolvi `pieni` (2. siemen) | 5,2 | 5,7 | 6,9 | 3,8 | 2,8 | 7,2 |
+| 3. sukupolvi `pieni` | 5,4 | 5,6 | 7,4 | 3,6 | 2,9 | 7,9 |
+
+"Johdonmukainen" = viiva on enintään 4° päässä saman heiton ihmisen viivoista sovitetusta vakiokiertoradasta (vain heitot, joilla on ≥ 3 viivaa; 16 viivaa 19:stä).
+
+Lukuja tulkitessa:
+* **Vakiokierto on suurin yksittäinen parannus.** Pelkillä ihmisen ruuduilla opetetun opettajan yksittäisen ruudun keskivirhe on 12,9° (3 viivaa yli 30°, suurin 82°), mutta kun heiton ruudut sovitetaan yhteen suoraan, 6,3° (suurin 23,6°).
+* **Itseopetus korjaa yksittäisen ruudun virheet, ja toinen kierros parantaa vielä; kolmas ei enää.** Yksittäisen ruudun keskivirhe 12,9° (opettaja) -> 7,1° (1. sukupolvi) -> 5,6 ja 5,7° (2. sukupolvi, kaksi siementä) -> 5,6° (3. sukupolvi), suurin virhe 82° -> 46° -> 32 ja 23° -> 28°;
+  vakiokierron jälkeen 6,3° -> 6,3° -> 5,2 ja 5,2° -> 5,4° ja suurin virhe 23,6° -> 26,1° -> 18,6 ja 17,4° -> 23,1°. Pseudomerkinnät muuttuvat sukupolvelta toiselle vähän (1. -> 2. sukupolvi: mediaani 1,0-1,1°, p90 3,2-3,6°, yli 10° eroaa 1,0-2,2 % ruuduista), joten kierros tasaantuu kahden kierroksen jälkeen.
+  Kahden 2. sukupolven siemenen yhdistelmä: 5,2° (suurin 17,9°); vakiokiertosovituksen lämpötila (`--lam`) 0,25-2,0: 5,1-5,4°.
+* **Syvempi ja pidempi verkko ei ollut selvästi pientä parempi.** `resf` (14 kerrosta, 1,7 M parametria, 6000 askelta) antoi 1. sukupolvessa 5,9° (`pieni` 6,3°), mikä on 19 viivan otoksessa kohinan sisällä; verkko sovittuu ihmisen 39 viivaan tiukemmin (opetusruuduilla 1,3° vs 2,3°), mutta pois jätetyissä viivoissa lisäkapasiteetista ei ole mitattavaa hyötyä.
+  Yhdistelmä (geometrinen keskiarvo) ei ollut yksittäistä verkkoa parempi (1. sukupolvi 6,1°; 2. sukupolvi `pieni` + 1. sukupolvi `resf` 5,5°). Jäännösverkko on `pieni`-verkkoa noin 1,6 kertaa hitaampi opettaa askelta kohti (koko ajo 2,4 kertaa pidempi) ja noin 1,3 kertaa hitaampi ennustaa.
+* **Ero vanhaan koodiin syntyy ei-pystysuorissa kulmissa ja silloin, kun ihmisen viivat ovat keskenään johdonmukaisia.** Kun ihmisen kulma on 60-130° (palkki osoittaa kameran katselusuuntaan ja sumenee liikkeen suuntaisesti, 9 viivaa), 2. sukupolven keskivirhe on 7,0° ja vanhan koodin 9,4°; muilla kulmilla (10 viivaa) 3,6° ja 8,2°.
+  Kolme suurinta virhettä (15-19°) ovat lähes pystysuorissa palkeissa (ihmisen kulma 87-118°). Heittokohtaisesti keskiarvoistettuna ero on pienempi kuin ruutukohtaisessa keskiarvossa (viivoja on heittoa kohti 1-4): verkko 5,6°, vanha koodi 8,4°; verkko on parempi 5 heitolla 6:sta (1. sukupolvi: 3 / 6).
+* **Osa jäljellä olevasta virheestä on ihmisen viivojen keskinäistä epäjohdonmukaisuutta.** Kun ihmisen viivat sovitetaan heittokohtaisesti vakiokierrolle, 9 viivan jäännös on enintään 4° ja 7 viivan yli 4° (kaikki kahdella heitolla, Matarmaa 69 ja Video2 11; esiselvityksessä jo havaittu: suoran jäännös 6,0° ja 7,1°).
+  Johdonmukaisilla viivoilla verkon keskivirhe on 2,9° (vanha koodi 9,2°), epäjohdonmukaisilla 7,3° (8,9°). Matarmaa 69:n viimeinen viiva (86,7°; edelliset kolme viivaa antavat kiertoa -108 ja -115 aste/s, viimeinen väli -203 aste/s) ja Video1 102:n toinen viiva (95,7°; kahden viivan antama kierto -14 aste/s, kun verkon kaikki 25 ruutua ovat suoralla +38 aste/s
+  ja vanha koodi antaa +43 aste/s) ovat verkon suurimpia virheitä eivätkä sovi omien heittojensa kiertoon; näiden viivojen tarkistus kannattaa. Ihmisen viivat ovat edelleen mittapuu: luvut ovat virhettä niihin.
+* **Ei viivettä.** Verkko ei näe aikaa, ja pois jätettyjen heittojen virhe on pienimmillään siirrolla 0 ± 20 ms (2. sukupolvi: 0 ms 5,2°, ± 20 ms 5,5°, ± 60 ms 6,9-7,1°; ruudun väli on 33 ms), eli koneen mallin ~1 ruudun (0,044 s) viivettä ihmisen viivoihin nähden ei ole.
+* **Kiertosuunta ja omega.** Verkon ja vakiokierron suunta täsmää ihmisen viivoista sovitettuun suuntaan 4 / 4 pois jätetyllä heitolla, joilla ihmisellä on vähintään 3 viivaa, ja kaukopään varmaan suuntaan 4 / 4 (vain raportointi); vanha koodi samoin 4 / 4. Omegan suuruudessa ei ole selvää etua:
+  Matarmaa 69: verkko -123, vanha koodi -147, ihminen -141, kaukopäästä lähipäähän -138; Video1 25: verkko -117, vanha koodi -107, ihminen -65, kaukopäästä lähipäähän -74 aste/s (verkko: 2. sukupolvi; vanhan koodin, ihmisen ja kaukopään luvut: validointiosion vertailu yllä).
+
+Esikokeet (kokeiluskripteillä, ei repossa; samat menetelmät; ihmisen aineisto 147 ruutua, koska ankkurointi ulottui ensimmäistä käsi-vapaata ruutua edeltäviin ruutuihin) vahvistavat suunnan:
+* Opettaja (vain ihmisen ruudut): `pieni` 1200 askelta 14,1 ja 14,6° (kaksi siementä; yksi ruutu) -> vakiokierron jälkeen 7,2 ja 7,7°; 4000 askelta 12,3° -> 6,8°; `resf` (24, 48, 96) 4000 askelta 9,1° -> 7,9°. Pidempi opetus parantaa vähän, syvempi verkko ei auta pienellä ihmisaineistolla.
+* Oppilaat (4 ajoa: pseudomerkinnät 1200- tai 4000-askelisesta opettajasta, kuvan kierto aina tai lievästi, `pieni` ja `resf`): yksi ruutu 6,4-7,3°, vakiokierron jälkeen 5,6-6,4° (opettajilla 9,1-14,6° ja 6,8-7,9°); `resf` 6000 askelta ei parantanut pois jätettyjä viivoja (keskeytetty ajo: 6,8° ilman TTA:ta 4200 askeleen kohdalla).
+
+Käyttö:
+```
+import kulmaverkko as kv
+mallit = [kv.lataa("kulmaverkko_paino_pieni.npz")]        # tai + kv.lataa("kulmaverkko_paino_resf.npz") yhdistelmäksi
+p = kv.ennusta(mallit, leikkeet)        # leikkeet (n, 56, 56, 3) uint8 = kv.leike56(kierre_leikkeet.topdown_leike(...)); TTA (kierrot x peilaus) ja verkkojen geometrinen keskiarvo
+r = kv.sovita_heitto(p, t)              # t = ruutujen ajat (s, nouseva); r["kulma"] (ruutukohtainen kulma), r["omega"], r["suunta_p"], r["residuaali"]
+```
+Toimitetut painot: `kulmaverkko_paino_pieni.npz` (1,8 MB; 2. sukupolven oppilas, opetettu kaikilla 39 ihmisen viivalla ja 497 heiton (11 087 ruudun) pseudomerkinnöillä) ja `kulmaverkko_paino_resf.npz` (6,4 MB; 1. sukupolven `resf`). Lopullisia verkkoja ei voi arvioida pois jätetyillä heitoilla (viivat ovat opetuksessa), joten niiden tarkkuusluvut ovat yllä olevista protokolla-ajoista;
+`tools/testaa_kulmaverkko.py` tarkistaa vain, että painot latautuvat ja sopivat ihmisen viivoihin (opetusruudut; keskivirhe 2,3° ja 1,3°). Ennustus NumPylla: noin 50-65 ms / ruutu TTA:lla (10 näkymää) ja 5-9 ms ilman (yksi säie).
+Ulostulo (`p`) on suoraan kustannuskäyrä (`pen = -log p`), joten sen voi antaa saranamallin (`netti_kierre._sarana_pen`) kulmakäyrien tilalle tai rinnalle; tätä ei ole tehty (tuotanto käyttää yhä sapluunasovitusta).
+
+Rajoitukset ja jatko:
+* **Pieni testiotos.** 19 viivaa (6 heittoa) on vähän: noin ± 0,5-1° ero kokoonpanojen välillä on kohinaa, ja kokoonpanot (rakenne, kierron voimakkuus, sukupolvien määrä) on tarkasteltu samoilla viivoilla, joten luvut ovat hieman optimistisia. Ihmisen viivoja on heittoa kohti 1-4, ja kaksi heittoa (Matarmaa 69, Video2 11) ei sovi omaan vakiokiertoonsa.
+* **Lähes pystysuorat palkit ovat vaikeita.** Ihmisen aineistossa kulmia 90-150° on vain 19 ruutua 143:sta (pseudoruuduissa kulmat jakautuvat tasaisesti), ja kuvissa liikesumennus on rata-akselin suuntainen eli pystysuoran palkin suuntainen. Lisämerkinnät näille kulmille ja ruuduille, joissa verkon jakauma on leveä (aktiivinen merkintä: `tools/luo_kahvamerkitsin.py`), sekä pseudomerkintöjen hajonnan kasvattaminen näillä kulmilla (verkko oppisi leveämpiä jakaumia ja vakiokierto painottaisi niitä vähemmän) ovat seuraavat kokeilut. Suurempaa leikettä (112 x 112) ei ole kokeiltu.
+* **Suora ei korjaa kaikkea.** Matarmaa 69:llä heiton lopussa (palkki lähes pystyssä) verkon yksittäiset arviot hajoavat ± 25° suoran ympärille ja ihmisen viimeinen viiva on 14° suoran alapuolella; sovitus pitää suoran, ja tämän viivan virhe (19°) syntyy tästä.
+* **Ei vielä tuotannossa.** Verkko ei ole `netti_kierre.py`:ssä; integrointi (kustannuskäyrien yhteinen posteriori sapluunasovituksen kanssa) vaatisi uuden validoinnin 162 heiton kaukopäävertailulla ja ihmisen viivoilla.
+* **Kalibrointi.** Verkko on opetettu viiden videon kalibroinneilla; uuden kameran asennon tarkkuutta ei ole mitattu.
+
+Testit: `python tools/testaa_kulmaverkko.py` (kuvan kierron ja peilauksen konventio 0,39° tarkkuudella, NumPy-verkko = JAX-verkko kultatiedostoilla `kierre_validointi/kulmaverkko_testi_*.npz` ja opetuskoodilla, tallennus ja lataus, verkkojen yhdistelmä, vakiokiertosovitus synteettisellä radalla ja virheruudulla, toimitetut painot ihmisen viivoilla).
 
 ### Suunnat toisen päädyn pesäkuvaan (`suunnat_pesakuvaan.py`)
 
