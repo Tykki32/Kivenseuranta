@@ -51,7 +51,8 @@ def kierrokset(omega_deg_s, t_keski, t1, t2, k=K_KIERRE):
 # ~2-3 px), kun kasi peittaa. Ruutukohtainen paras kulma (argmin) loikkaa silloin peilikuvaan, ja suoran sovitus nayttaa "latauksena" (kulma kiertyy ensin vastakkaiseen suuntaan ja kaantyy
 # V:n karjessa; todellisuudessa kierto on vakio koko ajan). Siksi ei kayteta ruutujen ennalta valittua parasta kulmaa eika kovaa kasirajausta, vaan jokaisen ruudun KOKO kustannuskayra
 # (60 kulmaa), joka sisaltaa molemmat minimit; ruutujen yhteinen malli on vakiokierto theta(t) = theta0 + omega t, ja omegan posteriori lasketaan ruudukossa (theta0 x omega).
-# Ruutujen painot kalibroitu videon omista pitkista heitoista (puhtaiden ruutujen suorat): ruudun kulmakohina sigma_i riippuu sovituksen jaannoksesta ja kasipikseleista palkin alueella.
+# Ruutujen painot kalibroitu videon omista pitkista heitoista (puhtaiden ruutujen suorat): ruudun kulmakohina sigma_i riippuu sovituksen jaannoksesta ja kasipikseleista palkin alueella; ei-puhtaiden ruutujen
+# lisapaino heittopaassa (HANTA_PAINO_LAHI) tarkistettu ihmisen merkitsemilla kulmilla ja kaukopaan mittauksella (README: Kierteen mittauksen validointi).
 # Ei omegan kovia rajoja (video: ~26 deg/s ... ~480 deg/s): ruudukko +-900 deg/s ja heikko lognormaali ennakko (mediaani 110, sigma_log 0,75: ~26 ja ~480 ovat +-2 sigmaa).
 OM_RUUDUKKO = np.arange(-900.0, 900.1, 3.0)
 TH_RUUDUKKO = np.arange(0.0, 180.0, 3.0)
@@ -62,7 +63,8 @@ CZ_PISTEET = np.array([0.0, 6.0, 8.0, 12.0, 20.0, 40.0, 80.0])       # jalanjalk
 CZ_SIGMA = np.array([4.4, 4.8, 6.5, 12.0, 16.0, 20.0, 60.0])         # ... -> kulmakohina (aste): puhtaat < 8: 4-5, 8-12: 10, > 12: 16+, > 40: umpimahkaan
 KASI_PISTEET = np.array([0.0, 1.0, 6.0, 20.0, 60.0, 200.0])          # kasipikseleita jalanjalkialueella ...
 KASI_SIGMA = np.array([4.4, 8.5, 12.6, 19.7, 25.6, 40.0])            # ... -> kulmakohina (aste)
-HANTA_PAINO = 0.5                                       # ei-puhtaiden ruutujen (kasi alueella tai Cz,min >= 8) paino: sigma / sqrt(paino); ruudut ovat osin yhteisesti harhaisia (tasanne / peilaus)
+HANTA_PAINO = 0.5                                       # ei-puhtaiden ruutujen (kasi alueella tai Cz,min >= 8) paino kaukopaassa: sigma / sqrt(paino); ruudut ovat osin yhteisesti harhaisia (tasanne / peilaus)
+HANTA_PAINO_LAHI = 1.0                                  # sama heittopaassa (ei lisarangaistusta: taulukoiden sigma kattaa jo kasipikselit ja huonon sovituksen); kalibroitu ihmisen merkitsemilla kulmilla (kierre_validointi/, tools/kierre_vertailu.py), ks. README
 PUHDAS_CZ = 8.0
 S2_KAYRA = 0.3                                          # kustannuskayran lampotila: pen = min((C - C_min) / (2 s2 (sigma_i / SIG_HYVA)^2), KAYRA_KATKAISU); kalibroitu (z-hajonta ~ 1)
 KAYRA_KATKAISU = 6.0
@@ -163,13 +165,14 @@ def kulmakayrat(cam, ast, vari, havainnot, t_irr, muoto, t0=0.0, y_max=Y_MAX_UUS
     return dict(t=np.array(t_l)[o], f=np.array(f_l)[o], Y=np.array(Y_l)[o], Cz=np.array(Cz_l)[o], nkz=np.array(nkz_l)[o], nvz=np.array(nvz_l)[o])
 
 
-def ruudun_sigma(cz_min, nkz):
-    """Ruutukohtainen kulmakohinan arvio (aste): jalanjalkialueen paras kustannus ja kasipikselit alueella (empiirinen, videon pitkista heitoista); ei-puhtaat ruudut painotetaan HANTA_PAINO:lla."""
+def ruudun_sigma(cz_min, nkz, hanta_paino=HANTA_PAINO):
+    """Ruutukohtainen kulmakohinan arvio (aste): jalanjalkialueen paras kustannus ja kasipikselit alueella (empiirinen, videon pitkista heitoista); ei-puhtaat ruudut painotetaan hanta_painolla
+    (oletus HANTA_PAINO = kaukopaa; heittopaa HANTA_PAINO_LAHI)."""
     sc = np.interp(cz_min, CZ_PISTEET, CZ_SIGMA)
     sn = np.interp(nkz, KASI_PISTEET, KASI_SIGMA)
     sg = np.sqrt(np.maximum(sc ** 2 + sn ** 2 - SIG_HYVA ** 2, 1.0))
     puhdas = (nkz == 0) & (cz_min < PUHDAS_CZ)
-    return np.where(puhdas, sg, sg / np.sqrt(HANTA_PAINO)), puhdas
+    return np.where(puhdas, sg, sg / np.sqrt(hanta_paino)), puhdas
 
 
 def _jaksollinen(C, ang):
@@ -188,11 +191,11 @@ def ennakko_lognormaali(om):
     return -0.5 * ((np.log(a) - np.log(ENNAKKO_MEDIAANI)) / ENNAKKO_SIGMA_LOG) ** 2 - np.log(a)
 
 
-def posteriori_omega(k, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lognormaali, om_ruudukko=OM_RUUDUKKO, th_ruudukko=TH_RUUDUKKO):
+def posteriori_omega(k, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, ennakko=ennakko_lognormaali, om_ruudukko=OM_RUUDUKKO, th_ruudukko=TH_RUUDUKKO, hanta_paino=HANTA_PAINO):
     """Omegan posteriori vakiokiertomallille theta(t) = theta0 + omega (t - t_ka) ruutujen kulmakustannuskayrista k (kulmakayrat); theta0 marginalisoidaan (tasainen).
     Palauttaa dict(om, p, p_ccw, sig [ruutujen kohina], puhdas, t_ka, n_eff, J)."""
     cmin = np.min(k["Cz"], axis=1)
-    sig, puhdas = ruudun_sigma(cmin, k["nkz"])
+    sig, puhdas = ruudun_sigma(cmin, k["nkz"], hanta_paino)
     dC = k["Cz"] - cmin[:, None]
     pen = np.minimum(dC / (2.0 * s2 * (sig / SIG_HYVA) ** 2)[:, None], katkaisu)
     w_t = 1.0 / sig ** 2
@@ -225,7 +228,7 @@ def posteriori_omega_sarana(k, t_irr, s2=S2_KAYRA, katkaisu=KAYRA_KATKAISU, enna
     (t_c tasainen valilla SARANA_TC_ALUE, myos 'ei saranaa' = t_c alussa). Syy: kierto alkaa, kun heittaja antaa kierteen kahvasta (sormet irtoavat), ei valttamatta reittidatan irroitushetkella; ennen sita
     kahvan kulma on vakio (tasanne), ja lineaarinen malli koko ruutujonon yli aliarvioisi omegan (punaiset heitot, joissa puhtaita ruutuja on vahan). Palauttaa kuten posteriori_omega."""
     cmin = np.min(k["Cz"], axis=1)
-    sig, puhdas = ruudun_sigma(cmin, k["nkz"])
+    sig, puhdas = ruudun_sigma(cmin, k["nkz"], HANTA_PAINO_LAHI)
     dC = k["Cz"] - cmin[:, None]
     pen = np.minimum(dC / (2.0 * s2 * (sig / SIG_HYVA) ** 2)[:, None], katkaisu)
     t = k["t"] - t_irr

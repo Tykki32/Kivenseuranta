@@ -135,6 +135,12 @@ def main():
     print(f"  varmasti vaara suunta {vaara_varma} / {n_all}; omega 3 sd:n sisalla {ok_z} / {n_all}")
     if vaara_varma > 0:
         virheita += 1; print("  VIRHE: varmasti vaara suunta myohaisella kierrolla")
+    # ei-puhtaiden ruutujen paino: heittopaan saranamalli kayttaa HANTA_PAINO_LAHI:a, vakiokiertomalli (kaukopaa) HANTA_PAINO:a; puhtaiden ruutujen kohina on sama
+    k, t_irr = synteettinen_sarana(110.0, rng, t_c=0.2, th_p=40.0, n_puhdas=14)
+    sig_lahi, sig_kauko, ei_puhdas = nk.posteriori_omega_sarana(k, t_irr)["sig"], nk.posteriori_omega(k)["sig"], k["nkz"] > 0
+    print(f"ei-puhtaiden ruutujen paino: heittopaa {nk.HANTA_PAINO_LAHI}, kaukopaa {nk.HANTA_PAINO}; kohinan suhde heittopaa / kaukopaa {np.median(sig_lahi[ei_puhdas] / sig_kauko[ei_puhdas]):.3f} (odotus {np.sqrt(nk.HANTA_PAINO / nk.HANTA_PAINO_LAHI):.3f}), puhtailla {np.median(sig_lahi[~ei_puhdas] / sig_kauko[~ei_puhdas]):.3f}")
+    if not (ei_puhdas.any() and (~ei_puhdas).any() and np.allclose(sig_lahi[ei_puhdas] / sig_kauko[ei_puhdas], np.sqrt(nk.HANTA_PAINO / nk.HANTA_PAINO_LAHI)) and np.allclose(sig_lahi[~ei_puhdas], sig_kauko[~ei_puhdas])):
+        virheita += 1; print("VIRHE: ei-puhtaiden ruutujen paino ei seuraa HANTA_PAINO_LAHI / HANTA_PAINO -jakoa")
     # toistettavuus
     a = synteettinen(110.0, np.random.default_rng(5)); b = synteettinen(110.0, np.random.default_rng(5))
     if arvioi(a) != arvioi(b):

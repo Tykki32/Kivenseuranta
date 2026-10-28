@@ -2303,8 +2303,69 @@ def testaa_kierre_etiketit():
     tarkista("raportti tulostuu (otsikko, heitot, suunta, vanha suodatin)", len(rivit_ulos) == len(rivit) + 5 and "Suunta" in rivit_ulos[-3] and "Vanha kasi-suodatin" in rivit_ulos[-1], rivit_ulos[-1][:60])
 
 
+def testaa_kierre_vertailu():
+    print("kierteen mittauksen vertailu ihmisen merkitsemiin kulmiin (tools/kierre_vertailu.py)")
+    import kierre_vertailu as kvl
+    tarkista("ero180: jakso 180 (170 vs 10 = -20, 10 vs 170 = +20, 90 vs 0 = -90)", np.allclose(kvl.ero180([170.0, 10.0, 90.0], [10.0, 170.0, 0.0]), [-20.0, 20.0, -90.0]))
+    tarkista("maa_kulma: leike ei ole peilattu: A = (-1, 1) antaa saman kulman, A = (1, -1) saman, A = (1, 1) peilaa", abs(kvl.maa_kulma(30.0, (-1.0, 1.0)) - 30.0) < 1e-9 and abs(kvl.maa_kulma(30.0, (1.0, -1.0)) - 30.0) < 1e-9
+             and abs(kvl.maa_kulma(30.0, (1.0, 1.0)) - 150.0) < 1e-9)
+    C = 5.0 + 0.02 * kvl.ero180(nk.KULMAT, 60.0) ** 2
+    tarkista("kayran_minimit ja kustannus_kulmassa: minimi 60 asteessa, arvo 5; 63 asteessa 5 + 0,02 * 9", kvl.kayran_minimit(C)[0] == (60.0, 5.0) and abs(kvl.kustannus_kulmassa(C, 63.0) - 5.18) < 1e-9 and abs(kvl.kustannus_kulmassa(C, 241.5) - kvl.kustannus_kulmassa(C, 61.5)) < 1e-9)
+    t = 0.04 * np.arange(10) + 100.0
+    th = 40.0 + 100.0 * (t - 100.0)                                         # koneen kulma kasvaa 100 astetta / s
+    kk = dict(t=t, f=np.arange(10) + 5000, Y=np.full(10, 600.0), Cz=np.array([5.0 + 0.02 * kvl.ero180(nk.KULMAT, a) ** 2 for a in th]), nkz=np.zeros(10, int), nvz=np.full(10, 400))
+    valinta = [dict(id=f"X_h1_f{5000 + i}", nimi="X", heitto=1, vari="punainen", puoli="vasen", f=5000 + i, t_s=float(t[i]), A=[-1.0, 1.0], kasi_px=0) for i in (0, 3, 6, 9)]
+    merk = {n["id"]: dict(id=n["id"], tila="ok", kulma_deg=float(40.0 + 100.0 * (n["t_s"] - 100.0) + 3.0)) for n in valinta}          # ihminen 3 astetta koneen ylapuolella
+    merk[valinta[2]["id"]] = dict(id=valinta[2]["id"], tila="ei_nay")
+    mitt = {("X", 1): dict(k=kk, tulos=dict(omega_deg_s=100.0, omega_sd_deg_s=10.0, p_suunta=1.0, varma=True, t_keski=100.2), t_irr=99.0)}
+    rr = kvl.ruutuvertailu(valinta, merk, mitt)
+    tarkista("ruutuvertailu: 3 viivallista ruutua (ei_nay pois), ero koneen ja ihmisen valilla -3 astetta (3 asteen ruudukko), puhdas", len(rr) == 3 and all(abs(x["ero"] + 3.0) <= 3.0 for x in rr) and all(x["puhdas"] for x in rr), str([x["ero"] for x in rr]))
+    ry = kvl.ruutuyhteenveto(rr)
+    tarkista("ruutuyhteenveto: kaikki / puhdas / punainen n = 3, ei-puhtaita ei ole", ry["kaikki"]["n"] == 3 and ry["puhdas"]["n"] == 3 and ry["punainen"]["n"] == 3 and ry["ei_puhdas"] is None and ry["keltainen"] is None)
+    radat = {"X": [dict(kauko_kierto=dict(omega_deg_s=60.0, omega_sd_deg_s=1.0, varma=True, t_keski=116.2))]}
+    hr = kvl.heittovertailu(valinta, merk, mitt, radat)
+    r = hr[0]
+    tarkista("heittovertailu: ihmisen omega ~ 100 aste/s (3 viivallista ruutua 0,36 s), suunta sama kuin koneella", len(hr) == 1 and abs(r["omega_ihminen"] - 100.0) < 3.0 and r["suunta_sama"], str(r.get("omega_ihminen")))
+    tarkista("heittovertailu: kaukopaan odotus = omega_kauko exp(K dt) = 60 exp(0,021 * 16)", abs(r["omega_ennuste"] - 60.0 * np.exp(nk.K_KIERRE * 16.0)) < 1e-6, f"{r.get('omega_ennuste')}")
+    tarkista("heittovertailu: koneen omega ihmisen ajanjaksolta (kaikki ruudut ikkunassa) ~ 100", "omega_paikallinen" in r and abs(r["omega_paikallinen"] - 100.0) < 15.0, str(r.get("omega_paikallinen")))
+    hy = kvl.heittoyhteenveto(hr)
+    tarkista("heittoyhteenveto: suunta 1 / 1, kaukopaa vertailtu 1 (suunta sama)", hy["suunta_sama"] == 1 and hy["ihmisen_omegalla"] == 1 and hy["kauko_vertailtu"] == 1 and hy["kauko_suunta_sama"] == 1)
+    rivit = []
+    kvl.tulosta_raportti(rr, hr, ry, hy, rivit.append)
+    tarkista("raportti tulostuu", len(rivit) > 8 and "Suunta:" in rivit[-2], rivit[-1][:50])
+
+
+def testaa_kierre_lahi_kauko():
+    print("heittopaan ja kaukopaan kierteen yhdenmukaisuus (tools/kierre_lahi_kauko.py)")
+    import kierre_lahi_kauko as klk
+
+    def lahi(om, p=1.0, t=100.0):
+        return dict(omega_deg_s=om, omega_sd_deg_s=5.0, p_suunta=p, varma=p >= nk.SUUNTA_VARMA, t_keski=t)
+
+    def kauko(om, p=1.0, varma=True, t=116.0):
+        return dict(omega_deg_s=om, omega_sd_deg_s=3.0, p_suunta=p, varma=varma, t_keski=t)
+    ennuste = 60.0 * np.exp(nk.K_KIERRE * 16.0)
+    radat = [dict(vari="punainen", kierto=lahi(ennuste), kauko_kierto=kauko(60.0)),                                  # sopii taydellisesti: ln r = 0, k = K_KIERRE
+             dict(vari="keltainen", kierto=lahi(-50.0), kauko_kierto=kauko(40.0)),                                  # varma ristiriita
+             dict(vari="punainen", kierto=lahi(80.0, p=0.7), kauko_kierto=kauko(-60.0)),                            # lahipaa epavarma: ei lasketa
+             dict(vari="punainen", kierto=lahi(-90.0), kauko_kierto=kauko(70.0, p=0.995, varma=False)),             # kaukopaa suunta varma, suuruus ei: ristiriita
+             dict(vari="punainen", kierto=lahi(90.0), kauko_kierto=kauko(-60.0, p=0.6, varma=False)),               # kaukopaa epavarma: ei todiste, ei ristiriitaa
+             dict(vari="punainen", kierto=lahi(70.0), kauko_kierto=dict(virhe="liian vahan ruutuja")),              # kaukopaan mittaus puuttuu
+             dict(vari="punainen", kierto=dict(virhe="liian vahan kelvollisia ruutuja (3)"))]                        # ei heittopaan mittausta
+    rivit = klk.rivit_radoista(radat, "X")
+    tarkista("rivit_radoista: heittopaan mittaus 6 heitolla, kaukopaa 5:lla (virhe-mittaus ei kelpaa)", len(rivit) == 6 and sum(r["kauko"] is not None for r in rivit) == 5 and rivit[0]["heitto"] == 1 and rivit[-1]["heitto"] == 6)
+    tarkista("kauko_luokka: varma / suunta / epavarma", [klk.kauko_luokka(kauko(1.0)), klk.kauko_luokka(kauko(1.0, p=0.995, varma=False)), klk.kauko_luokka(kauko(1.0, p=0.6, varma=False))] == ["varma", "suunta", "epavarma"])
+    y = klk.tilastot(rivit)
+    tarkista("tilastot: heittopaan varmoja 5 / 6, suunta: kaukopaa varma 1 / 2, suunta-luokka 0 / 1, epavarma 0 / 1", y["lahi_varma"] == 5 and y["suunta"]["varma"] == [1, 2] and y["suunta"]["suunta"] == [0, 1] and y["suunta"]["epavarma"] == [0, 1], str(y["suunta"]))
+    tarkista("tilastot: ristiriidat = varma ja suunta-luokan erimerkkiset (2), ei epavarman kaukopaan", [(r[1], r[2]) for r in y["ristiriidat"]] == [(2, -50.0), (4, -90.0)], str(y["ristiriidat"]))
+    tarkista("tilastot: k = K_KIERRE ja ln r = 0 taydellisesti sopivalle parille (vain sama-etumerkkiset varmat parit)", len(y["k"]) == 1 and abs(y["k"][0] - nk.K_KIERRE) < 1e-9 and abs(y["lnr"][0]) < 1e-9, f"{y['k']} {y['lnr']}")
+    rivit_ = []
+    klk.tulosta(y, rivit_.append)
+    tarkista("tulosta: otsikko, luokat, ristiriidat ja suuruus", len(rivit_) == 8 and "RISTIRIITA X heitto 2" in rivit_[5] and rivit_[-1].startswith("Suuruus"), str(len(rivit_)))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko):
         t()
     print()
     if VIRHEITA:
