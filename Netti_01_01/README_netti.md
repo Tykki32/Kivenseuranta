@@ -715,6 +715,33 @@ Rajoitukset: 48 merkittyä ruutua on vähän (kalibrointi erottaa vain karkeat e
 Lisämerkinnät (satunnaisia ruutuja samoilta heitoilta pitkältä aikaväliltä, käsiruutuja ja kaikkia kulmia; `tools/luo_kahvamerkitsin.py`) mahdollistaisivat taulukoiden uudelleenkalibroinnin ja pitävän riippumattoman testin (kalibrointi- ja testiheitot erikseen).
 Testit: `testaa_kierre_vertailu`, `testaa_kierre_lahi_kauko`, `testaa_kierron_merkki_ja_palkkimalli` (`tools/testaa_vakiot.py`) ja ei-puhtaiden painon jako heittopään / kaukopään välillä sekä mallin kulman (`kulmat_hetkilla`) tarkistus synteettisillä saranadatoilla (`tools/testaa_kierre.py`).
 
+### Neuroverkko kahvan kulmalle: esiselvitys (yksi ruutu sisään, vakiokierto opetukseen ja testiin)
+
+Kysymys: kannattaako opettaa verkko, joka saa yhden top-down-leikkeen kivestä ja antaa kahvan kulman, ja käyttää heiton vakiokiertoa (kulma on suora ajan funktiona) opetuksessa ja testauksessa? Pikakokeilu (ei repossa; JAX, CPU 4 ydintä, 150 + 12 heittoa, `kierre_validointi/` ihmisen viivoina):
+* **Verkko:** 56 x 56 x 3 -leike (top-down 3,5 px / cm pienennettynä 1,75 px / cm), 6 konvoluutiokerrosta + 2 tiheää, 0,48 M parametria (1,9 MB), ulos 60 kulmalokeroa (3°, jakso 180°) eli kulman jakauma, joka kelpaa suoraan saranamallin kustannuskäyräksi (`pen = -log p`): omega, suunnan varmuus ja kulma ruudun hetkellä toimisivat kuten nyt.
+  Ennustus pelkällä NumPylla 6,7 ms / ruutu (yksi säie; tulos sama kuin JAX:lla, ero 2e-7), joten tuotantoon ei tarvita uusia riippuvuuksia. Opetus 7 600 ruudulla 3-11 min CPU:lla. Verkko ei näe aikaa, joten heiton suoruus on sille riippumaton tarkistus.
+* **Opetus ilman yhtään ihmisen viivaa** (tavoite = koneen mallin kulma 150 heitolta, testiheitot pois opetuksesta), virhe ihmisen kulmaan (keski / mediaani, °):
+
+| kulman lähde | 39 ihmisen viivaa | 147 ruutua ihmisen vakiokiertoradalla (6 heittoa) |
+|---|---|---|
+| kone: ruudun kustannuskäyrän minimi | 10,0 / 8,7 | 9,8 / 6,7 |
+| kone: mallin kulma (ohjelman antama) | 7,2 / 6,7 | 6,0 / 5,4 |
+| verkko, yksi ruutu | 8,3 / 7,9 | 8,5 / 6,1 |
+| verkko, yksi ruutu, merkinnät siirretty +1 ruutu | 7,1 / 5,8 | 7,7 / 5,4 |
+| verkko + saranamalli, merkinnät siirretty +1 ruutu | 6,0 / 5,0 | 7,1 / 4,7 |
+
+  Verkko yltää koneen ruutukohtaiseen tarkkuuteen mutta ei ohita koneen saranamallilla yhdistettyä kulmaa. Opetusheittojen määrä ratkaisee: 39 viivan virhe 28,6° (20 heittoa), 13,0° (40), 9,5° (80), 7,6° (150), eikä käyrä ole tasaantunut. Verkon yksittäisten ruutujen poikkeama omasta suorasta on mediaanilta 3,0° (koneen ruudun minimin 7,8°).
+* **Heittokohtainen vakiopoikkeama on ratkaiseva virhe, eikä suoruus näe sitä.** Koneen mallin kulman virheestä (12 heittoa, 39 viivaa) 44 % neliöstä (rms 5,7°) on heiton kaikille ruuduille yhteistä vakiopoikkeamaa ja 56 % (rms 6,4°) heiton sisäistä vaihtelua; suora näyttää vain jälkimmäisen. Heiton suoruusjäännös (ruudun minimi vs heiton oma suora) ei ennusta heiton virhettä ihmisen viivoihin (Spearman -0,08, n = 12: siistein suora, 3,3°, oli heitolla, jonka virhe on 11°).
+  Kiertosuunnan peilaus (väärä etumerkki) on täydellinen suora, joten sen tarkistaa kaukopää, ei suoruus. Vakiokierto kelpaa siis kohinan, huonojen ruutujen ja virhemerkintöjen seulaksi (ihmisen viivat suoralla: jäännös 0,1-2,6°; Matarmaa 69:llä 6,0° ja Video2 11:llä 7,1°, eli näillä kahdella viivat eivät ole suoralla ja ne kannattaa tarkistaa), mutta ei oikeellisuuden todisteeksi.
+* **Ihmisen merkinnät monistuvat vakiokierrolla:** 3-4 viivasta (0,4-0,9 s) sovitetaan rata theta(t) = theta_ref + omega g(t), g = (1 - exp(-K s)) / K (K = `K_KIERRE`), jolloin ikkunan ja sen ± 0,2 s ympäristön kaikki ruudut (20-30 ruutua / heitto) saavat ihmisen tarkkuuden kulman ja jäännös paljastaa virhemerkinnän.
+  Hienosäätö tällä tavalla ankkuroiduilla ruuduilla 5 muulta heitolta ei kuitenkaan pienentänyt pois jätetyn heiton virhettä (8,5° -> 8,5°): heittokohtaisia vakiopoikkeamia ei opi viidestä heitosta, joten merkintöjä tarvitaan monelta eri heitolta (arvio: vähintään 50-100 heittoa x 3-4 viivaa, ruudut hajautettuna koko käsi-vapaalle ajalle), ei monta ruutua samalta heitolta.
+* **Koneen kulma on noin 1 ruudun (0,044 ± 0,015 s) jäljessä ihmisen viivoista.** Kun koneen mallin kulmaa luetaan yhtä ruutua myöhemmältä hetkeltä, virhe pienenee 11 / 12 heitolla (keskivirhe 7,25° -> 5,47°; etumerkkitesti p = 0,003, yksisuuntainen) ja heiton keskimääräinen virhe on verrannollinen omegaan (korrelaatio -0,67, p = 0,02; yhden parametrin viivemalli pienentää heitto kerrallaan pois -ristiinvalidoidun rms-virheen 8,4° -> 7,4°; kulmasta riippuva harha ei auta).
+  Ihmisen leike on tarkistetusti täsmälleen sama videoruutu kuin koneen (kuvakorrelaatio 0,9996, d = 0 kaikilla 48 ruudulla) eikä ajat poikkea (alle 0,05 ms), joten ero on kuvan tulkinnassa: riippumaton reunaviivasovitus ei näytä selvää viivettä (mediaanivirhe pienin, kun d = 0), mutta on kohinaisempi. Syy on tuntematon (ehdokkaita: videon aikasumennus / haamukuva + sapluunan pienimmän neliösumman sovitus); jos viive vahvistuu lisämerkinnöillä, ihmisen viivoilla opetettu verkko oppii ihmisen tulkinnan sellaisenaan, ja mallipohjaiselle koneelle riittäisi vakioajansiirto (`kulmat_hetkilla` t + 0,044 s).
+  Koneen malli jätettiin ennalleen, koska 12 heittoa on liian vähän muuttamaan kalibrointia ilman selitystä.
+
+**Suositus:** kyllä, kannattaa, mutta ihmisen merkinnöillä eikä koneen pseudomerkinnöillä. Merkitse noin 60 heittoa x 4 ruutua (`tools/kierre_leikkeet.py --heittoja 12` videota kohti ja `tools/luo_kahvamerkitsin.py`; ruudut tasavälein koko käsi-vapaalta ajalta, eri kivet, värit, puolet ja videot, noin 10 heitolle 8 ruutua radan tarkkuuden tarkistamiseksi).
+Verkko opetetaan ihmisen vakiokiertoradoilla ja koneen pseudomerkinnöillä esiopetettuna (550 heittoa), arvioidaan heitto kerrallaan pois -testillä ihmisen viivoilla (ja ankkuroiduilla ruuduilla), suoruus- ja kaukopää-tarkistuksella; ulostulo korvaa kustannuskäyrän saranamallissa, ja koneen oma käyrä jää rinnalle (yhteinen posteriori).
+
 ### Suunnat toisen päädyn pesäkuvaan (`suunnat_pesakuvaan.py`)
 
 `python suunnat_pesakuvaan.py tulokset vasen [--alkuperainen]` -> `tulokset/suunnat_pesakuva.png` (heittäjän näkökulma: kaukopää ylhäällä, + = heittäjän oikealle) ja `tulokset/suunnat_pesakuva_alkuperainen.png` (toisen pään oma top-down, hog ylhäällä; kuvassa oikea = heittäjän vasen).
