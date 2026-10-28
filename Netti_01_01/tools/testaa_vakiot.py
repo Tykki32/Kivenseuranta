@@ -2322,6 +2322,8 @@ def testaa_kierre_vertailu():
     tarkista("ruutuvertailu: 3 viivallista ruutua (ei_nay pois), ero koneen ja ihmisen valilla -3 astetta (3 asteen ruudukko), puhdas", len(rr) == 3 and all(abs(x["ero"] + 3.0) <= 3.0 for x in rr) and all(x["puhdas"] for x in rr), str([x["ero"] for x in rr]))
     ry = kvl.ruutuyhteenveto(rr)
     tarkista("ruutuyhteenveto: kaikki / puhdas / punainen n = 3, ei-puhtaita ei ole", ry["kaikki"]["n"] == 3 and ry["puhdas"]["n"] == 3 and ry["punainen"]["n"] == 3 and ry["ei_puhdas"] is None and ry["keltainen"] is None)
+    tarkista("ruutuvertailu: mallin kulma (heiton saranamallin posteriori) osuu ihmisen kulmaan -3 asteen sisalle (+- 3 astetta), R lahella 1", all(abs(x["ero_malli"] + 3.0) < 3.0 and x["R_malli"] > 0.9 for x in rr), str([round(x["ero_malli"], 1) for x in rr]))
+    tarkista("ruutuyhteenveto: malli_kaikki n = 3, yli 30 asteen eroja ei, suurin ero alle 6 astetta", ry["malli_kaikki"]["n"] == 3 and ry["malli_kaikki"]["yli_30"] == 0 and ry["malli_kaikki"]["max_abs"] < 6.0)
     radat = {"X": [dict(kauko_kierto=dict(omega_deg_s=60.0, omega_sd_deg_s=1.0, varma=True, t_keski=116.2))]}
     hr = kvl.heittovertailu(valinta, merk, mitt, radat)
     r = hr[0]
@@ -2364,8 +2366,41 @@ def testaa_kierre_lahi_kauko():
     tarkista("tulosta: otsikko, luokat, ristiriidat ja suuruus", len(rivit_) == 8 and "RISTIRIITA X heitto 2" in rivit_[5] and rivit_[-1].startswith("Suuruus"), str(len(rivit_)))
 
 
+def testaa_kierron_merkki_ja_palkkimalli():
+    print("kiertosuunta (ns.kierron_merkki) ja heittopaan palkkimalli (netti_kierre.PALKKI_MUOTO_LAHI)")
+    import types
+
+    def mit(om, varma):
+        return dict(omega_deg_s=om, varma=varma)
+
+    def heitto(lahi, kauko, c=None):
+        return types.SimpleNamespace(viivat=(dict(kaarevuus_1_cm=c) if c is not None else None), kierto=lahi, kauko_kierto=kauko)
+    km_ = ns.kierron_merkki
+    tarkista("kierron_merkki: kaksi varmaa samaan suuntaan -> se suunta", km_(heitto(mit(80.0, True), mit(40.0, True))) == 1 and km_(heitto(mit(-80.0, True), mit(-40.0, True))) == -1)
+    tarkista("kierron_merkki: kaksi varmaa eri suuntiin (ristiriita) -> tuntematon (0)", km_(heitto(mit(-62.0, True), mit(72.0, True))) == 0)
+    tarkista("kierron_merkki: ristiriita, mutta selva kaarto (vasemmalle = vastapaivaan) ratkaisee", km_(heitto(mit(-62.0, True), mit(72.0, True), c=-6e-5)) == 1 and km_(heitto(mit(-62.0, True), mit(72.0, True), c=6e-5)) == -1)
+    tarkista("kierron_merkki: yksi varma ratkaisee, vaikka toinen (epavarma) olisi eri mielta", km_(heitto(mit(-50.0, False), mit(70.0, True))) == 1 and km_(heitto(mit(90.0, True), mit(-30.0, False))) == 1)
+    tarkista("kierron_merkki: ei varmoja -> ensimmainen mittaus (heittopaa); ei mittauksia -> 0", km_(heitto(mit(-50.0, False), mit(70.0, False))) == -1 and km_(heitto(None, None)) == 0)
+    kutsut = []
+
+    def valekayrat(cam, ast, vari, havainnot, t_irr, muoto, t0=0.0, y_max=nk.Y_MAX_UUSI, sigma=None):
+        kutsut.append((tuple(muoto), sigma))
+        return None
+    vanha = nk.kulmakayrat
+    nk.kulmakayrat = valekayrat
+    try:
+        r1 = nk.arvioi_posteriori(None, {}, "punainen", [], 0.0)
+        r2 = nk.arvioi_posteriori(None, {}, "keltainen", [], 0.0, muoto=(6.0, 14.0, 5.0), sigma=2.5)
+        r3 = nk.arvioi_posteriori_kauko(None, {}, "punainen", [], 0.0, (4.8, 11.9, 6.6))
+    finally:
+        nk.kulmakayrat = vanha
+    tarkista("arvioi_posteriori (heittopaa): oletuksena PALKKI_MUOTO_LAHI ja SIGMA_PALKKI_LAHI", kutsut[0] == (tuple(nk.PALKKI_MUOTO_LAHI), nk.SIGMA_PALKKI_LAHI) and "virhe" in r1, str(kutsut[0]))
+    tarkista("arvioi_posteriori: nimetty muoto ja sigma kaytetaan sellaisenaan", kutsut[1] == ((6.0, 14.0, 5.0), 2.5) and "virhe" in r2, str(kutsut[1]))
+    tarkista("arvioi_posteriori_kauko: kalibrointikansion muoto ja kuvan oma sumeus (sigma None) sailyvat", kutsut[2] == ((4.8, 11.9, 6.6), None) and "virhe" in r3, str(kutsut[2]))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli):
         t()
     print()
     if VIRHEITA:

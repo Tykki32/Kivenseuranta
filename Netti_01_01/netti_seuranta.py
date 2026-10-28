@@ -554,7 +554,7 @@ def kierto_laske(m, args):
     puoli, vari, havainnot, t_irr = args[:4]
     try:
         if len(args) <= 4:                                     # heittopaa: robusti posteriori kaikista ruuduista irroituksesta kuvan reunaan (netti_kierre.arvioi_posteriori)
-            return nk.arvioi_posteriori(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari))
+            return nk.arvioi_posteriori(m.cam, m.ast, vari, havainnot, t_irr)                  # heittopaan palkkimalli: netti_kierre.PALKKI_MUOTO_LAHI (kierto_muoto_*.json on vain kaukopaalle)
         return nk.arvioi_posteriori_kauko(m.cam, m.ast, vari, havainnot, t_irr, m.kierto_muoto.get(vari), omega_ennakko=args[4])        # kaukopaa: kuten heittopaa, ruudukko tihea, heikko ennakko heittopaasta
     except Exception as e:
         return dict(virhe=repr(e))
@@ -2085,7 +2085,8 @@ def hog_hog_aika_malli(v):
 
 def kierron_merkki(h):
     """Kiertosuunta: +1 vastapaivaan, -1 myotapaivaan, 0 tuntematon. Kuvamittaus (omega; heittopaa ja kaukopaa), ellei se ole epavarma ja vapaan lennon kaarto (kaarevuus < 0: kaartaa
-    vasemmalle = vastapaivaan) ole selva; ilman kuvamittausta selva kaarto riittaa vihjeeksi. Kaksi varmaa mittausta samaan suuntaan ratkaisevat suunnan."""
+    vasemmalle = vastapaivaan) ole selva; ilman kuvamittausta selva kaarto riittaa vihjeeksi. Kaksi varmaa mittausta samaan suuntaan ratkaisevat suunnan; kaksi varmaa mittausta eri suuntiin (heittopaa ja
+    kaukopaa ristiriidassa, esim. Video2 heitto 49: heittopaa myotapaivaan, kaukopaa vastapaivaan) jattavat suunnan tuntemattomaksi (0), ellei kaarto ole selva."""
     v = h.viivat
     c = v.get("kaarevuus_1_cm") if v else None
     mitat = [(bool(k.get("varma")), 1 if k["omega_deg_s"] > 0 else -1) for k in (h.kierto, h.kauko_kierto) if k is not None and "virhe" not in k]
@@ -2093,7 +2094,7 @@ def kierron_merkki(h):
         varmat = [s_ for vm, s_ in mitat if vm]
         if varmat and len(set(varmat)) == 1:
             return varmat[0]
-        s_ = (varmat or [m[1] for m in mitat])[0]
+        s_ = 0 if varmat else mitat[0][1]                  # varmoja mittauksia on tassa vain eri suuntiin (ristiriita): suunta tuntematon; muuten ensimmainen (epavarma) mittaus
         if c is not None and abs(c) >= KAARTO_VARMA_1_CM:
             s_ = 1 if c < 0 else -1
         return s_

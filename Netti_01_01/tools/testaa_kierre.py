@@ -135,6 +135,20 @@ def main():
     print(f"  varmasti vaara suunta {vaara_varma} / {n_all}; omega 3 sd:n sisalla {ok_z} / {n_all}")
     if vaara_varma > 0:
         virheita += 1; print("  VIRHE: varmasti vaara suunta myohaisella kierrolla")
+    # kulmat_hetkilla: mallin kulma ruuduille (posteriorin ympyrakeskiarvo) palautuu tunnettuun kulmaan, kun kierto on selva; plateau (t < t_c) tunnetaan myos
+    print("kulmat_hetkilla (saranamalli A, t_c = 0,2 s, kasi 22 ruutua, puhtaita 14): suurin kulmavirhe puhtailla ruuduilla (kasivaiheen ruutujen kulma on epavarma)")
+    for om in (110.0, -110.0, 60.0, -214.0):
+        t_c_, th_p_ = 0.2, 40.0
+        k, t_irr = synteettinen_sarana(om, rng, t_c=t_c_, th_p=th_p_, n_puhdas=14)
+        t_c_abs = t_c_ + (nk.SARANA_T_ALKU + 0.6)
+        th_tosi = np.where(k["t"] < t_c_abs, th_p_, th_p_ + om * (k["t"] - t_c_abs)) % 180.0
+        kul = nk.kulmat_hetkilla(k, t_irr, k["t"])
+        e = np.array([abs(ero(a, b)) for (a, _), b in zip(kul, th_tosi)])
+        puhtaat = np.arange(len(e)) >= 22
+        R_ = np.array([r for _, r in kul])
+        print(f"  omega {om:+5.0f}: puhtaat ruudut max {e[puhtaat].max():4.1f}, R keski {R_[puhtaat].mean():.2f}; kasivaihe (kohina 15 aste, peilikuvaminimi) max {e[~puhtaat].max():4.1f}, R pienin {R_.min():.2f}")
+        if e[puhtaat].max() > 8.0 or R_[puhtaat].mean() < 0.8:
+            virheita += 1; print("  VIRHE: mallin kulma poikkeaa tunnetusta kulmasta puhtailla ruuduilla")
     # ei-puhtaiden ruutujen paino: heittopaan saranamalli kayttaa HANTA_PAINO_LAHI:a, vakiokiertomalli (kaukopaa) HANTA_PAINO:a; puhtaiden ruutujen kohina on sama
     k, t_irr = synteettinen_sarana(110.0, rng, t_c=0.2, th_p=40.0, n_puhdas=14)
     sig_lahi, sig_kauko, ei_puhdas = nk.posteriori_omega_sarana(k, t_irr)["sig"], nk.posteriori_omega(k)["sig"], k["nkz"] > 0

@@ -646,17 +646,19 @@ Testit: `python tools/testaa_vakiot.py` (`testaa_kierre_leikkeet`, `testaa_kahva
 
 Aineisto (`kierre_validointi/merkinnat.json`, `valinta.json`): 48 ruutua 12 heitosta (5 videota, molemmat värit), jotka merkitsijä sai satunnaisessa järjestyksessä: viiva 39 ruutuun, 6 "ei näy", 3 "käsi kahvassa"; 8 heitolle saatiin omega ihmisen viivoista (`kierre_etiketit.py`).
 `python tools/kierre_vertailu.py --valinta kierre_validointi/valinta.json --merkinnat kierre_validointi/merkinnat.json --ajo NIMI VIDEO RADAT ... [--tulos raportti.json]` ajaa heittopään mittauksen näille ruuduille samalla koodilla ja syötteellä kuin reaaliaikainen ohjelma
-(`netti_seuranta._kierto_aloita`: B-paikat, aikaperusta, leikkeet oikaistusta kuvasta) ja vertaa (1) koneen parasta kulmaa ihmisen viivaan ruutu kerrallaan (maan tason kulma, jakso 180°), (2) koneen omegaa ihmisen viivoista sovitettuun omegaan ja (3) kaukopään mittausta vaimennettuna lähipäähän
+(`netti_seuranta._kierto_aloita`: B-paikat, aikaperusta, leikkeet oikaistusta kuvasta) ja vertaa (1) koneen kulmaa ihmisen viivaan ruutu kerrallaan (maan tason kulma, jakso 180°): sekä ruudun oman kustannuskäyrän minimiä että ohjelman antamaa mallin kulmaa
+(heiton saranamallin posteriorin kulma ruudun hetkellä, `netti_kierre.kulmat_hetkilla`), (2) koneen omegaa ihmisen viivoista sovitettuun omegaan ja (3) kaukopään mittausta vaimennettuna lähipäähän
 (`omega_lähi = omega_kauko exp(K_KIERRE dt)`; ei käytä lähipään kuvia, joten se on riippumaton tuomari). `python tools/kierre_lahi_kauko.py r_X/radat.pkl ...` laskee vertailun (3) pelkistä ajon `radat.pkl`-tiedostoista (ei videota): heittopään varman suunnan vastaavuus kaukopään kanssa ja `k`-tilastot.
-Ihmisen viiva ei ole totuus (kuvan sumeus, käsi, liikesumeus; keltaisella kahvalla palkki on lähes saman värinen kuin kahva, ja merkityt ruudut ovat käsi-vapaita), joten tulokset luetaan kolmen tuomarin yhteisvaikutuksena.
+Ihmisen viivat ovat totuus ruutukohtaiselle kulmalle (käyttäjän linjaus: koneen kulma saa poiketa niistä vain muutaman asteen, ei koskaan yli 30°; viivat ovat keskenään johdonmukaisia 1-2°, kun niihin sovitetaan suora), joten ruutukohtainen ero on koneen virhettä.
+Heittokohtaisessa omegassa tuomareita on kolme (ihmisen viivat, koneen mittaus, kaukopää): ihmisen omega perustuu 3-4 ruutuun 0,4-0,9 sekunnin ikkunassa ja kaukopää mittaa toisella kameralla 10-25 s myöhemmin, joten ne ovat vertailuja eivätkä ruutukohtaista totuutta.
 
 *Tulos ennen korjausta (12 merkittyä heittoa; 5 täyttä ajoa = 550 heittoa kaukopäävertailuun).*
 * **Suunta:** koneen ja ihmisen omegan etumerkki sama 8 / 8 heitossa; 5 videon täysissä ajoissa (550 heittoa) heittopään varma suunta (456 heittoa) täsmää kaukopään kanssa **294 / 294** (kaukopää varma) ja **125 / 125** (kaukopään suunta p ≥ 0,99, suuruus epävarma).
 * **Suuruus:** |omega_kone - omega_ihminen| keskimäärin 11,1, mediaani 6,0 aste/s (8 heittoa; ihmisen oma keskivirhe 1-17 aste/s). Kaukopäävertailu: `k = ln(omega_lähi / omega_kauko) / dt` mediaani 0,0203 (IMU: 0,021), robusti hajonta 0,0166; |ln r| mediaani 0,19.
   Ahrenberg 92: ihminen -61, kone -99, kaukopäästä lähipäähän -107 aste/s, eli kone on lähempänä riippumatonta mittaa kuin ihmisen viivat.
 * **Ruutukohtainen kulma:** koneen kulmakäyrän minimi on mediaanilta 10,1° ihmisen viivasta (puhtaat ruudut 9,2°, ei-puhtaat 15,6°; keltainen 8,6°, punainen 17,1°). Kun ihmisen kulma on 60-120° (palkki osoittaa kameran katselusuuntaan, kustannuskäyrän pohja tasainen ja peilikuvaminimi),
-  mediaani on 19,3° ja keskiero -10,3° (n = 12); kulmilla 0-30° ja 120-180° 8-10° ja keskiero 0...+3°. Heittokohtaiseen omegaan tämä ei vaikuta paljon, koska posteriori käyttää koko kulmakäyrää eikä ruutukohtaista minimiä. Ohuempi palkkimalli (4,0 / 10,0 / 4,0 cm) poisti harhan
-  ruututasolla mutta huononsi heittokohtaista yhdenmukaisuutta kaukopään kanssa, joten palkin mallia ei muutettu.
+  mediaani on 19,3° ja keskiero -10,3° (n = 12); kulmilla 0-30° ja 120-180° 8-10° ja keskiero 0...+3°. Heittokohtaiseen omegaan tämä ei vaikuta paljon, koska posteriori käyttää koko kulmakäyrää eikä ruutukohtaista minimiä. Ensimmäinen kokeilu ohuemmasta palkkimallista (4,0 / 10,0 / 4,0 cm) poisti harhan
+  ruututasolla mutta huononsi heittokohtaista yhdenmukaisuutta kaukopään kanssa, joten sitä ei otettu käyttöön; ihmisen viivojen todettua totuudeksi ohut malli viimeisteltiin ja otettiin käyttöön heittopäässä (Korjaus 2 alla: 5,0 / 12,5 / 3,5 cm, kuvasumeus 1,7 px, kaukopäävertailu ei huonone).
 * **Ei-puhtaiden ruutujen paino:** ruutukohtainen suurimman uskottavuuden kalibrointi ihmisen kulmilla (39 ruutua, ihmisen kohina 3-5°) antaa ei-puhtaille ruuduille (käsi alueella tai Cz,min ≥ 8) 0,2-kertaisen kohinavarianssin nykyiseen verrattuna (logL +8; vastaa painoa ~2,3 painon 0,5 sijaan)
   ja puhtaille 1,3-1,6-kertaisen: käsipikselit ja huono sovitus on jo otettu huomioon `KASI_SIGMA`- ja `CZ_SIGMA`-taulukoissa, joten lisärangaistus `HANTA_PAINO` = 0,5 aliarvioi ei-puhtaita ruutuja (heittopään omegan epävarmuus ja varman suunnan osuus olivat liian varovaisia).
 
@@ -676,8 +678,42 @@ omegan hajonta pienenee mediaanilta 13 %. 12 merkityllä heitolla ero ihmisen vi
 Painoilla ≥ 1,4 ensimmäinen ristiriita kaukopään kanssa ilmestyy (Video2 heitto 49: heittopää -62 aste/s varmana, kaukopää +72 aste/s varmana; heiton ruuduista 71 / 72 on ei-puhtaita (käsi alueella tai huono sovitus), kaukopään ikkuna 2,2 s; kumpi on oikeassa, jää auki: kaikki ruutujoukot, myös vähiten käden peittämät loppuruudut, antavat heittopäässä myötäpäivään),
 joten painoa ei viety pidemmälle.
 
-Rajoitukset: 48 merkittyä ruutua on vähän (kalibrointi erottaa vain karkeat erot); merkityt ruudut ovat käsi-vapaita (`kasi_px` ≤ 250), joten pahoin käden peittämiä ruutuja (kuten Video2 49) ei ole merkitty; kaukopää ei ole totuus. Lisämerkinnät raskaasti peitetyistä ruuduista (`tools/kierre_leikkeet.py` ilman käsirajausta) ratkaisisivat painon lopullisesti.
-Testit: `testaa_kierre_vertailu`, `testaa_kierre_lahi_kauko` (`tools/testaa_vakiot.py`) ja ei-puhtaiden painon jako heittopään / kaukopään välillä (`tools/testaa_kierre.py`).
+*Korjaus 2: ruutukohtainen kulma ihmisen viivoihin (ihmisen viivat ovat totuus).* Vaatimus: koneen kulma saa poiketa ihmisen viivasta vain muutaman asteen, ei koskaan yli 30°. Ruutukohtainen ero on koneen virhettä, ja sen juurisyyt ja korjaukset ovat:
+* **Paksu palkkimalli kallistaa kulmaa.** Kalibrointikansion `kierto_muoto_*.json` (keltainen h / ell / w = 5,3 / 12,5 / 4,9, punainen 4,8 / 11,9 / 6,6 cm) on leveä, ja kustannuskäyrän minimi kääntyy leveän palkin lävistäjän suuntaan (kulmilla 60-120° keskiero -10°, 10-30° harhoja).
+  Heittopään malli on nyt ohut: `netti_kierre.PALKKI_MUOTO_LAHI` = 5,0 / 12,5 / 3,5 cm ja `SIGMA_PALKKI_LAHI` = 1,7 px (palkin reuna on terävä; kiekon sovituksen `ast["sigma_px"]` = 2,1 px on kiekon reunan sumeus). Heittopää ei lue enää `kierto_muoto_*.json`-tiedostoa; se jää kaukopään malliksi, koska kaukopäätä ei ole merkitty ja sen vertailu pysyy riippumattomana.
+* **Ohjelman antama kulma on koko heiton posteriori eikä yksittäisen ruudun minimi** (`netti_kierre.kulmat_hetkilla`): ruutujen kustannuskäyristä (`_sarana_pen`, sama kuin omegan posteriorissa) lasketaan saranamallin täysi posteriori (θ0, ω, t_c) ja ruudun kulma on posteriorin ympyräkeskiarvo ruudun hetkellä (R = varmuus).
+  Yksittäisen ruudun minimi voi olla jopa 37° pielessä (käsi, huono sovitus), mutta malli yhdistää heiton kaikki ruudut, joten kulma on aina fysikaalisesti sileä (vakio ennen kierron alkua, sen jälkeen suoraan etenevä).
+* **Kaksi varmaa, keskenään ristiriitaista mittausta jättävät suunnan tuntemattomaksi** (`netti_seuranta.kierron_merkki`): ohut malli antaa Video2 heitolle 49 varman myötäpäivään (-61 aste/s) ja kaukopää varman vastapäivään (+72); ennen ratkaisi ensimmäinen mittaus (heittopää), nyt suunta on 0 (tuntematon), ellei vapaan lennon kaarto ole selvä.
+
+Ruutukohtainen |kone - ihminen| (12 heittoa, 39 viivalla merkittyä ruutua; `tools/kierre_vertailu.py`, tuotantokoodi, asteina; ennen = paksu malli, HANTA_PAINO_LAHI 1,0):
+
+| kone | mediaani | keski | p90 | suurin | ≤ 5° | ≤ 10° | ≤ 20° | yli 30° |
+|---|---|---|---|---|---|---|---|---|
+| ruudun minimi, paksu malli (ennen) | 10,1 | 13,2 | 27,4 | 34,8 | 13 % | 49 % | 79 % | 1 |
+| ruudun minimi, ohut malli | 8,7 | 10,0 | 18,3 | 36,8 | 18 % | 69 % | 92 % | 1 |
+| mallin kulma, paksu malli | 7,1 | 9,3 | 17,7 | 31,5 | 31 % | 69 % | 95 % | 1 |
+| **mallin kulma, ohut malli (ohjelman antama, nyt)** | **6,7** | **7,2** | **13,8** | **18,3** | 28 % | **79 %** | **100 %** | **0** |
+
+Puhtaissa ruuduissa (Cz,min < 8; ohuella mallilla 8 / 39) mallin kulma poikkeaa keskimäärin 5,9° (suurin 12,9°), ei-puhtaissa (31 / 39) 7,6° (suurin 18,3°).
+Heittokohtainen omega: samalla aikaikkunalla kuin ihmisen viivat koneen omega poikkeaa ihmisen omegasta keskimäärin 11,2 (ennen 16,2), mediaanilta 6,3 (11,7) aste/s; koko heiton omega 12,6 (ennen 10,4) / 7,9 (5,9) aste/s, mikä on ihmisen oman keskivirheen (1-17 aste/s) ja 3-4 ruudun ikkunan epävarmuuden sisällä
+(neljällä heitolla ero kasvoi, Video1 43:lla ja Video2 8:lla yli 12 aste/s, kolmella pieneni, Matarmaa 7:llä yli 11 aste/s; Ahrenberg 92: ihminen -61, kone -94, kaukopäästä lähipäähän -107). Suunta 8 / 8 ihmisen kanssa ja 9 / 9 kaukopään kanssa; kaukopään kanssa riippumaton tarkistus 162 heitolla (tuotantokoodi tallennetuilla kulmakäyrillä):
+
+| heittopään palkkimalli | suunta varma (p ≥ 0,99) | kaukopää varma tai suunta p ≥ 0,99: sama etumerkki (kaikki heitot) | sama etumerkki, kun heittopää varma | k mediaani / hajonta | \|ln r\| mediaani / keski | σ(ω) / \|ω\| mediaani |
+|---|---|---|---|---|---|---|
+| paksu (ennen) | 143 / 162 | 132 / 138 | 125 / 125 | 0,0164 / 0,0159 | 0,178 / 0,257 | 0,131 |
+| **ohut (nyt)** | 140 / 162 | **135 / 138** | 120 / 121 | 0,0159 / 0,0160 | 0,178 / 0,240 | 0,116 |
+
+Viisi heittoa vaihtaa etumerkkiä, neljä kaukopään suuntaan: Saarelainen 68 (paksu -80 aste/s p = 0,70, ohut +25 aste/s p = 0,999, kaukopää +31 varmana, eli ohut malli korjasi suunnan varmaksi) sekä Saarelainen 86, Video2 18 ja Video2 36 (arpoja p 0,51-0,58 kummallakin mallilla; ohut malli on kaukopään suunnalla kaikissa kolmessa);
+yksi poispäin: Video2 40 (kaukopää -18 aste/s, hidas kierto; paksu -21 aste/s p = 1,0, ohut +13 aste/s p = 0,56, eli varmuus katoaa). Ainoa varma ristiriita kaukopään kanssa on Video2 49 (yllä: suunta nyt tuntematon); silmämääräinen tarkistus puoltaa heittopään myötäpäivään-tulosta.
+Ohuen mallin parametrit valittiin samoilla 39 ruudulla, joilla tulos mitataan (valinta muutaman vaihtoehdon väliltä: palkin leveys 3,5-6,6 cm, kuvasumeus 1,2-2,1 px), joten ruutukohtaiset luvut ovat osin näytteessä; riippumaton tarkistus on vain kaukopäävertailu (yllä), eikä se huonone.
+
+Jäljellä oleva virhe (mallin kulma, 7 ° keskimäärin, suurin 18 °) on pääosin heittokohtaista vakiopoikkeamaa (±6° rms): kolmella heitolla (Video1 25, Video1 43, Matarmaa 69) lähes vaakasuorat palkit (ihmisen kulma 0-11°) tulevat 9-15° liian vastapäivään, ja tällaiset heittokohtaiset poikkeamat vääristävät omegaa (Video1 25: kone -107, kaukopäästä -74, ihminen -65 aste/s).
+Rakenteellinen jäännös on palkin ja kiekon reunan yhtymäkohdassa (kiekon reunan sumea kehä); sitä yritettiin poistaa reunaviivasovituksella, liikesumeuden, kehän ja 3D-laatikon mallilla, ruutu- ja heittokohtaisella muodon ja paikan valinnalla, kulmaharhan korjauksella ja ihmisen kulmilla opetetulla regressiolla (jätä yksi heitto pois -testissä ei yleisty), eikä mikään niistä parantanut tulosta luotettavasti.
+
+Rajoitukset: 48 merkittyä ruutua on vähän (kalibrointi erottaa vain karkeat erot), eikä ruutuja ole merkitty heiton alusta (käsi kahvassa, kierron alku) eikä pitkältä aikaväliltä samasta heitosta (pisin ihmisen ikkuna 0,9 s); merkityt ruudut ovat käsi-vapaita (`kasi_px` ≤ 250), joten pahoin käden peittämiä ruutuja (kuten Video2 49) ei ole merkitty; kaukopää ei ole totuus.
+`CZ_PISTEET` / `CZ_SIGMA` / `PUHDAS_CZ` / `S2_KAYRA` on kalibroitu vanhalle paksulle mallille (ohuella mallilla Cz,min on suurempi: mediaani 10,9 vs 7,3, ja puhtaita ruutuja 12 % vs 19 % ruuduista); omegan hajonta on edelleen liian pieni ihmisen omegaan nähden (z rms 1,7), koska ruutukohtaiset virheet ovat osin yhteisiä koko heitolle.
+Lisämerkinnät (satunnaisia ruutuja samoilta heitoilta pitkältä aikaväliltä, käsiruutuja ja kaikkia kulmia; `tools/luo_kahvamerkitsin.py`) mahdollistaisivat taulukoiden uudelleenkalibroinnin ja pitävän riippumattoman testin (kalibrointi- ja testiheitot erikseen).
+Testit: `testaa_kierre_vertailu`, `testaa_kierre_lahi_kauko`, `testaa_kierron_merkki_ja_palkkimalli` (`tools/testaa_vakiot.py`) ja ei-puhtaiden painon jako heittopään / kaukopään välillä sekä mallin kulman (`kulmat_hetkilla`) tarkistus synteettisillä saranadatoilla (`tools/testaa_kierre.py`).
 
 ### Suunnat toisen päädyn pesäkuvaan (`suunnat_pesakuvaan.py`)
 

@@ -8,8 +8,9 @@ Videolta ajetaan heittopaan kierteen mittaus samoilla ruuduilla ja samalla koodi
 syotteesta; netti_kierre.kulmakayrat ja arvioi_posteriori); tulos toistaa radat.pkl:n tallennetun kierron.
 
 Vertailut:
-  * RUUTUKOHTAINEN: koneen paras kulma (kulmakustannuskayran minimi) ihmisen viivaan (kulma maan tasossa, X-akselista Y-akseliin, vastapaivaan; jakso 180 astetta): ero, koneen kustannus ihmisen kulmalla (dC) ja
-    kayran lahin paikallinen minimi; luokittain (vari, puhdas / ei-puhdas ruutu, ihmisen kulman alue). Koneen ruudun kohinatason oikeellisuus: pen = dC / (2 s2 (sigma / SIG_HYVA)^2) on kalibroidulla mallilla ~ khii^2 / 2
+  * RUUTUKOHTAINEN: koneen paras kulma (kulmakustannuskayran minimi; yksi ruutu kerrallaan) ja koneen mallin kulma (ohjelman antama kulma: koko heiton saranamallin posteriori ruudun hetkella) ihmisen viivaan
+    (kulma maan tasossa, X-akselista Y-akseliin, vastapaivaan; jakso 180 astetta): ero, koneen kustannus ihmisen kulmalla (dC) ja kayran lahin paikallinen minimi; luokittain (vari, puhdas / ei-puhdas ruutu,
+    ihmisen kulman alue). Koneen ruudun kohinatason oikeellisuus: pen = dC / (2 s2 (sigma / SIG_HYVA)^2) on kalibroidulla mallilla ~ khii^2 / 2
     (keski 0,5, mediaani 0,23); ihmisen oma kohina (~3-5 astetta) nostaa sita puhtailla ruuduilla.
   * HEITTOKOHTAINEN: omega ihmisen viivoista (kierre_etiketit: 180 asteen purku + suorasovitus) vs koneen omega (kaikki ruudut), koneen omega vain ihmisen ajanjaksolta (vakiokierto) ja kaukopaan mittaus
     vaimennettuna lahipaahan (omega_lahi = omega_kauko exp(K_KIERRE dt)): riippumaton viite, joka ei kayta lahipaan kuvia.
@@ -102,54 +103,69 @@ def kierto_havainnot(m, cap, h):
 def koneen_mittaus(m, cap, h):
     """Heiton kierteen mittaus (kulmakustannuskayrat k ja posteriorin tulos) videolta: dict(k, tulos)."""
     havainnot = kierto_havainnot(m, cap, h)
-    muoto = m.kierto_muoto.get(h["vari"])
-    muoto_ = tuple(muoto) if muoto is not None else (nk.ko.H_ALKU, nk.ko.ELL_ALKU, nk.ko.W_ALKU)
-    k = nk.kulmakayrat(m.cam, m.ast, h["vari"], havainnot, h["viivat"]["t_irr"], muoto_, t0=nk.SARANA_T_ALKU)
-    return dict(k=k, tulos=nk.arvioi_posteriori(m.cam, m.ast, h["vari"], havainnot, h["viivat"]["t_irr"], muoto), t_irr=h["viivat"]["t_irr"])
+    k = nk.kulmakayrat(m.cam, m.ast, h["vari"], havainnot, h["viivat"]["t_irr"], nk.PALKKI_MUOTO_LAHI, t0=nk.SARANA_T_ALKU, sigma=nk.SIGMA_PALKKI_LAHI)
+    return dict(k=k, tulos=nk.arvioi_posteriori(m.cam, m.ast, h["vari"], havainnot, h["viivat"]["t_irr"]), t_irr=h["viivat"]["t_irr"])
 
 
 # ---------------------------------------------------------------------------------------------------------------------
 # RUUTUKOHTAINEN VERTAILU
 # ---------------------------------------------------------------------------------------------------------------------
 def ruutuvertailu(valinta, merkinnat, mittaukset):
-    """Rivi jokaista ihmisen viivalla (tila ok / epavarma) merkitsemaa ruutua kohti: ihmisen kulma (maan taso), koneen paras kulma, ero, dC, lahin paikallinen minimi, ruudun laatu.
-    mittaukset: {(nimi, heitto): dict(k=kulmakayrat-tulos)}."""
-    rivit = []
+    """Rivi jokaista ihmisen viivalla (tila ok / epavarma) merkitsemaa ruutua kohti: ihmisen kulma (maan taso), koneen paras kulma (kulmakayran minimi, th_kone), koneen mallin kulma (heiton koko
+    saranamallin posteriorin ympyrakeskiarvo ruudun hetkella, th_malli: se kulma, jonka ohjelma antaa), erot, dC, lahin paikallinen minimi, ruudun laatu. mittaukset: {(nimi, heitto): dict(k=kulmakayrat-tulos,
+    t_irr)}."""
+    ehdokkaat = {}
     for n in valinta:
         d = merkinnat.get(n["id"])
         mk = mittaukset.get((n["nimi"], n["heitto"]))
         if d is None or d["tila"] not in ("ok", "epavarma") or mk is None or mk["k"] is None:
             continue
+        j = np.where(mk["k"]["f"] == n["f"])[0]
+        if len(j):
+            ehdokkaat.setdefault((n["nimi"], n["heitto"]), []).append((n, d, int(j[0])))
+    rivit = []
+    for key, lista in ehdokkaat.items():
+        mk = mittaukset[key]
         k = mk["k"]
-        j = np.where(k["f"] == n["f"])[0]
-        if len(j) == 0:
-            continue
-        j = int(j[0])
-        C = k["Cz"][j]
-        cmin = float(C.min())
-        sig, puhdas = nk.ruudun_sigma(np.array([cmin]), np.array([k["nkz"][j]]), nk.HANTA_PAINO_LAHI)
-        th = maa_kulma(d["kulma_deg"], n["A"])
-        am = float(nk.KULMAT[int(np.argmin(C))])
-        mi = kayran_minimit(C)
-        dC = kustannus_kulmassa(C, th) - cmin
-        rivit.append(dict(id=n["id"], nimi=n["nimi"], heitto=n["heitto"], vari=n["vari"], f=n["f"], t=n["t_s"], tila=d["tila"], th_ihminen=th, th_kone=am, ero=float(ero180(am, th)),
-                          ero_lahin=float(min((ero180(m_, th) for m_, c in mi), key=abs)) if mi else float("nan"), dC=float(dC), cmin=cmin, nkz=int(k["nkz"][j]), nvz=int(k["nvz"][j]),
-                          sigma=float(sig[0]), puhdas=bool(puhdas[0]), pen=float(dC / (2.0 * nk.S2_KAYRA * (sig[0] / nk.SIG_HYVA) ** 2))))
+        try:
+            malli = nk.kulmat_hetkilla(k, mk["t_irr"], [float(k["t"][j]) for _, _, j in lista]) if len(k["t"]) >= 4 and mk.get("t_irr") is not None else [(float("nan"), float("nan"))] * len(lista)
+        except (KeyError, ValueError):
+            malli = [(float("nan"), float("nan"))] * len(lista)
+        for (n, d, j), (th_m, r_m) in zip(lista, malli):
+            C = k["Cz"][j]
+            cmin = float(C.min())
+            sig, puhdas = nk.ruudun_sigma(np.array([cmin]), np.array([k["nkz"][j]]), nk.HANTA_PAINO_LAHI)
+            th = maa_kulma(d["kulma_deg"], n["A"])
+            am = float(nk.KULMAT[int(np.argmin(C))])
+            mi = kayran_minimit(C)
+            dC = kustannus_kulmassa(C, th) - cmin
+            rivit.append(dict(id=n["id"], nimi=n["nimi"], heitto=n["heitto"], vari=n["vari"], f=n["f"], t=n["t_s"], tila=d["tila"], th_ihminen=th, th_kone=am, ero=float(ero180(am, th)),
+                              th_malli=float(th_m), R_malli=float(r_m), ero_malli=float(ero180(th_m, th)) if np.isfinite(th_m) else float("nan"),
+                              ero_lahin=float(min((ero180(m_, th) for m_, c in mi), key=abs)) if mi else float("nan"), dC=float(dC), cmin=cmin, nkz=int(k["nkz"][j]), nvz=int(k["nvz"][j]),
+                              sigma=float(sig[0]), puhdas=bool(puhdas[0]), pen=float(dC / (2.0 * nk.S2_KAYRA * (sig[0] / nk.SIG_HYVA) ** 2))))
+    rivit.sort(key=lambda x: (x["nimi"], x["heitto"], x["t"]))
     return rivit
 
 
 def ruutuyhteenveto(rivit):
-    """Yhteenveto ruutukohtaisesta vertailusta: dict(kaikki / puhdas / ei_puhdas / punainen / keltainen / alueittain: n, |ero| mediaani ja keski, merkillinen keskiero, osuus <= 10 astetta, pen keski)."""
-    def tilasto(r):
+    """Yhteenveto ruutukohtaisesta vertailusta: dict(kaikki / puhdas / ei_puhdas / punainen / keltainen / alueittain: n, |ero| mediaani, keski, p90 ja suurin, merkillinen keskiero, osuudet <= 5 / 10 / 20 astetta,
+    yli 30 asteen erot, pen keski) koneen parhaalle kulmalle (kulmakayran minimi), ja `malli_kaikki / malli_puhdas / malli_ei_puhdas` ohjelman antamalle mallin kulmalle (ero_malli)."""
+    def tilasto(r, avain="ero"):
+        r = [x for x in r if np.isfinite(x[avain])]
         if not r:
             return None
-        e = np.array([x["ero"] for x in r])
-        return dict(n=len(r), mediaani_abs=float(np.median(np.abs(e))), keski_abs=float(np.mean(np.abs(e))), keskiero=float(e.mean()), osuus_10=float(np.mean(np.abs(e) <= 10.0)),
-                    osuus_20=float(np.mean(np.abs(e) <= 20.0)), lahin_10=float(np.mean([abs(x["ero_lahin"]) <= 10.0 for x in r])), pen_keski=float(np.mean([min(x["pen"], nk.KAYRA_KATKAISU) for x in r])))
+        e = np.array([x[avain] for x in r])
+        a = np.abs(e)
+        return dict(n=len(r), mediaani_abs=float(np.median(a)), keski_abs=float(np.mean(a)), p90_abs=float(np.percentile(a, 90)), max_abs=float(a.max()), keskiero=float(e.mean()), osuus_5=float(np.mean(a <= 5.0)),
+                    osuus_10=float(np.mean(a <= 10.0)), osuus_20=float(np.mean(a <= 20.0)), yli_30=int(np.sum(a > 30.0)), lahin_10=float(np.mean([abs(x["ero_lahin"]) <= 10.0 for x in r])),
+                    pen_keski=float(np.mean([min(x["pen"], nk.KAYRA_KATKAISU) for x in r])))
     y = {"kaikki": tilasto(rivit), "puhdas": tilasto([x for x in rivit if x["puhdas"]]), "ei_puhdas": tilasto([x for x in rivit if not x["puhdas"]]),
          "punainen": tilasto([x for x in rivit if x["vari"] == "punainen"]), "keltainen": tilasto([x for x in rivit if x["vari"] == "keltainen"])}
     for lo, hi in ((0, 30), (30, 60), (60, 120), (120, 180)):
         y[f"ihmisen_kulma_{lo}_{hi}"] = tilasto([x for x in rivit if lo <= x["th_ihminen"] < hi])
+    y["malli_kaikki"] = tilasto(rivit, "ero_malli")
+    y["malli_puhdas"] = tilasto([x for x in rivit if x["puhdas"]], "ero_malli")
+    y["malli_ei_puhdas"] = tilasto([x for x in rivit if not x["puhdas"]], "ero_malli")
     return y
 
 
@@ -218,11 +234,18 @@ def heittoyhteenveto(rivit):
 # RAPORTTI
 # ---------------------------------------------------------------------------------------------------------------------
 def tulosta_raportti(rr, hr, ry, hy, tulosta=print):
-    tulosta(f"Ruutukohtainen vertailu ({ry['kaikki']['n'] if ry.get('kaikki') else 0} ruutua, joihin ihminen piirsi viivan): koneen paras kulma vs ihmisen viiva")
+    tulosta(f"Ruutukohtainen vertailu ({ry['kaikki']['n'] if ry.get('kaikki') else 0} ruutua, joihin ihminen piirsi viivan): koneen kulma vs ihmisen viiva")
+    tulosta("  koneen paras kulma (kulmakayran minimi, yksi ruutu kerrallaan):")
     for nimi in ("kaikki", "puhdas", "ei_puhdas", "punainen", "keltainen", "ihmisen_kulma_0_30", "ihmisen_kulma_30_60", "ihmisen_kulma_60_120", "ihmisen_kulma_120_180"):
         t = ry.get(nimi)
         if t:
-            tulosta(f"  {nimi:<22} n={t['n']:>3}  |ero| mediaani {t['mediaani_abs']:5.1f}  keski {t['keski_abs']:5.1f}  keskiero {t['keskiero']:+5.1f}  <=10 astetta {t['osuus_10'] * 100:3.0f} %  <=20: {t['osuus_20'] * 100:3.0f} %  lahin minimi <=10: {t['lahin_10'] * 100:3.0f} %  pen {t['pen_keski']:.2f}")
+            tulosta(f"  {nimi:<22} n={t['n']:>3}  |ero| mediaani {t['mediaani_abs']:5.1f}  keski {t['keski_abs']:5.1f}  p90 {t['p90_abs']:5.1f}  suurin {t['max_abs']:5.1f}  keskiero {t['keskiero']:+5.1f}  <=5: {t['osuus_5'] * 100:3.0f} %  <=10: {t['osuus_10'] * 100:3.0f} %  <=20: {t['osuus_20'] * 100:3.0f} %  yli 30: {t['yli_30']}  lahin minimi <=10: {t['lahin_10'] * 100:3.0f} %  pen {t['pen_keski']:.2f}")
+    if ry.get("malli_kaikki"):
+        tulosta("  mallin kulma (ohjelman antama: koko heiton saranamallin posteriori ruudun hetkella):")
+        for nimi in ("malli_kaikki", "malli_puhdas", "malli_ei_puhdas"):
+            t = ry.get(nimi)
+            if t:
+                tulosta(f"  {nimi:<22} n={t['n']:>3}  |ero| mediaani {t['mediaani_abs']:5.1f}  keski {t['keski_abs']:5.1f}  p90 {t['p90_abs']:5.1f}  suurin {t['max_abs']:5.1f}  keskiero {t['keskiero']:+5.1f}  <=5: {t['osuus_5'] * 100:3.0f} %  <=10: {t['osuus_10'] * 100:3.0f} %  <=20: {t['osuus_20'] * 100:3.0f} %  yli 30: {t['yli_30']}")
     tulosta("\nHeittokohtainen omega (aste / s, + = vastapaivaan):")
     tulosta(f"{'heitto':<16}{'vari':<10}{'ihminen':>16}{'kone (kaikki)':>17}{'kone (ihm. aika)':>18}{'kauko':>8}{'kauko->lahi':>12}  suunta")
     for r in hr:
