@@ -6,8 +6,9 @@ Vaiheet (jokainen oma alikomentonsa; tulokset pickle-tiedostoina):
              python tools/kulmaverkko_opeta.py leikkeet --ajo Matarmaa Matarmaa.mp4 r_Matarmaa/radat.pkl --ajo ... --ulos leikkeet.pkl
   jalosta    Ihmisen viivat epätäydellisinä + tarkka kiertorata: kierto hidastuu lineaarisesti (omega(s) = omega_0 (1 - K s), kulma theta = th0 + omega_0 (s - K s^2 / 2)), joten heiton kaikki ruudut ovat kahden luvun (th0, omega_0)
              funktio. Radan sovitus viivoihin on robusti (yksittäinen väärä viiva ei kumoa muita) ja, jos --verkot annetaan, myös heitolle vieraiden verkkojen ruutujakaumiin; tulos on jalostettu kulma ruudulle (posteriorin keskiarvo ja hajonta)
-             koko heitolle sekä lista viivoista, joita rata ei hyväksy (`--ulos` pickle: opettajan ja oppilaan `--jalostetut`).
-             python tools/kulmaverkko_opeta.py jalosta --leikkeet leikkeet.pkl [--verkot vieras1.pkl vieras2.pkl] --ulos jalostetut.pkl
+             koko heitolle sekä lista viivoista, joita rata ei hyväksy (`--ulos` pickle: opettajan ja oppilaan `--jalostetut`). Rata on huonosti määrätty, kun heitolla on 1-2 viivaa tai viivat ovat keskenään ristiriitaisia (koe: väärä rata
+             pilasi opetuksen), joten `--varovainen` jalostaa vain johdonmukaiset heitot (3+ viivaa, jäännös <= 3 astetta, aikaikkuna >= 0,39 s) ja antaa muiden viivat sellaisenaan (`--raaka`: kaikkien viivat sellaisenaan).
+             python tools/kulmaverkko_opeta.py jalosta --leikkeet leikkeet.pkl --varovainen [--verkot vieras1.pkl vieras2.pkl] --ulos jalostetut.pkl
   opettaja   Ensimmäinen verkko pelkillä ihmisen kulmilla: oletuksena viivat sovitetaan heittokohtaiseen kiertorataan (ankkuroidut ruudut: 3+ viivaa, jäännös <= 3 astetta, rata antaa kulman viivojen aikaikkunan ± 0,2 s ruuduille;
              muiden heittojen yksittäiset viivat sellaisinaan) tai `--jalostetut` antaa jalostetut kulmat (suositus). Opetuksessa kuvan kierto (kulma + kierto) ja peilaus (kulma -> -kulma) tuottavat kaikki kulmat.
              python tools/kulmaverkko_opeta.py opettaja --leikkeet leikkeet.pkl --ulos opettaja.pkl [--verkko pieni] [--askelta 4000]
