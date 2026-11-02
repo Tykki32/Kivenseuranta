@@ -70,14 +70,18 @@ def _pool(x):
 
 
 def lataa(polku):
-    """Verkko tiedostosta (npz: arch = 'pieni' | 'resf', blocks, parametrit 'kerros/w' ja 'kerros/b')."""
+    """Verkko tiedostosta (npz: arch = 'pieni' | 'resf', blocks, parametrit 'kerros/w' ja 'kerros/b'; valinnainen 'kierrot' = verkon oletuksena käyttämät TTA-kierrot, jos ne poikkeavat TTA_KIERROT:sta)."""
     d = np.load(polku, allow_pickle=False)
-    return dict(arch=str(d["arch"]), blocks=int(d["blocks"]), P={k: d[k] for k in d.files if k not in ("arch", "blocks")})
+    malli = dict(arch=str(d["arch"]), blocks=int(d["blocks"]), P={k: d[k] for k in d.files if k not in ("arch", "blocks", "kierrot")})
+    if "kierrot" in d.files:
+        malli["kierrot"] = tuple(float(a) for a in d["kierrot"])
+    return malli
 
 
-def tallenna(polku, arch, P, blocks=2):
-    """Verkko tiedostoon: P = {'kerros/w': taulukko, ...}."""
-    np.savez_compressed(polku, arch=arch, blocks=blocks, **{k: np.asarray(v, np.float32) for k, v in P.items()})
+def tallenna(polku, arch, P, blocks=2, kierrot=None):
+    """Verkko tiedostoon: P = {'kerros/w': taulukko, ...}; kierrot = verkon oletus-TTA-kierrot (aste), jos ne eivät ole TTA_KIERROT (esim. (0,) kun opetuksessa ei kierretty kuvaa)."""
+    lisa = {} if kierrot is None else dict(kierrot=np.asarray(kierrot, np.float32))
+    np.savez_compressed(polku, arch=arch, blocks=blocks, **lisa, **{k: np.asarray(v, np.float32) for k, v in P.items()})
 
 
 def etenemista(malli, x):
@@ -105,7 +109,10 @@ def etenemista(malli, x):
 
 
 def _ennusta_yksi(malli, leikkeet, tta, kierrot, peilaus, erakoko):
-    """Yhden verkon jakauma (n, 60) alkuperäisille leikkeille; TTA: näkymät (kierto a, peilaus) -> jakauma siirretään takaisin (lokerot -a / 3; peilauksessa lokero k -> -k) ja log-keskiarvo."""
+    """Yhden verkon jakauma (n, 60) alkuperäisille leikkeille; TTA: näkymät (kierto a, peilaus) -> jakauma siirretään takaisin (lokerot -a / 3; peilauksessa lokero k -> -k) ja log-keskiarvo.
+    kierrot = None: verkon oma oletus (`malli["kierrot"]`, muuten TTA_KIERROT)."""
+    if kierrot is None:
+        kierrot = malli.get("kierrot", TTA_KIERROT)
     nakymat = []
     for peil in ((False, True) if (tta and peilaus) else (False,)):
         for a in (kierrot if tta else (0,)):
@@ -134,11 +141,28 @@ def _log_keskiarvo(jakaumat):
     return (p / p.sum(axis=1, keepdims=True)).astype(np.float32)
 
 
-def ennusta(mallit, leikkeet, tta=True, kierrot=TTA_KIERROT, peilaus=True, erakoko=64):
-    """Kulman jakauma (n, 60) leikkeille (n, 56, 56, 3, uint8). mallit = yksi verkko tai lista (jakaumien geometrinen keskiarvo)."""
+def ennusta(mallit, leikkeet, tta=True, kierrot=None, peilaus=True, erakoko=64):
+    """Kulman jakauma (n, 60) leikkeille (n, 56, 56, 3, uint8). mallit = yksi verkko tai lista (jakaumien geometrinen keskiarvo). kierrot = TTA-kierrot (aste); oletus (None): kunkin verkon oma oletus
+    (opetuksessa kuvaa kiertänyt verkko: TTA_KIERROT; kierrotta opetettu verkko: vain peilaus, sillä kierretty näkymä on sille vieras, ks. README)."""
     if isinstance(mallit, dict):
         mallit = [mallit]
     return _log_keskiarvo([_ennusta_yksi(m, leikkeet, tta, kierrot, peilaus, erakoko) for m in mallit])
+
+
+def johdonmukaisuus(jakaumat, ajat, K=K_KIERRE, lam=0.5):
+    """Verkon johdonmukaisuus ilman merkintöjä: kunkin heiton ruutujakaumiin (n_i, 60) ajoilla (n_i,) sovitetaan tarkka rata (`sovita_heitto`) ja mitataan ruutujen jakaumien huippujen ero sovitettuun kulmaan.
+    Mittaa ruutukohtaista satunnaisvirhettä kaikilla kivillä, joilla ei ole merkintöjä (laki on tarkka, joten sovitus on vain 2 parametria ruutujen yli). Ei havaitse virhettä, joka on koko heiton yhteinen (esim. vakiosiirtymä).
+    Palauttaa dict: ero (kaikkien ruutujen |ero| asteina), kulma (sovitettu kulma mod 180, ruuduittain), heitto (heiton indeksi ruuduittain), suunta_p, omega (heittokohtaiset)."""
+    ero, kul, hid, sp, om = [], [], [], [], []
+    for i, (p, t) in enumerate(zip(jakaumat, ajat)):
+        r = sovita_heitto(p, t, lam=lam, K=K)
+        a1, _ = kulma_jakaumasta(p)
+        ero.append(np.abs(ero180(a1, r["kulma"])))
+        kul.append(r["kulma"] % 180.0)
+        hid.append(np.full(len(t), i))
+        sp.append(r["suunta_p"])
+        om.append(r["omega"])
+    return dict(ero=np.concatenate(ero), kulma=np.concatenate(kul), heitto=np.concatenate(hid), suunta_p=np.array(sp), omega=np.array(om))
 
 
 def kulma_jakaumasta(p):

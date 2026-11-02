@@ -85,10 +85,60 @@ def testaa_tallenna_lataa_ja_yhdistelma():
     tarkista("verkkojen yhdistelma = geometrinen keskiarvo, summa 1", np.allclose(a, b) and np.abs(ab - g).max() < 1e-5 and np.allclose(ab.sum(axis=1), 1.0, atol=1e-5), f"ero {np.abs(ab - g).max():.1e}")
 
 
+def testaa_mallikohtainen_tta():
+    """Verkon oma oletus-TTA (`kierrot` tiedostossa): kierrotta opetettu verkko (kierrot = (0,)) ennustaa oletuksena vain peilauksella eikä kierretyillä näkymillä; tallenna / lataa toistaa asetuksen; yhdistelmässä
+    jokainen verkko käyttää omaa oletustaan; kierrot-argumentti ohittaa oletuksen."""
+    import tempfile
+    polku = os.path.join(KANSIO, "kierre_validointi", "kulmaverkko_testi_pieni.npz")
+    d = np.load(polku, allow_pickle=False)
+    X = d["tiles"][:6]
+    m1 = kv.lataa(polku)
+    tarkista("ilman kierrot-kenttää verkon oletus on TTA_KIERROT", "kierrot" not in m1)
+    with tempfile.TemporaryDirectory() as hak:
+        p = os.path.join(hak, "m.npz")
+        kv.tallenna(p, m1["arch"], m1["P"], m1["blocks"], kierrot=(0.0,))
+        m0 = kv.lataa(p)
+    tarkista("tallenna / lataa toistaa verkon oletus-TTA:n", m0.get("kierrot") == (0.0,) and all(np.array_equal(m0["P"][k], m1["P"][k]) for k in m1["P"]), f"kierrot {m0.get('kierrot')}")
+    oletus = kv.ennusta(m0, X)
+    vain_peilaus = kv.ennusta(m1, X, kierrot=(0.0,))
+    kaikki = kv.ennusta(m1, X)
+    tarkista("kierrotta opetettu verkko: oletus = vain peilaus (ei kierrettyjä näkymiä)", np.allclose(oletus, vain_peilaus, atol=1e-6) and np.abs(oletus - kaikki).max() > 1e-4,
+             f"ero vain peilaukseen {np.abs(oletus - vain_peilaus).max():.1e}, ero täyteen TTA:han {np.abs(oletus - kaikki).max():.1e}")
+    tarkista("kierrot-argumentti ohittaa verkon oletuksen", np.allclose(kv.ennusta(m0, X, kierrot=kv.TTA_KIERROT), kaikki, atol=1e-6))
+    yhd = kv.ennusta([m0, m1], X)
+    g = np.sqrt(vain_peilaus * kaikki)
+    g /= g.sum(axis=1, keepdims=True)
+    tarkista("yhdistelmässä kukin verkko käyttää omaa TTA:taan", np.abs(yhd - g).max() < 1e-5, f"ero {np.abs(yhd - g).max():.1e}")
+
+
 def _jakaumat(kulmat, kohina, rng, kappa=20.0):
     havaittu = (kulmat + rng.normal(0, kohina, len(kulmat))) % 180.0
     p = np.exp(np.cos(np.deg2rad(2.0 * (kv.KUL[None, :] - havaittu[:, None]))) * kappa)
     return p / p.sum(axis=1, keepdims=True)
+
+
+def testaa_johdonmukaisuus():
+    """Johdonmukaisuus ilman merkintöjä (`kulmaverkko.johdonmukaisuus`): tarkalla radalla ja 4 asteen ruutukohinalla ruutujen ero sovitettuun rataan on noin 3 astetta; jos 10 % ruuduista on aivan väärin, ne näkyvät yli 10 asteen osuudessa
+    mutta mediaani pysyy."""
+    rng = np.random.default_rng(5)
+    jak, ajat = [], []
+    for _ in range(8):
+        t = 3000.0 + np.arange(30) / 30.0
+        kulmat = (rng.uniform(0, 180) + rng.choice([-1, 1]) * rng.uniform(50, 150) * kv.rata_aika(t - t[0])) % 180.0
+        jak.append(_jakaumat(kulmat, 4.0, rng))
+        ajat.append(t)
+    r = kv.johdonmukaisuus(jak, ajat)
+    tarkista("johdonmukaisuus: tarkka rata + 4 asteen ruutukohina -> ero rataan noin 3 astetta, suunta varma", 2.2 < r["ero"].mean() < 4.0 and r["ero"].shape == (240,) and (r["suunta_p"] > 0.99).all() and r["heitto"].max() == 7,
+             f"ero keski {r['ero'].mean():.2f}, suunta-p vähintään {r['suunta_p'].min():.3f}")
+    jak2 = []
+    for p in jak:
+        p = p.copy()
+        idx = rng.choice(30, 3, replace=False)
+        p[idx] = _jakaumat(rng.uniform(0, 180, 3), 1.0, rng)
+        jak2.append(p)
+    r2 = kv.johdonmukaisuus(jak2, ajat)
+    tarkista("johdonmukaisuus: 10 % ruuduista väärin -> näkyy yli 10 asteen osuudessa, mediaani pysyy", 0.05 < np.mean(r2["ero"] > 10) < 0.16 and np.median(r2["ero"]) < 3.8,
+             f"yli 10 astetta {np.mean(r2['ero'] > 10) * 100:.1f} %, mediaani {np.median(r2['ero']):.2f}")
 
 
 def testaa_vakiokierto():
@@ -230,7 +280,7 @@ def testaa_toimitetut_painot():
 
 
 def main():
-    for t in (testaa_opetuskoodi_jax, testaa_kierto_ja_peilaus, testaa_verkko_kultatiedostot, testaa_tallenna_lataa_ja_yhdistelma, testaa_rata_aika, testaa_vakiokierto, testaa_viivat_epatayllisina, testaa_jalosta, testaa_toimitetut_painot):
+    for t in (testaa_opetuskoodi_jax, testaa_kierto_ja_peilaus, testaa_verkko_kultatiedostot, testaa_tallenna_lataa_ja_yhdistelma, testaa_mallikohtainen_tta, testaa_johdonmukaisuus, testaa_rata_aika, testaa_vakiokierto, testaa_viivat_epatayllisina, testaa_jalosta, testaa_toimitetut_painot):
         t()
     print()
     if VIRHEITA:

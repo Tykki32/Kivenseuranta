@@ -18,6 +18,8 @@ Vaiheet (jokainen oma alikomentonsa; tulokset pickle-tiedostoina):
              python tools/kulmaverkko_opeta.py oppilas --leikkeet leikkeet.pkl --pseudo pseudo.pkl --ulos oppilas.pkl [--verkko resf --kw '{"ch": [24, 48, 96], "blocks": 2}' --askelta 6000 --p-kierto 0.3 --kierto-max 30]
   arvioi     Verkkojen virhe ihmisen viivoihin (yksi ruutu + TTA; verkko + vakiokierto) pois jätetyillä heitoilla (--pois), jotka eivät ole missään opetuksessa.
              python tools/kulmaverkko_opeta.py arvioi --leikkeet leikkeet.pkl --verkot oppilas.pkl --pois Matarmaa:69,Saarelainen:68
+  johdonmukaisuus  Verkkojen johdonmukaisuus ilman merkintöjä: ruutukohtainen ero tarkkaan rataan heitoilla, joilla ei ole viivoja (pidätetyt heitot: verkko ei saa olla opetettu niillä); kuvaa satunnaisvirhettä kaikilla kivillä, ei viivojen kohinan rajoittama.
+             python tools/kulmaverkko_opeta.py johdonmukaisuus --leikkeet leikkeet.pkl --verkot oppilas.pkl [--heitot pidatetyt.json] [--pois ...]
   vie        Opetettu verkko NumPy-muotoon (kulmaverkko.py): python tools/kulmaverkko_opeta.py vie --verkko oppilas.pkl --ulos kulmaverkko_paino_resf.npz
   ihmisruudut  Ihmisen viivalla merkityt leikkeet ja kulmat pieneksi npz-tiedostoksi (reposta löytyvä testiaineisto toimitettujen painojen tarkistukseen, tools/testaa_kulmaverkko.py).
 
@@ -407,9 +409,26 @@ def opeta(X, TH, SIG, W, verkko="pieni", askelta=4000, bs=48, lr=1e-3, siemen=0,
     return jax.tree_util.tree_map(lambda a: np.asarray(a, np.float32), E)
 
 
+def tta_kierrot_asetuksista(a):
+    """Verkon oletus-TTA-kierrot opetuksen kuvan kierrosta: `--tta-kierrot` (esim. "0" tai "-9,0,9") tai automaattisesti: ei kiertoa opetuksessa (`--p-kierto 0`) -> vain peilaus (kierretty näkymä on tällaiselle verkolle vieras:
+    liikesumennus on todellisuudessa aina radan suuntainen); pieni kierto (`--kierto-max` < 20) -> (-a, 0, a) opetuksen kiertoalueella (a kolmen monikerta); muuten kv.TTA_KIERROT."""
+    s = getattr(a, "tta_kierrot", "auto")
+    if s and s != "auto":
+        return tuple(float(x) for x in s.split(","))
+    p_k, k_max = getattr(a, "p_kierto", 1.0), getattr(a, "kierto_max", 90.0)
+    if p_k <= 0.0:
+        return (0.0,)
+    if k_max < 20.0:
+        v = 3.0 * int(k_max // 3)
+        return (-v, 0.0, v) if v > 0 else (0.0,)
+    return tuple(float(x) for x in kv.TTA_KIERROT)
+
+
 def asetukset(a):
-    """Komentorivin asetukset tallennettavaan muotoon (ilman argparsen alikomentofunktiota `f`, jota ei voi purkaa muualla kuin tästä tiedostosta)."""
-    return {k: v for k, v in vars(a).items() if k != "f"}
+    """Komentorivin asetukset tallennettavaan muotoon (ilman argparsen alikomentofunktiota `f`, jota ei voi purkaa muualla kuin tästä tiedostosta) sekä verkon oletus-TTA-kierrot (`tta_kierrot`)."""
+    d = {k: v for k, v in vars(a).items() if k != "f"}
+    d["tta_kierrot"] = tta_kierrot_asetuksista(a)
+    return d
 
 
 def tallenna_verkko(polku, verkko, P, kw, cfg=None):
@@ -430,9 +449,12 @@ def jax_ennustaja(d):
     """Opetettu verkko (pickle-sanakirja) -> ennustaja f(leikkeet, tta=True) -> jakauma (n, 60); sama TTA kuin kulmaverkko.ennusta, mutta JAX:lla (nopea joukkoennustus opetuksen aikana)."""
     jax, jnp, optax = _jax()
     verkko, P, blocks = d["verkko"], d["E"], d["kw"].get("blocks", 2)
+    oletus_kierrot = tuple(d.get("cfg", {}).get("tta_kierrot") or kv.TTA_KIERROT)          # opetuksessa valittu TTA-kierto (vanhoissa tiedostoissa ei ole: kv.TTA_KIERROT)
     f = jax.jit(lambda P, x: jax.nn.softmax(eteenpain(verkko, P, x, blocks=blocks)))
 
-    def ennusta(leikkeet, tta=True, kierrot=kv.TTA_KIERROT, peilaus=True, erakoko=256):
+    def ennusta(leikkeet, tta=True, kierrot=None, peilaus=True, erakoko=256):
+        if kierrot is None:
+            kierrot = oletus_kierrot
         nakymat = []
         for peil in ((False, True) if (tta and peilaus) else (False,)):
             for a in (kierrot if tta else (0,)):
@@ -626,6 +648,27 @@ def komento_arvioi(a):
     arvioi(L, V, lataa_ennustajat(a.verkot), heitot, a.lam)
 
 
+def komento_johdonmukaisuus(a):
+    """Verkkojen johdonmukaisuus ilman merkintöjä (`kulmaverkko.johdonmukaisuus`): ruutukohtainen ero tarkkaan rataan, kulmaluokittain ja suunnan varmuus. Oletuksena kaikki heitot, joilla ei ole ihmisen viivoja;
+    `--heitot` (JSON: [[nimi, nro], ...]) rajaa joukon, `--pois` jättää heittoja pois. Kuvaa satunnaisvirhettä, ei yhteistä poikkeamaa; verkon pitää olla opettamatta näillä heitoilla (pidätetyt heitot)."""
+    L = pickle.load(open(a.leikkeet, "rb"))
+    pois = jaa_heitot(a.pois)
+    if a.heitot:
+        avaimet = [tuple(x) for x in json.load(open(a.heitot))]
+    else:
+        merkityt = set(lue_viivat(L, a.valinta, a.merkinnat).keys())
+        avaimet = [k for k in sorted(L) if k not in merkityt]
+    avaimet = [k for k in avaimet if k in L and k not in pois]
+    print(f"johdonmukaisuus: {len(avaimet)} heittoa, {sum(len(L[k]['f']) for k in avaimet)} ruutua")
+    for polku in a.verkot:
+        ennustajat = lataa_ennustajat(polku.split(","))
+        r = kv.johdonmukaisuus([yhdistelma(ennustajat, L[k]["tiles"]) for k in avaimet], [L[k]["t"] for k in avaimet])
+        e, kul = r["ero"], r["kulma"]
+        pysty = (kul >= 75) & (kul < 120)
+        print(f"  {polku}: ero rataan keski {e.mean():.2f} mediaani {np.median(e):.2f} p90 {np.percentile(e, 90):.2f}, yli 10 astetta {np.mean(e > 10) * 100:.1f} %; lähes pysty (75-119) {e[pysty].mean():.2f}, muut {e[~pysty].mean():.2f}; "
+              f"suunta varma (p >= 0,99) {np.mean(r['suunta_p'] >= 0.99) * 100:.0f} %")
+
+
 def komento_ihmisruudut(a):
     L = pickle.load(open(a.leikkeet, "rb"))
     V = lue_viivat(L, a.valinta, a.merkinnat, jaa_heitot(a.pois))
@@ -635,8 +678,10 @@ def komento_ihmisruudut(a):
 
 
 def komento_vie(a):
-    arch, P, blocks = npz_muotoon(pickle.load(open(a.verkko, "rb")))
-    kv.tallenna(a.ulos, arch, P, blocks)
+    d = pickle.load(open(a.verkko, "rb"))
+    arch, P, blocks = npz_muotoon(d)
+    kierrot = d.get("cfg", {}).get("tta_kierrot")
+    kv.tallenna(a.ulos, arch, P, blocks, kierrot=kierrot if kierrot is not None and tuple(kierrot) != tuple(kv.TTA_KIERROT) else None)
     print(f"{a.ulos}: {arch}, {sum(v.size for v in P.values())} parametria, {os.path.getsize(a.ulos) / 1e6:.1f} MB")
 
 
@@ -692,13 +737,19 @@ def main():
     p.add_argument("--min-suunta-p", dest="min_suunta_p", type=float, default=0.9)
     p.add_argument("--max-resid-heitto", dest="max_resid_heitto", type=float, default=15.0)
     p.add_argument("--max-resid-ruutu", dest="max_resid_ruutu", type=float, default=25.0)
-    p.add_argument("--p-kierto", dest="p_kierto", type=float, default=1.0, help="kuvan kierron todennäköisyys opetuksessa (1 = aina; 0,3 + --kierto-max 30 on lievä vaihtoehto)")
+    p.add_argument("--p-kierto", dest="p_kierto", type=float, default=1.0, help="kuvan kierron todennäköisyys opetuksessa (1 = aina; 0 = ei lainkaan, suositus oppilaalle: liikesumennus on aina radan suuntainen; 0,3 + --kierto-max 30 on lievä vaihtoehto)")
+    p.add_argument("--tta-kierrot", dest="tta_kierrot", default="auto", help="verkon oletus-TTA-kierrot (aste, pilkuin erotettuina, esim. 0 tai -9,0,9) tai auto: opetuksen kuvan kierrosta (ks. tta_kierrot_asetuksista)")
     p.set_defaults(f=komento_oppilas)
     p = sp.add_parser("arvioi")
     yhteiset(p)
     p.add_argument("--verkot", nargs="+", required=True)
     p.add_argument("--lam", type=float, default=0.5)
     p.set_defaults(f=komento_arvioi)
+    p = sp.add_parser("johdonmukaisuus")
+    yhteiset(p)
+    p.add_argument("--verkot", nargs="+", required=True, help="verkkojen pickle-tiedostot (yhdistelmä: tiedostot pilkulla erotettuina yhtenä argumenttina)")
+    p.add_argument("--heitot", help="JSON-tiedosto: [[nimi, nro], ...] (oletus: kaikki heitot, joilla ei ole ihmisen viivoja)")
+    p.set_defaults(f=komento_johdonmukaisuus)
     p = sp.add_parser("ihmisruudut")
     yhteiset(p)
     p.add_argument("--ulos", required=True)
