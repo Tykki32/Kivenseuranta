@@ -1,15 +1,19 @@
-"""Kahvan kulman neuroverkon opetus: ihmisen merkitsemät kulmat + kierteen vakionopeus (ei vanhan koodin tunnistamia kulmia).
+"""Kahvan kulman neuroverkon opetus: ihmisen merkitsemät (epätäydelliset) kulmat + kierron tarkka lineaarinen hidastuminen (ei vanhan koodin tunnistamia kulmia).
 
 Vaiheet (jokainen oma alikomentonsa; tulokset pickle-tiedostoina):
 
   leikkeet   Heittojen käsi-vapaat ruudut top-down-leikkeinä (56 x 56 x 3) videolta: irroituksen jälkeen kuvan reunaan, ensimmäisestä ruudusta alkaen, jossa käsi ei enää ole kahvalla (kuten merkintätyökalussa).
              python tools/kulmaverkko_opeta.py leikkeet --ajo Matarmaa Matarmaa.mp4 r_Matarmaa/radat.pkl --ajo ... --ulos leikkeet.pkl
-  opettaja   Ensimmäinen verkko pelkillä ihmisen kulmilla: viivat sovitetaan heittokohtaiseen vakiokiertorataan theta(t) = th_ref + omega g(t), g = (1 - exp(-K s)) / K, ja rata antaa kulman koko merkityn aikaikkunan
-             ruuduille (ankkuroidut ruudut); muiden heittojen yksittäiset viivat otetaan sellaisinaan. Opetuksessa kuvan kierto (kulma + kierto) ja peilaus (kulma -> -kulma) tuottavat kaikki kulmat.
+  jalosta    Ihmisen viivat epätäydellisinä + tarkka kiertorata: kierto hidastuu lineaarisesti (omega(s) = omega_0 (1 - K s), kulma theta = th0 + omega_0 (s - K s^2 / 2)), joten heiton kaikki ruudut ovat kahden luvun (th0, omega_0)
+             funktio. Radan sovitus viivoihin on robusti (yksittäinen väärä viiva ei kumoa muita) ja, jos --verkot annetaan, myös heitolle vieraiden verkkojen ruutujakaumiin; tulos on jalostettu kulma ruudulle (posteriorin keskiarvo ja hajonta)
+             koko heitolle sekä lista viivoista, joita rata ei hyväksy (`--ulos` pickle: opettajan ja oppilaan `--jalostetut`).
+             python tools/kulmaverkko_opeta.py jalosta --leikkeet leikkeet.pkl [--verkot vieras1.pkl vieras2.pkl] --ulos jalostetut.pkl
+  opettaja   Ensimmäinen verkko pelkillä ihmisen kulmilla: oletuksena viivat sovitetaan heittokohtaiseen kiertorataan (ankkuroidut ruudut: 3+ viivaa, jäännös <= 3 astetta, rata antaa kulman viivojen aikaikkunan ± 0,2 s ruuduille;
+             muiden heittojen yksittäiset viivat sellaisinaan) tai `--jalostetut` antaa jalostetut kulmat (suositus). Opetuksessa kuvan kierto (kulma + kierto) ja peilaus (kulma -> -kulma) tuottavat kaikki kulmat.
              python tools/kulmaverkko_opeta.py opettaja --leikkeet leikkeet.pkl --ulos opettaja.pkl [--verkko pieni] [--askelta 4000]
   pseudo     Opettajan (tai verkkojen yhdistelmän) ennusteet merkitsemättömille heitoille (TTA) sovitetaan vakiokiertoon (kulmaverkko.sovita_heitto); sovitettu rata on heiton pseudomerkintä.
              python tools/kulmaverkko_opeta.py pseudo --leikkeet leikkeet.pkl --verkot opettaja.pkl --ulos pseudo.pkl
-  oppilas    Uusi verkko ihmisen ruuduilla ja pseudomerkinnöillä (itseopetus; kierroksen voi toistaa: oppilas -> pseudo -> oppilas, README: toinen kierros paransi, kolmas ei enää).
+  oppilas    Uusi verkko ihmisen ruuduilla ja pseudomerkinnöillä (itseopetus; kierroksen voi toistaa: oppilas -> pseudo -> oppilas; `--jatka` jatkaa opetusta aiemmista painoista).
              python tools/kulmaverkko_opeta.py oppilas --leikkeet leikkeet.pkl --pseudo pseudo.pkl --ulos oppilas.pkl [--verkko resf --kw '{"ch": [24, 48, 96], "blocks": 2}' --askelta 6000 --p-kierto 0.3 --kierto-max 30]
   arvioi     Verkkojen virhe ihmisen viivoihin (yksi ruutu + TTA; verkko + vakiokierto) pois jätetyillä heitoilla (--pois), jotka eivät ole missään opetuksessa.
              python tools/kulmaverkko_opeta.py arvioi --leikkeet leikkeet.pkl --verkot oppilas.pkl --pois Matarmaa:69,Saarelainen:68
@@ -37,7 +41,13 @@ import kulmaverkko as kv  # noqa: E402
 NB = kv.NB
 KUL = kv.KUL
 K_KIERRE = kv.K_KIERRE
-SIGMA_VIIVA = 2.5                  # ihmisen viivan kohina (aste): suoran sovituksen jäännös 0,1-2,6 astetta
+SIGMA_VIIVA = 2.5                  # ankkuroinnin (ei-jalostetun) ihmisen viivan kohina (aste): suoran sovituksen jäännös 0,1-2,6 astetta
+SIGMA_JAL0 = 3.0                   # jalostetun kulman perusepävarmuus (aste), yhdistetään radan posteriorin hajontaan
+MAX_SIGMA_JAL = 7.0                # ruutu otetaan jalostettuun aineistoon, kun kulman posteriorin huipun hajonta (katkaistu +- 12 asteeseen) ruudulla on enintään tämä (aste)
+MIN_MASSA_JAL = 0.8                # ... ja huippu (+- 12 astetta) sisältää vähintään tämän osan posteriorin massasta (muuten kulma on moniselitteinen tai ihmisen viiva on todennäköisesti pielessä)
+RAAKA_PAINO = 3.0                  # raa'an viivan otantapaino (yksi viiva edustaa koko heittoa; jalostettu ruutu painaa 1)
+LAM_JAL = 0.05                    # jalostuksessa vieraiden verkkojen ruutujakaumien paino (pseudomerkinnöissä 0,5): verkon jakaumat ovat ylivarmoja suhteessa virheeseensä (ks. README), viivat saavat enemmän painoa
+ENNAKKO_JAL = (76.0, 0.6)          # jalostuksen |omega|-ennakko (mediaani aste / s, log-hajonta): 506 varman suunnan heiton omegat ovat mediaaniltaan 76 aste/s (log-hajonta 0,42); tiukempi ennakko poistaa viivojen aliasoitumisen
 RAJA_RMS, RAJA_IKKUNA, MARGINAALI = 3.0, 0.39, 0.2     # ankkurointi: suoran jäännös (aste), merkittyjen ruutujen aikaikkuna (s), ankkurointi ikkunan ulkopuolelle (s)
 LEIKE_KOKO = kv.KOKO
 
@@ -122,7 +132,7 @@ def komento_leikkeet(a):
 # IHMISEN MERKINNÄT -> OPETUSRUUDUT (viivat, vakiokiertorata)
 # ---------------------------------------------------------------------------------------------------------------------
 def g_aika(s, K=K_KIERRE):
-    return (1.0 - np.exp(-K * np.asarray(s, float))) / K
+    return kv.rata_aika(s, K)
 
 
 def pura(a):
@@ -198,6 +208,52 @@ def ihmisen_aineisto(L, V, viiva_paino=4.0):
             for j, a, w, _ in r["viivat"]:
                 X.append(L[key]["tiles"][j][None]); TH.append(np.array([a])); SIG.append(np.array([SIGMA_VIIVA])); W.append(np.array([viiva_paino * w]))
     return np.concatenate(X), np.concatenate(TH), np.concatenate(SIG), np.concatenate(W)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# JALOSTUS: epätäydelliset viivat + tarkka kiertorata (+ vieraiden verkkojen todiste) -> kulma koko heiton ruuduille
+# ---------------------------------------------------------------------------------------------------------------------
+def jalosta(L, V, ennustajat=None, lam=LAM_JAL, sigma_viiva=kv.SIGMA_VIIVA, eps=kv.EPS_VIIVA, sigma0=SIGMA_JAL0, max_sigma=MAX_SIGMA_JAL):
+    """Jokaiselle merkitylle heitolle (V = lue_viivat) sovitetaan rata (th0, omega) ihmisen viivoihin epätäydellisinä (`kulmaverkko.viiva_rangaistus`) ja, jos `ennustajat` on annettu, myös niiden ruutujakaumiin
+    (verkkojen pitää olla heitolle vieraita, muuten verkko vain toistaa viivat). Palauttaa {avain: dict(idx, kulma, sigma, viivat: [(id, ihmisen kulma, ero jalostettuun)], omega, omega_sd, suunta_p)}: idx = ruudut, joissa
+    posteriorin huipun hajonta on enintään max_sigma ja huippu (+- 12 astetta) sisältää vähintään MIN_MASSA_JAL massasta, kulma = huipun keskiarvo ja sigma = sqrt(sigma0^2 + huipun hajonta^2) (viivojen mahdolliset virheet eivät laajenna tavoitetta,
+    mutta ne voivat siirtää huippua tai tehdä ruudusta moniselitteisen)."""
+    ulos = {}
+    for k, r in sorted(V.items()):
+        e = L[k]
+        idx_v = np.array([j for j, *_ in r["viivat"]], int)
+        a_v = np.array([a for _, a, _, _ in r["viivat"]], float)
+        p = yhdistelma(ennustajat, e["tiles"]) if ennustajat else None
+        f = kv.sovita_heitto(p, e["t"], lam, viivat=dict(idx=idx_v, kulma=a_v, sigma=sigma_viiva, eps=eps), ennakko=ENNAKKO_JAL)
+        ok = np.where((f["sigma_moodi"] <= max_sigma) & (f["massa_moodi"] >= MIN_MASSA_JAL))[0]
+        ulos[k] = dict(idx=ok, kulma=f["kulma_moodi"][ok], sigma=np.sqrt(sigma0 ** 2 + f["sigma_moodi"][ok] ** 2), omega=f["omega"], omega_sd=f["omega_sd"], suunta_p=f["suunta_p"],
+                       viivat=[(id_, float(a), float(kv.ero180(f["kulma_moodi"][j], a))) for j, a, _, id_ in r["viivat"]])
+    return ulos
+
+
+def jalostettu_aineisto(L, JAL):
+    """Jalostetut ruudut opetusaineistoksi: (X, TH, SIG, W); paino 1 / ruutu tai heiton oma `paino` (raa'at viivat: yksi viiva edustaa koko heittoa)."""
+    X, TH, SIG, W = [], [], [], []
+    for k, j in sorted(JAL.items()):
+        if len(j["idx"]):
+            X.append(L[k]["tiles"][j["idx"]]); TH.append(j["kulma"]); SIG.append(j["sigma"]); W.append(np.full(len(j["idx"]), float(j.get("paino", 1.0))))
+    return np.concatenate(X), np.concatenate(TH), np.concatenate(SIG), np.concatenate(W)
+
+
+def lataa_jalostetut(polut, pois=()):
+    """Jalostetut kulmat pickle-tiedostoista (myöhemmät tiedostot ohittavat aiemmat samalle heitolle); pois jätettävät heitot ohitetaan."""
+    JAL = {}
+    for polku in polut:
+        JAL.update(pickle.load(open(polku, "rb")))
+    return {k: v for k, v in JAL.items() if k not in pois}
+
+
+def ihmisen_ruudut(a, L, V):
+    """Opetuksen ihmisaineisto komentorivin mukaan: jalostetut kulmat (--jalostetut) tai ankkuroidut ruudut ja yksittäiset viivat (`ihmisen_aineisto`)."""
+    if a.jalostetut:
+        JAL = lataa_jalostetut(a.jalostetut, jaa_heitot(a.pois))
+        return jalostettu_aineisto(L, JAL), f"{len(JAL)} heittoa jalostettuina"
+    return ihmisen_aineisto(L, V, a.viivapaino), f"{sum(1 for r in V.values() if r['ankkuri'] is not None)} ankkuroitua heittoa, {sum(1 for r in V.values() if r['ankkuri'] is None)} heittoa viivoina"
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -313,12 +369,12 @@ def laajenna(rng, tiles, th, kierto_max=90.0, p_kierto=1.0, p_peilaus=0.5, siirt
     return np.clip(ulos, 0, 1) - 0.5, th2 % 180.0
 
 
-def opeta(X, TH, SIG, W, verkko="pieni", askelta=4000, bs=48, lr=1e-3, siemen=0, kw=None, pudotus=0.3, wd=1e-4, ema=0.995, kierto_max=90.0, p_kierto=1.0, p_peilaus=0.5, loki=print, loki_vali=500):
-    """Opetus: X (N, 56, 56, 3) uint8, TH kulmat, SIG tavoitteen hajonta (aste), W otantapainot. Palauttaa EMA-parametrit (numpy)."""
+def opeta(X, TH, SIG, W, verkko="pieni", askelta=4000, bs=48, lr=1e-3, siemen=0, kw=None, pudotus=0.3, wd=1e-4, ema=0.995, kierto_max=90.0, p_kierto=1.0, p_peilaus=0.5, loki=print, loki_vali=500, P0=None):
+    """Opetus: X (N, 56, 56, 3) uint8, TH kulmat, SIG tavoitteen hajonta (aste), W otantapainot. P0 = aiemmat painot (jatkoopetus), muuten satunnaisalustus. Palauttaa EMA-parametrit (numpy)."""
     jax, jnp, optax = _jax()
     kw = dict(kw or {})
     blocks = kw.get("blocks", 2)
-    P = alusta(verkko, siemen, **kw)
+    P = alusta(verkko, siemen, **kw) if P0 is None else jax.tree_util.tree_map(jnp.asarray, P0)
     rng = np.random.default_rng(siemen)
     p_otanta = np.asarray(W, float) / np.sum(W)
     opt = optax.adamw(optax.warmup_cosine_decay_schedule(0.0, lr, min(50, max(askelta // 10, 1)), askelta, lr * 0.02), weight_decay=wd)
@@ -473,11 +529,53 @@ def komento_opettaja(a):
     L = pickle.load(open(a.leikkeet, "rb"))
     pois = jaa_heitot(a.pois)
     V = lue_viivat(L, a.valinta, a.merkinnat, pois)
-    X, TH, SIG, W = ihmisen_aineisto(L, V, a.viivapaino)
+    (X, TH, SIG, W), kuvaus = ihmisen_ruudut(a, L, V)
     kw = json.loads(a.kw) if a.kw else {}
-    print(f"opettaja: {a.verkko} {kw}, ihmisen ruutuja {len(X)} ({sum(1 for r in V.values() if r['ankkuri'] is not None)} ankkuroitua heittoa, {sum(1 for r in V.values() if r['ankkuri'] is None)} heittoa viivoina), {a.askelta} askelta")
-    P = opeta(X, TH, SIG, W, a.verkko, a.askelta, a.bs, a.lr, a.siemen, kw, kierto_max=a.kierto_max)
+    print(f"opettaja: {a.verkko} {kw}, ihmisen ruutuja {len(X)} ({kuvaus}), {a.askelta} askelta" + (", jatkoa painoista " + a.jatka if a.jatka else ""))
+    P = opeta(X, TH, SIG, W, a.verkko, a.askelta, a.bs, a.lr, a.siemen, kw, kierto_max=a.kierto_max, P0=jatko_painot(a, kw))
     tallenna_verkko(a.ulos, a.verkko, P, kw, asetukset(a))
+
+
+def jatko_painot(a, kw):
+    """--jatka: aiemman opetuksen painot (tämän työkalun pickle) jatkoopetuksen alkuarvoiksi; verkon rakenteen pitää täsmätä."""
+    if not a.jatka:
+        return None
+    d = pickle.load(open(a.jatka, "rb"))
+    if d["verkko"] != a.verkko or dict(d["kw"]) != dict(kw):
+        sys.exit(f"--jatka: painojen rakenne ({d['verkko']} {d['kw']}) ei täsmää ({a.verkko} {kw})")
+    return d["E"]
+
+
+def raa_at_viivat(V, sigma=kv.SIGMA_VIIVA, paino=RAAKA_PAINO):
+    """Ihmisen viivat sellaisenaan: vain viivojen ruudut, kulma = viiva, hajonta sigma, paino `paino` (ei rataa; suositus heitoille, joilla on 1-2 viivaa tai epäjohdonmukaiset viivat)."""
+    return {k: dict(idx=np.array([j for j, *_ in r["viivat"]], int), kulma=np.array([a for _, a, _, _ in r["viivat"]], float), sigma=np.full(len(r["viivat"]), float(sigma)), paino=paino,
+                    omega=float("nan"), omega_sd=float("nan"), suunta_p=float("nan"), viivat=[(id_, float(a), 0.0) for _, a, _, id_ in r["viivat"]]) for k, r in V.items()}
+
+
+def komento_jalosta(a):
+    L = pickle.load(open(a.leikkeet, "rb"))
+    V = lue_viivat(L, a.valinta, a.merkinnat, jaa_heitot(a.pois))
+    if a.raaka:
+        JAL = raa_at_viivat(V)
+        print(f"jalosta --raaka: {len(JAL)} heittoa, {sum(len(j['idx']) for j in JAL.values())} viivaa sellaisenaan (hajonta {kv.SIGMA_VIIVA} astetta, paino {RAAKA_PAINO})")
+        pickle.dump(JAL, open(a.ulos, "wb"), protocol=4)
+        return
+    ennustajat = lataa_ennustajat(a.verkot) if a.verkot else None
+    muut = {}
+    if a.varovainen:                     # rata vain heitoille, joiden viivat ovat johdonmukaiset (ankkurointikriteeri: 3+ viivaa, suoran jäännös <= 3 astetta, aikaikkuna >= 0,39 s); muilla viivat sellaisenaan
+        muut = raa_at_viivat({k: r for k, r in V.items() if r["ankkuri"] is None})
+        V = {k: r for k, r in V.items() if r["ankkuri"] is not None}
+    JAL = jalosta(L, V, ennustajat, a.lam)
+    print(f"jalosta: {len(JAL)} heittoa, " + (f"viivat + {len(a.verkot)} vierasta verkkoa" if a.verkot else "vain viivat") + (f"; {len(muut)} heitolle viivat sellaisenaan (ei johdonmukaisia)" if muut else ""))
+    epailyttavia = 0
+    for k, j in sorted(JAL.items()):
+        epaily = [(id_, ihm, ero) for id_, ihm, ero in j["viivat"] if abs(ero) > 2.5 * kv.SIGMA_VIIVA]
+        epailyttavia += len(epaily)
+        print(f"  {k[0][:6]} h{k[1]:<4d} ruutuja {len(j['idx']):3d} / {len(L[k]['f']):3d}  omega {j['omega']:+7.1f} (+-{j['omega_sd']:.1f})  suunta-p {j['suunta_p']:.3f}  viivojen ero jalostettuun: "
+              + " ".join(f"{ero:+.0f}" for _, _, ero in j["viivat"]) + ("   EPÄILYTTÄVÄ: " + ", ".join(f"{id_} (ihminen {ihm:.0f}, rata {ihm + ero:.0f})" for id_, ihm, ero in epaily) if epaily else ""))
+    print(f"viivoja, jotka poikkeavat radasta yli {2.5 * kv.SIGMA_VIIVA:.0f} astetta: {epailyttavia}")
+    JAL.update(muut)
+    pickle.dump(JAL, open(a.ulos, "wb"), protocol=4)
 
 
 def komento_pseudo(a):
@@ -507,7 +605,7 @@ def komento_oppilas(a):
     L = pickle.load(open(a.leikkeet, "rb"))
     pois = jaa_heitot(a.pois)
     V = lue_viivat(L, a.valinta, a.merkinnat, pois)
-    Xh, THh, SIGh, Wh = ihmisen_aineisto(L, V, a.viivapaino)
+    (Xh, THh, SIGh, Wh), kuvaus = ihmisen_ruudut(a, L, V)
     PS = pickle.load(open(a.pseudo, "rb"))
     Xp, THp, SIGp, Wp, n = pseudo_aineisto(L, PS, a.min_suunta_p, a.max_resid_heitto, a.max_resid_ruutu)
     X = np.concatenate([Xh, Xp])
@@ -515,8 +613,8 @@ def komento_oppilas(a):
     SIG = np.concatenate([SIGh, SIGp])
     W = np.concatenate([a.ihmis_osuus * Wh / Wh.sum(), (1 - a.ihmis_osuus) * Wp / Wp.sum()])
     kw = json.loads(a.kw) if a.kw else {}
-    print(f"oppilas: {a.verkko} {kw}, ihmisen ruutuja {len(Xh)}, pseudoruutuja {len(Xp)} ({n} heittoa), {a.askelta} askelta")
-    P = opeta(X, TH, SIG, W, a.verkko, a.askelta, a.bs, a.lr, a.siemen, kw, kierto_max=a.kierto_max, p_kierto=a.p_kierto)
+    print(f"oppilas: {a.verkko} {kw}, ihmisen ruutuja {len(Xh)} ({kuvaus}), pseudoruutuja {len(Xp)} ({n} heittoa), {a.askelta} askelta" + (", jatkoa painoista " + a.jatka if a.jatka else ""))
+    P = opeta(X, TH, SIG, W, a.verkko, a.askelta, a.bs, a.lr, a.siemen, kw, kierto_max=a.kierto_max, p_kierto=a.p_kierto, P0=jatko_painot(a, kw))
     tallenna_verkko(a.ulos, a.verkko, P, kw, asetukset(a))
 
 
@@ -559,13 +657,23 @@ def main():
             p.add_argument("--lr", type=float, default=1e-3)
             p.add_argument("--siemen", type=int, default=0)
             p.add_argument("--kierto-max", dest="kierto_max", type=float, default=90.0, help="kuvan kierron enimmäiskulma opetuksessa (aste)")
-            p.add_argument("--viivapaino", type=float, default=4.0, help="yksittäisten viivojen otantapaino")
+            p.add_argument("--viivapaino", type=float, default=4.0, help="yksittäisten viivojen otantapaino (ilman --jalostetut)")
+            p.add_argument("--jalostetut", nargs="*", default=[], metavar="PICKLE", help="jalosta-alikomennon tulokset ihmisen aineistoksi (ankkuroinnin ja yksittäisten viivojen sijaan); myöhempi tiedosto ohittaa aiemman samalle heitolle")
+            p.add_argument("--jatka", default="", metavar="PICKLE", help="jatka opetusta aiemman opetuksen painoista (sama verkko; pienempi --lr, esim. 3e-4)")
             p.add_argument("--ulos", required=True)
     p = sp.add_parser("leikkeet")
     p.add_argument("--ajo", nargs=3, action="append", metavar=("NIMI", "VIDEO", "RADAT"), required=True, help="video (Video1 / Video2 / Saarelainen / Matarmaa / Ahrenberg), videotiedosto ja netti_live.py --radat -pickle")
     p.add_argument("--kansio", action="append", default=[], metavar="NIMI=POLKU", help="kalibrointikansio videolle (oletus kierre_leikkeet.KANSIOT)")
     p.add_argument("--ulos", required=True)
     p.set_defaults(f=komento_leikkeet)
+    p = sp.add_parser("jalosta")
+    yhteiset(p)
+    p.add_argument("--verkot", nargs="*", default=[], help="heitolle vieraiden verkkojen pickle-tiedostot (ruutujakaumien todiste); ilman niitä jalostus perustuu vain viivoihin")
+    p.add_argument("--lam", type=float, default=LAM_JAL, help="vieraiden verkkojen ruutujakaumien paino (pieni: viivat ovat verkkoa tarkempia)")
+    p.add_argument("--raaka", action="store_true", help="ei rataa: vain viivojen ruudut sellaisenaan (heitoille, joilla on 1-2 viivaa tai epäjohdonmukaiset viivat)")
+    p.add_argument("--varovainen", action="store_true", help="rata vain johdonmukaisille heitoille (3+ viivaa, jäännös <= 3 astetta; suositus), muille heitoille viivat sellaisenaan")
+    p.add_argument("--ulos", required=True)
+    p.set_defaults(f=komento_jalosta)
     p = sp.add_parser("opettaja")
     yhteiset(p, True)
     p.set_defaults(f=komento_opettaja)

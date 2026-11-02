@@ -1,5 +1,5 @@
-"""Kahvan kulman neuroverkon (kulmaverkko.py) yksikkotestit: kuvan kierto / peilaus -konventio, NumPy-verkon tulos sama kuin opetuksessa kaytetyn JAX-verkon (kultatiedostot), vakiokiertosovitus synteettisella
-radalla (ei videota, ei JAX:ia).
+"""Kahvan kulman neuroverkon (kulmaverkko.py) yksikkotestit: kuvan kierto / peilaus -konventio, NumPy-verkon tulos sama kuin opetuksessa kaytetyn JAX-verkon (kultatiedostot), kiertoratasovitus (lineaarisesti
+hidastuva kierto) synteettisella radalla, ihmisen viivat epatayllisina (robusti sovitus, jalostus; ei videota, ei JAX:ia).
 
     python tools/testaa_kulmaverkko.py
 
@@ -92,10 +92,10 @@ def _jakaumat(kulmat, kohina, rng, kappa=20.0):
 
 
 def testaa_vakiokierto():
-    """Vakiokiertosovitus (kulmat suoralla kierteen vaimeneminen mukana): kulmat, omega ja suunta palautuvat; peilattu rata vaihtaa suunnan; yksittainen 90 asteen virheruutu ei vie sovitusta, mutta nakyy residuaalissa."""
+    """Kiertoratasovitus (kulma on aikafunktio, kierto hidastuu lineaarisesti): kulmat, omega ja suunta palautuvat; peilattu rata vaihtaa suunnan; yksittainen 90 asteen virheruutu ei vie sovitusta, mutta nakyy residuaalissa."""
     rng = np.random.default_rng(1)
     t = 3000.0 + np.arange(40) * 0.04
-    G = (1.0 - np.exp(-kv.K_KIERRE * (t - t[0]))) / kv.K_KIERRE
+    G = (t - t[0]) - 0.5 * kv.K_KIERRE * (t - t[0]) ** 2                   # lineaarisesti hidastuva kierto (omega = omega_0 (1 - K s)), kirjoitettu auki: ei kv.rata_aika:a
     for om_tosi in (110.0, -70.0, 25.0, 300.0):
         th = (20.0 + om_tosi * G) % 180.0
         r = kv.sovita_heitto(_jakaumat(th, 6.0, rng), t)
@@ -109,6 +109,73 @@ def testaa_vakiokierto():
     r = kv.sovita_heitto(paha, t)
     tarkista("yksittainen virheruutu ei vie sovitusta", abs(kv.ero180(r["kulma"][17], th[17])) < 6.0 and r["residuaali"][17] > 60.0 and np.abs(kv.ero180(r["kulma"], th)).mean() < 3.0,
              f"virheruudun sovitusvirhe {abs(kv.ero180(r['kulma'][17], th[17])):.1f}, residuaali {r['residuaali'][17]:.0f}")
+
+
+def testaa_rata_aika():
+    """rata_aika(s) = s - K s^2 / 2: alussa nopeus 1, hidastuvuus K (omega(s) = omega_0 (1 - K s)), pysähtyy hetkellä 1 / K, ei kasva sen jälkeen."""
+    K, h = kv.K_KIERRE, 1e-4
+    g = kv.rata_aika
+    nopeus = (g(h) - g(-h)) / (2 * h)
+    kiihtyvyys = (g(1.0 + h) - 2 * g(1.0) + g(1.0 - h)) / h ** 2
+    tarkista("kiertorata: nopeus 1 alussa, hidastuvuus K, lineaarinen hidastuminen", abs(nopeus - 1.0) < 1e-6 and abs(kiihtyvyys + K) < 1e-4 and abs(g(1.0 / K) - 0.5 / K) < 1e-9 and g(3.0 / K) == g(1.0 / K),
+             f"g'(0) = {nopeus:.6f}, g'' = {kiihtyvyys:.5f} (K = {K}), g(1/K) = {g(1.0 / K):.3f}")
+    a = kv.rata_aika(np.array([0.0, 0.5, 1.0]))
+    tarkista("kiertorata: arvot", np.allclose(a, [0.0, 0.5 - 0.125 * K, 1.0 - 0.5 * K]), str(a))
+
+
+def _verkon_jakaumat(th, kohina, rng, kappa=12.0, harha=None):
+    hav = th + rng.normal(0, kohina, len(th))
+    if harha is not None:
+        hav = hav + harha
+    p = np.exp(np.cos(np.deg2rad(2.0 * (kv.KUL[None, :] - hav[:, None]))) * kappa)
+    return p / p.sum(axis=1, keepdims=True)
+
+
+def testaa_viivat_epatayllisina():
+    """Ihmisen viivat epätäydellisinä: (1) yksi aivan väärä viiva ei vie rataa (kulma väärän viivan ruudussa pysyy lähellä oikeaa), (2) viivat parantavat verkon harhaista todistetta, (3) pelkistä viivoista (ei verkkoa) rata palautuu,
+    (4) viivarangaistus on rajoitettu ylhäältä, (5) posteriorin huipun massa kertoo ruudun luotettavuuden."""
+    rng = np.random.default_rng(5)
+    t = 3000.0 + np.arange(30) * 0.04
+    th = (30.0 - 120.0 * kv.rata_aika(t - t[0])) % 180.0
+    idx = np.array([3, 9, 15, 21, 27])
+    a = th[idx] + np.array([1.5, -2.0, 2.5, -1.0, 40.0])         # viimeinen viiva 40 astetta pielessa
+    harha = np.zeros(len(t))
+    harha[-8:] = 25.0                                                   # verkko on 8 loppuruudussa 25 astetta pielessa
+    p = _verkon_jakaumat(th, 8.0, rng, harha=harha)
+    r0 = kv.sovita_heitto(p, t)
+    r1 = kv.sovita_heitto(p, t, viivat=dict(idx=idx, kulma=a))
+    e0, e1 = np.abs(kv.ero180(r0["kulma"], th)), np.abs(kv.ero180(r1["kulma"], th))
+    tarkista("viivat parantavat verkon harhaista todistetta", e1.mean() < e0.mean() - 1.5 and e1[-8:].mean() < e0[-8:].mean() - 3.0, f"keskivirhe {e0.mean():.2f} -> {e1.mean():.2f}, loppuruudut {e0[-8:].mean():.2f} -> {e1[-8:].mean():.2f}")
+    tarkista("aivan väärä viiva ei vie rataa", abs(kv.ero180(r1["kulma"][27], th[27])) < 20.0 and abs(kv.ero180(r1["kulma"][27], a[4])) > 15.0, f"väärän viivan ruudussa virhe radasta {abs(kv.ero180(r1['kulma'][27], th[27])):.1f}, erosta viivaan {abs(kv.ero180(r1['kulma'][27], a[4])):.1f}")
+    r2 = kv.sovita_heitto(None, t, viivat=dict(idx=idx[:4], kulma=a[:4]))
+    e2 = np.abs(kv.ero180(r2["kulma"], th))
+    tarkista("pelkistä viivoista rata palautuu", e2.mean() < 3.0 and abs(r2["omega"] + 120.0) < 35.0, f"keskivirhe {e2.mean():.2f}, omega {r2['omega']:+.0f} +- {r2['omega_sd']:.0f}")
+    ero = np.array([0.0, 4.0, 8.0, 12.0, 25.0, 40.0, 80.0])
+    pen = kv.viiva_rangaistus(ero)
+    tarkista("viivarangaistus: nolla nollassa, kasvaa, rajoitettu ylhäältä", abs(pen[0]) < 1e-9 and np.all(np.diff(pen[:4]) > 0) and abs(pen[-1] - pen[-2]) < 1e-9 and pen[-1] < 8.0, f"{np.round(pen, 2)}")
+    tarkista("posteriorin huipun massa: korkea hyvin määrätyillä ruuduilla", np.median(r1["massa_moodi"]) > 0.9 and np.all(r1["sigma_moodi"] >= 1.0) and np.all(r1["massa_moodi"] <= 1.0 + 1e-9),
+             f"massa mediaani {np.median(r1['massa_moodi']):.2f}, huipun hajonta mediaani {np.median(r1['sigma_moodi']):.1f}")
+
+
+def testaa_jalosta():
+    """tools/kulmaverkko_opeta.jalosta: ihmisen viivat + rata -> jalostetut kulmat heiton ruuduille; väärä viiva ilmoitetaan, jalostettu aineisto kokoaa oikeat ruudut (synteettinen heitto, ei videota, ei JAX:ia)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import kulmaverkko_opeta as ko
+    rng = np.random.default_rng(2)
+    t = 500.0 + np.arange(24) * 0.04
+    th = (80.0 + 90.0 * kv.rata_aika(t - t[0])) % 180.0
+    L = {("Testi", 1): dict(t=t, f=np.arange(24), tiles=(rng.random((24, kv.KOKO, kv.KOKO, 3)) * 255).astype(np.uint8))}
+    idx = [1, 8, 15, 21]
+    viivat = [(j, float((th[j] + d) % 180.0), 1.0, f"Testi_h1_f{j}") for j, d in zip(idx, (1.0, -2.0, 1.5, 35.0))]     # viimeinen viiva 35 astetta pielessa
+    V = {("Testi", 1): dict(viivat=viivat, ankkuri=None, rata=None)}
+    JAL = ko.jalosta(L, V)
+    j = JAL[("Testi", 1)]
+    epailyttavat = [id_ for id_, ihm, ero in j["viivat"] if abs(ero) > 2.5 * kv.SIGMA_VIIVA]
+    e = np.abs(kv.ero180(j["kulma"], th[j["idx"]]))
+    tarkista("jalosta: kulmat radalla, ruutuja riittävästi", len(j["idx"]) >= 15 and e.mean() < 4.0, f"{len(j['idx'])} / 24 ruutua, keskivirhe {e.mean():.2f}")
+    tarkista("jalosta: väärä viiva ilmoitetaan, muut eivät", epailyttavat == ["Testi_h1_f21"], f"epäilyttävät: {epailyttavat}")
+    X, TH, SIG, W = ko.jalostettu_aineisto(L, JAL)
+    tarkista("jalostettu aineisto: ruudut, kulmat, hajonnat, painot", len(X) == len(TH) == len(SIG) == len(W) == len(j["idx"]) and np.array_equal(X, L[("Testi", 1)]["tiles"][j["idx"]]) and np.all(SIG >= ko.SIGMA_JAL0), f"{len(X)} ruutua, hajonta {SIG.min():.1f}-{SIG.max():.1f}")
 
 
 def testaa_opetuskoodi_jax():
@@ -148,7 +215,8 @@ def testaa_opetuskoodi_jax():
 
 def testaa_toimitetut_painot():
     """Repon mukana toimitetut painot (kulmaverkko_paino_*.npz) latautuvat, antavat jakauman ja sopivat ihmisen merkitsemiin ruutuihin (kierre_validointi/kulmaverkko_ihmisen_ruudut.npz, 39 viivaa). Lopullisten verkkojen opetuksessa ovat
-    mukana kaikki nämä viivat, joten tämä on toimivuustarkistus (paino ei ole rikki, kulmakonventio oikein) eikä riippumaton testi; riippumaton arvio on README:n protokolla (`kulmaverkko_opeta.py arvioi --pois ...`)."""
+    mukana nämä viivat (jalostettuina: rata hylkää kolme viivaa, joten kaikkia ei toisteta), joten tämä on toimivuustarkistus (paino ei ole rikki, kulmakonventio oikein) eikä riippumaton testi; riippumaton arvio on README:n protokolla
+    (`kulmaverkko_opeta.py arvioi --pois ...`)."""
     import glob
     polut = sorted(glob.glob(os.path.join(KANSIO, "kulmaverkko_paino_*.npz")))
     d = np.load(os.path.join(KANSIO, "kierre_validointi", "kulmaverkko_ihmisen_ruudut.npz"))
@@ -157,12 +225,12 @@ def testaa_toimitetut_painot():
     for polku, malli in list(zip(polut, mallit)) + ([("kaikki yhdessä", mallit)] if len(mallit) > 1 else []):
         p = kv.ennusta(malli, d["tiles"])
         e = np.abs(kv.ero180(kv.kulma_jakaumasta(p)[0], d["kulma"]))
-        tarkista(f"painot {os.path.basename(polku)}: ihmisen viivat keskimäärin alle 6 astetta, ei yli 20", p.shape == (len(d["tiles"]), kv.NB) and np.allclose(p.sum(axis=1), 1.0, atol=1e-4) and e.mean() < 6.0 and e.max() < 20.0,
-                 f"keskivirhe {e.mean():.1f}, mediaani {np.median(e):.1f}, suurin {e.max():.1f} astetta ({len(e)} viivaa)")
+        tarkista(f"painot {os.path.basename(polku)}: ihmisen viivat keskimäärin alle 6 astetta, enintään 3 viivaa yli 12 asteen, ei yli 30", p.shape == (len(d["tiles"]), kv.NB) and np.allclose(p.sum(axis=1), 1.0, atol=1e-4)
+                 and e.mean() < 6.0 and np.median(e) < 4.5 and (e > 12.0).sum() <= 3 and e.max() < 30.0, f"keskivirhe {e.mean():.1f}, mediaani {np.median(e):.1f}, suurin {e.max():.1f} astetta, yli 12 asteen {(e > 12.0).sum()} ({len(e)} viivaa)")
 
 
 def main():
-    for t in (testaa_opetuskoodi_jax, testaa_kierto_ja_peilaus, testaa_verkko_kultatiedostot, testaa_tallenna_lataa_ja_yhdistelma, testaa_vakiokierto, testaa_toimitetut_painot):
+    for t in (testaa_opetuskoodi_jax, testaa_kierto_ja_peilaus, testaa_verkko_kultatiedostot, testaa_tallenna_lataa_ja_yhdistelma, testaa_rata_aika, testaa_vakiokierto, testaa_viivat_epatayllisina, testaa_jalosta, testaa_toimitetut_painot):
         t()
     print()
     if VIRHEITA:

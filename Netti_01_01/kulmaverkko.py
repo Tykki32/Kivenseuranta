@@ -1,6 +1,6 @@
 """Kahvan kulman neuroverkko (puhdas NumPy, ei JAX / torch -riippuvuutta): top-down-leike kivesta (56 x 56 x 3, uint8) -> kulman jakauma (60 lokeroa, 3 astetta, jakso 180), ja heiton vakiokiertosovitus.
 
-Verkko on opetettu ihmisen merkitsemillä kulmilla (`kierre_validointi/`), niiden vakiokiertoradalla ja merkitsemättömien heittojen vakiokiertosovituksella (tools/kulmaverkko_opeta.py); vanhan koodin kulmia ei käytetä.
+Verkko on opetettu ihmisen merkitsemillä (epätäydellisillä) kulmilla (`kierre_validointi/`) ja heiton tarkalla kiertoradalla (kierto hidastuu lineaarisesti), joka jalostaa viivat ruutukohtaisiksi kulmiksi myös merkitsemättömille heitoille (tools/kulmaverkko_opeta.py); vanhan koodin kulmia ei käytetä.
 Kulma: maan tason kulma X-akselista Y-akseliin, 0 = vaakasuora, + = vastapäivään ylhäältä katsoen, jakso 180 (sama kuin merkintäsivun `kulma_deg` top-down-leikkeessä, A = (-1, +1)).
 Leike: `tools/kierre_leikkeet.topdown_leike` (z = 20 cm, 3,5 px / cm, 32 x 32 cm) pienennettynä 56 x 56 px:ksi (`cv2.INTER_AREA`); ks. `leike56`.
 
@@ -15,10 +15,12 @@ import numpy as np
 KUL = np.arange(0.0, 180.0, 3.0)        # kulmalokerot (aste)
 NB = len(KUL)
 KOKO = 56                               # leikkeen sivu (px)
-K_KIERRE = 0.021                        # kierteen vaimenemisvakio (1/s), sama kuin netti_kierre.K_KIERRE (IMU-mittaus)
+K_KIERRE = 0.021                        # kierteen hidastumisvakio (1/s): omega(t) = omega_0 (1 - K (t - t_0)), IMU-mittaus 2,1 % / s (sama luku kuin netti_kierre.K_KIERRE)
 OM_RUUDUKKO = np.arange(-600.0, 600.1, 6.0)     # omegan ruudukko (aste / s) vakiokiertosovituksessa
 TTA_KIERROT = (-60, -30, 0, 30, 60)     # ennustuksen testiaikaiset kierrot (aste; 3:n monikertoja, jotta jakauma siirtyy kokonaisten lokeroiden verran)
 ENNAKKO_MEDIAANI, ENNAKKO_SIGMA_LOG = 100.0, 1.0   # |omega| lognormaali ennakko (aste / s): sulkee pois omegan ~ 0 ja ylisuuret nopeudet
+MOODI_IKKUNA = 4                                    # kulman posteriorin huipun ympäristö: +- 4 lokeroa (+- 12 astetta)
+SIGMA_VIIVA, EPS_VIIVA = 4.0, 0.08                 # ihmisen viivan epätäydellisyys: useimmat viivat 4 asteen hajonnalla, 8 % viivoista täysin pielessä (tasajakauma 180 asteen yli; 39 viivasta 2 poikkesi radastaan yli 15 astetta)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -151,8 +153,14 @@ def ero180(a, b):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# HEITON VAKIOKIERTO: kulma(t) = th0 + omega G(t), G(t) = (1 - exp(-K (t - t_0))) / K  (kierteen vaimeneminen mukana; kierron alusta ei oleteta tasannetta kasi-vapailla ruuduilla)
+# HEITON KIERTORATA: kierto hidastuu lineaarisesti (tarkka laki): omega(s) = omega_0 (1 - K s), s = t - t_0, joten kulma(t) = th0 + omega_0 g(s), g(s) = s - K s^2 / 2
 # ---------------------------------------------------------------------------------------------------------------------
+def rata_aika(s, K=K_KIERRE):
+    """Kiertoradan aikafunktio g(s) = s - K s^2 / 2 (lineaarisesti hidastuva kierto; s sekunteina alkuhetkestä, voi olla negatiivinen): kulma = th0 + omega_0 g(s). Kierto pysähtyy hetkellä s = 1 / K."""
+    s = np.minimum(np.asarray(s, float), 1.0 / K)
+    return s - 0.5 * K * s * s
+
+
 def _jaksollinen(pen, th):
     """Rangaistus pen (n, 60) kulmassa th ((n,) tai (m, n)), lineaarinen interpolointi, jakso 180; rivi i käyttää pen[i]."""
     n, nb = pen.shape
@@ -164,38 +172,65 @@ def _jaksollinen(pen, th):
     return pen[rivi, i0] * (1 - w) + pen[rivi, i1] * w
 
 
-def _ennakko(om):
+def _ennakko(om, mediaani=ENNAKKO_MEDIAANI, sigma_log=ENNAKKO_SIGMA_LOG):
     a = np.abs(om)
-    return np.where(a > 1.0, -0.5 * (np.log(np.maximum(a, 1e-9) / ENNAKKO_MEDIAANI) / ENNAKKO_SIGMA_LOG) ** 2 - np.log(np.maximum(a, 1e-9)), -50.0)
+    return np.where(a > 1.0, -0.5 * (np.log(np.maximum(a, 1e-9) / mediaani) / sigma_log) ** 2 - np.log(np.maximum(a, 1e-9)), -50.0)
 
 
-def sovita_heitto(p, t, lam=0.5, katkaisu=6.0, K=K_KIERRE):
-    """Vakiokiertosovitus ruutujen jakaumiin p (n, 60) ajoilla t (n, nouseva, s): posteriori (th0, omega) ruudukossa, rangaistus pen = min(lam (-log p - min), katkaisu).
-    Palauttaa dict: kulma (n,) ja R (n,) = sovitetun kulman posteriorin ympyrakeskiarvo / keskittyneisyys, residuaali (n,) = |ruudun jakauman huippu - sovitettu kulma|, omega ja omega_sd (aste / s,
+def viiva_rangaistus(d, sigma=SIGMA_VIIVA, eps=EPS_VIIVA):
+    """Ihmisen viivan epätäydellisyys: ero d (aste) viivaan on useimmiten pieni (normaali, sigma), mutta osuus eps viivoista on aivan pielessä (tasajakauma jaksolla 180). Rangaistus = -log (sekoitusjakauma), nolla kohdassa d = 0,
+    ylhäältä rajoitettu: yksittäinen väärä viiva ei voi kumota muita viivoja eikä verkon todisteita."""
+    nimitt = (1.0 - eps) / (sigma * np.sqrt(2.0 * np.pi))
+    return -np.log((nimitt * np.exp(-0.5 * (d / sigma) ** 2) + eps / 180.0) / (nimitt + eps / 180.0))
+
+
+def sovita_heitto(p, t, lam=0.5, katkaisu=6.0, K=K_KIERRE, viivat=None, ennakko=None):
+    """Kiertoratasovitus ruutujen jakaumiin p (n, 60) ajoilla t (n, nouseva, s): posteriori (th0, omega) ruudukossa, rangaistus pen = min(lam (-log p - min), katkaisu); p = None: ei verkon todistetta (vain viivat).
+    viivat = dict(idx, kulma, sigma, eps): ihmisen viivat ruuduissa idx (kulmat asteina) epätäydellisinä (`viiva_rangaistus`), rata on silti tarkka (lineaarinen hidastuminen, `rata_aika`).
+    ennakko = (mediaani, sigma_log): |omega|:n lognormaali ennakko (oletus ENNAKKO_*).
+    Palauttaa dict: kulma (n,), R (n,) = sovitetun kulman posteriorin keskittyneisyys, sigma (n,) = sitä vastaava hajonta (aste), kulma_moodi / sigma_moodi / massa_moodi (n,) = posteriorin huippu, sen ympäristön (+- MOODI_IKKUNA
+    lokeroa) hajonta (katkaistu ikkunaan) ja todennäköisyysmassa (viivojen mahdolliset virheet jäävät huipun ulkopuolelle), residuaali (n,) = |ruudun jakauman huippu - sovitettu kulma| (p annettu), omega ja omega_sd (aste / s,
     valitulla suunnalla), suunta_p (valitun kiertosuunnan todennakoisyys), p_ccw (vastapaivaan)."""
     t = np.asarray(t, float)
     n = len(t)
-    pen = np.minimum((-np.log(np.clip(p, 1e-6, None)) - (-np.log(np.clip(p, 1e-6, None))).min(axis=1, keepdims=True)) * lam, katkaisu)
-    tau = (1.0 - np.exp(-K * (t - t[0]))) / K
+    if p is None:
+        pen = np.zeros((n, NB))
+    else:
+        pen = np.minimum((-np.log(np.clip(p, 1e-6, None)) - (-np.log(np.clip(p, 1e-6, None))).min(axis=1, keepdims=True)) * lam, katkaisu)
+    tau = rata_aika(t - t[0], K)
     om = OM_RUUDUKKO
     J = np.empty((NB, len(om)))
     for ia, th0 in enumerate(KUL):
         J[ia] = _jaksollinen(pen, th0 + om[:, None] * tau[None, :]).sum(axis=1)
-    lw = -J + _ennakko(om)[None, :]
+    if viivat is not None and len(viivat["idx"]):
+        idx = np.asarray(viivat["idx"], int)
+        ero = ero180(KUL[:, None, None] + om[None, :, None] * tau[idx][None, None, :], np.asarray(viivat["kulma"], float)[None, None, :])
+        J += viiva_rangaistus(ero, viivat.get("sigma", SIGMA_VIIVA), viivat.get("eps", EPS_VIIVA)).sum(axis=2)
+    lw = -J + _ennakko(om, *(ennakko or (ENNAKKO_MEDIAANI, ENNAKKO_SIGMA_LOG)))[None, :]
     lw -= lw.max()
     w = np.exp(lw)
     w /= w.sum()
     kulma = np.empty(n)
     R = np.empty(n)
+    k_moodi, s_moodi, massa = np.empty(n), np.empty(n), np.empty(n)
+    ikkuna = np.arange(-MOODI_IKKUNA, MOODI_IKKUNA + 1)
     for i in range(n):
-        z = (w * np.exp(2j * np.radians(KUL[:, None] + om[None, :] * tau[i]))).sum()
+        ang = KUL[:, None] + om[None, :] * tau[i]
+        z = (w * np.exp(2j * np.radians(ang))).sum()
         kulma[i] = (np.degrees(np.angle(z)) / 2.0) % 180.0
         R[i] = abs(z)
+        hist = np.bincount((((ang % 180.0) / 3.0).astype(int) % NB).ravel(), weights=w.ravel(), minlength=NB)         # kulman posteriori lokeroina
+        lok = (hist.argmax() + ikkuna) % NB                                                                              # huippulokero ja sen ympäristö
+        massa[i] = hist[lok].sum()
+        zm = (hist[lok] * np.exp(2j * np.radians(KUL[lok]))).sum() / max(massa[i], 1e-12)
+        k_moodi[i] = (np.degrees(np.angle(zm)) / 2.0) % 180.0
+        s_moodi[i] = max(np.degrees(0.5 * np.sqrt(-2.0 * np.log(np.clip(abs(zm), 1e-6, 1.0 - 1e-9)))), 1.0)
     p_om = w.sum(axis=0)
     p_ccw = float(p_om[om > 0].sum())
     s = 1 if p_ccw >= 0.5 else -1
     m = (om * s) > 0
     pp = p_om[m] / max(p_om[m].sum(), 1e-12)
     mu = float((om[m] * pp).sum())
-    return dict(kulma=kulma, R=R, residuaali=np.abs(ero180(KUL[np.argmax(p, axis=1)], kulma)), omega=mu, omega_sd=float(np.sqrt(((om[m] - mu) ** 2 * pp).sum())),
-                suunta_p=max(p_ccw, 1.0 - p_ccw), p_ccw=p_ccw)
+    sigma = np.degrees(0.5 * np.sqrt(-2.0 * np.log(np.clip(R, 1e-6, 1.0 - 1e-9))))
+    residuaali = np.abs(ero180(KUL[np.argmax(p, axis=1)], kulma)) if p is not None else np.zeros(n)
+    return dict(kulma=kulma, R=R, sigma=sigma, kulma_moodi=k_moodi, sigma_moodi=s_moodi, massa_moodi=massa, residuaali=residuaali, omega=mu, omega_sd=float(np.sqrt(((om[m] - mu) ** 2 * pp).sum())), suunta_p=max(p_ccw, 1.0 - p_ccw), p_ccw=p_ccw)
