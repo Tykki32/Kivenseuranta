@@ -183,6 +183,38 @@ def testaa_vyohyke():
     tarkista("pseudo_aineisto: ohitetut ruudut säilyvät radan kulmalla (vanhassa pickle-muodossa ne putoaisivat)", len(X) == n and heittoja == 1 and np.allclose(TH, kulma) and ilman < n, f"mukana {len(X)} / {n} ruutua, ilman ohitettu-kenttää {ilman}")
 
 
+def testaa_kasiruudut():
+    """Käsiruudut (`kasi_px` > 250: käsi, hiha tai harja kahvan päällä): `ohitettavat` yhdistää y-vyöhykkeet ja käsiruudut (raja ei mukana, nan ei ole käsiruutu), `vyohyke` / `kasi` / `raja` rajaavat ryhmät ja alle
+    `min_ruutuja` ruutua jäljelle jättävää ohitusta ei tehdä; käsiruutujen harhainen arvio ei vie rataa, kun ne ohitetaan; opetustyökalun `ohitettavat` lukee leikkeen `kasi`-kentän (puuttuva kenttä: vain vyöhykkeet)."""
+    Y = [530.0, 600.0, 600.0, 690.0, 600.0, 600.0, 600.0, 600.0, 600.0, 600.0]
+    K = [0.0, 251.0, 250.0, 0.0, float("nan"), 0.0, 0.0, 0.0, 0.0, 0.0]
+    m = kv.ohitettavat(Y, K)
+    tarkista("ohitettavat: y-vyöhykkeet ja käsiruudut (kasi_px > 250; 250 ja tuntematon eivät ole)", m.tolist() == [True, True, False, True] + [False] * 6, str(m.tolist()))
+    a, b, c, d = kv.ohitettavat(Y, K, vyohyke=False), kv.ohitettavat(Y, K, kasi=False), kv.ohitettavat(Y, None), kv.ohitettavat(Y, K, raja=100.0)
+    tarkista("ohitettavat: vyohyke / kasi / raja rajaavat ryhmät, kasi_px = None antaa vain vyöhykkeet",
+             a.tolist() == [False, True] + [False] * 8 and b.tolist() == c.tolist() == [True, False, False, True] + [False] * 6 and d.tolist() == [True, True, True, True] + [False] * 6, f"{a.tolist()} {b.tolist()} {d.tolist()}")
+    lyhyt = [530.0] * 3 + [600.0] * 3
+    tarkista("ohitettavat: jos jäljelle jäisi alle 5 ruutua, mitään ei ohiteta (min_ruutuja = 0 poistaa tämän)", not kv.ohitettavat(lyhyt, None).any() and int(kv.ohitettavat(lyhyt, None, min_ruutuja=0).sum()) == 3)
+    rng = np.random.default_rng(3)
+    n = 14
+    t = 3000.0 + np.arange(n) / 25.0
+    kasi = np.zeros(n)
+    kasi[[3, 4, 5, 9]] = 400.0
+    tosi = (40.0 - 70.0 * kv.rata_aika(t - t[0])) % 180.0
+    havaittu = tosi.copy()
+    havaittu[kasi > 250] += 35.0                          # käsi kahvan päällä: ruutujen arvio on vedetty pieleen
+    p = _jakaumat(havaittu, 1.5, rng)
+    ohi = kv.ohitettavat(np.full(n, 600.0), kasi)
+    r0, r1 = kv.sovita_heitto(p, t), kv.sovita_heitto(p, t, ohita=ohi)
+    e0, e1 = np.abs(kv.ero180(r0["kulma"], tosi)).mean(), np.abs(kv.ero180(r1["kulma"], tosi)).mean()
+    tarkista("ohita käsiruudut: harhaiset käsiruudut pois -> rata palautuu (virhe koko heitossa, myös ohitetuissa ruuduissa)", ohi.tolist() == (kasi > 250).tolist() and e1 < 2.0 and e0 > e1 + 3.0, f"virhe ilman ohitusta {e0:.2f}, ohituksella {e1:.2f}")
+    import kulmaverkko_opeta as ko
+    L = {("T", 1): dict(Y=np.array(Y), kasi=np.array(K)), ("T", 2): dict(Y=np.array(Y))}
+    tarkista("opetustyökalun ohitettavat: leikkeen kasi-kenttä mukana, puuttuva kenttä = vain vyöhykkeet, kasi=False ja vyohyke=False ottavat ryhmän mukaan",
+             ko.ohitettavat(L, ("T", 1)).tolist() == m.tolist() and ko.ohitettavat(L, ("T", 2)).tolist() == c.tolist() and ko.ohitettavat(L, ("T", 1), kasi=False).tolist() == b.tolist()
+             and ko.ohitettavat(L, ("T", 1), vyohyke=False).tolist() == a.tolist() and not ko.ohitettavat(L, ("T", 1), vyohyke=False, kasi=False).any())
+
+
 def testaa_vakiokierto():
     """Kiertoratasovitus (kulma on aikafunktio, kierto hidastuu lineaarisesti): kulmat, omega ja suunta palautuvat; peilattu rata vaihtaa suunnan; yksittainen 90 asteen virheruutu ei vie sovitusta, mutta nakyy residuaalissa."""
     rng = np.random.default_rng(1)
@@ -322,7 +354,7 @@ def testaa_toimitetut_painot():
 
 
 def main():
-    for t in (testaa_opetuskoodi_jax, testaa_kierto_ja_peilaus, testaa_verkko_kultatiedostot, testaa_tallenna_lataa_ja_yhdistelma, testaa_mallikohtainen_tta, testaa_johdonmukaisuus, testaa_vyohyke, testaa_rata_aika, testaa_vakiokierto, testaa_viivat_epatayllisina, testaa_jalosta, testaa_toimitetut_painot):
+    for t in (testaa_opetuskoodi_jax, testaa_kierto_ja_peilaus, testaa_verkko_kultatiedostot, testaa_tallenna_lataa_ja_yhdistelma, testaa_mallikohtainen_tta, testaa_johdonmukaisuus, testaa_vyohyke, testaa_kasiruudut, testaa_rata_aika, testaa_vakiokierto, testaa_viivat_epatayllisina, testaa_jalosta, testaa_toimitetut_painot):
         t()
     print()
     if VIRHEITA:

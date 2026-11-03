@@ -22,6 +22,7 @@ TTA_KIERROT = (-60, -30, 0, 30, 60)     # ennustuksen testiaikaiset kierrot (ast
 VYOHYKE_Y_CM = (682.8, 702.6)    # kiven y-asema (cm), jossa sininen hog-viiva näkyy kuvassa kahvan takana (Video1 heitto 59: t = 0 ... 0,1 s); kamera kuvaa vinosta ja kahva on kiven yläreunassa, joten vyöhyke on eri kohdassa kuin itse hog-viiva
 VYOHYKE2_Y_CM = (520.0, 540.0)   # toinen vyöhyke: kahvan takana on jäähän maalattu iso mainosteksti; sama kohta kaikissa videoissa, molemmilla puolilla ja kaikilla kiertosuunnilla (piikki y 522-533 cm)
 VYOHYKKEET_Y_CM = (VYOHYKE2_Y_CM, VYOHYKE_Y_CM)    # kaikki tunnetut vyöhykkeet, joiden ruudut jätetään oletuksena pois radan sovituksesta
+KASI_RAJA_PX = 250.0             # ruudut, joiden leikkeessä on enemmän käsi- tai harjaajapikseleitä (`kasi_px`), jätetään oletuksena pois radan sovituksesta: käsi, hiha tai harja kahvan päällä tai vieressä vie verkon arvion pieleen (noin 14 % näistä ruuduista yli 15 astetta, pahimmillaan 60-80 astetta; README, kolmas kierros)
 ENNAKKO_MEDIAANI, ENNAKKO_SIGMA_LOG = 100.0, 1.0   # |omega| lognormaali ennakko (aste / s): sulkee pois omegan ~ 0 ja ylisuuret nopeudet
 MOODI_IKKUNA = 4                                    # kulman posteriorin huipun ympäristö: +- 4 lokeroa (+- 12 astetta)
 SIGMA_VIIVA, EPS_VIIVA = 4.0, 0.08                 # ihmisen viivan epätäydellisyys: useimmat viivat 4 asteen hajonnalla, 8 % viivoista täysin pielessä (tasajakauma 180 asteen yli; 39 viivasta 2 poikkesi radastaan yli 15 astetta)
@@ -166,10 +167,23 @@ def vyohykkeessa(Y, vali=None):
     return m
 
 
+def ohitettavat(Y, kasi_px=None, vyohyke=True, kasi=True, raja=KASI_RAJA_PX, min_ruutuja=5):
+    """Ruudut, jotka jätetään oletuksena pois radan sovituksesta (`sovita_heitto(..., ohita=ohitettavat(Y, kasi_px))`): kiven y-vyöhykkeet (`vyohykkeessa`; vyohyke=False: ei vyöhykkeitä) ja ruudut, joiden leikkeessä on enemmän kuin `raja`
+    käsi- tai harjaajapikseliä (`kasi_px`; kasi=False tai kasi_px=None: ei käsiruutuja; tuntematon (nan) ei ole käsiruutu; raja ei ole mukana). Jos ohituksen jälkeen jäisi alle `min_ruutuja` ruutua, mitään ei ohiteta (rata tarvitsee ruutuja,
+    ja pseudomerkintöjen laatuseula hylkää huonon heiton; min_ruutuja=0 poistaa tämän). Palauttaa (n,) bool."""
+    Y = np.asarray(Y, float)
+    m = vyohykkeessa(Y) if vyohyke else np.zeros(Y.shape, bool)
+    if kasi and kasi_px is not None:
+        m = m | (np.asarray(kasi_px, float) > raja)
+    if Y.size - int(m.sum()) < min_ruutuja:
+        m = np.zeros(Y.shape, bool)
+    return m
+
+
 def johdonmukaisuus(jakaumat, ajat, K=K_KIERRE, lam=0.5, ohita=None):
     """Verkon johdonmukaisuus ilman merkintöjä: kunkin heiton ruutujakaumiin (n_i, 60) ajoilla (n_i,) sovitetaan tarkka rata (`sovita_heitto`) ja mitataan ruutujen jakaumien huippujen ero sovitettuun kulmaan.
     Mittaa ruutukohtaista satunnaisvirhettä kaikilla kivillä, joilla ei ole merkintöjä (laki on tarkka, joten sovitus on vain 2 parametria ruutujen yli). Ei havaitse virhettä, joka on koko heiton yhteinen (esim. vakiosiirtymä).
-    ohita = None / lista (n_i,) bool-taulukoita heittoa kohti (esim. `vyohykkeessa(Y)`): niiden ruutujen jakaumia ei käytetä radan sovituksessa, mutta ero niihin mitataan edelleen (`ohitettu` erottaa ne).
+    ohita = None / lista (n_i,) bool-taulukoita heittoa kohti (esim. `ohitettavat(Y, kasi_px)`: y-vyöhykkeet ja käsiruudut): niiden ruutujen jakaumia ei käytetä radan sovituksessa, mutta ero niihin mitataan edelleen (`ohitettu` erottaa ne).
     Palauttaa dict: ero (kaikkien ruutujen |ero| asteina), kulma (sovitettu kulma mod 180, ruuduittain), heitto (heiton indeksi ruuduittain), ohitettu (ruuduittain, bool), suunta_p, omega (heittokohtaiset)."""
     ero, kul, hid, oh, sp, om = [], [], [], [], [], []
     for i, (p, t) in enumerate(zip(jakaumat, ajat)):
@@ -232,7 +246,7 @@ def sovita_heitto(p, t, lam=0.5, katkaisu=6.0, K=K_KIERRE, viivat=None, ennakko=
     """Kiertoratasovitus ruutujen jakaumiin p (n, 60) ajoilla t (n, nouseva, s): posteriori (th0, omega) ruudukossa, rangaistus pen = min(lam (-log p - min), katkaisu); p = None: ei verkon todistetta (vain viivat).
     viivat = dict(idx, kulma, sigma, eps): ihmisen viivat ruuduissa idx (kulmat asteina) epätäydellisinä (`viiva_rangaistus`), rata on silti tarkka (lineaarinen hidastuminen, `rata_aika`).
     ennakko = (mediaani, sigma_log): |omega|:n lognormaali ennakko (oletus ENNAKKO_*).
-    ohita = (n,) bool: ruudut, joiden jakaumaa ei käytetä sovituksessa (esim. `vyohykkeessa(Y)`); rata kulkee silti kaikkien ruutujen läpi ja `kulma` ym. lasketaan niille, `ohitettu` palautetaan sellaisenaan.
+    ohita = (n,) bool: ruudut, joiden jakaumaa ei käytetä sovituksessa (esim. `ohitettavat(Y, kasi_px)`: y-vyöhykkeet ja käsiruudut); rata kulkee silti kaikkien ruutujen läpi ja `kulma` ym. lasketaan niille, `ohitettu` palautetaan sellaisenaan.
     Palauttaa dict: kulma (n,), R (n,) = sovitetun kulman posteriorin keskittyneisyys, sigma (n,) = sitä vastaava hajonta (aste), kulma_moodi / sigma_moodi / massa_moodi (n,) = posteriorin huippu, sen ympäristön (+- MOODI_IKKUNA
     lokeroa) hajonta (katkaistu ikkunaan) ja todennäköisyysmassa (viivojen mahdolliset virheet jäävät huipun ulkopuolelle), residuaali (n,) = |ruudun jakauman huippu - sovitettu kulma| (p annettu), omega ja omega_sd (aste / s,
     valitulla suunnalla), suunta_p (valitun kiertosuunnan todennakoisyys), p_ccw (vastapaivaan)."""

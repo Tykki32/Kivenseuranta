@@ -18,7 +18,9 @@ Vaiheet (jokainen oma alikomentonsa; tulokset pickle-tiedostoina):
              python tools/kulmaverkko_opeta.py oppilas --leikkeet leikkeet.pkl --pseudo pseudo.pkl --ulos oppilas.pkl [--verkko resf --kw '{"ch": [24, 48, 96], "blocks": 2}' --askelta 6000 --p-kierto 0.3 --kierto-max 30]
   arvioi     Verkkojen virhe ihmisen viivoihin (yksi ruutu + TTA; verkko + vakiokierto) pois jätetyillä heitoilla (--pois), jotka eivät ole missään opetuksessa.
              python tools/kulmaverkko_opeta.py arvioi --leikkeet leikkeet.pkl --verkot oppilas.pkl --pois Matarmaa:69,Saarelainen:68
-  (y-vyöhykkeet) `jalosta`, `pseudo`, `arvioi` ja `johdonmukaisuus` jättävät oletuksena kiven y-välien 520-540 cm (jäähän maalattu mainosteksti kahvan takana) ja 682,8-702,6 cm (sininen hog-viiva kahvan takana) ruutujen jakaumat pois radan sovituksesta (`--vyohyke-mukana` ottaa ne mukaan): verkon arvio vetäytyy niissä kohti vaakasuuntaa tai menee pieleen; kamera kuvaa vinosta ja kahva on kiven yläreunassa, joten hog-viivan vyöhyke on eri kohdassa kuin itse hog-viiva.
+  (ohitetut ruudut) `jalosta`, `pseudo`, `arvioi` ja `johdonmukaisuus` jättävät oletuksena kaksi ruuturyhmää pois radan sovituksesta (ruudut pysyvät opetuksessa radan antamalla kulmalla): (1) kiven y-välit 520-540 cm (jäähän maalattu mainosteksti kahvan takana) ja 682,8-702,6 cm
+             (sininen hog-viiva kahvan takana; `--vyohyke-mukana` ottaa ne mukaan): verkon arvio vetäytyy niissä kohti vaakasuuntaa tai menee pieleen; kamera kuvaa vinosta ja kahva on kiven yläreunassa, joten hog-viivan vyöhyke on eri kohdassa kuin itse hog-viiva;
+             (2) käsiruudut eli ruudut, joiden leikkeessä on yli 250 käsi- tai harjaajapikseliä (`kasi_px`; `--kasi-mukana` ottaa ne mukaan): käsi, hiha tai harja kahvan päällä vie arvion pieleen (`kulmaverkko.ohitettavat`).
   johdonmukaisuus  Verkkojen johdonmukaisuus ilman merkintöjä: ruutukohtainen ero tarkkaan rataan heitoilla, joilla ei ole viivoja (pidätetyt heitot: verkko ei saa olla opetettu niillä); kuvaa satunnaisvirhettä kaikilla kivillä, ei viivojen kohinan rajoittama.
              python tools/kulmaverkko_opeta.py johdonmukaisuus --leikkeet leikkeet.pkl --verkot oppilas.pkl [--heitot pidatetyt.json] [--pois ...]
   vie        Opetettu verkko NumPy-muotoon (kulmaverkko.py): python tools/kulmaverkko_opeta.py vie --verkko oppilas.pkl --ulos kulmaverkko_paino_resf.npz
@@ -54,6 +56,13 @@ LAM_JAL = 0.05                    # jalostuksessa vieraiden verkkojen ruutujakau
 ENNAKKO_JAL = (76.0, 0.6)          # jalostuksen |omega|-ennakko (mediaani aste / s, log-hajonta): 506 varman suunnan heiton omegat ovat mediaaniltaan 76 aste/s (log-hajonta 0,42); tiukempi ennakko poistaa viivojen aliasoitumisen
 RAJA_RMS, RAJA_IKKUNA, MARGINAALI = 3.0, 0.39, 0.2     # ankkurointi: suoran jäännös (aste), merkittyjen ruutujen aikaikkuna (s), ankkurointi ikkunan ulkopuolelle (s)
 LEIKE_KOKO = kv.KOKO
+
+
+def ohitettavat(L, k, vyohyke=True, kasi=True):
+    """Heiton k ruudut, jotka jätetään pois radan sovituksesta (`kulmaverkko.ohitettavat`): y-vyöhykkeet (vyohyke) ja käsiruudut (kasi: `kasi_px` > `kulmaverkko.KASI_RAJA_PX`); False ottaa ryhmän mukaan sovitukseen.
+    Leikkeet ilman `kasi`-kenttää (vanhat pickle-tiedostot) antavat vain vyöhykkeet."""
+    e = L[k]
+    return kv.ohitettavat(e["Y"], e.get("kasi"), vyohyke=vyohyke, kasi=kasi)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -217,9 +226,9 @@ def ihmisen_aineisto(L, V, viiva_paino=4.0):
 # ---------------------------------------------------------------------------------------------------------------------
 # JALOSTUS: epätäydelliset viivat + tarkka kiertorata (+ vieraiden verkkojen todiste) -> kulma koko heiton ruuduille
 # ---------------------------------------------------------------------------------------------------------------------
-def jalosta(L, V, ennustajat=None, lam=LAM_JAL, sigma_viiva=kv.SIGMA_VIIVA, eps=kv.EPS_VIIVA, sigma0=SIGMA_JAL0, max_sigma=MAX_SIGMA_JAL, vyohyke=True):
+def jalosta(L, V, ennustajat=None, lam=LAM_JAL, sigma_viiva=kv.SIGMA_VIIVA, eps=kv.EPS_VIIVA, sigma0=SIGMA_JAL0, max_sigma=MAX_SIGMA_JAL, vyohyke=True, kasi=True):
     """Jokaiselle merkitylle heitolle (V = lue_viivat) sovitetaan rata (th0, omega) ihmisen viivoihin epätäydellisinä (`kulmaverkko.viiva_rangaistus`) ja, jos `ennustajat` on annettu, myös niiden ruutujakaumiin
-    (verkkojen pitää olla heitolle vieraita, muuten verkko vain toistaa viivat). Palauttaa {avain: dict(idx, kulma, sigma, viivat: [(id, ihmisen kulma, ero jalostettuun)], omega, omega_sd, suunta_p)}: idx = ruudut, joissa
+    (verkkojen pitää olla heitolle vieraita, muuten verkko vain toistaa viivat; y-vyöhykkeiden ja käsiruutujen verkkotodistetta ei käytetä, ks. `ohitettavat`). Palauttaa {avain: dict(idx, kulma, sigma, viivat: [(id, ihmisen kulma, ero jalostettuun)], omega, omega_sd, suunta_p)}: idx = ruudut, joissa
     posteriorin huipun hajonta on enintään max_sigma ja huippu (+- 12 astetta) sisältää vähintään MIN_MASSA_JAL massasta, kulma = huipun keskiarvo ja sigma = sqrt(sigma0^2 + huipun hajonta^2) (viivojen mahdolliset virheet eivät laajenna tavoitetta,
     mutta ne voivat siirtää huippua tai tehdä ruudusta moniselitteisen)."""
     ulos = {}
@@ -228,7 +237,7 @@ def jalosta(L, V, ennustajat=None, lam=LAM_JAL, sigma_viiva=kv.SIGMA_VIIVA, eps=
         idx_v = np.array([j for j, *_ in r["viivat"]], int)
         a_v = np.array([a for _, a, _, _ in r["viivat"]], float)
         p = yhdistelma(ennustajat, e["tiles"]) if ennustajat else None
-        ohita = kv.vyohykkeessa(e["Y"]) if (vyohyke and p is not None) else None          # hog-viivan vyöhykkeen ruutujen verkkotodistetta ei käytetä (viivat ovat ihmisen merkintöjä: ne pysyvät)
+        ohita = ohitettavat(L, k, vyohyke, kasi) if p is not None else None          # y-vyöhykkeiden ja käsiruutujen verkkotodistetta ei käytetä (viivat ovat ihmisen merkintöjä: ne pysyvät)
         f = kv.sovita_heitto(p, e["t"], lam, viivat=dict(idx=idx_v, kulma=a_v, sigma=sigma_viiva, eps=eps), ennakko=ENNAKKO_JAL, ohita=ohita)
         ok = np.where((f["sigma_moodi"] <= max_sigma) & (f["massa_moodi"] >= MIN_MASSA_JAL))[0]
         ulos[k] = dict(idx=ok, kulma=f["kulma_moodi"][ok], sigma=np.sqrt(sigma0 ** 2 + f["sigma_moodi"][ok] ** 2), omega=f["omega"], omega_sd=f["omega_sd"], suunta_p=f["suunta_p"],
@@ -489,14 +498,15 @@ def yhdistelma(ennustajat, leikkeet, tta=True):
 # ---------------------------------------------------------------------------------------------------------------------
 # PSEUDOMERKINNÄT: ennusteet -> vakiokiertosovitus
 # ---------------------------------------------------------------------------------------------------------------------
-def pseudomerkinnat(L, ennustajat, avaimet, lam=0.5, loki=print, vyohyke=True):
+def pseudomerkinnat(L, ennustajat, avaimet, lam=0.5, loki=print, vyohyke=True, kasi=True):
     """Heiton ruutujen ennusteet (TTA, verkkojen geometrinen keskiarvo) sovitetaan vakiokiertoon; palauttaa {avain: dict(kulma, R, residuaali, ohitettu, omega, omega_sd, suunta_p)}.
-    vyohyke: y-vyöhykkeiden (`kulmaverkko.VYOHYKKEET_Y_CM`: mainosteksti ja hog-viiva kahvan takana) ruutujen jakaumia ei käytetä sovituksessa (verkon arvio vetäytyy niissä kohti vaakasuuntaa); niille tulee silti rata-kulma (`ohitettu` = True)."""
+    vyohyke: y-vyöhykkeiden (`kulmaverkko.VYOHYKKEET_Y_CM`: mainosteksti ja hog-viiva kahvan takana) ruutujen jakaumia ei käytetä sovituksessa (verkon arvio vetäytyy niissä kohti vaakasuuntaa); kasi: samoin käsiruutujen
+    (`kasi_px` > `kulmaverkko.KASI_RAJA_PX`: käsi tai harja kahvan päällä); niille tulee silti rata-kulma (`ohitettu` = True)."""
     out = {}
     t0 = time.time()
     for i, k in enumerate(avaimet):
         p = yhdistelma(ennustajat, L[k]["tiles"])
-        r = kv.sovita_heitto(p, L[k]["t"], lam, ohita=kv.vyohykkeessa(L[k]["Y"]) if vyohyke else None)
+        r = kv.sovita_heitto(p, L[k]["t"], lam, ohita=ohitettavat(L, k, vyohyke, kasi))
         r["p"] = p
         out[k] = r
         if (i + 1) % 100 == 0:
@@ -506,8 +516,8 @@ def pseudomerkinnat(L, ennustajat, avaimet, lam=0.5, loki=print, vyohyke=True):
 
 def pseudo_aineisto(L, PS, min_suunta_p=0.9, max_resid_heitto=15.0, max_resid_ruutu=25.0, sigma0=4.5, sigma1=15.0, min_ruutuja=8):
     """Pseudomerkityt ruudut opetukseen: heitto hyväksytään, kun kiertosuunta on varma (suunta_p), ruutujen jakaumat ovat johdonmukaisia sovituksen kanssa (keskiresiduaali) ja ruutu on sovituksen lähellä;
-    tavoitteen hajonta sigma0 + sigma1 (1 - R), paino R^2. Sovituksessa pois jätetyt (`ohitettu`, hog-viivan vyöhyke) ruudut eivät vaikuta heiton hyväksyntään eivätkä pudota itseään: ne tulevat opetukseen radan
-    antamalla kulmalla (rata on laskettu muista ruuduista, joten ruutu oppii "näkemään hog-viivan läpi"). Palauttaa (X, TH, SIG, W, heittoja)."""
+    tavoitteen hajonta sigma0 + sigma1 (1 - R), paino R^2. Sovituksessa pois jätetyt (`ohitettu`: y-vyöhykkeet ja käsiruudut) ruudut eivät vaikuta heiton hyväksyntään eivätkä pudota itseään: ne tulevat opetukseen radan
+    antamalla kulmalla (rata on laskettu muista ruuduista, joten ruutu oppii "näkemään hog-viivan, tekstin tai käden läpi"). Palauttaa (X, TH, SIG, W, heittoja)."""
     X, TH, SIG, W, n = [], [], [], [], 0
     for k, r in PS.items():
         oh = r.get("ohitettu", np.zeros(len(r["kulma"]), bool))
@@ -531,8 +541,8 @@ def tilasto(e):
     return f"n={len(e):3d} keski {e.mean():5.1f} med {np.median(e):5.1f} p90 {np.percentile(e, 90):5.1f} max {e.max():5.1f}  <=5: {np.mean(e <= 5) * 100:3.0f}%  <=10: {np.mean(e <= 10) * 100:3.0f}%  >30: {int((e > 30).sum())}"
 
 
-def arvioi(L, V, ennustajat, heitot, lam=0.5, loki=print, vyohyke=True):
-    """Ihmisen viivat heitoilla `heitot`: yksi ruutu + TTA ja verkko + vakiokierto (koko heiton käsi-vapaat ruudut)."""
+def arvioi(L, V, ennustajat, heitot, lam=0.5, loki=print, vyohyke=True, kasi=True):
+    """Ihmisen viivat heitoilla `heitot`: yksi ruutu + TTA ja verkko + vakiokierto (koko heiton käsi-vapaat ruudut; y-vyöhykkeiden ja käsiruutujen jakaumat eivät ole mukana radan sovituksessa, ks. `ohitettavat`)."""
     e1, e2 = [], []
     for k in heitot:
         if k not in V or k not in L:
@@ -540,7 +550,7 @@ def arvioi(L, V, ennustajat, heitot, lam=0.5, loki=print, vyohyke=True):
             continue
         p = yhdistelma(ennustajat, L[k]["tiles"])
         a1, _ = kv.kulma_jakaumasta(p)
-        r = kv.sovita_heitto(p, L[k]["t"], lam, ohita=kv.vyohykkeessa(L[k]["Y"]) if vyohyke else None)
+        r = kv.sovita_heitto(p, L[k]["t"], lam, ohita=ohitettavat(L, k, vyohyke, kasi))
         for j, a, _, _ in V[k]["viivat"]:
             e1.append(float(kv.ero180(a1[j], a)))
             e2.append(float(kv.ero180(r["kulma"][j], a)))
@@ -595,7 +605,7 @@ def komento_jalosta(a):
     if a.varovainen:                     # rata vain heitoille, joiden viivat ovat johdonmukaiset (ankkurointikriteeri: 3+ viivaa, suoran jäännös <= 3 astetta, aikaikkuna >= 0,39 s); muilla viivat sellaisenaan
         muut = raa_at_viivat({k: r for k, r in V.items() if r["ankkuri"] is None})
         V = {k: r for k, r in V.items() if r["ankkuri"] is not None}
-    JAL = jalosta(L, V, ennustajat, a.lam, vyohyke=not a.vyohyke_mukana)
+    JAL = jalosta(L, V, ennustajat, a.lam, vyohyke=not a.vyohyke_mukana, kasi=not a.kasi_mukana)
     print(f"jalosta: {len(JAL)} heittoa, " + (f"viivat + {len(a.verkot)} vierasta verkkoa" if a.verkot else "vain viivat") + (f"; {len(muut)} heitolle viivat sellaisenaan (ei johdonmukaisia)" if muut else ""))
     epailyttavia = 0
     for k, j in sorted(JAL.items()):
@@ -617,11 +627,14 @@ def komento_pseudo(a):
         avaimet = avaimet[:a.enintaan]
     ennustajat = lataa_ennustajat(a.verkot)
     print(f"pseudo: {len(avaimet)} merkitsemätöntä heittoa, {len(ennustajat)} verkkoa")
-    PS = pseudomerkinnat(L, ennustajat, avaimet, a.lam, vyohyke=not a.vyohyke_mukana)
+    PS = pseudomerkinnat(L, ennustajat, avaimet, a.lam, vyohyke=not a.vyohyke_mukana, kasi=not a.kasi_mukana)
     sp = np.array([r["suunta_p"] for r in PS.values()])
     rm = np.array([r["residuaali"][~r["ohitettu"]].mean() if (~r["ohitettu"]).any() else r["residuaali"].mean() for r in PS.values()])
-    if not a.vyohyke_mukana:
-        print(f"y-vyöhykkeet {', '.join(f'{x[0]:g}-{x[1]:g}' for x in kv.VYOHYKKEET_Y_CM)} cm (mainosteksti, hog-viiva) jätetty pois sovituksesta: {sum(int(r['ohitettu'].sum()) for r in PS.values())} / {sum(len(r['kulma']) for r in PS.values())} ruutua")
+    if not (a.vyohyke_mukana and a.kasi_mukana):
+        oh = sum(int(r["ohitettu"].sum()) for r in PS.values())
+        zo = sum(int((r["ohitettu"] & kv.vyohykkeessa(L[k]["Y"])).sum()) for k, r in PS.items())
+        print(f"pois sovituksesta (ruudut pysyvät opetuksessa radan kulmalla): {oh} / {sum(len(r['kulma']) for r in PS.values())} ruutua, joista y-vyöhykkeiden ({', '.join(f'{x[0]:g}-{x[1]:g}' for x in kv.VYOHYKKEET_Y_CM)} cm: mainosteksti, hog-viiva) {zo} "
+              f"ja käsiruutujen (kasi_px > {kv.KASI_RAJA_PX:g}, vyöhykkeiden ulkopuolella) {oh - zo}")
     print(f"suunta varma (p >= 0,9) {(sp >= 0.9).sum()} / {len(PS)}, p >= 0,99 {(sp >= 0.99).sum()}; heiton keskiresiduaali p50 / p90 {np.percentile(rm, 50):.1f} / {np.percentile(rm, 90):.1f} astetta")
     ag = tot = 0
     for k, r in PS.items():                      # vain raportointi: kaukopään (varma) kiertosuunta ei ole opetuksessa
@@ -654,7 +667,7 @@ def komento_arvioi(a):
     L = pickle.load(open(a.leikkeet, "rb"))
     V = lue_viivat(L, a.valinta, a.merkinnat)
     heitot = sorted(jaa_heitot(a.pois)) if a.pois else sorted(V)
-    arvioi(L, V, lataa_ennustajat(a.verkot), heitot, a.lam, vyohyke=not a.vyohyke_mukana)
+    arvioi(L, V, lataa_ennustajat(a.verkot), heitot, a.lam, vyohyke=not a.vyohyke_mukana, kasi=not a.kasi_mukana)
 
 
 def komento_johdonmukaisuus(a):
@@ -671,14 +684,16 @@ def komento_johdonmukaisuus(a):
     print(f"johdonmukaisuus: {len(avaimet)} heittoa, {sum(len(L[k]['f']) for k in avaimet)} ruutua")
     for polku in a.verkot:
         ennustajat = lataa_ennustajat(polku.split(","))
-        ohita = None if a.vyohyke_mukana else [kv.vyohykkeessa(L[k]["Y"]) for k in avaimet]
+        ohita = [ohitettavat(L, k, not a.vyohyke_mukana, not a.kasi_mukana) for k in avaimet]
         r = kv.johdonmukaisuus([yhdistelma(ennustajat, L[k]["tiles"]) for k in avaimet], [L[k]["t"] for k in avaimet], ohita=ohita)
         e, kul, oh = r["ero"], r["kulma"], r["ohitettu"]
         pysty = (kul >= 75) & (kul < 120)
         print(f"  {polku}: ero rataan keski {e.mean():.2f} mediaani {np.median(e):.2f} p90 {np.percentile(e, 90):.2f}, yli 10 astetta {np.mean(e > 10) * 100:.1f} %; lähes pysty (75-119) {e[pysty].mean():.2f}, muut {e[~pysty].mean():.2f}; "
               f"suunta varma (p >= 0,99) {np.mean(r['suunta_p'] >= 0.99) * 100:.0f} %")
         if oh.any():
-            print(f"    y-vyöhykkeiden (mainosteksti, hog-viiva) ruudut ({oh.sum()}, jätetty pois sovituksesta): ero rataan keski {e[oh].mean():.2f}, yli 10 astetta {np.mean(e[oh] > 10) * 100:.1f} %; muut ruudut ({(~oh).sum()}): keski {e[~oh].mean():.2f}, yli 10 astetta {np.mean(e[~oh] > 10) * 100:.1f} %")
+            zo = np.concatenate([kv.vyohykkeessa(L[k]["Y"]) for k in avaimet])
+            ryhmat = (("y-vyöhykkeiden (mainosteksti, hog-viiva) ruudut", oh & zo), (f"käsiruudut (kasi_px > {kv.KASI_RAJA_PX:g}, vyöhykkeiden ulkopuolella)", oh & ~zo), ("muut ruudut", ~oh))
+            print("    ohitetut ruudut jätetty pois sovituksesta; ero rataan: " + "; ".join(f"{nimi} ({int(m.sum())}): keski {e[m].mean():.2f}, yli 10 astetta {np.mean(e[m] > 10) * 100:.1f} %" for nimi, m in ryhmat if m.any()))
 
 
 def komento_ihmisruudut(a):
@@ -731,6 +746,7 @@ def main():
     p.add_argument("--raaka", action="store_true", help="ei rataa: vain viivojen ruudut sellaisenaan (heitoille, joilla on 1-2 viivaa tai epäjohdonmukaiset viivat)")
     p.add_argument("--varovainen", action="store_true", help="rata vain johdonmukaisille heitoille (3+ viivaa, jäännös <= 3 astetta; suositus), muille heitoille viivat sellaisenaan")
     p.add_argument("--vyohyke-mukana", dest="vyohyke_mukana", action="store_true", help="ota myös y-vyöhykkeiden (mainosteksti kiven y 520-540 cm ja hog-viiva 682,8-702,6 cm) ruutujen jakaumat mukaan radan sovitukseen (oletus: ne jätetään pois)")
+    p.add_argument("--kasi-mukana", dest="kasi_mukana", action="store_true", help="ota myös käsiruutujen (kasi_px > 250: käsi, hiha tai harja kahvan päällä) jakaumat mukaan radan sovitukseen (oletus: ne jätetään pois)")
     p.add_argument("--ulos", required=True)
     p.set_defaults(f=komento_jalosta)
     p = sp.add_parser("opettaja")
@@ -742,6 +758,7 @@ def main():
     p.add_argument("--lam", type=float, default=0.5, help="ruutujen jakaumien lämpötila vakiokiertosovituksessa")
     p.add_argument("--enintaan", type=int, default=0, help="vain näin monta ensimmäistä heittoa (testaukseen)")
     p.add_argument("--vyohyke-mukana", dest="vyohyke_mukana", action="store_true", help="ota myös y-vyöhykkeiden (mainosteksti kiven y 520-540 cm ja hog-viiva 682,8-702,6 cm) ruutujen jakaumat mukaan radan sovitukseen (oletus: ne jätetään pois)")
+    p.add_argument("--kasi-mukana", dest="kasi_mukana", action="store_true", help="ota myös käsiruutujen (kasi_px > 250: käsi, hiha tai harja kahvan päällä) jakaumat mukaan radan sovitukseen (oletus: ne jätetään pois)")
     p.add_argument("--ulos", required=True)
     p.set_defaults(f=komento_pseudo)
     p = sp.add_parser("oppilas")
@@ -759,12 +776,14 @@ def main():
     p.add_argument("--verkot", nargs="+", required=True)
     p.add_argument("--lam", type=float, default=0.5)
     p.add_argument("--vyohyke-mukana", dest="vyohyke_mukana", action="store_true", help="ota myös y-vyöhykkeiden (mainosteksti kiven y 520-540 cm ja hog-viiva 682,8-702,6 cm) ruutujen jakaumat mukaan radan sovitukseen (oletus: ne jätetään pois)")
+    p.add_argument("--kasi-mukana", dest="kasi_mukana", action="store_true", help="ota myös käsiruutujen (kasi_px > 250: käsi, hiha tai harja kahvan päällä) jakaumat mukaan radan sovitukseen (oletus: ne jätetään pois)")
     p.set_defaults(f=komento_arvioi)
     p = sp.add_parser("johdonmukaisuus")
     yhteiset(p)
     p.add_argument("--verkot", nargs="+", required=True, help="verkkojen pickle-tiedostot (yhdistelmä: tiedostot pilkulla erotettuina yhtenä argumenttina)")
     p.add_argument("--heitot", help="JSON-tiedosto: [[nimi, nro], ...] (oletus: kaikki heitot, joilla ei ole ihmisen viivoja)")
     p.add_argument("--vyohyke-mukana", dest="vyohyke_mukana", action="store_true", help="ota myös y-vyöhykkeiden (mainosteksti kiven y 520-540 cm ja hog-viiva 682,8-702,6 cm) ruutujen jakaumat mukaan radan sovitukseen (oletus: ne jätetään pois)")
+    p.add_argument("--kasi-mukana", dest="kasi_mukana", action="store_true", help="ota myös käsiruutujen (kasi_px > 250: käsi, hiha tai harja kahvan päällä) jakaumat mukaan radan sovitukseen (oletus: ne jätetään pois)")
     p.set_defaults(f=komento_johdonmukaisuus)
     p = sp.add_parser("ihmisruudut")
     yhteiset(p)
