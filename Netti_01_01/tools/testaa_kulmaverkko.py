@@ -141,6 +141,43 @@ def testaa_johdonmukaisuus():
              f"yli 10 astetta {np.mean(r2['ero'] > 10) * 100:.1f} %, mediaani {np.median(r2['ero']):.2f}")
 
 
+def testaa_vyohyke():
+    """Hog-viivan vyöhyke (kiven y 682,8-702,6 cm, ruudut joissa viiva on kahvan takana): `vyohykkeessa` rajat; `sovita_heitto(ohita=...)` jättää ruutujen jakaumat pois sovituksesta mutta antaa niille radan kulman, ja kun vyöhykkeen
+    ruutujen arvio on vedetty kohti vaakasuuntaa, rata palautuu ohituksella; `johdonmukaisuus` näyttää ohitetut ruudut; `pseudo_aineisto` pitää ohitetut ruudut opetuksessa radan kulmalla."""
+    v = kv.vyohykkeessa([682.7, 682.8, 690.0, 702.6, 702.7])
+    tarkista("vyohykkeessa: rajat 682,8 ja 702,6 cm mukana", v.tolist() == [False, True, True, True, False], str(v.tolist()))
+    rng = np.random.default_rng(11)
+    n = 10
+    t = 3000.0 + np.arange(n) / 25.0
+    Y = 684.0 + np.arange(n) * 6.0                      # 684, 690, 696, 702 vyöhykkeessä, loput ulkopuolella
+    z = kv.vyohykkeessa(Y)
+    tosi = (40.0 - 70.0 * kv.rata_aika(t - t[0])) % 180.0
+    havaittu = tosi.copy()
+    havaittu[z] -= 16.0                                 # vyöhykkeen ruudut vetäytyvät kohti vaakasuuntaa
+    p = _jakaumat(havaittu, 1.5, rng)
+    r0 = kv.sovita_heitto(p, t)
+    r1 = kv.sovita_heitto(p, t, ohita=z)
+    e0, e1 = np.abs(kv.ero180(r0["kulma"], tosi)).mean(), np.abs(kv.ero180(r1["kulma"], tosi)).mean()
+    tarkista("ohita: vyöhykkeen harhaiset ruudut pois -> rata palautuu (virhe koko heitossa, myös ohitetuissa ruuduissa)", e1 < 2.0 and e0 > e1 + 1.0 and r1["ohitettu"].tolist() == z.tolist() and np.isfinite(r1["kulma"]).all(), f"virhe ilman ohitusta {e0:.2f}, ohituksella {e1:.2f}")
+    tarkista("ohita = ei yhtään ruutua: sama tulos kuin ilman", np.allclose(kv.sovita_heitto(p, t, ohita=np.zeros(n, bool))["kulma"], r0["kulma"]), "")
+    r = kv.johdonmukaisuus([p, p], [t, t], ohita=[z, z])
+    tarkista("johdonmukaisuus: ohitetut ruudut näkyvät ja niiden ero rataan on suuri", r["ohitettu"].sum() == 2 * z.sum() and r["ero"][r["ohitettu"]].mean() > 3 * r["ero"][~r["ohitettu"]].mean(),
+             f"ohitetut {r['ero'][r['ohitettu']].mean():.1f}, muut {r['ero'][~r['ohitettu']].mean():.1f} astetta")
+    import kulmaverkko_opeta as ko
+    kulma = np.linspace(40, 20, n)
+    resid = np.where(z, 40.0, 2.0)
+    L = {("T", 1): dict(f=np.arange(n), tiles=np.zeros((n, 56, 56, 3), np.uint8))}
+    PS = {("T", 1): dict(kulma=kulma, R=np.full(n, 0.99), residuaali=resid, suunta_p=1.0, ohitettu=z)}
+    X, TH, SIG, W, heittoja = ko.pseudo_aineisto(L, PS, min_ruutuja=8)
+    PS0 = {("T", 1): dict(kulma=kulma, R=np.full(n, 0.99), residuaali=resid, suunta_p=1.0)}
+    try:
+        X0 = ko.pseudo_aineisto(L, PS0, min_ruutuja=8)[0]
+        ilman = len(X0)
+    except ValueError:                                  # vanha pickle (ei ohitettu-kenttää): vyöhykkeen ruudut pudotetaan residuaalin vuoksi, heitto jää liian lyhyeksi
+        ilman = 0
+    tarkista("pseudo_aineisto: ohitetut ruudut säilyvät radan kulmalla (vanhassa pickle-muodossa ne putoaisivat)", len(X) == n and heittoja == 1 and np.allclose(TH, kulma) and ilman < n, f"mukana {len(X)} / {n} ruutua, ilman ohitettu-kenttää {ilman}")
+
+
 def testaa_vakiokierto():
     """Kiertoratasovitus (kulma on aikafunktio, kierto hidastuu lineaarisesti): kulmat, omega ja suunta palautuvat; peilattu rata vaihtaa suunnan; yksittainen 90 asteen virheruutu ei vie sovitusta, mutta nakyy residuaalissa."""
     rng = np.random.default_rng(1)
@@ -280,7 +317,7 @@ def testaa_toimitetut_painot():
 
 
 def main():
-    for t in (testaa_opetuskoodi_jax, testaa_kierto_ja_peilaus, testaa_verkko_kultatiedostot, testaa_tallenna_lataa_ja_yhdistelma, testaa_mallikohtainen_tta, testaa_johdonmukaisuus, testaa_rata_aika, testaa_vakiokierto, testaa_viivat_epatayllisina, testaa_jalosta, testaa_toimitetut_painot):
+    for t in (testaa_opetuskoodi_jax, testaa_kierto_ja_peilaus, testaa_verkko_kultatiedostot, testaa_tallenna_lataa_ja_yhdistelma, testaa_mallikohtainen_tta, testaa_johdonmukaisuus, testaa_vyohyke, testaa_rata_aika, testaa_vakiokierto, testaa_viivat_epatayllisina, testaa_jalosta, testaa_toimitetut_painot):
         t()
     print()
     if VIRHEITA:
