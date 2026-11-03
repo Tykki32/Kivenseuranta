@@ -678,7 +678,7 @@ def komento_johdonmukaisuus(a):
         print(f"  {polku}: ero rataan keski {e.mean():.2f} mediaani {np.median(e):.2f} p90 {np.percentile(e, 90):.2f}, yli 10 astetta {np.mean(e > 10) * 100:.1f} %; lähes pysty (75-119) {e[pysty].mean():.2f}, muut {e[~pysty].mean():.2f}; "
               f"suunta varma (p >= 0,99) {np.mean(r['suunta_p'] >= 0.99) * 100:.0f} %")
         if oh.any():
-            print(f"    hog-viivan vyöhykkeen ruudut ({oh.sum()}, jätetty pois sovituksesta): ero rataan keski {e[oh].mean():.2f}, yli 10 astetta {np.mean(e[oh] > 10) * 100:.1f} %; muut ruudut ({(~oh).sum()}): keski {e[~oh].mean():.2f}, yli 10 astetta {np.mean(e[~oh] > 10) * 100:.1f} %")
+            print(f"    y-vyöhykkeiden (mainosteksti, hog-viiva) ruudut ({oh.sum()}, jätetty pois sovituksesta): ero rataan keski {e[oh].mean():.2f}, yli 10 astetta {np.mean(e[oh] > 10) * 100:.1f} %; muut ruudut ({(~oh).sum()}): keski {e[~oh].mean():.2f}, yli 10 astetta {np.mean(e[~oh] > 10) * 100:.1f} %")
 
 
 def komento_ihmisruudut(a):
