@@ -20,6 +20,8 @@ OM_RUUDUKKO = np.arange(-600.0, 600.1, 6.0)     # omegan ruudukko (aste / s) vak
 TTA_KIERROT = (-60, -30, 0, 30, 60)     # ennustuksen testiaikaiset kierrot (aste; 3:n monikertoja, jotta jakauma siirtyy kokonaisten lokeroiden verran)
 
 VYOHYKE_Y_CM = (682.8, 702.6)    # kiven y-asema (cm), jossa sininen hog-viiva näkyy kuvassa kahvan takana (Video1 heitto 59: t = 0 ... 0,1 s); kamera kuvaa vinosta ja kahva on kiven yläreunassa, joten vyöhyke on eri kohdassa kuin itse hog-viiva
+VYOHYKE2_Y_CM = (520.0, 540.0)   # toinen vyöhyke: kahvan takana on jäähän maalattu iso mainosteksti; sama kohta kaikissa videoissa, molemmilla puolilla ja kaikilla kiertosuunnilla (piikki y 522-533 cm)
+VYOHYKKEET_Y_CM = (VYOHYKE2_Y_CM, VYOHYKE_Y_CM)    # kaikki tunnetut vyöhykkeet, joiden ruudut jätetään oletuksena pois radan sovituksesta
 ENNAKKO_MEDIAANI, ENNAKKO_SIGMA_LOG = 100.0, 1.0   # |omega| lognormaali ennakko (aste / s): sulkee pois omegan ~ 0 ja ylisuuret nopeudet
 MOODI_IKKUNA = 4                                    # kulman posteriorin huipun ympäristö: +- 4 lokeroa (+- 12 astetta)
 SIGMA_VIIVA, EPS_VIIVA = 4.0, 0.08                 # ihmisen viivan epätäydellisyys: useimmat viivat 4 asteen hajonnalla, 8 % viivoista täysin pielessä (tasajakauma 180 asteen yli; 39 viivasta 2 poikkesi radastaan yli 15 astetta)
@@ -151,11 +153,17 @@ def ennusta(mallit, leikkeet, tta=True, kierrot=None, peilaus=True, erakoko=64):
     return _log_keskiarvo([_ennusta_yksi(m, leikkeet, tta, kierrot, peilaus, erakoko) for m in mallit])
 
 
-def vyohykkeessa(Y, vali=VYOHYKE_Y_CM):
-    """Ruudut, joissa kivi on y-välillä `VYOHYKE_Y_CM` (cm): hog-viiva on kuvassa kahvan takana ja verkon ruutuarvio vetäytyy kohti vaakasuuntaa (kolmas kierros, README). Palauttaa (n,) bool;
+def vyohykkeessa(Y, vali=None):
+    """Ruudut, joissa kivi on y-vyöhykkeessä, jossa kahvan takana on voimakas vaakasuora kuvio ja verkon ruutuarvio vetäytyy kohti vaakasuuntaa tai menee täysin pieleen (README, kolmas kierros): `VYOHYKE_Y_CM` (hog-viiva)
+    ja `VYOHYKE2_Y_CM` (jäähän maalattu mainosteksti). vali = None: kaikki tunnetut vyöhykkeet (`VYOHYKKEET_Y_CM`); (alku, loppu) tai lista sellaisia: vain annetut välit (cm, päät mukana). Palauttaa (n,) bool;
     sovita_heitto(..., ohita=vyohykkeessa(Y)) jättää niiden jakaumat pois radan sovituksesta."""
     Y = np.asarray(Y, float)
-    return (Y >= vali[0]) & (Y <= vali[1])
+    v = np.asarray(VYOHYKKEET_Y_CM if vali is None else vali, float)
+    v = v[None, :] if v.ndim == 1 else v
+    m = np.zeros(Y.shape, bool)
+    for alku, loppu in v:
+        m |= (Y >= alku) & (Y <= loppu)
+    return m
 
 
 def johdonmukaisuus(jakaumat, ajat, K=K_KIERRE, lam=0.5, ohita=None):

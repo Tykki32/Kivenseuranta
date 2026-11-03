@@ -145,7 +145,12 @@ def testaa_vyohyke():
     """Hog-viivan vyöhyke (kiven y 682,8-702,6 cm, ruudut joissa viiva on kahvan takana): `vyohykkeessa` rajat; `sovita_heitto(ohita=...)` jättää ruutujen jakaumat pois sovituksesta mutta antaa niille radan kulman, ja kun vyöhykkeen
     ruutujen arvio on vedetty kohti vaakasuuntaa, rata palautuu ohituksella; `johdonmukaisuus` näyttää ohitetut ruudut; `pseudo_aineisto` pitää ohitetut ruudut opetuksessa radan kulmalla."""
     v = kv.vyohykkeessa([682.7, 682.8, 690.0, 702.6, 702.7])
-    tarkista("vyohykkeessa: rajat 682,8 ja 702,6 cm mukana", v.tolist() == [False, True, True, True, False], str(v.tolist()))
+    tarkista("vyohykkeessa: hog-viivan vyöhyke, rajat 682,8 ja 702,6 cm mukana", v.tolist() == [False, True, True, True, False], str(v.tolist()))
+    v2 = kv.vyohykkeessa([519.9, 520.0, 530.0, 540.0, 540.1, 600.0])
+    tarkista("vyohykkeessa: toinen vyöhyke (jäähän maalattu mainosteksti) 520-540 cm mukana oletuksena", v2.tolist() == [False, True, True, True, False, False], str(v2.tolist()))
+    v3 = kv.vyohykkeessa([530.0, 690.0, 600.0], kv.VYOHYKE_Y_CM)
+    v4 = kv.vyohykkeessa([530.0, 690.0, 600.0], [kv.VYOHYKE2_Y_CM])
+    tarkista("vyohykkeessa: vali-argumentti rajaa vain annetun välin tai välilistan", v3.tolist() == [False, True, False] and v4.tolist() == [True, False, False], f"{v3.tolist()} {v4.tolist()}")
     rng = np.random.default_rng(11)
     n = 10
     t = 3000.0 + np.arange(n) / 25.0
