@@ -1,7 +1,7 @@
 """Reaaliaikainen kivenseuranta: kuva tulostuu VIIVE_S sekuntia analyysin perassa, ilman top-down-muunnosta.
 
     python netti_live.py --youtube hnTTLqHr5x8                     # YouTube (yt_dlp + OpenCV, kuten oma testikoodi), ikkuna taydella resoluutiolla, 'q' lopettaa
-    python netti_live.py --youtube hnTTLqHr5x8 --ulos              # sama + tallennus tiedostoon kivenseuranta_<paivays>_<aika>.mp4 (tai --ulos oma.mp4)
+    python netti_live.py --youtube hnTTLqHr5x8 --ulos              # sama + tallennus tiedostoon kivenseuranta_<videon nimi>_<paivays>_<aika>.mp4 (tai --ulos oma.mp4); CSV heitot_<videon nimi>_<paivays>_<aika>.csv
     python netti_live.py --lahde netti.mp4                         # tiedosto reaaliajassa (nopeus kuten live-lahteessa)
     python netti_live.py --lahde netti.mp4 --nopea --ulos ulos.mp4 --ei-ikkunaa     # simulaatio: ajetaan niin nopeasti kuin ehtii, tulos kirjoitetaan tiedostoon
 
@@ -29,6 +29,7 @@ import tempfile
 import threading
 import time
 import traceback
+import unicodedata
 
 import cv2
 import numpy as np
@@ -51,9 +52,61 @@ YT_FORMAATTI = "bestvideo[protocol=https][vcodec^=avc1]/bestvideo[protocol=https
 
 YT_VALINTA_RUUTUJA = 12       # kalibrointikansion automaattinen valinta virrasta: mediaanikuva tasmalleen taman monesta ruudusta (haku virrassa on hidas)
 
+OTSIKKO_PAIKKA = "{otsikko}"  # tulostiedoston polussa (--ulos, --csv): korvataan videon nimella (YouTube); ilman nimea paikka poistuu yhdessa perassa olevan _-merkin kanssa (otsikko_polkuun)
+OTSIKKO_MAX_MERKKEJA = 80     # videon nimi tiedostonimessa: enintaan nain monta merkkia ...
+OTSIKKO_MAX_TAVUA = 120       # ... ja UTF-8-tavua (tiedostonimen raja on 255 tavua; nimessa on lisaksi etuliite, tunnus, aikaleima ja paate)
+
+
+def puhdista_otsikko(otsikko, enint=200):
+    """Videon nimi naytettavaksi (loki, selain): ohjaus- ja muotoilumerkit pois (esim. terminaalin ohjauskoodit lokissa), valilyonnit yhdeksi, pituus rajattu. Ei tekstia tai tyhja -> None."""
+    if not isinstance(otsikko, str):
+        return None
+    teksti = "".join(" " if unicodedata.category(c) in ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp") else c for c in otsikko)
+    return " ".join(teksti.split())[:enint].rstrip() or None
+
+
+def siisti_otsikko(otsikko, ascii_vain=None, enint_merkkia=OTSIKKO_MAX_MERKKEJA, enint_tavua=OTSIKKO_MAX_TAVUA):
+    """Videon nimi tiedostonimen osaksi (sopii Windowsiin, SMB-jakoon ja Linuxiin): kielletyt merkit (< > : " / \\ | ? * seka % ja $, jotka yt_dlp:n tiedostonimipohja ja ymparistomuuttujien laajennus tulkitsisivat), BMP:n ulkopuoliset merkit (emojit) ja ohjausmerkit pois, valilyonnit yhdeksi,
+    alku- ja loppupisteet, -valit, -viivat ja -alaviivat pois, pituus rajattu (merkkeja ja UTF-8-tavuja). ascii_vain (oletus: Windows): aakkoset perusmerkeiksi (a, o) ja muut ei-ASCII-merkit pois,
+    koska OpenCV:n VideoWriter (tallennus ilman ffmpegia) ei lue Windowsissa UTF-8-polkuja. Tyhja -> ''."""
+    s = unicodedata.normalize("NFKC", puhdista_otsikko(otsikko, 10 ** 6) or "")
+    if ascii_vain is None:
+        ascii_vain = os.name == "nt"
+    if ascii_vain:
+        s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c)).encode("ascii", "ignore").decode("ascii")
+    s = "".join(" " if (c in '<>:"/\\|?*%$' or ord(c) > 0xFFFF or unicodedata.category(c).startswith("C")) else c for c in s)
+    s = " ".join(s.split()).strip(" .")[:enint_merkkia]
+    while s and len(s.encode("utf-8")) > enint_tavua:
+        s = s[:-1]
+    return s.strip(" ._-")
+
+
+def otsikko_polkuun(polku, otsikko, ascii_vain=None):
+    """Korvaa tulostiedoston polun {otsikko}-paikan videon nimella (siistittyna, ks. siisti_otsikko). Ilman nimea paikka poistetaan yhdessa perassa olevan erottimen (_) kanssa:
+    kivenseuranta_{otsikko}_yt_X_1.mp4 -> kivenseuranta_Nimi_yt_X_1.mp4 tai kivenseuranta_yt_X_1.mp4. Polku ilman paikkaa ei muutu."""
+    if not polku or OTSIKKO_PAIKKA not in polku:
+        return polku
+    nimi = siisti_otsikko(otsikko, ascii_vain)
+    if nimi:
+        return polku.replace(OTSIKKO_PAIKKA, nimi)
+    return polku.replace(OTSIKKO_PAIKKA + "_", "").replace(OTSIKKO_PAIKKA, "")
+
+
+def nimet_otsikolla(a, otsikko):
+    """Tulostiedostojen (--ulos, --csv) nimiin videon nimi (YouTube); lahteilla, joilla nimea ei ole, paikka vain poistuu."""
+    a.ulos = otsikko_polkuun(a.ulos, otsikko)
+    a.csv = otsikko_polkuun(a.csv, otsikko)
+
 
 def youtube_virta(ref, formaatti=YT_FORMAATTI):
-    """YouTube-tunnus tai -osoite -> (virran URL, onko live). Sama kuin oma testikoodi: yt_dlp hakee virran osoitteen, OpenCV (FFmpeg) lukee sen."""
+    """YouTube-tunnus tai -osoite -> (virran URL, onko live) (ks. youtube_tiedot)."""
+    t = youtube_tiedot(ref, formaatti)
+    return t["url"], t["live"]
+
+
+def youtube_tiedot(ref, formaatti=YT_FORMAATTI):
+    """YouTube-tunnus tai -osoite -> dict(url=virran URL, live=onko live, otsikko=videon nimi tai None). Sama kuin oma testikoodi: yt_dlp hakee virran osoitteen (ja samalla videon nimen; ei lisakutsua),
+    OpenCV (FFmpeg) lukee sen."""
     try:
         import yt_dlp
     except ImportError:
@@ -71,7 +124,7 @@ def youtube_virta(ref, formaatti=YT_FORMAATTI):
             if info.get("height") and info["height"] > RUUTU_H:
                 print(f"Huom: virran korkeus {info['height']} px > {RUUTU_H}; ruudut pienennetaan (kalibrointi on tehty {RUUTU_W} x {RUUTU_H}). "
                       f"Kevyempi: --yt-formaatti 'bestvideo[height<={RUUTU_H}][protocol=https][vcodec^=avc1]/bestvideo[height<={RUUTU_H}]'", file=sys.stderr)
-            return info["url"], bool(info.get("is_live"))
+            return dict(url=info["url"], live=bool(info.get("is_live")), otsikko=puhdista_otsikko(info.get("title")))
     except Exception as e:                                # yt_dlp.utils.DownloadError ym.
         raise SystemExit(f"YouTube-virran haku epaonnistui ({url}): {e}\n"
                          "Tarkista verkko, paivita yt-dlp (pip install -U yt-dlp) ja etta JavaScript-ajuri (deno) on asennettu.")
@@ -106,6 +159,7 @@ class Lahde:
         self.tiedosto, self.youtube, self.yt_formaatti, self.url = tiedosto, youtube, yt_formaatti, url
         self.dekoodaus_saikeet = dekoodaus_saikeet            # FFmpegin dekoodaussaikeiden maara (None = FFmpegin oma: loogiset ytimet)
         self.alku_s, self.loppu_s = alku_s, loppu_s
+        self.otsikko = None                                   # videon nimi (YouTube: yt_dlp antaa sen virran osoitteen mukana); tulostiedostojen nimiin
         self.live = False
         self.cap = None
         self.fps = 30.0
@@ -122,7 +176,8 @@ class Lahde:
 
     def _avaa(self):
         if self.youtube:
-            osoite, self.live = youtube_virta(self.youtube, self.yt_formaatti)
+            t = youtube_tiedot(self.youtube, self.yt_formaatti)
+            osoite, self.live, self.otsikko = t["url"], t["live"], t["otsikko"]
             self.cap = self._avaa_cap(osoite, cv2.CAP_FFMPEG)
         elif self.url:                                    # suora virran osoite (http / https / rtsp / m3u8): sama OpenCV-polku kuin YouTubessa
             self.cap = self._avaa_cap(self.url, cv2.CAP_FFMPEG)
@@ -2012,7 +2067,8 @@ def main():
     ap.add_argument("--viive", type=float, default=10.0, help="tulosteen viive analyysiin nahden (s); oletus 10: 97 %%:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm) kun viiva ilmestyy (5 s: 12 %%)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")
     ap.add_argument("--viivat", type=float, default=60.0, help="linjat nakyvissa taman ajan heiton alusta, tai seuraavaan heittoon (s)")
-    ap.add_argument("--ulos", nargs="?", const="auto", help="tallenna tuloste tiedostoon (mp4); ilman nimea: kivenseuranta_<paivays>_<aika>.mp4 nykyiseen kansioon")
+    ap.add_argument("--ulos", nargs="?", const="auto", help="tallenna tuloste tiedostoon (mp4); ilman nimea: kivenseuranta_<paivays>_<aika>.mp4 nykyiseen kansioon (YouTube: videon nimi mukaan, "
+                    "kivenseuranta_<videon nimi>_<paivays>_<aika>.mp4; omassa nimessa {otsikko} korvautuu videon nimella)")
     ap.add_argument("--koodekki", default="auto", help="tallenteen koodekki: auto (ffmpeg: laitteistokooderi jos toimii, muuten H.264 prosessorilla; ilman ffmpegia OpenCV mp4v), cpu (libx264), gpu "
                                                        "(laitteistokooderi) tai OpenCV:n fourcc (mp4v, avc1, MJPG)")
     ap.add_argument("--ffmpeg", default=None, help="ffmpeg-ohjelman polku (oletus: PATH tai imageio-ffmpeg)")
@@ -2021,8 +2077,8 @@ def main():
                     help="ikkuna: kuva taydella 1920 x 1080 resoluutiolla; auto = kokoruutu jos naytto ei ole sita suurempi (1:1); 'f' vaihtaa kokoruudun")
     ap.add_argument("--ikkuna-leveys", type=int, default=0, help="ikkunan leveys pikseleina (0 = taysi resoluutio 1920; pienempi skaalaa kuvaa)")
     ap.add_argument("--csv", nargs="?", const="auto", default="auto",
-                    help="heittojen tiedot CSV:hen (oletus: heitot_<paivays>_<aika>.csv nykyiseen kansioon; kivikohtaiset vakiot viereen <nimi>_kivet.csv): heiton viivaestimaatti, kierre, "
-                         "kaukopaan pysahtyminen, kiven vakiot (A, kappa), miettimisaika ja joukkueen aika")
+                    help="heittojen tiedot CSV:hen (oletus: heitot_<paivays>_<aika>.csv nykyiseen kansioon, YouTube: heitot_<videon nimi>_<paivays>_<aika>.csv; kivikohtaiset vakiot viereen <nimi>_kivet.csv): "
+                         "heiton viivaestimaatti, kierre, kaukopaan pysahtyminen, kiven vakiot (A, kappa), miettimisaika ja joukkueen aika")
     ap.add_argument("--ei-csv", action="store_true", help="ei CSV-tallennusta")
     ap.add_argument("--radat", help="tallenna heittojen radat ja mittaukset (pickle) jalkianalyysia varten, esim. kiven vakioiden uudelleensovitus ilman koko videon analyysia (kehitys)")
     ap.add_argument("--ei-kelloa", action="store_true", help="ei joukkueiden kelloa (miettimisaika) kuvassa")
@@ -2099,11 +2155,11 @@ def main():
             a.kansio = oma
     leima = time.strftime("%Y%m%d_%H%M%S")
     if a.ulos == "auto":
-        a.ulos = f"kivenseuranta_{leima}.mp4"
+        a.ulos = f"kivenseuranta_{OTSIKKO_PAIKKA}_{leima}.mp4"          # {otsikko}: YouTube-videon nimi (nimet_otsikolla, kun lahde on avattu), muuten paikka poistuu
     if a.ei_csv:
         a.csv = None
     elif a.csv == "auto":
-        a.csv = f"heitot_{leima}.csv"
+        a.csv = f"heitot_{OTSIKKO_PAIKKA}_{leima}.csv"
     if not (a.youtube or a.lahde or a.url):
         ap.error("anna --youtube [TUNNUS], --lahde TIEDOSTO tai --url OSOITE")
     sim = bool(a.nopea and a.lahde)
@@ -2123,6 +2179,9 @@ def main():
               + ("" if "C++" in sovitin else f" ({ns.netti_fit_selitys()})"), flush=True)
     lahde = Lahde(tiedosto=a.lahde, youtube=a.youtube, alku_s=a.alku, loppu_s=a.loppu, yt_formaatti=a.yt_formaatti, url=a.url, dekoodaus_saikeet=a.dekoodaus_saikeet)
     an.fps = lahde.fps
+    nimet_otsikolla(a, lahde.otsikko)                      # tulostiedostojen nimiin YouTube-videon nimi (--ulos, --csv; {otsikko}-paikka)
+    if lahde.otsikko and not a.hiljaa:
+        print(f"Video: {lahde.otsikko}", flush=True)
     if not sim and not lahde.live and not a.ohita_myohassa:
         an.aseta_toistettava(True)
     elif not sim:

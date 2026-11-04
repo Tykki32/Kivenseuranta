@@ -266,7 +266,7 @@ class AaniLataus:
 
         kokeiltu, parhaat = [], []
         for i, formaatti in enumerate(YT_AANI_FORMAATIT):
-            opts = {"format": formaatti, "outtmpl": f"{kohde}.{i}.%(ext)s", "quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True, "js_runtimes": {"deno": {}},
+            opts = {"format": formaatti, "outtmpl": f"{kohde.replace('%', '%%')}.{i}.%(ext)s", "quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True, "js_runtimes": {"deno": {}},
                     "http_chunk_size": 10 << 20, "retries": 10, "fragment_retries": 10, "skip_unavailable_fragments": False, "socket_timeout": 30, "progress_hooks": [koukku], "logger": Loki()}
             if self.ffmpeg:
                 opts["ffmpeg_location"] = self.ffmpeg

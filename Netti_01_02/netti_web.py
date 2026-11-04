@@ -58,10 +58,12 @@ a{color:var(--korostus);text-decoration:none}a:hover{text-decoration:underline}.
 <script>
 const $=id=>document.getElementById(id);
 function koko(n){return n>=1e9?(n/1e9).toFixed(2)+" Gt":n>=1e6?(n/1e6).toFixed(1)+" Mt":Math.max(1,Math.round(n/1e3))+" kt"}
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 async function paivita(){
   try{
     const t=await (await fetch("tila",{cache:"no-store"})).json();
-    $("tila").innerHTML=(t.kaynnissa?"<b>Ajo kaynnissa</b>":"<b>Ajo paattynyt</b>")+" &middot; kuvia "+t.kuvia+" &middot; katsojia "+t.katsojia+(t.viim_kuva_ika_s!=null?" &middot; viimeisin kuva "+t.viim_kuva_ika_s.toFixed(1)+" s sitten":"")+(t.kaynnissa&&t.viim_kuva_ika_s!=null&&t.viim_kuva_ika_s>30?" &middot; <b>kuva ei etene: katso loki (Jumivahti)</b>":"")+(t.lahde?" &middot; "+t.lahde.replace(/&/g,"&amp;").replace(/</g,"&lt;"):"");
+    $("tila").innerHTML=(t.kaynnissa?"<b>Ajo kaynnissa</b>":"<b>Ajo paattynyt</b>")+" &middot; kuvia "+t.kuvia+" &middot; katsojia "+t.katsojia+(t.viim_kuva_ika_s!=null?" &middot; viimeisin kuva "+t.viim_kuva_ika_s.toFixed(1)+" s sitten":"")+(t.kaynnissa&&t.viim_kuva_ika_s!=null&&t.viim_kuva_ika_s>30?" &middot; <b>kuva ei etene: katso loki (Jumivahti)</b>":"")+((t.otsikko||t.lahde)?" &middot; "+esc(t.otsikko||t.lahde):"");
+    document.title=t.otsikko?"Kivenseuranta: "+t.otsikko:"Kivenseuranta";
     const l=$("loki"),alhaalla=l.scrollTop+l.clientHeight>=l.scrollHeight-30;
     l.textContent=await (await fetch("loki",{cache:"no-store"})).text();
     if(alhaalla)l.scrollTop=l.scrollHeight;

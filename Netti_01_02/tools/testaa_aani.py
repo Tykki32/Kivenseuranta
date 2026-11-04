@@ -279,6 +279,9 @@ def testaa_yt_dlp_logiikka(kansio, p):
                  and any("simuloitu varoitus" in v for v in viestit), "; ".join(viestit)[:200])
         l, kohde = kokeile({F[0]: ("1", None, 0), F[1]: ("2", None, 0), F[2]: ("3", None, 0)}, "d")
         tarkista("kaikki formaatit epaonnistuvat: virhe, jossa yt_dlp:n syy (403)", l.virhe is not None and "403" in str(l.virhe), repr(l.virhe))
+        l, kohde = kokeile({F[0]: ("140", p["aani30.m4a"], 30.0), F[1]: ("140", p["aani30.m4a"], 30.0), F[2]: ("140", p["aani30.m4a"], 30.0)}, "100% x%(ext)s")
+        tarkista("kohteen %-merkit (videon nimi tiedostonimessa: '100 %', '%(ext)s') eivat tulkitu yt_dlp:n tiedostonimipohjaksi: tiedosto syntyy kohteen nimella", l.virhe is None and l.polku == kohde + ".0.m4a" and os.path.exists(kohde + ".0.m4a"),
+                 f"{l.virhe!r} {l.polku}")
     finally:
         if vanha is not None:
             sys.modules["yt_dlp"] = vanha

@@ -432,7 +432,7 @@ def testaa_linkkilista():
         # komento
         c = np_.rakenna_komento(a, "youtube_lista", "hnTTLqHr5x8", "20260101_120000", None, 32.0)
         tarkista("komento: youtube_lista -> --youtube TUNNUS, ei --nopea, tulostiedostojen tunniste yt_<tunnus>", lahde_komennosta(c) == ("--youtube", "hnTTLqHr5x8") and "--nopea" not in c and "--lahde" not in c
-                 and os.path.join(a.ulos_kansio, "kivenseuranta_yt_hnTTLqHr5x8_20260101_120000.mp4") in c, " ".join(c[3:6]))
+                 and os.path.join(a.ulos_kansio, "kivenseuranta_{otsikko}_yt_hnTTLqHr5x8_20260101_120000.mp4") in c, " ".join(c[3:6]))
         c = np_.rakenna_komento(a, "url_lista", "rtsp://kamera.lan/x", "x", None, 4.0)
         tarkista("komento: url_lista -> --url OSOITE, vahan muistia: --lataus 8", lahde_komennosta(c) == ("--url", "rtsp://kamera.lan/x") and c[c.index("--lataus") + 1] == "8")
 
@@ -757,8 +757,80 @@ def testaa_netti_live_palvelinosat():
     tarkista("netti_live --help: uudet valitsimet (--web, --web-leveys, --web-fps, --web-laatu, --tila-tiedosto)", all(x in s for x in ("--web ", "--web-leveys", "--web-fps", "--web-laatu", "--tila-tiedosto")))
 
 
+def testaa_videon_nimi_palvelin():
+    print("YouTube-videon nimi tulostiedostojen nimiin (netti_palvelin: komento ja loki)")
+    import contextlib
+    import netti_live as nl
+    tarkista("OTSIKKO_PAIKKA on sama netti_palvelinissa ja netti_livessa", np_.OTSIKKO_PAIKKA == nl.OTSIKKO_PAIKKA == "{otsikko}")
+    with tempfile.TemporaryDirectory() as t:
+        a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LAHDE="hnTTLqHr5x8"))
+        c = np_.rakenna_komento(a, "youtube", "hnTTLqHr5x8", "20260101_120000", None, 32.0)
+        ulos, csv_ = c[c.index("--ulos") + 1], c[c.index("--csv") + 1]
+        tarkista("YouTube: --ulos ja --csv nimessa {otsikko}-paikka tunnisteen edessa (netti_live taydentaa nimen, kun yt_dlp on kertonut sen)",
+                 ulos == os.path.join(a.ulos_kansio, "kivenseuranta_{otsikko}_yt_hnTTLqHr5x8_20260101_120000.mp4") and csv_ == os.path.join(a.ulos_kansio, "heitot_{otsikko}_yt_hnTTLqHr5x8_20260101_120000.csv"), f"{ulos} {csv_}")
+        nimella = [nl.otsikko_polkuun(x, "Matarmaa SM-finaali: Hyvinkää", ascii_vain=False) for x in (ulos, csv_)]
+        tarkista("netti_live taydentaa: nimi tunnisteen edessa (mp4 ja csv; _kivet.csv tulee csv:n viereen)", nimella == [os.path.join(a.ulos_kansio, "kivenseuranta_Matarmaa SM-finaali Hyvinkää_yt_hnTTLqHr5x8_20260101_120000.mp4"),
+                                                                                                           os.path.join(a.ulos_kansio, "heitot_Matarmaa SM-finaali Hyvinkää_yt_hnTTLqHr5x8_20260101_120000.csv")], str(nimella))
+        tarkista("ilman nimea (YouTube ei kertonut) nimet ovat kuten ennen", [nl.otsikko_polkuun(x, None) for x in (ulos, csv_)] == [os.path.join(a.ulos_kansio, "kivenseuranta_yt_hnTTLqHr5x8_20260101_120000.mp4"),
+                                                                                                                                       os.path.join(a.ulos_kansio, "heitot_yt_hnTTLqHr5x8_20260101_120000.csv")])
+        c = np_.rakenna_komento(a, "url", "rtsp://kamera.lan/x", "x", None, 32.0)
+        tarkista("virta (--url): ei otsikkopaikkaa (nimea ei ole)", all("{otsikko}" not in x for x in c))
+        c = np_.rakenna_komento(a, "youtube_lista", "https://youtu.be/hnTTLqHr5x8", "x", None, 32.0)
+        tarkista("linkkilistan YouTube-rivi: otsikkopaikka mukana", any("{otsikko}_yt_hnTTLqHr5x8" in x for x in c))
+
+        # ajosilmukan loki kertoo videon nimen (lapsi kirjoittaa sen tilatiedostoon)
+        nyt = time.time()
+
+        def ajuri(cmd, env=None, cwd=None):
+            polku = cmd[cmd.index("--tila-tiedosto") + 1]
+            with open(polku, "w", encoding="utf-8") as f:
+                json.dump(dict(lahde="hnTTLqHr5x8", otsikko="Matarmaa SM-finaali – Hyvinkää", live=False), f, ensure_ascii=False)
+            return 0
+        a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LAHDE="hnTTLqHr5x8", NETTI_JATKUVA="0"))
+        ulos_loki = io.StringIO()
+        with contextlib.redirect_stdout(ulos_loki):
+            rc = np_.palvele(a, EsiPysaytys(), ajuri, 32.0, lambda: nyt)
+        tarkista("ajosilmukan loki: 'ajo paattyi (<videon nimi>): koodi 0'", rc == 0 and "ajo paattyi (Matarmaa SM-finaali – Hyvinkää): koodi 0" in ulos_loki.getvalue(), ulos_loki.getvalue()[-200:])
+
+        def ajuri_ilman(cmd, env=None, cwd=None):
+            return 0
+        ulos_loki = io.StringIO()
+        with contextlib.redirect_stdout(ulos_loki):
+            np_.palvele(a, EsiPysaytys(), ajuri_ilman, 32.0, lambda: nyt)
+        tarkista("ajosilmukan loki: ilman nimea kuten ennen", "ajo paattyi: koodi 0" in ulos_loki.getvalue(), ulos_loki.getvalue()[-200:])
+
+
+def testaa_web_videon_nimi():
+    print("selainnakyma: videon nimi tilatiedossa ja aakkosia sisaltavat tiedostonimet")
+    import html
+    import urllib.parse
+    with tempfile.TemporaryDirectory() as t:
+        mp4 = "kivenseuranta_Matarmaa SM-finaali – Hyvinkää 2026_yt_hnTTLqHr5x8_20260101_120000.mp4"
+        csv_ = "heitot_Matarmaa SM-finaali – Hyvinkää 2026_yt_hnTTLqHr5x8_20260101_120000_kivet.csv"
+        kirjoita(os.path.join(t, mp4), bytes(range(256)) * 10)
+        kirjoita(os.path.join(t, csv_), "a,b\n1,2\n")
+        w = nw.WebNaytto(0, t, leveys=320, fps=5, laatu=70, tila=lambda: dict(lahde="hnTTLqHr5x8", otsikko="Matarmaa SM-finaali <b>&</b>"))
+        p = w.portti
+        try:
+            tila = json.loads(pyyda(p, "/tila")[2])
+            tarkista("/tila: videon nimi mukana lahteen vieressa", tila["otsikko"] == "Matarmaa SM-finaali <b>&</b>" and tila["lahde"] == "hnTTLqHr5x8", str(tila))
+            sivu = pyyda(p, "/")[2].decode("utf-8")
+            tarkista("sivu: nimi naytetaan escapoituna (esc) ja valilehden otsikkona (document.title)", "esc(t.otsikko||t.lahde)" in sivu and "document.title" in sivu and "t.lahde.replace" not in sivu)
+            tiedostot = json.loads(pyyda(p, "/tiedostot.json")[2])
+            tarkista("tiedostolista: aakkoset, valilyonnit ja ajatusviiva sailyvat nimessa", sorted(x["nimi"] for x in tiedostot) == sorted([mp4, csv_]), str([x["nimi"] for x in tiedostot]))
+            s, h, b = pyyda(p, "/tiedostot/" + urllib.parse.quote(mp4))
+            tarkista("mp4 latautuu aakkosnimella (koodattu osoite), Content-Disposition filename*=UTF-8", s == 200 and len(b) == 2560 and "filename*=UTF-8''" in h["Content-Disposition"] and urllib.parse.quote(mp4) in h["Content-Disposition"], str(h.get("Content-Disposition")))
+            s, h, b = pyyda(p, "/tiedostot/" + urllib.parse.quote(csv_))
+            tarkista("csv latautuu aakkosnimella", s == 200 and b == b"a,b\n1,2\n")
+            s, h, b = pyyda(p, "/tiedostot/")
+            tarkista("HTML-lista: nimi escapoituna ja linkki koodattuna", html.escape(mp4).encode("utf-8") in b and urllib.parse.quote(mp4).encode() in b)
+        finally:
+            w.sulje()
+
+
 def main():
-    for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat):
+    for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
+              testaa_videon_nimi_palvelin, testaa_web_videon_nimi):
         t()
     print()
     if VIRHEITA:
