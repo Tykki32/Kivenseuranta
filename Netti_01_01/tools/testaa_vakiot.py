@@ -2399,8 +2399,64 @@ def testaa_kierron_merkki_ja_palkkimalli():
     tarkista("arvioi_posteriori_kauko: kalibrointikansion muoto ja kuvan oma sumeus (sigma None) sailyvat", kutsut[2] == ((4.8, 11.9, 6.6), None) and "virhe" in r3, str(kutsut[2]))
 
 
+def testaa_alustava_kierre():
+    print("alustava kierrosmaara heti: hog-hog-aika vakiohidastuvuudella (videoiden mediaani), omegan vaimeneminen K_KIERRE; konsoliin heti heittopaan kierron jalkeen, lopullinen vasta kaukopaan hog-ylityksen jalkeen")
+    import types
+    import netti_live as nl
+    D = (ns.ETAISYYS_CM - 2.0 * ns.HOG_KESKI_CM) / 100.0
+    a = ns.HIDASTUVUUS_TYYPILLINEN
+    # --- hog-hog-aika: vakiohidastuvuus, nopeus hog-viivalla radasta (muuten irroituksen nopeudesta); ei kiven omaa mitattua hidastuvuutta
+    v = dict(nopeus_hog1=2.0, nopeus_jalkeen=2.3, irr_Y=300.0, vapaa_hidastuvuus=0.05, vapaa_matka_cm=300.0)
+    T1 = ns.hog_hog_aika_malli(v)
+    tarkista("hog_hog_aika_malli: T = (v1 - v2) / a, v1 = nopeus hog-viivalla, v2^2 = v1^2 - 2 a D", T1 is not None and abs(T1 - (2.0 - np.sqrt(4.0 - 2.0 * a * D)) / a) < 1e-9, str(T1))
+    v_toinen = dict(v, vapaa_hidastuvuus=0.14, vapaa_matka_cm=600.0)
+    v_kolmas = dict(v, vapaa_hidastuvuus=-0.1, vapaa_matka_cm=0.0)
+    tarkista("hog_hog_aika_malli: kiven oma mitattu vapaan lennon hidastuvuus ei vaikuta (vakio = mediaani)", ns.hog_hog_aika_malli(v_toinen) == T1 and ns.hog_hog_aika_malli(v_kolmas) == T1)
+    v_irr = dict(nopeus_jalkeen=2.3, irr_Y=300.0)
+    v1sq = 2.3 ** 2 - 2.0 * a * (ns.HOG_KESKI_CM - 300.0) / 100.0
+    T2 = ns.hog_hog_aika_malli(v_irr)
+    tarkista("hog_hog_aika_malli: ilman hog-nopeutta irroituksen nopeus vakiohidastuvuudella hog-viivalle", T2 is not None and abs(T2 - (np.sqrt(v1sq) - np.sqrt(v1sq - 2.0 * a * D)) / a) < 1e-9, str(T2))
+    tarkista("hog_hog_aika_malli: hog-nopeus puuttuu (None) -> sama kuin avain puuttuisi", ns.hog_hog_aika_malli(dict(v_irr, nopeus_hog1=None)) == T2)
+    T_a = [ns.hog_hog_aika_malli(v, a=x) for x in (0.06, 0.075)]
+    tarkista("hog_hog_aika_malli: argumentti a (kiinteä nopeus hog-viivalla: suurempi hidastuvuus -> kivi hidastuu enemmän -> pidempi aika)", T_a[0] < T1 < T_a[1] and all(abs(t - (2.0 - np.sqrt(4.0 - 2.0 * x * D)) / x) < 1e-9 for t, x in zip(T_a, (0.06, 0.075))), str(T_a))
+    tarkista("hog_hog_aika_malli: kivi ei yllä kaukopään hog-viivalle -> None", ns.hog_hog_aika_malli(dict(v, nopeus_hog1=1.0)) is None and ns.hog_hog_aika_malli(dict(nopeus_jalkeen=1.0, irr_Y=300.0)) is None)
+    # --- alustava kierrosmaara: omega + T(malli) + vaimeneminen K_KIERRE (vain heittopaan mittaus), sama heti ja ilman kaukopaata
+    fps = 30.0
+
+    def heitto(tunnus, omega, kierto_tila="valmis"):
+        viivat = dict(liuku_a=10.0, liuku_b=0.0, irr_X=0.0, irr_Y=400.0, irr_suunta_deg=0.0, irr_virhe_deg=0.1, nopeus_ennen=2.2, nopeus_jalkeen=2.3, nopeus_hog1=2.0, vapaa_hidastuvuus=0.05,
+                      vapaa_matka_cm=300.0, vakaa=True, t_irr=10.0)
+        kierto = dict(omega_deg_s=omega, omega_sd_deg_s=8.0, f_keski=fps * 12.0, varma=True, ruutuja=50, p_suunta=1.0)
+        return types.SimpleNamespace(viivat=viivat, merkki=None, kierto=kierto, kauko_kierto=None, kierre=None, kauko=None, vakiot=None, vari="punainen", kivi_nro=3, tunnus=tunnus,
+                                     kierto_tila=kierto_tila, saapuminen="haku", kauko_kierto_tila=None, hog1_f=fps * 15.0, hog2_f=None)
+    an = types.SimpleNamespace(fps=fps, laske_kierre=True)
+    h = heitto(1, -90.0)
+    ns.Analyysi._paivita_kierre(an, h)
+    T_m = ns.hog_hog_aika_malli(h.viivat)
+    N_odotus = nk.kierrokset(-90.0, 12.0, 15.0, 15.0 + T_m)
+    tarkista("alustava kierre (vain heittopaan mittaus): lahde 'malli', T = hog_hog_aika_malli, N = omega-vaimeneminen K_KIERRE yli hog-hog-ajan", h.kierre is not None and h.kierre["lahde"] == "malli" and abs(h.kierre["T"] - T_m) < 1e-9
+             and abs(h.kierre["N"] - N_odotus) < 1e-9 and abs(h.kierre["k"] - nk.K_KIERRE) < 1e-9, str(h.kierre))
+    kj = nl.Kirjaaja(hiljaa=False, fps=fps)
+    ulos = []
+    kj._tulosta = ulos.append
+    s = ns.heiton_suureet(h)
+    r1 = kj._kierre_valmis(an, h, 3, False)
+    tarkista("konsoli: alustava rivi tulostuu heti (kaukopaan hog-ylitysta ei ole), eika heitto ole viela 'hoidettu'", r1 is False and len(ulos) == 1 and "kierre (alustava)" in ulos[0], " | ".join(ulos))
+    tarkista("konsoli: alustava rivi sisaltaa omegan, hog-hog-ajan, oletukset ja kierrokset merkilla", all(x in ulos[0] for x in ("omega -90", "myotapaivaan", f"hog-hog {T_m:.1f} s", "hidastuvuus 0,068 m/s2", "vaimeneminen 2,1 %/s", nl._pilkku(s["kierre"], 1, True), "kierrosta")), ulos[0])
+    r2 = kj._kierre_valmis(an, h, 3, False)
+    tarkista("konsoli: alustava tulostuu vain kerran", r2 is False and len(ulos) == 1)
+    h_kesken = heitto(2, 60.0, kierto_tila="kaynnissa")
+    r3 = kj._kierre_valmis(an, h_kesken, 4, False)
+    tarkista("konsoli: ei alustavaa, ennen kuin heittopaan kierto on mitattu", r3 is False and len(ulos) == 1)
+    h.hog2_f = h.hog1_f + 14.5 * fps                                           # kivi ylittaa kaukopaan hog-viivan
+    ns.Analyysi._paivita_kierre(an, h)
+    r4 = kj._kierre_valmis(an, h, 3, False)
+    tarkista("konsoli: lopullinen rivi tulee, kun kaukopaan hog-ylitys on mitattu (hog-hog 14,5 s), eika siina ole 'alustava'", r4 is True and len(ulos) == 2 and "alustava" not in ulos[1] and "mitattu videosta" in ulos[1] and "hog-hog 14.5 s" in ulos[1], ulos[-1])
+    tarkista("lopullinen luku kayttaa mitattua aikaa: lahde 'mitattu'", h.kierre["lahde"] == "mitattu" and abs(h.kierre["T"] - 14.5) < 1e-6, str(h.kierre))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre):
         t()
     print()
     if VIRHEITA:

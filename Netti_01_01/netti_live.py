@@ -35,6 +35,7 @@ import numpy as np
 
 import netti_aani as na
 import netti_geom as ng
+import netti_kierre as nk
 import netti_piirto as npi
 import netti_seuranta as ns
 
@@ -656,6 +657,7 @@ class Kirjaaja:
         self.ilmoitettu = set()
         self.valmis = set()
         self.kierre_ilm = set()
+        self.kierre_alust = set()                       # heitot, joille alustava kierrosmaara on jo tulostettu (lopullinen: kierre_ilm)
         self.muuttunut = False
         self.kauko_ilm = set()
         self.kello_ilm = set()
@@ -740,6 +742,7 @@ class Kirjaaja:
             return False
         paattynyt = h.hog2_f is not None or h.saapuminen in ("ei_loytynyt", None) or h.hog1_f is None
         if not paattynyt and not lopuksi:
+            self._kierre_alustava(h, n)                # alustava luku heti; lopullinen vasta kun kaukopaan hog-ylitys on nahty
             return False
         s = ns.heiton_suureet(h)
         k = h.kierto
@@ -754,6 +757,24 @@ class Kirjaaja:
                           f"hog-hog {s['T_hh']:.1f} s ({lahde}) -> {_pilkku(s['kierre'], 1, True)} kierrosta (- = vastapaivaan); "
                           f"irroitus (heitto - liuku) {_pilkku(s['irroitus_cm'], 0, True)} cm")
         return True
+
+    def _kierre_alustava(self, h, n):
+        """Alustava kierrosmaara heti, kun heittopaan kierto on mitattu: omega ja nopeus tunnetaan, hog-hog-aika arvioidaan kiven mediaanihidastuvuudella (netti_seuranta.hog_hog_aika_malli) ja
+        omegan vaimeneminen on K_KIERRE (netti_kierre.yhdista, vain heittopaan mittaus). Tulostetaan kerran; lopullinen luku (mitattu hog-hog-aika ja kaukopaan mittaus) tulee, kun kivi on
+        ylittanyt kaukopaan hog-viivan."""
+        if h.tunnus in self.kierre_alust or h.kierre is None:
+            return
+        s = ns.heiton_suureet(h)
+        if s is None or s["kierre"] is None:
+            return
+        self.kierre_alust.add(h.tunnus)
+        k = h.kierto
+        suunta = "vastapaivaan" if s["merkki"] > 0 else "myotapaivaan"
+        sd = f" +-{k['omega_sd_deg_s']:.0f}" if k.get("omega_sd_deg_s") is not None else ""
+        sg = f" +-{_pilkku(s['kierre_sigma'], 1)}" if s.get("kierre_sigma") is not None else ""
+        self._tulosta(f"          heitto {n} kierre (alustava): omega {k['omega_deg_s']:+.0f}{sd} deg/s ({suunta}, {'varma' if k.get('varma') else 'epavarma'}), hog-hog {s['T_hh']:.1f} s "
+                      f"(arvio: hidastuvuus {_pilkku(ns.HIDASTUVUUS_TYYPILLINEN, 3)} m/s2, omegan vaimeneminen {_pilkku(100.0 * nk.K_KIERRE, 1)} %/s) -> {_pilkku(s['kierre'], 1, True)}{sg} kierrosta "
+                      f"(- = vastapaivaan); tarkentuu, kun kivi ylittaa kaukopaan hog-viivan")
 
     @staticmethod
     def _allekirjoitus(an):
