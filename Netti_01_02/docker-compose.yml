@@ -6,6 +6,7 @@
 #   docker compose down           # pysayttaa (tallenne ja CSV viimeistellaan ensin)
 #
 # Oletus: videokansion valvonta. Pudota videotiedosto kansioon /mnt/user/netti/video -> kontti analysoi sen ja kirjoittaa tulokset kansioon /mnt/user/netti/ulos.
+# YouTube-linkit: kirjoita ne tiedostoon /mnt/user/netti/youtube.txt (yksi per rivi): kontin ei tarvitse kaynnistya uudelleen.
 # YouTube-lahetyksen tai -videon analyysiin ks. NETTI_LAHDE alla; kaikki asetukset: README_unraid.md.
 services:
   netti:
@@ -23,7 +24,7 @@ services:
       PUID: "99"                     # Unraid: nobody
       PGID: "100"                    # Unraid: users
       UMASK: "022"
-      # --- LAHDE (jata pois = kansion /data/video valvonta) ---
+      # --- LAHDE (jata pois = kansion /data/video valvonta + linkkilista /data/youtube.txt) ---
       # NETTI_LAHDE: "hnTTLqHr5x8"                         # YouTube-tunnus tai -osoite (video tai live)
       # NETTI_LAHDE: "https://www.youtube.com/@KANAVA/live" # kanavan live-lahetys; yhdessa NETTI_JATKUVA=1:n kanssa odottaa lahetysta
       # NETTI_LAHDE: "/data/video/peli.mp4"                # yksittainen tiedosto
