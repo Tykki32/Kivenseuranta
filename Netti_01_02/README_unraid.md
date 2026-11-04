@@ -109,7 +109,7 @@ docker run --rm -v /mnt/user/kivenseuranta:/data -p 63884:63884 \
   kivenseuranta:latest
 ```
 
-Tulokset: `ulos/kivenseuranta_peli_<aika>.mp4`, `ulos/heitot_peli_<aika>.csv` ja `ulos/heitot_peli_<aika>_kivet.csv`. Compose / Unraid: aseta `NETTI_LAHDE`, `NETTI_JATKUVA=0` ja kontin
+Tulokset (videotiedostolle; YouTube-linkille nimessä on videon nimi, ks. [Tulokset](#6-tulokset-ja-selainnäkymä)): `ulos/kivenseuranta_peli_<aika>.mp4`, `ulos/heitot_peli_<aika>.csv` ja `ulos/heitot_peli_<aika>_kivet.csv`. Compose / Unraid: aseta `NETTI_LAHDE`, `NETTI_JATKUVA=0` ja kontin
 *Restart* = `no`, muuten Docker käynnistää kontin uudelleen ajon päätyttyä.
 
 **b) Kansion valvonta (oletus).** Ei `NETTI_LAHDE`-asetusta, Restart = `unless-stopped`. Pudota videoita kansioon `video`; jokainen analysoidaan kerran. Valmiit kirjataan tiedostoon
@@ -194,10 +194,15 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 
 | Tiedosto | Sisältö |
 |---|---|
-| `kivenseuranta_<lähde>_<aika>.mp4` | Alkuperäinen kuva piirroksineen (liuku- ja irroituslinjat, tietopaneeli, joukkueiden kello) lähdevideon aikajanalla ja mittasuhteilla (1920 × 1080). Linjat näkyvät heti heiton alusta, koska analyysi on `NETTI_VIIVE` s kuvaa edellä. Noin 1,5 Gt tunnissa |
-| `heitot_<lähde>_<aika>.csv` | Yksi rivi heittoa kohti: viivaestimaatti, nopeus, hidastuvuus, kierre, hog–hog-aika, kaukopään pysähtyminen, kiven vakiot, kello. Sarakkeiden selitykset: [`README_netti.md`](README_netti.md) |
-| `heitot_<lähde>_<aika>_kivet.csv` | Kivikohtaiset vakiot (kitkataso A, kaarto kappa) |
+| `kivenseuranta_<videon nimi>_<lähde>_<aika>.mp4` | Alkuperäinen kuva piirroksineen (liuku- ja irroituslinjat, tietopaneeli, joukkueiden kello) lähdevideon aikajanalla ja mittasuhteilla (1920 × 1080). Linjat näkyvät heti heiton alusta, koska analyysi on `NETTI_VIIVE` s kuvaa edellä. Noin 1,5 Gt tunnissa |
+| `heitot_<videon nimi>_<lähde>_<aika>.csv` | Yksi rivi heittoa kohti: viivaestimaatti, nopeus, hidastuvuus, kierre, hog–hog-aika, kaukopään pysähtyminen, kiven vakiot, kello. Sarakkeiden selitykset: [`README_netti.md`](README_netti.md) |
+| `heitot_<videon nimi>_<lähde>_<aika>_kivet.csv` | Kivikohtaiset vakiot (kitkataso A, kaarto kappa) |
 | `kasitellyt.json` | Valvonnan muisti (vain valvontatilassa): valmiit videot ja linkit, epäonnistuneiden yritykset |
+
+**Tiedostojen nimet.** YouTube-lähteellä (`youtube.txt`, `NETTI_LAHDE`) videon nimi lisätään tiedostojen nimiin, jotta oikean pelin löytää helposti: yt-dlp kertoo nimen samalla kutsulla kuin virran osoitteen (ei lisäkutsuja), ja nimi näkyy
+myös selainnäkymässä (sivun tilarivi ja välilehden otsikko) sekä lokissa (`Video: …`, `ajo paattyi (…)`). Esimerkki: `kivenseuranta_Matarmaa SM-finaali 2026_yt_hnTTLqHr5x8_20261104_163130.mp4`. `<lähde>` on `yt_<tunnus>` (YouTube),
+tiedoston nimi (videotiedosto; sen nimi on jo mukana) tai `virta` (`--url`). Nimi siistitään tiedostonimeksi: kielletyt merkit (`< > : " / \ | ? *`), `%`, `$` ja emojit jätetään pois, välilyönnit yhdistetään, ja nimi lyhennetään enintään 80 merkkiin (120 tavuun).
+Ääkköset säilyvät (Linux / SMB-jako); jos YouTube ei kerro nimeä, tiedostonimet ovat kuten ennen (`kivenseuranta_yt_<tunnus>_<aika>.mp4`).
 
 CSV päivittyy ajon aikana heiton valmistuttua. Ajon päätyttyä tai pysäytyksen (`docker stop`, Unraidin Stop) yhteydessä tallenne suljetaan ja CSV kirjoitetaan valmiiksi.
 

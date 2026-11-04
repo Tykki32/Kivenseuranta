@@ -44,6 +44,7 @@ ODOTUS_MAX_S = 900.0
 YRITYKSIA_MAX = 3                        # tiedosto, jonka analyysi epaonnistuu nain monta kertaa, ohitetaan valvonnassa
 LINKKI_YRITYKSIA_MAX = 10                # linkkilistan rivi, jonka analyysi epaonnistuu nain monta kertaa, jaa pois (valit 60, 120, 240, 480, 900 ... s: yhteensa noin 1,5 h; lahetys voi alkaa vasta myohemmin)
 LISTALAJIT = ("youtube_lista", "url_lista")   # linkkilistan rivien lajit (youtube / url + "_lista"): ajetaan kerran, epaonnistuminen pidentaa odotusta rivikohtaisesti
+OTSIKKO_PAIKKA = "{otsikko}"             # tulostiedoston nimessa: netti_live.py korvaa sen YouTube-videon nimella (sama merkkijono kuin netti_live.OTSIKKO_PAIKKA; testi varmistaa)
 YOUTUBE_OSOITE = re.compile(r"youtube\.com|youtu\.be|youtube-nocookie\.com", re.IGNORECASE)
 YT_TUNNUS_OSOITTEESTA = re.compile(r"(?:v=|youtu\.be/|/live/|/shorts/|/embed/)([A-Za-z0-9_-]{11})")
 
@@ -255,15 +256,16 @@ def rakenna_komento(a, laji, arvo, leima, tila_polku=None, muisti_gt=None, lisa=
     if laji in LISTALAJIT:
         laji = laji[:-len("_lista")]
     tag = tunniste(laji, arvo)
+    nimi_osa = (OTSIKKO_PAIKKA + "_" if laji == "youtube" else "") + tag             # YouTube: netti_live.py korvaa paikan videon nimella, kun yt_dlp on kertonut sen (ilman nimea paikka poistuu)
     valitsin = {"youtube": "--youtube", "url": "--url", "tiedostot": "--lahde"}[laji]
     # lahde yhtena argumenttina (--youtube=ARVO): erillisena argumenttina viivalla alkava arvo (noin 1,6 % YouTube-tunnuksista alkaa viivalla) tulkittaisiin valitsimeksi ja ajo epaonnistuisi
     cmd = [sys.executable, "-u", os.path.join(HERE, "netti_live.py"), f"{valitsin}={arvo}", "--ei-ikkunaa"]
     if a.web_portti:
         cmd += ["--web", str(a.web_portti), "--web-leveys", str(a.web_leveys), "--web-fps", f"{a.web_fps:g}", "--web-laatu", str(a.web_laatu)]
     if a.tallenna_video:
-        cmd += ["--ulos", os.path.join(a.ulos_kansio, f"kivenseuranta_{tag}_{leima}.mp4"), "--koodekki", a.koodekki, "--x264-preset", a.preset, "--aani", a.aani]
+        cmd += ["--ulos", os.path.join(a.ulos_kansio, f"kivenseuranta_{nimi_osa}_{leima}.mp4"), "--koodekki", a.koodekki, "--x264-preset", a.preset, "--aani", a.aani]
     if a.csv:
-        cmd += ["--csv", os.path.join(a.ulos_kansio, f"heitot_{tag}_{leima}.csv")]
+        cmd += ["--csv", os.path.join(a.ulos_kansio, f"heitot_{nimi_osa}_{leima}.csv")]
     else:
         cmd += ["--ei-csv"]
     if a.kansio:
@@ -508,7 +510,7 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
                 loki(f"pysaytetty (ajo paattyi koodiin {rc}, kesto {kesto:.0f} s)")
                 return 0
             tila = lue_tila(tila_polku) or {}
-            loki(f"ajo paattyi: koodi {rc}, kesto {kesto:.0f} s")
+            loki(f"ajo paattyi{' (' + str(tila['otsikko'])[:120] + ')' if tila.get('otsikko') else ''}: koodi {rc}, kesto {kesto:.0f} s")
             if rc != 0:
                 paluu = rc
             if not a.jatkuva:

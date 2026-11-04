@@ -2687,8 +2687,108 @@ def testaa_kopiojono_lukko():
     tarkista("jumivahti 0 = pois: saietta ei kaynnisteta", nl.Jumivahti(lambda: 0, 0).kaynnista()._saie is None)
 
 
+def testaa_videon_nimi():
+    print("YouTube-videon nimi tulostiedostojen nimiin (siisti_otsikko, otsikko_polkuun, youtube_tiedot, Lahde.otsikko)")
+    import subprocess
+    import types
+    import netti_live as nl
+
+    def siisti(t, **k):
+        return nl.siisti_otsikko(t, ascii_vain=k.pop("ascii_vain", False), **k)
+    tarkista("siisti_otsikko: tavallinen nimi ja aakkoset sailyvat (Linux / palvelin)", siisti("Matarmaa SM-finaali 2026") == "Matarmaa SM-finaali 2026" and siisti("Hyvinkään Jäähalli – Ääkköset") == "Hyvinkään Jäähalli – Ääkköset")
+    tarkista("siisti_otsikko: kielletyt merkit (< > : \" / \\ | ? *) pois, valilyonnit yhdeksi", siisti('Curling: SM-finaali | "Hyvinkää" <live> a/b\\c?*') == "Curling SM-finaali Hyvinkää live a b c", siisti('Curling: SM-finaali | "Hyvinkää" <live> a/b\\c?*'))
+    tarkista("siisti_otsikko: emojit (BMP:n ulkopuoliset) pois", siisti("Finaali \U0001F94C\U0001F525 päivä") == "Finaali päivä")
+    tarkista("siisti_otsikko: % ja $ pois (yt_dlp:n tiedostonimipohja ja ymparistomuuttujien laajennus tulkitsisivat ne)", all(c not in siisti("100% $HOME ${PATH} 50%(ext)s") for c in "%$") and siisti("100% curling") == "100 curling")
+    tarkista("siisti_otsikko: ohjausmerkit (ESC, NUL, rivinvaihto, sarkain) pois", all(c not in siisti("Nimi\x1b[31m punainen\x00\n rivi\tloppu") for c in "\x1b\x00\n\t") and siisti("a\nb\tc") == "a b c")
+    tarkista("siisti_otsikko: alku- ja loppupisteet, -valit, -viivat ja -alaviivat pois (Windows ei salli loppupistetta)", siisti("  ..Nimi..  ") == "Nimi" and siisti("___Nimi---") == "Nimi" and siisti("Odota…") == "Odota")
+    tarkista("siisti_otsikko: NFKC: kokoleveat erottimet ja matemaattiset kirjaimet normalisoidaan (： -> : -> valilyonti)", siisti("A：B") == "A B" and siisti("\U0001D400\U0001D401") == "AB")
+    tarkista("siisti_otsikko: tyhja, None, ei-teksti ja pelkat kielletyt merkit -> ''", siisti("") == "" and siisti(None) == "" and siisti(123) == "" and siisti('<>:"/\\|?*') == "" and siisti("\U0001F94C") == "")
+    pitka = siisti("Pitkä nimi " * 30)
+    tarkista("siisti_otsikko: pituus rajattu (merkkeja)", 0 < len(pitka) <= nl.OTSIKKO_MAX_MERKKEJA and not pitka.endswith((" ", ".", "_", "-")), f"{len(pitka)} merkkia")
+    laaja = siisti("ä" * 200)
+    tarkista("siisti_otsikko: pituus rajattu myos UTF-8-tavuina (tiedostonimen raja 255 tavua)", 0 < len(laaja.encode("utf-8")) <= nl.OTSIKKO_MAX_TAVUA and set(laaja) == {"ä"}, f"{len(laaja)} merkkia, {len(laaja.encode('utf-8'))} tavua")
+    tarkista("siisti_otsikko: ASCII-tila (Windows): aakkoset perusmerkeiksi, muut ei-ASCII-merkit pois", nl.siisti_otsikko("Hyvinkään Jäähalli – Ääkköset", ascii_vain=True) == "Hyvinkaan Jaahalli Aakkoset" and nl.siisti_otsikko("Привет мир", ascii_vain=True) == "")
+    tarkista("siisti_otsikko: oletus ascii_vain on Windowsissa tosi, muualla epatosi", nl.siisti_otsikko("Äiti") == ("Aiti" if os.name == "nt" else "Äiti"))
+    tarkista("puhdista_otsikko: ohjausmerkit pois, valilyonnit yhdeksi, pituus rajattu, ei tekstia -> None", nl.puhdista_otsikko("a\x1b[2Jb\n c") == "a [2Jb c" and nl.puhdista_otsikko("x" * 500, 50) == "x" * 50
+             and nl.puhdista_otsikko("  \n ") is None and nl.puhdista_otsikko(None) is None and nl.puhdista_otsikko(5) is None and nl.puhdista_otsikko("​​") is None)
+
+    pohja = os.path.join("ulos", "kivenseuranta_{otsikko}_yt_hnTTLqHr5x8_20260101_120000.mp4")
+    tarkista("otsikko_polkuun: paikka korvautuu siistityllä nimella (tunniste ja aikaleima perassa)", nl.otsikko_polkuun(pohja, "Matarmaa SM: Hyvinkää", ascii_vain=False) == os.path.join("ulos", "kivenseuranta_Matarmaa SM Hyvinkää_yt_hnTTLqHr5x8_20260101_120000.mp4"))
+    ilman = os.path.join("ulos", "kivenseuranta_yt_hnTTLqHr5x8_20260101_120000.mp4")
+    tarkista("otsikko_polkuun: ilman nimea (None, tyhja, pelkat kielletyt merkit) nimi on kuten ennen: paikka ja sen _ poistuvat", all(nl.otsikko_polkuun(pohja, o) == ilman for o in (None, "", "\U0001F94C", "///")))
+    tarkista("otsikko_polkuun: polku ilman paikkaa (kayttajan oma nimi) ja tyhja polku eivat muutu", nl.otsikko_polkuun("oma.mp4", "Nimi") == "oma.mp4" and nl.otsikko_polkuun(None, "Nimi") is None and nl.otsikko_polkuun("", "Nimi") == "")
+    tarkista("otsikko_polkuun: kayttajan oma nimi voi sisaltaa paikan ({otsikko}.mp4)", nl.otsikko_polkuun("{otsikko}.mp4", "Peli 1", ascii_vain=False) == "Peli 1.mp4")
+    tarkista("otsikko_polkuun: nimen sisalto ei laajene uudelleen ({otsikko} nimessa)", nl.otsikko_polkuun("a_{otsikko}_b", "x{otsikko}y", ascii_vain=False) == "a_x{otsikko}y_b")
+    tarkista("otsikko_polkuun: polkuerottimet nimessa muuttuvat valilyonneiksi (ei karkaa hakemistoon)", nl.otsikko_polkuun("a_{otsikko}_b", "../../etc/passwd", ascii_vain=False) == "a_etc passwd_b"
+             and "/" not in nl.otsikko_polkuun("a_{otsikko}_b", "x/y\\z", ascii_vain=False) and "\\" not in nl.otsikko_polkuun("a_{otsikko}_b", "x/y\\z", ascii_vain=False))
+    a = types.SimpleNamespace(ulos=os.path.join("o", "kivenseuranta_{otsikko}_20260101_120000.mp4"), csv=os.path.join("o", "heitot_{otsikko}_20260101_120000.csv"))
+    nl.nimet_otsikolla(a, "Matarmaa")
+    tarkista("nimet_otsikolla: --ulos ja --csv saavat nimen", a.ulos == os.path.join("o", "kivenseuranta_Matarmaa_20260101_120000.mp4") and a.csv == os.path.join("o", "heitot_Matarmaa_20260101_120000.csv"))
+    a = types.SimpleNamespace(ulos=None, csv=os.path.join("o", "heitot_{otsikko}_20260101_120000.csv"))
+    nl.nimet_otsikolla(a, None)
+    tarkista("nimet_otsikolla: ei tallennetta (ulos None) ja ei nimea: csv kuten ennen, None pysyy None", a.ulos is None and a.csv == os.path.join("o", "heitot_20260101_120000.csv"))
+
+    # yt_dlp antaa nimen samalla kutsulla kuin virran osoitteen (korvattu esimerkki yt_dlp-moduuli)
+    class EsiYDL:
+        info = {}
+
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *e):
+            return False
+
+        def extract_info(self, url, download=False):
+            EsiYDL.url = url
+            return dict(EsiYDL.info)
+    esi = types.ModuleType("yt_dlp")
+    esi.YoutubeDL = EsiYDL
+    vanha_yt = sys.modules.get("yt_dlp")
+    sys.modules["yt_dlp"] = esi
+    vanha_cap = nl.Lahde._avaa_cap
+
+    class EsiCap:
+        def isOpened(self):
+            return True
+
+        def get(self, p):
+            return 30.0
+
+        def set(self, p, v):
+            return True
+
+        def release(self):
+            pass
+    nl.Lahde._avaa_cap = lambda self, osoite, api: EsiCap()
+    try:
+        EsiYDL.info = dict(url="https://palvelin/video.mp4", is_live=False, title="Matarmaa \x1b[31mSM-finaali\n2026", height=1080)
+        t = nl.youtube_tiedot("hnTTLqHr5x8")
+        tarkista("youtube_tiedot: osoite, live ja nimi (ohjausmerkit pois) yhdella yt_dlp-kutsulla", t == dict(url="https://palvelin/video.mp4", live=False, otsikko="Matarmaa [31mSM-finaali 2026") and EsiYDL.url.endswith("watch?v=hnTTLqHr5x8"), str(t))
+        tarkista("youtube_virta: ennallaan (osoite, live)", nl.youtube_virta("hnTTLqHr5x8") == ("https://palvelin/video.mp4", False))
+        for info_title in (None, "", "   ", 123, ["x"]):
+            EsiYDL.info = dict(url="u", is_live=False, title=info_title)
+            tarkista(f"youtube_tiedot: nimi {info_title!r} -> None", nl.youtube_tiedot("hnTTLqHr5x8")["otsikko"] is None)
+        EsiYDL.info = dict(url="u")
+        tarkista("youtube_tiedot: nimi puuttuu kokonaan -> None, live epatosi", nl.youtube_tiedot("hnTTLqHr5x8") == dict(url="u", live=False, otsikko=None))
+        EsiYDL.info = dict(url="https://palvelin/live.m3u8", is_live=True, title="Live-lähetys 2026-01-01 12:00")
+        l = nl.Lahde(youtube="hnTTLqHr5x8")
+        tarkista("Lahde: YouTube-lahteella nimi ja live tulevat yt_dlp:lta", l.otsikko == "Live-lähetys 2026-01-01 12:00" and l.live is True)
+        tarkista("Lahde: tiedostolla ja --url-lahteella ei nimea", nl.Lahde(tiedosto="x.mp4").otsikko is None and nl.Lahde(url="http://x/y.m3u8").otsikko is None)
+    finally:
+        nl.Lahde._avaa_cap = vanha_cap
+        if vanha_yt is None:
+            sys.modules.pop("yt_dlp", None)
+        else:
+            sys.modules["yt_dlp"] = vanha_yt
+    ohje = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "netti_live.py"), "--help"], capture_output=True, text=True, timeout=120).stdout
+    tarkista("netti_live --help: --ulos ja --csv kertovat videon nimesta ja {otsikko}-paikasta", "{otsikko}" in ohje and "<videon nimi>" in ohje)
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre, testaa_kiri_kierre_odotus, testaa_kopiojono_lukko):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre, testaa_kiri_kierre_odotus, testaa_kopiojono_lukko, testaa_videon_nimi):
         t()
     print()
     if VIRHEITA:
