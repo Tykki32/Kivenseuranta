@@ -108,7 +108,7 @@ class Asetukset:
         self.ei_kierretta = _totuus(env, "NETTI_EI_KIERRETTA", False)
         self.ei_kelloa = _totuus(env, "NETTI_EI_KELLOA", False)
         self.hiljaa = _totuus(env, "NETTI_HILJAA", False)
-        self.web_portti = _luku(env, "NETTI_WEB_PORTTI", 8080, int, 0, 65535)
+        self.web_portti = _luku(env, "NETTI_WEB_PORTTI", 63884, int, 0, 65535)
         self.web_leveys = _luku(env, "NETTI_WEB_LEVEYS", 1280, int, 160, 1920)
         self.web_fps = _luku(env, "NETTI_WEB_FPS", 8.0, float, 0.5, 30.0)
         self.web_laatu = _luku(env, "NETTI_WEB_LAATU", 75, int, 10, 100)

@@ -55,5 +55,5 @@ RUN sed -i 's/\r$//' /app/entrypoint.sh \
  && python -c "import cv2, numpy, scipy, yt_dlp, netti_fit; print('Python-paketit ok:', 'OpenCV', cv2.__version__, 'numpy', numpy.__version__, 'scipy', scipy.__version__, 'yt-dlp', yt_dlp.version.__version__)"
 
 VOLUME ["/data"]
-EXPOSE 8080
+EXPOSE 63884
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]

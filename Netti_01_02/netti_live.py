@@ -4,7 +4,7 @@
     python netti_live.py --youtube hnTTLqHr5x8 --ulos              # sama + tallennus tiedostoon kivenseuranta_<paivays>_<aika>.mp4 (tai --ulos oma.mp4)
     python netti_live.py --lahde netti.mp4                         # tiedosto reaaliajassa (nopeus kuten live-lahteessa)
     python netti_live.py --lahde netti.mp4 --nopea --ulos ulos.mp4 --ei-ikkunaa     # simulaatio: ajetaan niin nopeasti kuin ehtii, tulos kirjoitetaan tiedostoon
-    python netti_live.py --youtube hnTTLqHr5x8 --web 8080 --ulos   # palvelin (Netti_01_02): ei ikkunaa, kuva selaimeen http://palvelin:8080; kayta yleensa netti_palvelin.py / Dockeria, ks. README_unraid.md
+    python netti_live.py --youtube hnTTLqHr5x8 --web 63884 --ulos   # palvelin (Netti_01_02): ei ikkunaa, kuva selaimeen http://palvelin:63884; kayta yleensa netti_palvelin.py / Dockeria, ks. README_unraid.md
 
 Toiminta (kaikissa tiloissa sama):
   * Jokainen saapuva ruutu analysoidaan heti (netti_seuranta.Analyysi): kopioruudut pois, kiven tunnistus hackista, kahvan vari + tarkka siluettisovitus

@@ -2,7 +2,7 @@
 
 Tämä kansio on `Netti_01_01`:n **palvelimella ajettava versio**: sama analyysi (kiven tunnistus, liuku, irroitus, nopeus, kierre, joukkueiden kello), mutta ilman ikkunaa. Ohjelma pakataan
 Docker-kuvaksi, jota Unraid (tai mikä tahansa Linux-palvelin, jossa on Docker) ajaa kontissa. Tulokset (CSV ja kuvallinen mp4) kirjoitetaan jakokansioon, ja kuvaa, lokia ja tiedostoja
-voi katsoa selaimella osoitteessa `http://PALVELIN:8080`.
+voi katsoa selaimella osoitteessa `http://PALVELIN:63884`.
 
 Analyysin algoritmit ovat täsmälleen samat kuin `Netti_01_01`:ssä; heittojen CSV on koeajossa tavu tavulta sama kuin natiivissa C++-ajossa (ks. [Testaus](#testaus)). Algoritmien dokumentaatio on
 tiedostossa [`README_netti.md`](README_netti.md), tämä tiedosto kertoo vain palvelinajosta.
@@ -31,7 +31,7 @@ GPU-koodausta. Ne ovat ensimmäisen oikean käyttökerran riskikohdat; ohjeet ni
      `/boot/config/plugins/dockerMan/templates-user/my-netti-kivenseuranta.xml`, valitse *Docker → Add Container → Template: netti-kivenseuranta*, tarkista polku (`Data` = `/mnt/user/netti`) ja
      paina *Apply*.
    * **Docker Compose** (Compose Manager -lisäosa tai `docker compose`): [`docker-compose.yml`](docker-compose.yml); muokkaa polku ja asetukset, sitten `docker compose up -d`.
-5. **Avaa selainnäkymä** (`http://PALVELIN:8080`) ja katso lokia. Oletuksena kontti **valvoo kansiota `video`**: pudota sinne videotiedosto, niin kontti analysoi sen (kun tiedosto on pysynyt
+5. **Avaa selainnäkymä** (`http://PALVELIN:63884`; portti on valittu harvinaiseksi, ettei se törmää tavallisiin palveluihin, ks. [Asetukset](#2-asetukset-ympäristömuuttujat)) ja katso lokia. Oletuksena kontti **valvoo kansiota `video`**: pudota sinne videotiedosto, niin kontti analysoi sen (kun tiedosto on pysynyt
    muuttumattomana 30 s) ja kirjoittaa tulokset kansioon `ulos`.
 
 Lähteeksi voi antaa myös YouTube-tunnuksen tai -osoitteen ([YouTube](#5-youtube)).
@@ -60,7 +60,7 @@ Kaikki ovat valinnaisia. Tyhjä arvo tarkoittaa samaa kuin asettamatta jättämi
 | `NETTI_KIRI` | 10 | YouTube-videolle: katso `python netti_live.py --help` (`--kiri`) |
 | `NETTI_YT_FORMAATTI` | – | yt-dlp-formaattivalitsin, esim. `bestvideo[height<=1080][protocol=https][vcodec^=avc1]` |
 | `NETTI_EI_KIERRETTA`, `NETTI_EI_KELLOA`, `NETTI_HILJAA` | 0 | Ei kierteen mittausta / ei joukkueiden kelloa kuvassa / vähemmän tulostetta |
-| `NETTI_WEB_PORTTI` | 8080 | Selainnäkymän portti **kontin sisällä**; 0 = ei selainnäkymää |
+| `NETTI_WEB_PORTTI` | 63884 | Selainnäkymän portti **kontin sisällä**; 0 = ei selainnäkymää. Jos portti on palvelimella varattu, vaihda portin yhdistyksessä vain palvelimen puoli (Unraid: *Host Port*, compose: `ports`-rivin vasen luku) ja jätä tämä ennalleen. Tämän muuttaminen on tarpeen vain, jos kontti ajetaan `host`-verkossa (silloin kontin portti on palvelimen portti) |
 | `NETTI_WEB_LEVEYS`, `NETTI_WEB_FPS`, `NETTI_WEB_LAATU` | 1280, 8, 75 | Selaimeen menevän kuvan leveys (px), enimmäistaajuus katsojaa kohden ja JPEG-laatu. Kuva pakataan vain, kun joku katsoo |
 | `NETTI_WEB_KAYTTAJA`, `NETTI_WEB_SALASANA` | – | Salasana selainnäkymään (HTTP Basic; kumpikin pakollinen) |
 | `NETTI_ODOTUS_S` | 60 | Valvonta: odotus ajojen välillä. Toistuvissa nopeissa epäonnistumisissa odotus kaksinkertaistuu (enintään 15 min) |
@@ -85,7 +85,7 @@ Asetukset ja lopullinen komento näkee ajamatta: `docker run --rm -e NETTI_LAHDE
 **a) Videotiedoston analyysi (kertaajo).** Laita tiedosto kansioon `video`.
 
 ```bash
-docker run --rm -v /mnt/user/netti:/data -p 8080:8080 \
+docker run --rm -v /mnt/user/netti:/data -p 63884:63884 \
   -e NETTI_LAHDE=peli.mp4 -e NETTI_JATKUVA=0 \
   netti-kivenseuranta:latest
 ```
@@ -100,7 +100,7 @@ epäonnistuu kolme kertaa, jää pois (rikkinäinen tiedosto ei silmukoi ikuises
 **c) YouTube-video tai live-lähetys.**
 
 ```bash
-docker run --rm -v /mnt/user/netti:/data -p 8080:8080 \
+docker run --rm -v /mnt/user/netti:/data -p 63884:63884 \
   -e NETTI_LAHDE=hnTTLqHr5x8 -e NETTI_JATKUVA=0 \
   netti-kivenseuranta:latest
 ```
@@ -161,7 +161,7 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 
 CSV päivittyy ajon aikana heiton valmistuttua. Ajon päätyttyä tai pysäytyksen (`docker stop`, Unraidin Stop) yhteydessä tallenne suljetaan ja CSV kirjoitetaan valmiiksi.
 
-**Selainnäkymä** (`http://PALVELIN:8080`): kuva (MJPEG; toimii kaikissa selaimissa ja puhelimessa), viimeiset lokirivit, ajon tila ja lista tulostiedostoista. Mp4 toistuu selaimessa ja CSV latautuu. Näkymä
+**Selainnäkymä** (`http://PALVELIN:63884`): kuva (MJPEG; toimii kaikissa selaimissa ja puhelimessa), viimeiset lokirivit, ajon tila ja lista tulostiedostoista. Mp4 toistuu selaimessa ja CSV latautuu. Näkymä
 kuuluu ajoon: **kun yksikään ajo ei ole käynnissä** (valvonnassa odotusaikana tai ajon päätyttyä) portti ei vastaa. Kuva pakataan vain, kun joku katsoo, joten näkymä ei kuormita ajoa, kun kukaan ei seuraa.
 
 **Turvallisuus:** selainnäkymässä ei ole oletuksena kirjautumista, ja se näyttää tulostiedostot. Käytä sitä kotiverkossa äläkä avaa porttia internetiin. `NETTI_WEB_KAYTTAJA` ja `NETTI_WEB_SALASANA`
@@ -204,7 +204,8 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 | Loki: `ei analysoitavia videoita` (kertaajo) | Kansiossa ei ole videota; valvonnassa (`NETTI_JATKUVA=1`) kontti odottaa |
 | Video ei käynnisty valvonnassa | Tiedosto on vielä muuttunut viimeisen `NETTI_VAKAUS_S` sekunnin aikana, tai se on jo `kasitellyt.json`:ssa |
 | `Permission denied` / tiedostot root-omisteisia | `PUID`/`PGID` eivät vastaa jakokansion omistajaa; Unraid: 99/100. Kontti vaihtaa vain kansioiden `ulos`, `video`, `kalibroinnit` omistajan, ei tiedostoja |
-| Selainnäkymä ei aukea | Portti varattu (loki: `Web-porttia … ei voitu avata`; vaihda isäntäportti), tai ajoa ei ole käynnissä (valvonnan odotus) |
+| Kontti ei käynnisty, Docker kertoo `port is already allocated` | Palvelimen portti on jo toisella kontilla tai palvelulla: vaihda portin yhdistyksessä palvelimen puoli (Unraid: *Host Port*) |
+| Selainnäkymä ei aukea | Ajoa ei ole käynnissä (valvonnan odotus; näkymä on vain ajon aikana), väärä portti osoitteessa, tai `host`-verkossa portti on varattu (loki: `Web-porttia … ei voitu avata`) |
 | `YouTube-virran haku epäonnistui` | [YouTube](#5-youtube): päivitä yt-dlp, tarkista verkko; live-lähetys ei ehkä ole alkanut (valvonnassa kontti yrittää uudelleen) |
 | Kuvan viive kasvaa / `Huom: piirto / ikkuna on N s jäljessä` | Kone ei jaksa reaaliaikaa: lisää ytimiä, `NETTI_X264_PRESET=ultrafast`, pienempi `NETTI_WEB_LEVEYS`, tiedostolle `NETTI_NOPEA=1` |
 | Loki: `tarkka sovitus: Python` | C++-sovitin ei lataudu; kuvan rakennus katkeaa siihen, joten tätä ei pitäisi tulla. Python-varapolku on hitaampi eikä anna samoja tuloksia |

@@ -2,7 +2,7 @@
 #
 #   docker compose build          # rakentaa kuvan tasta kansiosta (kerran; uudelleen, kun ohjelma paivittyy)
 #   docker compose up -d          # kaynnistaa
-#   docker compose logs -f        # loki (sama nakyy selaimessa: http://PALVELIN:8080)
+#   docker compose logs -f        # loki (sama nakyy selaimessa: http://PALVELIN:63884)
 #   docker compose down           # pysayttaa (tallenne ja CSV viimeistellaan ensin)
 #
 # Oletus: videokansion valvonta. Pudota videotiedosto kansioon /mnt/user/netti/video -> kontti analysoi sen ja kirjoittaa tulokset kansioon /mnt/user/netti/ulos.
@@ -15,7 +15,7 @@ services:
     restart: unless-stopped          # kertaajossa (yksi video tai YouTube-VOD, ei valvontaa) kayta: restart: "no"
     stop_grace_period: 90s           # SIGTERMin jalkeen tallenteen ja CSV:n viimeistely saa kestaa
     ports:
-      - "8080:8080"                  # selainnakyma (kuva, loki, tiedostot); vaihda vasenta lukua, jos 8080 on varattu. Ala avaa internetiin.
+      - "63884:63884"                # selainnakyma (kuva, loki, tiedostot): vasen = palvelimen portti (vaihda tama, jos se on varattu), oikea = kontin portti (= NETTI_WEB_PORTTI). Ala avaa internetiin.
     volumes:
       - /mnt/user/netti:/data        # video/ (syote), ulos/ (tulokset), kalibroinnit/ (omat kalibroinnit)
     environment:
@@ -32,7 +32,7 @@ services:
       NETTI_VIDEO: "1"                 # tallenna kuvallinen video (mp4); 0 = vain CSV (saastaa levytilaa)
       NETTI_VIIVE: "10"                # kuvan viive analyysiin nahden (s)
       # NETTI_KANSIO: ""               # kalibrointikansio (nimi tai polku); tyhja = valitaan videon mukaan automaattisesti
-      # NETTI_WEB_PORTTI: "8080"       # 0 = ei selainnakymaa
+      # NETTI_WEB_PORTTI: "63884"      # kontin portti (muuta vain host-verkossa); 0 = ei selainnakymaa
       # NETTI_WEB_KAYTTAJA: "kayttaja" # salasana selainnakymaan (kumpikin pakollinen)
       # NETTI_WEB_SALASANA: "salasana"
       # YTDLP_PAIVITA: "1"             # paivita yt-dlp kontin kaynnistyessa (YouTube muuttuu usein)

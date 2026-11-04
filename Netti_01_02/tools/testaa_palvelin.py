@@ -81,7 +81,7 @@ def testaa_asetukset():
         a = np_.Asetukset(env)
         tarkista("ei lahdetta: video-kansion valvonta", a.laji == "tiedostot" and a.arvo["kokoelma"] and a.jatkuva, str(a.arvo))
         tarkista("oletuskansiot NETTI_DATA:n alla", a.video_kansio == video and a.ulos_kansio == ulos)
-        tarkista("oletukset: video paalla, csv paalla, libx264, viive 10, web 8080", a.tallenna_video and a.csv and a.koodekki == "cpu" and a.viive == 10.0 and a.web_portti == 8080)
+        tarkista("oletukset: video paalla, csv paalla, libx264, viive 10, web 63884", a.tallenna_video and a.csv and a.koodekki == "cpu" and a.viive == 10.0 and a.web_portti == 63884)
         a = np_.Asetukset(dict(env, NETTI_LAHDE="hnTTLqHr5x8"))
         tarkista("YouTube-tunnus", (a.laji, a.arvo) == ("youtube", "hnTTLqHr5x8") and not a.jatkuva)
         a = np_.Asetukset(dict(env, NETTI_LAHDE="https://www.youtube.com/watch?v=hnTTLqHr5x8"))
@@ -124,7 +124,7 @@ def testaa_asetukset():
                                   "NETTI_LISAVALITSIMET", "NETTI_AANI", "NETTI_KOODEKKI", "NETTI_EI_KIERRETTA", "NETTI_HILJAA", "NETTI_ODOTUS_S")}
         a = np_.Asetukset(dict(env, **tyhjat))
         tarkista("tyhjat muuttujat (Unraid valittaa ne) = ei asetettu: oletukset", a.laji == "tiedostot" and a.jatkuva and a.tallenna_video and a.csv and a.nopea and a.viive == 10.0 and a.saikeet is None
-                 and a.web_portti == 8080 and a.lisa == [] and a.aani == "auto" and a.koodekki == "cpu" and not a.ei_kierretta and a.odotus_s == 60.0)
+                 and a.web_portti == 63884 and a.lisa == [] and a.aani == "auto" and a.koodekki == "cpu" and not a.ei_kierretta and a.odotus_s == 60.0)
         a = np_.Asetukset(dict(env, NETTI_LISAVALITSIMET="--kiri 0 --yt-formaatti 'best[height<=1080]'"))
         tarkista("NETTI_LISAVALITSIMET jaetaan kuten kuori", a.lisa == ["--kiri", "0", "--yt-formaatti", "best[height<=1080]"], str(a.lisa))
 
@@ -140,7 +140,7 @@ def testaa_komento():
         tarkista("netti_live.py ajetaan -u:lla ja ilman ikkunaa", c[1] == "-u" and c[2].endswith("netti_live.py") and "--ei-ikkunaa" in c)
         tarkista("tiedosto: --lahde ja --nopea", c[c.index("--lahde") + 1].endswith("Matarmaa osa 1 (2).mp4") and "--nopea" in c)
         tarkista("tulostiedostojen nimet: tunniste + aikaleima", os.path.join(t, "ulos", "kivenseuranta_Matarmaa_osa_1_2_20260101_120000.mp4") in c and os.path.join(t, "ulos", "heitot_Matarmaa_osa_1_2_20260101_120000.csv") in c)
-        tarkista("web-valitsimet ja tilatiedosto", "--web 8080" in j and "--web-leveys 1280" in j and "--tila-tiedosto /tmp/tila.json" in j)
+        tarkista("web-valitsimet ja tilatiedosto", "--web 63884" in j and "--web-leveys 1280" in j and "--tila-tiedosto /tmp/tila.json" in j)
         tarkista("tiedostolle ei --lataus eika --kiri", "--lataus" not in c and "--kiri" not in c)
         a = np_.Asetukset(dict(env, NETTI_LAHDE="Matarmaa osa 1 (2).mp4", NETTI_NOPEA="0", NETTI_ALKU="30", NETTI_LOPPU="90", NETTI_VIDEO="0", NETTI_CSV="0", NETTI_WEB_PORTTI="0"))
         c = np_.rakenna_komento(a, a.laji, a.arvo["kuvio"], "x")
