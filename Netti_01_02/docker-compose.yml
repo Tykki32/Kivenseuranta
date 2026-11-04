@@ -1,0 +1,45 @@
+# Kivenseuranta (Netti_01_02) Docker Composella (myos Unraidin Compose Manager -lisaosa).
+#
+#   docker compose build          # rakentaa kuvan tasta kansiosta (kerran; uudelleen, kun ohjelma paivittyy)
+#   docker compose up -d          # kaynnistaa
+#   docker compose logs -f        # loki (sama nakyy selaimessa: http://PALVELIN:63884)
+#   docker compose down           # pysayttaa (tallenne ja CSV viimeistellaan ensin)
+#
+# Oletus: videokansion valvonta. Pudota videotiedosto kansioon /mnt/user/netti/video -> kontti analysoi sen ja kirjoittaa tulokset kansioon /mnt/user/netti/ulos.
+# YouTube-lahetyksen tai -videon analyysiin ks. NETTI_LAHDE alla; kaikki asetukset: README_unraid.md.
+services:
+  netti:
+    build: .
+    image: netti-kivenseuranta:latest
+    container_name: netti-kivenseuranta
+    restart: unless-stopped          # kertaajossa (yksi video tai YouTube-VOD, ei valvontaa) kayta: restart: "no"
+    stop_grace_period: 90s           # SIGTERMin jalkeen tallenteen ja CSV:n viimeistely saa kestaa
+    ports:
+      - "63884:63884"                # selainnakyma (kuva, loki, tiedostot): vasen = palvelimen portti (vaihda tama, jos se on varattu), oikea = kontin portti (= NETTI_WEB_PORTTI). Ala avaa internetiin.
+    volumes:
+      - /mnt/user/netti:/data        # video/ (syote), ulos/ (tulokset), kalibroinnit/ (omat kalibroinnit)
+    environment:
+      TZ: Europe/Helsinki
+      PUID: "99"                     # Unraid: nobody
+      PGID: "100"                    # Unraid: users
+      UMASK: "022"
+      # --- LAHDE (jata pois = kansion /data/video valvonta) ---
+      # NETTI_LAHDE: "hnTTLqHr5x8"                         # YouTube-tunnus tai -osoite (video tai live)
+      # NETTI_LAHDE: "https://www.youtube.com/@KANAVA/live" # kanavan live-lahetys; yhdessa NETTI_JATKUVA=1:n kanssa odottaa lahetysta
+      # NETTI_LAHDE: "/data/video/peli.mp4"                # yksittainen tiedosto
+      # NETTI_JATKUVA: "1"                                 # valvonta: ajo paattyy -> odota ja yrita uudelleen (kansio: uudet videot)
+      # --- yleisimmat asetukset ---
+      NETTI_VIDEO: "1"                 # tallenna kuvallinen video (mp4); 0 = vain CSV (saastaa levytilaa)
+      NETTI_VIIVE: "10"                # kuvan viive analyysiin nahden (s)
+      # NETTI_KANSIO: ""               # kalibrointikansio (nimi tai polku); tyhja = valitaan videon mukaan automaattisesti
+      # NETTI_WEB_PORTTI: "63884"      # kontin portti (muuta vain host-verkossa); 0 = ei selainnakymaa
+      # NETTI_WEB_KAYTTAJA: "kayttaja" # salasana selainnakymaan (kumpikin pakollinen)
+      # NETTI_WEB_SALASANA: "salasana"
+      # YTDLP_PAIVITA: "1"             # paivita yt-dlp kontin kaynnistyessa (YouTube muuttuu usein)
+      # YTDLP_KEKSIT: "/data/cookies.txt"  # YouTube vaatii kirjautumisen (bot-tarkistus): selaimesta viety cookies.txt
+      # NETTI_LISAVALITSIMET: "--kiri 0 --lataus 15"       # mika tahansa netti_live.py:n valitsin (python netti_live.py --help)
+    # Resurssirajat (valinnainen). Ohjelma lukee rajat ja mitoittaa tyoprosessit ja puskurit niiden mukaan.
+    # cpus: 4
+    # mem_limit: 8g
+    # cpuset: "2-5"                    # kiinnita tietyille ytimille
+    # Intel / Nvidia -kuvakoodaus (ei testattu): NETTI_KOODEKKI: "auto" ja laitteen jako, ks. README_unraid.md

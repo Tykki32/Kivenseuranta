@@ -1,0 +1,5 @@
+# Kontissa ajettavat tiedostot pidetaan LF-rivinvaihdoilla myos Windowsissa (CRLF rikkoisi kuoriskriptin: "/bin/sh^M: bad interpreter")
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.xml text eol=lf
