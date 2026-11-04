@@ -2455,8 +2455,60 @@ def testaa_alustava_kierre():
     tarkista("lopullinen luku kayttaa mitattua aikaa: lahde 'mitattu'", h.kierre["lahde"] == "mitattu" and abs(h.kierre["T"] - 14.5) < 1e-6, str(h.kierre))
 
 
+def testaa_kiri_kierre_odotus():
+    print("kiri: kuva odottaa heittopaan kierron laskentaa rajatusti (muuten Kierre-rivi on `? mitataan` lahes koko heiton ajan, koska laskennan seinakelloviive venyy kirin nopeudella videosekunneiksi); kaatunut laskentaprosessi ei jata tilaan 'kaynnissa'")
+    import types
+    import netti_live as nl
+
+    def heitto(f_alku, tila, vl=True):
+        return types.SimpleNamespace(f_alku=f_alku, kierto_tila=tila, lopullinen=True, viivat_lopullinen=vl)
+    an = types.SimpleNamespace(laske_kierre=True, heitot=[heitto(100, "valmis"), heitto(500, "kaynnissa")])
+    kk = lambda f: ns.Analyysi.kierre_kesken(an, f)
+    tarkista("kierre_kesken: edellisen heiton paneeli (uusi heitto ei ole alkanut) -> ei odoteta", kk(499) is False)
+    tarkista("kierre_kesken: uuden heiton paneeli ilmestyisi laskennan ollessa kesken -> odotetaan", kk(500) is True and kk(900) is True)
+    an.heitot[1].kierto_tila = "valmis"
+    tarkista("kierre_kesken: laskenta valmis -> ei odoteta", kk(500) is False)
+    an.heitot[0].kierto_tila, an.heitot[1].kierto_tila = "kaynnissa", "valmis"
+    tarkista("kierre_kesken: vain viimeisin heitto (jonka paneeli nakyy) ratkaisee, vanhan heiton kesken oleva laskenta ei pysayta kuvaa", kk(600) is False)
+    an.heitot[1].kierto_tila, an.heitot[1].viivat_lopullinen = None, False
+    tarkista("kierre_kesken: laskenta alkaa vasta lopullisen estimaatin jalkeen (heitto kesken / estimaattia odotetaan) -> odotetaan", kk(600) is True)
+    an.heitot[1].viivat_lopullinen = True
+    tarkista("kierre_kesken: lopullinen estimaatti valmis mutta laskentaa ei kaynnistetty (ei estimaattia) -> tulosta ei ole tulossa, ei odoteta", kk(600) is False)
+    an.heitot[1].kierto_tila = "kaynnissa"
+    an.laske_kierre = False
+    tarkista("kierre_kesken: kierteen laskenta pois paalta -> ei odoteta", kk(600) is False)
+    # kiri_odotus_raja: viivaestimaatti ensin (3 s), sitten kierto (8 s), muuten ei odoteta
+    stub = lambda v, k: types.SimpleNamespace(viivat_kesken=lambda f: v, kierre_kesken=lambda f: k)
+    tarkista("kiri_odotus_raja: viimeisimman heiton kierto tulossa -> KIRI_KIERRE_ODOTUS_S (kattaa myos viivaestimaatin odotuksen; pidempi kuin viivojen odotus)", nl.kiri_odotus_raja(stub(True, True), 0) == nl.KIRI_KIERRE_ODOTUS_S and nl.kiri_odotus_raja(stub(False, True), 0) == nl.KIRI_KIERRE_ODOTUS_S and nl.KIRI_KIERRE_ODOTUS_S > nl.KIRI_VIIVAT_ODOTUS_S)
+    tarkista("kiri_odotus_raja: vain jonkin (vanhemman) heiton viivaestimaatti kesken -> KIRI_VIIVAT_ODOTUS_S", nl.kiri_odotus_raja(stub(True, False), 0) == nl.KIRI_VIIVAT_ODOTUS_S)
+    tarkista("kiri_odotus_raja: ei kesken -> None", nl.kiri_odotus_raja(stub(False, False), 0) is None)
+    # keraa_taustatulokset: valmis kierron tulos kerataan ilman ruudun syottoa (kirin vastapaine: analyysisaie odottaa kuvaa, eika odota() kay), B-toita ei kosketa
+    class Valmis:
+        def done(self):
+            return True
+
+        def result(self):
+            return dict(omega_deg_s=40.0, omega_sd_deg_s=5.0, f_keski=300.0, varma=True)
+    h_k = types.SimpleNamespace(kierto_tila="kaynnissa", kierto=None, f_loppu=200, tunnus=9)
+    kera = types.SimpleNamespace(est_tyot=[], kierto_tyot=[(Valmis(), h_k, False)], vakiot_tyot=[], valmiit=[], tyot=["b-tyo"], tapahtumat=[], toistettava=False, _paivita_kierre=lambda h: None, _vapauta_lykatty=lambda h: None)
+    for nimi in ("_keraa_estimaatit", "_keraa_kierto", "_keraa_vakiot", "_aseta_kierto"):
+        setattr(kera, nimi, types.MethodType(getattr(ns.Analyysi, nimi), kera))
+    ns.Analyysi.keraa_taustatulokset(kera)
+    tarkista("keraa_taustatulokset: valmis kierron tulos kerataan (kierto_tila 'valmis'), jono tyhjenee, B-tyot koskematta", h_k.kierto_tila == "valmis" and kera.kierto_tyot == [] and kera.tyot == ["b-tyo"], str((h_k.kierto_tila, kera.tyot)))
+    # laskentaprosessin kaatuminen: submit nostaa poikkeuksen -> tila 'virhe' ja syy (paneelissa `ei saatu`), ei ikuista 'kaynnissa'-tilaa
+    class KaatunutPooli:
+        def submit(self, *a, **k):
+            raise RuntimeError("A process in the process pool was terminated abruptly")
+    pilke = types.SimpleNamespace(laske_kierre=True, kierto_pool=KaatunutPooli(), kierto_tyot=[], tapahtumat=[], toistettava=False, M={}, _paivita_kierre=lambda h: None, _vapauta_lykatty=lambda h: None)
+    pilke._aseta_kierto = types.MethodType(ns.Analyysi._aseta_kierto, pilke)
+    n_ = types.SimpleNamespace(B=(10.0, 400.0), Bs=None, f=100)
+    h = types.SimpleNamespace(viivat=dict(t_lisa=[1.0, 1.1], t_irr=0.9), kierto_lisa=[(n_, None, 0, 0), (n_, None, 0, 0)], kierto_kehykset=[1], kierto_tila=None, kierto=None, puoli="vasen", vari="punainen", tunnus=7, f_loppu=200)
+    ns.Analyysi._kierto_aloita(pilke, h)
+    tarkista("kierto_aloitus: laskentaprosessi kaatunut -> tila 'virhe' ja syy, ei jonoon", h.kierto_tila == "virhe" and "laskentaprosessi ei vastaa" in h.kierto["virhe"] and pilke.kierto_tyot == [], str((h.kierto_tila, h.kierto)))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre, testaa_kiri_kierre_odotus):
         t()
     print()
     if VIRHEITA:

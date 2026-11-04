@@ -2328,6 +2328,26 @@ class Analyysi:
                 return True
         return False
 
+    def keraa_taustatulokset(self):
+        """Keraa valmiit viivaestimaatit sekä kierron ja kiven vakioiden tyot (ei B-toita: niiden kayttoonotto on toistettavassa ajossa sidottu kiinteaan ruutuviiveeseen). Analyysisaikeesta, kun se
+        odottaa kuvaa (netti_live, kirin vastapaine): odota() ajetaan vain syotetyilla ruuduilla, joten kuvan odottama valmis tulos jaisi muuten keraamatta ja kuva ja analyysi odottaisivat toisiaan aikarajaan asti."""
+        self._keraa_estimaatit()
+        self._keraa_kierto()
+        self._keraa_vakiot()
+
+    def kierre_kesken(self, f):
+        """True, jos ruudun f paneeli (viimeisin heitto, jonka lahtoruutu <= f) piirrettaisiin ilman heittopaan kierron tulosta, vaikka tulos on tulossa: laskenta on kaynnissa (kierto_tila 'kaynnissa')
+        tai se alkaa, kun heiton lopullinen viivaestimaatti valmistuu (heitto on viela analyysissa kesken tai lopullista estimaattia ei ole viela tehty). Kirissa kuva etenee reaaliaikaa nopeammin, joten
+        ~3 s seinakellon laskenta on kymmenia videosekunteja ja Kierre-rivi olisi `? mitataan` lahes koko heiton ajan; netti_live odottaa tulosta rajatusti (KIRI_KIERRE_ODOTUS_S). Kun lopullinen
+        estimaatti on valmis eika laskentaa ole kaynnistetty (ei estimaattia), tulosta ei ole tulossa eika odoteta."""
+        if not self.laske_kierre:
+            return False
+        vh = [h for h in list(self.heitot) if h.f_alku is not None and h.f_alku <= f]
+        if not vh:
+            return False
+        h = max(vh, key=lambda x: x.f_alku)
+        return h.kierto_tila == "kaynnissa" or (h.kierto_tila is None and not h.viivat_lopullinen)
+
     def matalaksi_taustaprosessit(self):
         """Live-virta (tulos saa riippua ajoituksesta, ruutuja ohitetaan myohassa): B-tyoprosessit ja viivaestimaatin laskija alemmalle prioriteetille, jotta analyysi-, piirto- ja ikkunasaikeet saavat
         prosessorin ensin. Toistettavassa ajossa (tiedosto, VOD) nama pysyvat normaalilla: analyysi odottaa B-tuloksia ja kuva (kiri) lopullista viivaestimaattia, joten matala prioriteetti kaantyisi
@@ -2527,7 +2547,12 @@ class Analyysi:
         h.kierto_tila = "kaynnissa"
         args = (h.puoli, h.vari, havainnot, v["t_irr"])
         if self.kierto_pool is not None:
-            self.kierto_tyot.append((self.kierto_pool.submit(tyo_kierto, args), h, False))
+            try:
+                fut = self.kierto_pool.submit(tyo_kierto, args)
+            except Exception as e:                       # esim. laskentaprosessi kaatunut (BrokenProcessPool): ei jaeta ikuisesti tilaan 'kaynnissa' (paneelin `? mitataan`), vaan kerrotaan syy
+                self._aseta_kierto(h, dict(virhe=f"laskentaprosessi ei vastaa ({e!r})"))
+                return
+            self.kierto_tyot.append((fut, h, False))
         else:
             self._aseta_kierto(h, kierto_laske(self.M[h.puoli], args))
 
