@@ -2059,28 +2059,29 @@ class KaukoSeuranta(_Seuranta):
 # ---------------------------------------------------------------------------------------------------------------------
 # KIERRE: hog-hog-aika, kierrokset, suunta
 # ---------------------------------------------------------------------------------------------------------------------
-HIDASTUVUUS_TYYPILLINEN = 0.068  # m/s2: puhtaiden heittojen vapaan lennon hidastuvuus (0,06-0,07)
+HIDASTUVUUS_TYYPILLINEN = 0.068  # m/s2: kiven hidastuvuus (vakio): viiden videon 489 heiton hog-hog-keskihidastuvuuden (nopeus hog1 - nopeus hog2) / hog-hog-aika mediaani on 0,067 (1,48 MAD 0,005); 0,068 antaa pienimman harhan hog-hog-ajalle (mediaanivirhe -0,02 s). Mitattu vapaan lennon hidastuvuus (mediaani 0,058, kohinainen) on pienempi, koska kitka kasvaa nopeuden pienentyessa
 
 
-def hog_hog_aika_malli(v):
-    """Hog-hog-aika (s) vakiohidastuvuuden mallilla (kun kaukopaan ylitysta ei mitattu): nopeus hog-viivalla irroituksen nopeudesta ja hidastuvuudesta. Vapaan lennon
-    hidastuvuus on kohinainen (mittaus kattaa vain ~2 s: arvot -0,2 ... +0,5), joten se sekoitetaan tyypilliseen arvoon sen mukaan miten pitka vapaa lento on (paino 0 ... 1
-    vapaasta matkasta 150 ... 550 cm); jos kivi ei sillakaan yllaisi kaukopaan hog-viivalle, kokeillaan tyypillista hidastuvuutta. None, jos kivi ei sillakaan yllaa."""
-    a0 = HIDASTUVUUS_TYYPILLINEN
-    a_mit = float(np.clip(v["vapaa_hidastuvuus"], 0.04, 0.14))
-    w = float(np.clip((float(v.get("vapaa_matka_cm", 0.0)) - 150.0) / 400.0, 0.0, 1.0))
-    v_r = max(float(v["nopeus_jalkeen"]), 0.3)
-    s1 = max(HOG_KESKI_CM - v["irr_Y"], 0.0) / 100.0
+def hog_hog_aika_malli(v, a=HIDASTUVUUS_TYYPILLINEN):
+    """Hog-hog-aika (s) vakiohidastuvuuden mallilla: alustava kierrosmaara heti heittopaan kierron mittauksen jalkeen, kun kaukopaan hog-ylitysta ei ole (viela) mitattu. Kivi hidastuu
+    vakiolla a (oletus HIDASTUVUUS_TYYPILLINEN eli videoiden mediaani; ei kiven omaa mitattua hidastuvuutta, joka on kohinainen): nopeus heittopaan hog-viivalla on radasta mitattu
+    nopeus (v['nopeus_hog1']) tai, ellei sita ole, irroituksen nopeus vakiohidastuvuudella hog-viivalle; sielta kaukopaan hog-viivalle (T = (v1 - v2) / a, v2^2 = v1^2 - 2 a D).
+    5 videon 492 heitolla, joilla hog-hog-aika mitattiin: virhe mediaani -0,02 s, 1,48 MAD 0,31 s, p90 0,90 s (vanha malli, johon sekoitettiin mitattu vapaan lennon hidastuvuus:
+    -0,11 / 0,49 / 1,24 s). None, jos kivi ei yllaisi kaukopaan hog-viivalle."""
     D = (ETAISYYS_CM - 2.0 * HOG_KESKI_CM) / 100.0
-    for a in (a0 + w * (a_mit - a0), a0):
+    v1 = v.get("nopeus_hog1")
+    if v1 is not None and np.isfinite(float(v1)):
+        v1sq = max(float(v1), 0.3) ** 2
+    else:
+        v_r = max(float(v["nopeus_jalkeen"]), 0.3)
+        s1 = max(HOG_KESKI_CM - float(v["irr_Y"]), 0.0) / 100.0
         v1sq = v_r * v_r - 2.0 * a * s1
-        if v1sq <= 0.0:
-            continue
-        d = v1sq - 2.0 * a * D
-        if d <= 0.0:
-            continue
-        return float((np.sqrt(v1sq) - np.sqrt(d)) / a)
-    return None
+    if v1sq <= 0.0:
+        return None
+    d = v1sq - 2.0 * a * D
+    if d <= 0.0:
+        return None
+    return float((np.sqrt(v1sq) - np.sqrt(d)) / a)
 
 
 def kierron_merkki(h):
