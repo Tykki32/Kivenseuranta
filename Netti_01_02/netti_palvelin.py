@@ -14,11 +14,16 @@ Lahde (NETTI_LAHDE):
 Linkkilista (kansion valvonnassa): tiedosto /data/youtube.txt (NETTI_LINKIT), yksi YouTube-tunnus tai verkko-osoite per rivi (# aloittaa kommentin). Tiedostoa luetaan jokaisella valvontakierroksella,
 joten uuden linkin lisaaminen ei vaadi kontin uudelleenkaynnistysta; jokainen linkki ajetaan kerran (kirjataan kasitellyt.json:iin), epaonnistuneita yritetaan uudelleen pidentyvin valein.
 
+Kanavat (kansion valvonnassa): YouTube-kanavan osoite (https://www.youtube.com/@kanava/streams, /videos tai pelkka @kanava) linkkilistassa, NETTI_KANAVAT:ssa tai NETTI_LAHDE:ssa. Kanavan Streams-valilehti
+haetaan NETTI_KANAVA_VALI_MIN minuutin valein (yt_dlp, vain luettelo), ja jokainen UUSI lahetys ajetaan kerran, kun se on paattynyt (NETTI_KANAVA_LIVE=1: heti suorana). Kanavan /live-osoite on
+edelleen yksittainen lahde (kanavan nykyinen suora lahetys), ei kanavan seurantaa.
+Kanavalla jo olevia videoita ei ajeta (NETTI_KANAVA_VANHAT=N ajaa N uusinta); lyhyet videot (NETTI_KANAVA_MIN_KESTO_MIN) ja otsikkosuodattimeen (NETTI_KANAVA_SUODATIN) osumattomat jatetaan pois.
+
 NETTI_JATKUVA=1 = valvonta: kun ajo paattyy (live-lahetys loppui, tai YouTube-lahetysta ei viela ole) odotetaan NETTI_ODOTUS_S sekuntia ja yritetaan uudelleen; toistuvissa
 nopeissa epaonnistumisissa odotus kaksinkertaistuu (enintaan 15 min), jotta YouTubea ei kuormiteta.
 
 SIGTERM / SIGINT (docker stop): lapsiprosessi saa saman signaalin ja viimeistelee tallenteen ja CSV:n; jos se ei ehdi NETTI_SULKU_S sekunnissa, se tapetaan.
-Vain standardikirjasto (+ netti_ymparisto.py)."""
+Vain standardikirjasto (+ netti_ymparisto.py; kanavien haku: yt_dlp ja netti_aani.keksitiedosto)."""
 import argparse
 import glob
 import json
@@ -47,14 +52,48 @@ LISTALAJIT = ("youtube_lista", "url_lista")   # linkkilistan rivien lajit (youtu
 OTSIKKO_PAIKKA = "{otsikko}"             # tulostiedoston nimessa: netti_live.py korvaa sen YouTube-videon nimella (sama merkkijono kuin netti_live.OTSIKKO_PAIKKA; testi varmistaa)
 YOUTUBE_OSOITE = re.compile(r"youtube\.com|youtu\.be|youtube-nocookie\.com", re.IGNORECASE)
 YT_TUNNUS_OSOITTEESTA = re.compile(r"(?:v=|youtu\.be/|/live/|/shorts/|/embed/)([A-Za-z0-9_-]{11})")
+KANAVA_OSOITE = re.compile(r"^https?://(?:www\.|m\.)?youtube\.com/(?P<kanava>@[^/?#\s]+|channel/[^/?#\s]+|c/[^/?#\s]+|user/[^/?#\s]+)(?:/(?P<valilehti>[A-Za-z]+))?/?(?:[?#].*)?$", re.IGNORECASE)
+KANAVA_NIMI = re.compile(r"^(?P<kanava>@[^/?#\s]+)(?:/(?P<valilehti>[A-Za-z]+))?/?$")       # pelkka @kanava
+KANAVA_VALI_OLETUS_MIN = 5.0             # kanavan Streams-valilehden haku: oletusvali (min); uusi lahetys huomataan tassa ajassa
+KANAVA_MIN_KESTO_OLETUS_MIN = 20.0       # kanavan videot, jotka ovat tata lyhyempia (min), jatetaan pois (traileri, katkelma)
+KANAVA_LISTAUS_N = 30                    # kuinka monta uusinta videota kanavan luettelosta haetaan (yksi luettelosivu); vakio, jotta "nahdyt" -ikkuna ei muutu asetusten mukana (muuten vanhat videot muuttuisivat uusiksi)
+KANAVA_VANHAT_MAX = 20                   # NETTI_KANAVA_VANHAT:n ylaraja (pitaa mahtua luetteloikkunaan)
+KANAVA_HAUN_AIKARAJA_S = 120.0           # yksittaisen luettelohaun enimmaisaika: jumiin jaanyt haku ei saa pysayttaa koko valvontaa
+KANAVA_VIRHE_MAX_S = 3600.0              # toistuvasti epaonnistuvan haun uusintavali kasvaa enintaan tahan (s)
+KANAVA_EI_KELPAA = {"private", "premium_only", "subscriber_only", "needs_auth"}      # yt_dlp:n availability: ei toistettavissa ilman jasenyytta / kirjautumista
+KANAVA_KESKEN = {"is_upcoming", "post_live"}       # lahetys ei ole viela alkanut / YouTube viela kasittelee paattynytta lahetysta: odotetaan
 
 
 class AsetusVirhe(Exception):
     pass
 
 
+class KanavaVirhe(Exception):
+    """Kanavan luettelon haku epaonnistui (verkko, YouTuben esto, yt_dlp puuttuu / on vanhentunut)."""
+
+
 def loki(*a):
     print("[palvelin]", *a, flush=True)
+
+
+def kanava_osoite(s):
+    """YouTube-kanavan osoite -> luettelon osoite (https://www.youtube.com/<kanava>/streams tai /videos) tai None, jos s ei ole kanava (video, soittolista, 11 merkin tunnus, kanavan /live-osoite).
+    Hyvaksytaan @kahva, channel/UC..., c/nimi ja user/nimi (www., m. ja http kelpaavat) seka pelkka @kahva; valilehti: streams (oletus) tai videos, muut valilehdet (featured, home ...) -> streams.
+    /live ei ole kanavan seuranta vaan kanavan nykyinen suora lahetys (yt_dlp ratkaisee sen), joten se jaa tavalliseksi YouTube-lahteeksi."""
+    s = s.strip().strip('"').strip("'")
+    m = KANAVA_OSOITE.match(s) or KANAVA_NIMI.match(s)
+    if not m:
+        return None
+    valilehti = (m.group("valilehti") or "").lower()
+    if valilehti == "live":
+        return None
+    return f"https://www.youtube.com/{m.group('kanava')}/{valilehti if valilehti in ('streams', 'videos') else 'streams'}"
+
+
+def kanavan_nimi(osoite):
+    """Kanavan lyhyt nimi lokiin: '@kahva' tai 'channel/UC...' (osoitteesta ilman valilehtea)."""
+    m = KANAVA_OSOITE.match(osoite)
+    return m.group("kanava") if m else osoite[:60]
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -128,6 +167,27 @@ class Asetukset:
         except ValueError as e:
             raise AsetusVirhe(f"NETTI_LISAVALITSIMET: {e}")
         self.laji, self.arvo = luokittele_lahde(self.lahde, self.video_kansio)
+        self.kanavat = []                                          # seurattavat YouTube-kanavat (luettelon osoitteet): NETTI_KANAVAT + NETTI_LAHDE; linkkilistan kanavat tulevat lisaksi (lahteet)
+        if self.laji == "kanava":                                  # NETTI_LAHDE = kanava: tavallinen kansion valvonta, jossa kanava on seurattavana
+            self.kanavat.append(self.arvo)
+            self.laji, self.arvo = luokittele_lahde(None, self.video_kansio)
+        for osa in re.split(r"[,;\s]+", _teksti(env, "NETTI_KANAVAT", "")):
+            if not osa:
+                continue
+            osoite = kanava_osoite(osa)
+            if osoite is None:
+                raise AsetusVirhe(f"NETTI_KANAVAT: {osa!r} ei ole YouTube-kanavan osoite (esim. https://www.youtube.com/@kanava/streams tai @kanava; kanavan /live-osoite ja yksittaiset videot kuuluvat NETTI_LAHDE:en tai linkkilistaan)")
+            if osoite not in self.kanavat:
+                self.kanavat.append(osoite)
+        self.kanava_vali_min = _luku(env, "NETTI_KANAVA_VALI_MIN", KANAVA_VALI_OLETUS_MIN, float, 1.0, 1440.0)
+        self.kanava_vanhat = _luku(env, "NETTI_KANAVA_VANHAT", 0, int, 0, KANAVA_VANHAT_MAX)        # kanavan jo olemassa olevista videoista nain monta uusinta ajetaan ensimmaisella kerralla (0 = ei yhtaan)
+        self.kanava_min_kesto_min = _luku(env, "NETTI_KANAVA_MIN_KESTO_MIN", KANAVA_MIN_KESTO_OLETUS_MIN, float, 0.0, 1440.0)
+        self.kanava_live = _totuus(env, "NETTI_KANAVA_LIVE", False)                                 # aja suora lahetys heti (False: vasta kun se on paattynyt ja YouTube on kasitellyt sen)
+        suodatin = _teksti(env, "NETTI_KANAVA_SUODATIN")
+        try:
+            self.kanava_suodatin = re.compile(suodatin, re.IGNORECASE) if suodatin else None      # vain videot, joiden nimessa on tama (saannollinen lauseke, kirjainkoolla ei valia)
+        except re.error as e:
+            raise AsetusVirhe(f"NETTI_KANAVA_SUODATIN={suodatin!r}: virheellinen saannollinen lauseke ({e})")
         jatkuva_oletus = self.lahde is None or self.laji == "tiedostot" and self.arvo.get("kokoelma", False)
         self.jatkuva = _totuus(env, "NETTI_JATKUVA", jatkuva_oletus)
         self.kasitellyt_polku = os.path.join(self.ulos_kansio, "kasitellyt.json")
@@ -136,11 +196,14 @@ class Asetukset:
 
 
 def luokittele_lahde(lahde, video_kansio):
-    """(laji, arvo): ('youtube', ref) | ('url', osoite) | ('tiedostot', {'kuvio': ..., 'kokoelma': bool}). Puuttuva lahde = video-kansio (valvonta)."""
+    """(laji, arvo): ('youtube', ref) | ('url', osoite) | ('kanava', luettelon osoite) | ('tiedostot', {'kuvio': ..., 'kokoelma': bool}). Puuttuva lahde = video-kansio (valvonta)."""
     if lahde is None:
         return "tiedostot", dict(kuvio=os.path.join(video_kansio, "*"), kokoelma=True, kansio=True)
     s = lahde.strip().strip('"').strip("'")
     if VERKKO.match(s):
+        kanava = kanava_osoite(s)
+        if kanava:
+            return "kanava", kanava
         return ("youtube", s) if YOUTUBE_OSOITE.search(s) else ("url", s)
     polku = s if os.path.isabs(s) else os.path.join(video_kansio, s)
     if os.path.isdir(polku):
@@ -153,7 +216,10 @@ def luokittele_lahde(lahde, video_kansio):
         return "tiedostot", dict(kuvio=polku, kokoelma=True, kansio=False)
     if YOUTUBE_TUNNUS.match(s):
         return "youtube", s
-    raise AsetusVirhe(f"NETTI_LAHDE={lahde!r}: ei YouTube-tunnus / verkko-osoite eika olemassa oleva tiedosto, kansio tai kuvio (videot haetaan kansiosta {video_kansio})")
+    kanava = kanava_osoite(s)                                       # pelkka @kahva
+    if kanava:
+        return "kanava", kanava
+    raise AsetusVirhe(f"NETTI_LAHDE={lahde!r}: ei YouTube-tunnus / -kanava / verkko-osoite eika olemassa oleva tiedosto, kansio tai kuvio (videot haetaan kansiosta {video_kansio})")
 
 
 def tiedostot(arvo, nyt=None, vakaus_s=0.0):
@@ -186,8 +252,11 @@ def yt_tunnus(ref):
 
 
 def luokittele_rivi(s):
-    """Linkkilistan rivin lahde: ('youtube', ref) | ('url', osoite) | None (ei tunnistettu)."""
+    """Linkkilistan rivin lahde: ('youtube', ref) | ('url', osoite) | ('kanava', luettelon osoite) | None (ei tunnistettu)."""
     s = s.strip().strip('"').strip("'")
+    kanava = kanava_osoite(s)
+    if kanava:
+        return "kanava", kanava
     if VERKKO.match(s):
         return ("youtube", s) if YOUTUBE_OSOITE.search(s) else ("url", s)
     if YOUTUBE_TUNNUS.match(s):
@@ -358,6 +427,15 @@ class Kasitellyt:
         self.tallenna()
         return r
 
+    def kanava(self, osoite):
+        """Kanavan seurannan alkutila (dict: alustettu, ohitetut = kanavalla jo ollessa nahdyt videot) tai None, jos kanavaa ei ole viela haettu onnistuneesti."""
+        r = self.data.get("kanava:" + osoite)
+        return r if isinstance(r, dict) and isinstance(r.get("ohitetut"), list) else None
+
+    def kirjaa_kanava(self, osoite, ohitetut):
+        self.data["kanava:" + osoite] = dict(alustettu=time.strftime("%Y-%m-%d %H:%M:%S"), ohitetut=sorted(ohitetut))
+        self.tallenna()
+
     def tallenna(self):
         try:
             os.makedirs(os.path.dirname(self.polku), exist_ok=True)
@@ -367,6 +445,237 @@ class Kasitellyt:
             os.replace(tmp, self.polku)
         except OSError as e:
             loki(f"huom: {self.polku} ei voitu kirjoittaa ({e}); valvonta voi ajaa videon uudelleen kaynnistyksen jalkeen")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# KANAVAT (uusien lahetysten seuranta)
+# ---------------------------------------------------------------------------------------------------------------------
+def _aikarajalla(fn, aikaraja_s):
+    """Ajaa fn():n erillisessa saikeessa enintaan aikaraja_s sekuntia: jumiin jaanyt verkkohaku ei saa pysayttaa valvontasilmukkaa. Jumittunut saie jaa taustalle (daemon) ja unohdetaan."""
+    tulos = {}
+
+    def tyo():
+        try:
+            tulos["arvo"] = fn()
+        except BaseException as e:                                  # myos SystemExit (yt_dlp voi kutsua sys.exit): valitetaan kutsujalle, ei lopeteta palvelinta
+            tulos["virhe"] = e
+
+    saie = threading.Thread(target=tyo, name="kanavahaku", daemon=True)
+    saie.start()
+    saie.join(aikaraja_s)
+    if saie.is_alive():
+        raise KanavaVirhe(f"haku ei vastannut {aikaraja_s:.0f} sekunnissa")
+    virhe = tulos.get("virhe")
+    if virhe is not None:
+        raise virhe if isinstance(virhe, Exception) else KanavaVirhe(repr(virhe))
+    return tulos.get("arvo")
+
+
+def _keksit():
+    """Selaimesta viety cookies.txt (YTDLP_KEKSIT) tai None; sama kuin YouTube-ajoissa (yt_dlp: 'Sign in to confirm you're not a bot')."""
+    try:
+        import netti_aani as na
+        return na.keksitiedosto()
+    except Exception:                                               # keksit ovat lisa: haku yritetaan ilmankin
+        return None
+
+
+def _virheteksti(e):
+    """yt_dlp:n virheesta lyhyt, yksirivinen viesti lokiin (ANSI-varit pois)."""
+    teksti = re.sub(r"\x1b\[[0-9;]*m", "", str(e) or type(e).__name__)
+    return re.sub(r"\s+", " ", teksti).strip()[:300]
+
+
+def _luettelon_videot(info, syvyys=0):
+    """yt_dlp:n luettelotuloksesta (extract_flat) videot luettelon jarjestyksessa (uusin ensin): [dict(id, otsikko, kesto_s, tila, saatavuus, osoite)]; sisakkaiset luettelot litistetaan."""
+    ulos = []
+    for e in (info or {}).get("entries") or []:
+        if not isinstance(e, dict):
+            continue
+        if e.get("_type") == "playlist" and syvyys < 2:
+            ulos += _luettelon_videot(e, syvyys + 1)
+            continue
+        tunnus = e.get("id")
+        if not isinstance(tunnus, str) or not YOUTUBE_TUNNUS.match(tunnus) or e.get("ie_key") not in (None, "Youtube"):
+            continue
+        kesto = e.get("duration")
+        ulos.append(dict(id=tunnus, otsikko=str(e.get("title") or ""), kesto_s=float(kesto) if isinstance(kesto, (int, float)) and kesto >= 0 else None,
+                         tila=e.get("live_status"), saatavuus=e.get("availability"), osoite=str(e.get("url") or "")))
+    return ulos
+
+
+class _HiljainenLogger:
+    """yt_dlp:n oma tuloste pois: virhe tulee poikkeuksena (KanavaVirhe) ja kirjoitetaan lokiin kerran, ohjeineen (muuten sama virhe tulisi lokiin kahdesti)."""
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        pass
+
+
+def luettele_kanava(osoite, n=KANAVA_LISTAUS_N):
+    """Kanavan luettelon (Streams / Videos) uusimmat n videota yt_dlp:lla; vain luettelo, ei virtoja eika latausta. Palauttaa [dict(id, otsikko, kesto_s, tila, saatavuus, osoite)] uusin ensin;
+    tila = yt_dlp:n live_status (is_live / is_upcoming / was_live / None). Virhe -> KanavaVirhe."""
+    try:
+        import yt_dlp
+    except ImportError:
+        raise KanavaVirhe("yt_dlp puuttuu: pip install -U yt-dlp")
+    opts = {"quiet": True, "no_warnings": True, "logger": _HiljainenLogger(), "skip_download": True, "extract_flat": "in_playlist", "playlistend": n, "socket_timeout": 30, "js_runtimes": {"deno": {}}}
+    keksit = _keksit()
+    if keksit:
+        opts["cookiefile"] = keksit
+
+    def hae():
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(osoite, download=False)
+
+    try:
+        info = _aikarajalla(hae, KANAVA_HAUN_AIKARAJA_S)
+    except KanavaVirhe:
+        raise
+    except Exception as e:                                          # yt_dlp.utils.DownloadError ym.
+        raise KanavaVirhe(_virheteksti(e))
+    return _luettelon_videot(info)
+
+
+def _lokiotsikko(otsikko):
+    """Videon nimi yhtena lyhyena rivina lokiin (ohjausmerkit pois)."""
+    teksti = re.sub(r"[\x00-\x1f\x7f]+", " ", otsikko or "").strip()
+    return teksti[:77] + "..." if len(teksti) > 80 else teksti
+
+
+class Kanavavahti:
+    """Seuraa YouTube-kanavien luetteloita (Streams-valilehti) ja kertoo uudet lahetykset; valvontasilmukka ajaa ne linkkilistan rivien tapaan (kerran, epaonnistuessa uusinta pidentyvin valein).
+
+    Ensimmaisella onnistuneella haulla kanavalla jo olevat (paattyneet) videot merkitaan nahdyiksi eika niita ajeta (NETTI_KANAVA_VANHAT = N: N uusinta ajetaan silti); merkinta tallentuu
+    kasitellyt.json:iin (kanava:<osoite>), joten uudelleenkaynnistys ei ala alusta. Sen jalkeen jokainen nakemattomista videoista, joka kelpaa suodattimille ja on valmis (paattynyt; suora lahetys
+    vain NETTI_KANAVA_LIVE=1), on ajettava lahde. Luettelo haetaan vain NETTI_KANAVA_VALI_MIN minuutin valein; epaonnistunut haku pidentaa valia (enintaan KANAVA_VIRHE_MAX_S)."""
+
+    def __init__(self, kasitellyt, a, listaaja=None, kello=time.time):
+        self.kasitellyt = kasitellyt
+        self.vali_s = a.kanava_vali_min * 60.0
+        self.vanhat = a.kanava_vanhat
+        self.min_kesto_s = a.kanava_min_kesto_min * 60.0
+        self.suodatin = a.kanava_suodatin
+        self.live = a.kanava_live
+        self.listaaja = listaaja or luettele_kanava
+        self.kello = kello
+        self.seuraava = {}                                          # kanava -> aika, jolloin se haetaan seuraavan kerran
+        self.virheita = {}                                          # kanava -> perakkaiset epaonnistuneet haut
+        self.jonossa = {}                                           # kanava -> [(tunnus, otsikko)] ajettavat, vanhin ensin
+        self.ilmoitettu = set()                                     # (video, paatos): lokiin jo kirjoitetut, ei toisteta joka haulla
+        self.virhe_ilmoitettu = {}                                  # kanava -> (viesti, aika): sama virhe kirjoitetaan lokiin enintaan tunnin valein
+
+    def _syy_ohittaa(self, v):
+        """Syy, miksi video ei kelpaa ajettavaksi (None = kelpaa)."""
+        if "/shorts/" in v["osoite"]:
+            return "lyhytvideo (Shorts)"
+        if v["saatavuus"] in KANAVA_EI_KELPAA:
+            return f"ei toistettavissa ({v['saatavuus']})"
+        if self.suodatin is not None and not self.suodatin.search(v["otsikko"]):
+            return "nimi ei vastaa suodatinta (NETTI_KANAVA_SUODATIN)"
+        if v["kesto_s"] is not None and v["kesto_s"] < self.min_kesto_s:
+            return f"lyhyt: {v['kesto_s'] / 60:.0f} min < {self.min_kesto_s / 60:g} min (NETTI_KANAVA_MIN_KESTO_MIN)"
+        return None
+
+    def _arvioi(self, v):
+        """('aja', None) | ('odota', syy) | ('ohita', syy): ajetaanko video nyt, odotetaanko sen valmistumista vai jaako se pois."""
+        syy = self._syy_ohittaa(v)
+        if syy:
+            return "ohita", syy
+        if v["tila"] == "is_upcoming":
+            return "odota", "lahetys on tulossa"
+        if v["tila"] == "post_live":
+            return "odota", "lahetys on paattynyt, YouTube kasittelee sita viela"
+        if v["tila"] == "is_live" and not self.live:
+            return "odota", "lahetys on suorana: ajetaan, kun se on paattynyt (NETTI_KANAVA_LIVE=1: heti)"
+        return "aja", None
+
+    def _perusta(self, nimi, kanava, lista):
+        """Kanavan ensimmainen onnistunut haku: jo olevat paattyneet videot merkitaan nahdyiksi (ei ajeta), paitsi self.vanhat uusinta suodattimille kelpaavaa. Kesken olevat ja tulevat lahetykset
+        jaavat uusiksi. Tyhja luettelo ei perusta mitaan (ohimenevan tyhjan vastauksen jalkeen koko kanavan vanha sisalto muuttuisi uusiksi)."""
+        if not lista:
+            loki(f"kanava {nimi}: luettelo on tyhja; seuranta alkaa, kun kanavalla on videoita")
+            return None
+        vanhat = self.vanhat
+        ohitetut = []
+        for v in lista:                                             # uusin ensin
+            if v["tila"] in KANAVA_KESKEN or v["tila"] == "is_live":
+                continue
+            if vanhat > 0 and self._syy_ohittaa(v) is None:
+                vanhat -= 1
+                continue
+            ohitetut.append(v["id"])
+        self.kasitellyt.kirjaa_kanava(kanava, ohitetut)
+        valittu = self.vanhat - vanhat
+        loki(f"kanava {nimi}: {len(ohitetut)} olemassa olevaa videota ohitetaan; uudet lahetykset analysoidaan automaattisesti"
+             + (f" (lisaksi {valittu} uusinta olemassa olevaa: NETTI_KANAVA_VANHAT={self.vanhat})" if valittu else ""))
+        return set(ohitetut)
+
+    def _virhe(self, nimi, kanava, e, nyt):
+        n = self.virheita[kanava] = self.virheita.get(kanava, 0) + 1
+        odotus = min(self.vali_s * 2 ** min(n - 1, 20), KANAVA_VIRHE_MAX_S)
+        self.seuraava[kanava] = nyt + odotus
+        viesti = _virheteksti(e)
+        ed = self.virhe_ilmoitettu.get(kanava)
+        if ed is None or ed[0] != viesti or nyt - ed[1] >= 3600:
+            self.virhe_ilmoitettu[kanava] = (viesti, nyt)
+            vihje = ""
+            if re.search(r"not a bot|sign in|cookies", viesti, re.IGNORECASE):
+                vihje = " (YouTube vaatii kirjautumisen: aseta YTDLP_KEKSIT, ks. README_unraid.md)"
+            elif re.search(r"does not have a streams tab|no .*tab", viesti, re.IGNORECASE):
+                vihje = " (kanavalla ei ole Streams-valilehtea: kayta osoitetta .../videos)"
+            loki(f"kanava {nimi}: luettelon haku epaonnistui: {viesti}{vihje}; uusi yritys {odotus / 60:.0f} min kuluttua")
+
+    def _hae(self, kanava, nyt):
+        nimi = kanavan_nimi(kanava)
+        try:
+            lista = self.listaaja(kanava, KANAVA_LISTAUS_N)
+        except Exception as e:                                      # mikaan haun virhe ei saa kaataa valvontaa
+            self._virhe(nimi, kanava, e, nyt)
+            return
+        if self.virheita.get(kanava):
+            loki(f"kanava {nimi}: luettelo haettu taas onnistuneesti")
+        self.virheita[kanava] = 0
+        self.virhe_ilmoitettu.pop(kanava, None)
+        self.seuraava[kanava] = nyt + self.vali_s
+        tila = self.kasitellyt.kanava(kanava)
+        ohitetut = set(tila["ohitetut"]) if tila else self._perusta(nimi, kanava, lista)
+        if ohitetut is None:                                        # ei perustettu (tyhja luettelo): ei ajettavaa
+            self.jonossa[kanava] = []
+            return
+        jonossa = []
+        for v in reversed(lista):                                   # vanhin ensin
+            if v["id"] in ohitetut:
+                continue
+            paatos, syy = self._arvioi(v)
+            if (v["id"], paatos) not in self.ilmoitettu:
+                self.ilmoitettu.add((v["id"], paatos))
+                if paatos == "aja":
+                    loki(f"kanava {nimi}: " + ("uusi lahetys" if v["tila"] != "is_live" else "suora lahetys") + f", analysoidaan: {_lokiotsikko(v['otsikko'])!r} ({v['id']})")
+                else:
+                    loki(f"kanava {nimi}: {_lokiotsikko(v['otsikko'])!r} ({v['id']}): {'ohitetaan' if paatos == 'ohita' else 'odotetaan'}, {syy}")
+            if paatos == "aja":
+                jonossa.append((v["id"], v["otsikko"]))
+        self.jonossa[kanava] = jonossa
+
+    def uudet(self, kanavat, nyt=None):
+        """Ajettavat uudet lahetykset: [('youtube_lista', osoite)], kanavittain vanhin ensin. Kanava haetaan vain, kun edellisesta hausta on kulunut NETTI_KANAVA_VALI_MIN minuuttia (virheen jalkeen
+        pidempi); muulloin palautetaan viimeisimman haun jono. Jo ajetut (kasitellyt.valmis) ja odottavat suodattaa kutsuja (lahteet)."""
+        nyt = self.kello() if nyt is None else nyt
+        ulos = []
+        for kanava in kanavat:
+            if nyt >= self.seuraava.get(kanava, 0.0):
+                self._hae(kanava, nyt)
+            ulos += [("youtube_lista", f"https://www.youtube.com/watch?v={tunnus}") for tunnus, _ in self.jonossa.get(kanava, [])]
+        return ulos
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -435,15 +744,30 @@ def lue_tila(polku):
 # ---------------------------------------------------------------------------------------------------------------------
 # PAASILMUKKA
 # ---------------------------------------------------------------------------------------------------------------------
-def lahteet(a, kasitellyt=None, nyt=None, huomautetut=None):
-    """Taman kierroksen ajettavat lahteet: [(laji, arvo)]. Kansion valvonnassa videotiedostojen jalkeen tulevat linkkilistan rivit (youtube_lista / url_lista); valvonnassa jo kasitellyt ja
+def lahteet(a, kasitellyt=None, nyt=None, huomautetut=None, vahti=None):
+    """Taman kierroksen ajettavat lahteet: [(laji, arvo)]. Kansion valvonnassa videotiedostojen jalkeen tulevat linkkilistan rivit (youtube_lista / url_lista) ja kanavien uudet lahetykset
+    (youtube_lista; kanavat: NETTI_KANAVAT, NETTI_LAHDE ja linkkilistan kanavarivit; vahti = Kanavavahti, ilman sita kanavia ei haeta). Sama video vain kerran; valvonnassa jo kasitellyt ja
     epaonnistumisen jalkeista odotusta pitavat jaavat pois."""
     if a.laji != "tiedostot":
         jono = [(a.laji, a.arvo)]
     else:
         jono = [("tiedostot", p) for p in tiedostot(a.arvo, nyt, a.vakaus_s if a.arvo["kokoelma"] else 0.0)]
-        if a.arvo["kokoelma"] and a.jatkuva and a.linkit_polku:
-            jono += [(laji + "_lista", ref) for laji, ref in lue_linkit(a.linkit_polku, huomautetut)]
+        if a.arvo["kokoelma"] and a.jatkuva:
+            kanavat = list(a.kanavat)
+            for laji, ref in (lue_linkit(a.linkit_polku, huomautetut) if a.linkit_polku else []):
+                if laji != "kanava":
+                    jono.append((laji + "_lista", ref))
+                elif ref not in kanavat:
+                    kanavat.append(ref)
+            if kanavat and vahti is not None:
+                jono += vahti.uudet(kanavat, nyt)
+    nahty, yksi = set(), []
+    for l, v in jono:                                               # sama video linkkilistalla ja kanavalla (tai kahdella kanavalla) ajetaan vain kerran
+        avain = Kasitellyt.avain(l, v)
+        if avain not in nahty:
+            nahty.add(avain)
+            yksi.append((l, v))
+    jono = yksi
     if kasitellyt is not None and a.jatkuva:
         t = time.time() if nyt is None else nyt
         jono = [(l, v) for l, v in jono if not kasitellyt.valmis(l, v) and not kasitellyt.odottaa(l, v, t)]
@@ -466,8 +790,8 @@ def valmistele_kansiot(a):
     return True, ""
 
 
-def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
-    """Ajosilmukka. Palauttaa prosessin paluukoodin (0 = kaikki hyvin tai pysaytetty signaalilla; 2 = kansiot eivat kelpaa)."""
+def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time, kanavalista=None):
+    """Ajosilmukka. Palauttaa prosessin paluukoodin (0 = kaikki hyvin tai pysaytetty signaalilla; 2 = kansiot eivat kelpaa). kanavalista: kanavan luettelon hakija (testeissa korvattu; oletus luettele_kanava)."""
     ajuri = ajuri or (lambda cmd, env=None, cwd=None: aja_lapsi(cmd, pysaytys, a.sulku_s, env, cwd))
     ok, syy = valmistele_kansiot(a)
     if not ok:
@@ -475,19 +799,23 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
         return 2
     tila_polku = os.path.join(a.tyo_kansio, "ajon_tila.json")
     kasitellyt = Kasitellyt(a.kasitellyt_polku)
+    vahti = Kanavavahti(kasitellyt, a, kanavalista, kello)
     vikoja = 0
     paluu = 0
     viim_tyhja_ilmoitus = None
     huomautetut = set()                                             # linkkilistan jo ilmoitetut virheelliset rivit (ilmoitetaan kerran, ei joka kierroksella)
     while True:
-        jono = lahteet(a, kasitellyt, kello(), huomautetut)
+        jono = lahteet(a, kasitellyt, kello(), huomautetut, vahti)
         if not jono:
             if not a.jatkuva:
                 loki("ei analysoitavia videoita" + (f" (kansio {os.path.dirname(a.arvo['kuvio'])})" if a.laji == "tiedostot" else ""))
                 return paluu or 3
             nyt = time.monotonic()
             if viim_tyhja_ilmoitus is None or nyt - viim_tyhja_ilmoitus > 1800:
-                loki(f"valvonta: ei uusia videoita, tarkistetaan {a.odotus_s:.0f} s valein" + (f" ({os.path.dirname(a.arvo['kuvio'])}" + (f", linkkilista {a.linkit_polku}" if a.linkit_polku and a.arvo["kokoelma"] else "") + ")" if a.laji == "tiedostot" else ""))
+                kanavat = sorted(vahti.seuraava)
+                loki(f"valvonta: ei uusia videoita, tarkistetaan {a.odotus_s:.0f} s valein"
+                     + (f" ({os.path.dirname(a.arvo['kuvio'])}" + (f", linkkilista {a.linkit_polku}" if a.linkit_polku and a.arvo["kokoelma"] else "")
+                        + (f", kanavat: {', '.join(kanavan_nimi(k) for k in kanavat)} {a.kanava_vali_min:g} min valein" if kanavat else "") + ")" if a.laji == "tiedostot" else ""))
                 viim_tyhja_ilmoitus = nyt
             if pysaytys.nuku(a.odotus_s):
                 return 0
@@ -538,7 +866,7 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
                 if rc == 0 and kasitellyt.valmis(laji, arvo):
                     loki("lahde analysoitu kokonaan (ei live-lahetys): sita ei ajeta uudelleen")
                     continue
-                odotus = min(a.odotus_s * 2 ** max(vikoja - 1, 0), ODOTUS_MAX_S)
+                odotus = min(a.odotus_s * 2 ** min(max(vikoja - 1, 0), 30), ODOTUS_MAX_S)         # eksponentin raja: muuten ~1000 perakkaisen epaonnistumisen (~11 vrk odotusta) jalkeen luku ylivuotaa ja palvelin kaatuu
                 loki(f"valvonta: uusi yritys {odotus:.0f} s kuluttua")
                 if pysaytys.nuku(odotus):
                     return 0
@@ -561,6 +889,13 @@ def main(argv=None):
     loki(f"{ny.kuvaus()}; lahde: {a.laji} {a.arvo if a.laji != 'tiedostot' else a.arvo['kuvio']}; valvonta {'paalla' if a.jatkuva else 'pois'}; tulokset: {a.ulos_kansio}"
          + (f"; selain: portti {a.web_portti}" if a.web_portti else "; selainnakyma pois")
          + (f"; linkkilista: {a.linkit_polku}" + (" (loytyy)" if os.path.isfile(a.linkit_polku) else " (ei viela: luo tiedosto ja kirjoita siihen linkit)") if a.laji == "tiedostot" and a.arvo["kokoelma"] and a.jatkuva and a.linkit_polku else ""))
+    seuraa = a.laji == "tiedostot" and a.arvo["kokoelma"] and a.jatkuva                     # kanavia ja linkkilistaa seurataan vain kansion valvonnassa
+    kanavat = list(a.kanavat) + ([r for l, r in lue_linkit(a.linkit_polku) if l == "kanava" and r not in a.kanavat] if seuraa and a.linkit_polku else [])
+    if kanavat and seuraa:
+        loki("kanavat: " + ", ".join(kanavan_nimi(k) for k in kanavat) + f" (luettelo {a.kanava_vali_min:g} min valein; uudet lahetykset analysoidaan, kanavalla jo olevia ei"
+             + (f", lisaksi {a.kanava_vanhat} uusinta" if a.kanava_vanhat else "") + ("; suorat heti" if a.kanava_live else "; suorat vasta kun ne ovat paattyneet") + ")")
+    elif a.kanavat:
+        loki("huom: kanavia (NETTI_KANAVAT / NETTI_LAHDE) seurataan vain kansion valvonnassa (NETTI_LAHDE puuttuu tai on kansio ja NETTI_JATKUVA=1); ne ohitetaan")
     if omat.nayta:
         jono = lahteet(a, None, None) or [(a.laji, a.arvo if a.laji != "tiedostot" else "<video>")]
         loki("komento: " + " ".join(shlex.quote(x) for x in rakenna_komento(a, jono[0][0], jono[0][1], time.strftime("%Y%m%d_%H%M%S"), None, muisti, lisa)))

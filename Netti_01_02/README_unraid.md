@@ -54,6 +54,8 @@ docker run -d --name kivenseuranta --restart unless-stopped --stop-timeout 90 \
 
 Lähteeksi voi antaa myös kiinteän YouTube-tunnuksen tai -osoitteen asetuksella `NETTI_LAHDE` ([YouTube](#5-youtube)), mutta helpompaa on linkkilista `youtube.txt`.
 
+**Haluatko, että kanavan jokainen uusi video / lähetys (Streams) analysoidaan itsestään?** Kirjoita kanavan osoite (esim. `https://www.youtube.com/@KANAVA/streams`) linkkilistaan `youtube.txt` tai asetukseen `NETTI_KANAVAT`: ks. [Käyttö g](#3-käyttö-tavallisimmat-tilanteet).
+
 ---
 
 ## 2. Asetukset (ympäristömuuttujat)
@@ -62,9 +64,15 @@ Kaikki ovat valinnaisia. Tyhjä arvo tarkoittaa samaa kuin asettamatta jättämi
 
 | Muuttuja | Oletus | Merkitys |
 |---|---|---|
-| `NETTI_LAHDE` | kansio `/data/video` ja linkkilista `/data/youtube.txt` (valvonta) | Mitä analysoidaan: **YouTube-tunnus tai -osoite**, suora virran osoite (`http`/`https`/`rtsp`/`m3u8`), **videotiedosto** (`/data/video/peli.mp4` tai pelkkä `peli.mp4`), **kansio** tai **kuvio** (`/data/video/*.mp4`). Kiinteä YouTube-lähde vaatii kontin asetusten muuttamisen aina, kun osoite vaihtuu; vaihtuville osoitteille käytä linkkilistaa (jätä tämä tyhjäksi) |
-| `NETTI_LINKIT` | `/data/youtube.txt` | Linkkilista: tekstitiedosto, jossa on yksi YouTube-tunnus tai verkko-osoite per rivi (`#` aloittaa kommentin). Luetaan joka valvontakierroksella, joten uuden linkin lisäys ei vaadi uudelleenkäynnistystä. Toimii vain kansion valvonnassa. `ei` = pois käytöstä |
-| `NETTI_JATKUVA` | kansiolle 1, muulle 0 | Valvonta: kun ajo päättyy (video valmis, live-lähetys loppui, YouTube-lähetystä ei vielä ole), odotetaan `NETTI_ODOTUS_S` s ja yritetään uudelleen. Kansiossa uudet videot ja linkkilistan uudet linkit analysoidaan, valmiit eivät toistu |
+| `NETTI_LAHDE` | kansio `/data/video` ja linkkilista `/data/youtube.txt` (valvonta) | Mitä analysoidaan: **YouTube-tunnus tai -osoite**, suora virran osoite (`http`/`https`/`rtsp`/`m3u8`), **videotiedosto** (`/data/video/peli.mp4` tai pelkkä `peli.mp4`), **kansio** tai **kuvio** (`/data/video/*.mp4`). Kiinteä YouTube-lähde vaatii kontin asetusten muuttamisen aina, kun osoite vaihtuu; vaihtuville osoitteille käytä linkkilistaa (jätä tämä tyhjäksi). **Kanavan osoite** (`@kanava`, `…/@kanava/streams`) = kansion valvonta, jossa kanavan uudet lähetykset analysoidaan automaattisesti (kuten `NETTI_KANAVAT`) |
+| `NETTI_LINKIT` | `/data/youtube.txt` | Linkkilista: tekstitiedosto, jossa on yksi YouTube-tunnus, verkko-osoite tai **YouTube-kanavan osoite** per rivi (`#` aloittaa kommentin). Luetaan joka valvontakierroksella, joten uuden linkin lisäys ei vaadi uudelleenkäynnistystä. Toimii vain kansion valvonnassa. `ei` = pois käytöstä |
+| `NETTI_KANAVAT` | – | Seurattavat YouTube-kanavat: osoitteet tai `@kahvat` pilkulla, välilyönnillä tai rivinvaihdolla erotettuna (esim. `@Matarmaa, https://www.youtube.com/@toinen/streams`). Kanavan jokainen **uusi** lähetys analysoidaan kerran, kun se on päättynyt ([Käyttö g](#3-käyttö-tavallisimmat-tilanteet)). Kanavia voi lisätä myös linkkilistaan ilman uudelleenkäynnistystä |
+| `NETTI_KANAVA_VALI_MIN` | 5 | Kanavan luettelon hakuväli (min; 1 … 1440): uusi lähetys huomataan tässä ajassa. Haku lataa vain luettelon, ei videoita |
+| `NETTI_KANAVA_VANHAT` | 0 | Kuinka monta kanavalla jo olevaa uusinta videota analysoidaan, kun kanava nähdään ensimmäisen kerran (0 … 20). Oletus 0: vanhaa arkistoa ei ajeta, vain uudet. `1` sopii kokeiluun |
+| `NETTI_KANAVA_MIN_KESTO_MIN` | 20 | Kanavan videot, jotka ovat tätä lyhyempiä (min), jätetään pois (traileri, katkelma); 0 = ei rajaa. Shorts-videot ja jäsenille / maksulliset videot jäävät aina pois |
+| `NETTI_KANAVA_SUODATIN` | – | Vain videot, joiden nimessä on tämä säännöllinen lauseke (kirjainkoolla ei väliä), esim. `matarmaa\|finaali` (kenoviiva on tässä vain taulukon takia: arvo on `matarmaa|finaali`) |
+| `NETTI_KANAVA_LIVE` | 0 | 1 = kanavan käynnissä oleva lähetys analysoidaan heti suorana (reaaliaikainen analyysi, ei ääntä). 0 = odotetaan, että lähetys päättyy ja YouTube on käsitellyt sen, ja analysoidaan se tallenteena |
+| `NETTI_JATKUVA` | kansiolle 1, muulle 0 | Valvonta: kun ajo päättyy (video valmis, live-lähetys loppui, YouTube-lähetystä ei vielä ole), odotetaan `NETTI_ODOTUS_S` s ja yritetään uudelleen. Kansiossa uudet videot, linkkilistan uudet linkit ja kanavien uudet lähetykset analysoidaan, valmiit eivät toistu |
 | `NETTI_VIDEO` | 1 | Tallenna kuvallinen mp4 (`ulos/kivenseuranta_*.mp4`). 0 = vain CSV |
 | `NETTI_CSV` | 1 | Tallenna heittojen tiedot CSV:hen |
 | `NETTI_VIIVE` | 10 | Kuva tulee tämän verran (s) analyysin perässä (vaikuttaa näkymään ja tallenteen piirtoon) |
@@ -133,7 +141,7 @@ https://youtu.be/abcdefghijk   # toinen peli (kommentti rivin lopussa)
 * Linkki voi olla valmis video, käynnissä oleva live-lähetys (analysoidaan reaaliajassa ja ajo päättyy lähetyksen mukana) tai tuleva lähetys. Jos lähetys ei ole vielä alkanut tai haku epäonnistuu, kontti yrittää
   uudelleen 1, 2, 4 ja 8 minuutin ja sen jälkeen 15 minuutin välein; kymmenen epäonnistumisen (noin 1,5 tuntia) jälkeen rivi jää pois, ja lokiin tulee siitä merkintä.
 * Rivi on joko verkko-osoite (muu teksti sen perässä ohitetaan; esim. `rtsp://…` ja `https://….m3u8` kelpaavat myös) tai YouTube-tunnus **yksin rivillä**. Muut rivit ohitetaan, ja lokiin tulee niistä yksi huomautus.
-* Kanavan live-osoitteen (`…/@KANAVA/live`) voi lisätä, mutta sekin ajetaan vain kerran. Jos haluat, että kontti odottaa kanavan jokaista uutta lähetystä, käytä kiinteää lähdettä (kohta d).
+* Kanavan live-osoitteen (`…/@KANAVA/live`) voi lisätä, mutta sekin ajetaan vain kerran. Jos haluat, että kontti analysoi kanavan **jokaisen uuden lähetyksen** (Streams-välilehti), lisää kanavan osoite (`https://www.youtube.com/@KANAVA/streams`) samaan tiedostoon: ks. kohta g.
 * Polun voi vaihtaa muuttujalla `NETTI_LINKIT` (`ei` = linkkilista pois). Linkkilista toimii vain kansion valvonnassa, ei silloin kun `NETTI_LAHDE` on yksittäinen YouTube-osoite tai tiedosto tai ajo on kertaajo.
 
 **d) Kiinteä YouTube-video tai live-lähetys (`NETTI_LAHDE`).** Osoite annetaan kontin asetuksella, joten sen vaihtaminen vaatii asetuksen muuttamisen (Unraid: Edit → Apply; kuvaa ei tarvitse rakentaa uudelleen).
@@ -145,7 +153,7 @@ docker run --rm -v /mnt/user/kivenseuranta:/data -p 63884:63884 \
 ```
 
 Live-lähetyksen odotus: `NETTI_LAHDE=https://www.youtube.com/@KANAVA/live`, `NETTI_JATKUVA=1`, Restart = `unless-stopped`. Kontti yrittää uudelleen minuutin välein (toistuvasta epäonnistumisesta
-alkaen harvemmin), analysoi lähetyksen ja jatkaa odottamaan seuraavaa. Tavallinen YouTube-**video** (ei live) analysoidaan valvonnassa vain kerran.
+alkaen harvemmin), analysoi lähetyksen ja jatkaa odottamaan seuraavaa. Tavallinen YouTube-**video** (ei live) analysoidaan valvonnassa vain kerran. Kanavan kaikkien uusien lähetysten (myös menneiden, ei vain käynnissä olevan) seurantaan sopii paremmin kohta g.
 
 **e) Katso tallenne kuin lähetystä.** Tiedostolle `NETTI_NOPEA=0`: video etenee reaaliajassa ja selainnäkymä näyttää kuvan viiveellä (`NETTI_VIIVE`).
 
@@ -156,6 +164,34 @@ docker run --rm -v /mnt/user/kivenseuranta:/data kivenseuranta:latest python /ap
 docker run --rm kivenseuranta:latest testaa
 docker run --rm -it -v /mnt/user/kivenseuranta:/data kivenseuranta:latest bash
 ```
+
+**g) Kanavan uudet videot ja lähetykset automaattisesti (Streams-välilehti).** Kirjoita kanavan osoite linkkilistaan `youtube.txt` (tai asetukseen `NETTI_KANAVAT`), niin kontti seuraa kanavan Streams-välilehteä ja
+analysoi jokaisen **uuden** lähetyksen, kun se on päättynyt. Uudelleenkäynnistystä ei tarvita, eikä linkkejä tarvitse kopioida yksitellen:
+
+```text
+# Matarmaan kanava: kaikki uudet lähetykset
+https://www.youtube.com/@Matarmaa/streams
+```
+
+Kelpaavat muodot: `https://www.youtube.com/@kanava/streams`, `https://www.youtube.com/@kanava` (= Streams), pelkkä `@kanava`, `…/channel/UC…`, `…/c/nimi` ja `…/user/nimi`; osoite `…/videos` seuraa Streams-välilehden sijaan
+kanavan tavallisia videoita. Kanavan `…/live`-osoite on edelleen yksittäinen lähde (kohta d), ei kanavan seuranta.
+
+* **Mitä tapahtuu.** Kontti hakee kanavan luettelon `NETTI_KANAVA_VALI_MIN` minuutin välein (oletus 5; yt-dlp lataa vain luettelon, ei videoita). Uusi lähetys ajetaan kerran, kun se on päättynyt ja YouTube on käsitellyt sen.
+  Ajo on samanlainen kuin linkkilistan linkillä: videon nimi tiedostojen nimiin ja selainnäkymään, valmis kirjataan muistiin (`ulos/kasitellyt.json`, rivi `lista:yt_<tunnus>`), epäonnistunut ajo yritetään uudelleen pidentyvin
+  välein (enintään kymmenen kertaa). Loki kertoo jokaisesta havaitusta lähetyksestä (`kanava @KANAVA: uusi lahetys, analysoidaan: '…'`) ja siitä, miksi jokin video jätetään pois.
+* **Kanavalla jo olevia videoita ei ajeta.** Kun kanava nähdään ensimmäisen kerran, sen nykyiset videot merkitään nähdyiksi (`kasitellyt.json`, rivi `kanava:<osoite>`), eikä vanhaa arkistoa käydä läpi. Kokeiluun: `NETTI_KANAVA_VANHAT=1`
+  ajaa kanavan uusimman olemassa olevan videon (enintään 20). Käynnissä oleva tai tuleva lähetys ei ole vanha: se ajetaan, kun se on päättynyt. Jos kontti on ollut pysäytettynä, sen aikana tulleet lähetykset ajetaan
+  käynnistyksen jälkeen. Jos kanavan luettelo on ensimmäisellä haulla tyhjä, seuranta alkaa vasta kun kanavalla on videoita.
+* **Suorat lähetykset.** Oletuksena odotetaan, että lähetys päättyy, ja analysoidaan koko lähetys tallenteena (myös ääni liitetään tallenteeseen). `NETTI_KANAVA_LIVE=1` aloittaa analyysin jo suorana: se on reaaliaikaista
+  (kone on kuormitettu koko lähetyksen ajan, [Resurssit](#7-resurssit-ja-suorituskyky)), eikä live-virran ääntä liitetä.
+* **Suodattimet.** Alle `NETTI_KANAVA_MIN_KESTO_MIN` minuutin (oletus 20; 0 = pois) videot, Shorts-videot sekä jäsenille tai maksulliset videot jätetään pois. `NETTI_KANAVA_SUODATIN` rajaa nimen mukaan
+  säännöllisellä lausekkeella (kirjainkoolla ei väliä), esim. `matarmaa|finaali`: vain nimeltään sopivat ajetaan. Suodattimet koskevat uusia lähetyksiä; nähdyiksi merkittyjä ei ajeta, vaikka suodatinta muuttaisi.
+* **Yksi kerrallaan.** Videot, linkit ja kanavien lähetykset ajetaan peräkkäin: pitkä ajo (esim. suora lähetys) viivästää seuraavaa. Sama video ajetaan vain kerran, vaikka se olisi sekä linkkilistalla että kanavalla.
+* **Virheet.** Jos luettelon haku epäonnistuu (verkko; YouTuben kirjautumisvaatimus: `YTDLP_KEKSIT`; vanhentunut yt-dlp: `YTDLP_PAIVITA=1`; kanavalla ei ole Streams-välilehteä: käytä osoitetta `…/videos`), kontti yrittää
+  uudelleen pidentyvin välein (enintään tunnin välein) ja kirjoittaa syyn lokiin; jo havaitut lähetykset pysyvät jonossa.
+* **Kanavan poisto ja alusta aloitus.** Poista kanavan rivi tiedostosta (tai asetuksesta). Alkutila jää muistiin; poista rivi `kanava:<osoite>` tiedostosta `kasitellyt.json`, jos haluat, että kanavan nykyiset videot
+  merkitään taas nähdyiksi (esimerkiksi kun palaat kanavaan pitkän tauon jälkeen eikä välissä ilmestyneitä haluta ajaa).
+* Toimii vain kansion valvonnassa (`NETTI_LAHDE` tyhjä tai kansio, `NETTI_JATKUVA` oletuksena päällä). Kontin käynnistyslokissa lukee `kanavat: …`, kun kanavia seurataan.
 
 ---
 
@@ -177,7 +213,8 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 
 ## 5. YouTube
 
-* Helpoin tapa antaa YouTube-osoite on linkkilista `youtube.txt` ([Käyttö c](#3-käyttö-tavallisimmat-tilanteet)): ei uudelleenkäynnistystä.
+* Helpoin tapa antaa YouTube-osoite on linkkilista `youtube.txt` ([Käyttö c](#3-käyttö-tavallisimmat-tilanteet)): ei uudelleenkäynnistystä. Samaan tiedostoon voi kirjoittaa myös kanavan osoitteen, jolloin kanavan
+  jokainen uusi lähetys analysoidaan itsestään ([Käyttö g](#3-käyttö-tavallisimmat-tilanteet)).
 * Kuvassa ovat `yt-dlp`, sen JavaScript-ajuri (`deno`) ja `yt-dlp-ejs`; YouTuben muutokset rikkovat yt-dlp:n aika ajoin. **Ensimmäinen keino kaikkiin YouTube-ongelmiin: `YTDLP_PAIVITA=1`**
   (päivittää yt-dlp:n joka käynnistyksellä) tai kuvan uudelleenrakennus (`docker build --no-cache …`).
 * Virheilmoitus *Sign in to confirm you're not a bot* tai ikärajaviesti: YouTube vaatii kirjautumisen. Vie selaimesta (kirjautuneena) evästeet Netscape-muodossa tiedostoon
@@ -197,7 +234,7 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 | `kivenseuranta_<videon nimi>_<lähde>_<aika>.mp4` | Alkuperäinen kuva piirroksineen (liuku- ja irroituslinjat, tietopaneeli, joukkueiden kello) lähdevideon aikajanalla ja mittasuhteilla (1920 × 1080). Linjat näkyvät heti heiton alusta, koska analyysi on `NETTI_VIIVE` s kuvaa edellä. Noin 1,5 Gt tunnissa |
 | `heitot_<videon nimi>_<lähde>_<aika>.csv` | Yksi rivi heittoa kohti: viivaestimaatti, nopeus, hidastuvuus, kierre, hog–hog-aika, kaukopään pysähtyminen, kiven vakiot, kello. Sarakkeiden selitykset: [`README_netti.md`](README_netti.md) |
 | `heitot_<videon nimi>_<lähde>_<aika>_kivet.csv` | Kivikohtaiset vakiot (kitkataso A, kaarto kappa) |
-| `kasitellyt.json` | Valvonnan muisti (vain valvontatilassa): valmiit videot ja linkit, epäonnistuneiden yritykset |
+| `kasitellyt.json` | Valvonnan muisti (vain valvontatilassa): valmiit videot ja linkit, epäonnistuneiden yritykset sekä seurattujen kanavien alkutila (`kanava:<osoite>`: kanavalla jo olleet videot) |
 
 **Tiedostojen nimet.** YouTube-lähteellä (`youtube.txt`, `NETTI_LAHDE`) videon nimi lisätään tiedostojen nimiin, jotta oikean pelin löytää helposti: yt-dlp kertoo nimen samalla kutsulla kuin virran osoitteen (ei lisäkutsuja), ja nimi näkyy
 myös selainnäkymässä (sivun tilarivi ja välilehden otsikko) sekä lokissa (`Video: …`, `ajo paattyi (…)`). Esimerkki: `kivenseuranta_Matarmaa SM-finaali 2026_yt_hnTTLqHr5x8_20261104_163130.mp4`. `<lähde>` on `yt_<tunnus>` (YouTube),
@@ -249,6 +286,7 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 | Loki: `ei analysoitavia videoita` (kertaajo) | Kansiossa ei ole videota; valvonnassa (`NETTI_JATKUVA=1`) kontti odottaa |
 | Video ei käynnisty valvonnassa | Tiedosto on vielä muuttunut viimeisen `NETTI_VAKAUS_S` sekunnin aikana, tai se on jo `kasitellyt.json`:ssa |
 | Linkkilistan rivi ei käynnisty | (1) Tiedoston nimen on oltava täsmälleen `youtube.txt` jakokansion juuressa; Windows voi piilottaa päätteen ja tallentaa nimellä `youtube.txt.txt`. (2) Kontin lähde-asetus (`NETTI_LAHDE`) on oltava tyhjä (tai kansio). (3) Rivi on osoite tai yksin rivillä oleva 11 merkin tunnus; muut rivit mainitaan lokissa. (4) Edellinen ajo on kesken: uusi rivi huomataan sen jälkeen. (5) Rivi on jo ajettu (`kasitellyt.json`) tai odottaa uutta yritystä (loki kertoo ajan) |
+| Kanavan uusia lähetyksiä ei analysoida | (1) Lokin käynnistysrivin pitää sisältää `kanavat: …`; muuten kanavaa ei seurata (osoite ei ole kanava, `NETTI_LAHDE` on yksittäinen lähde tai valvonta on pois). (2) Kanavalla jo olleita videoita ei ajeta tarkoituksella (`NETTI_KANAVA_VANHAT`). (3) Lähetys on vielä käynnissä tai YouTube käsittelee sitä (loki: `odotetaan`); `NETTI_KANAVA_LIVE=1` aloittaa suorana. (4) Video on suodattimissa (alle `NETTI_KANAVA_MIN_KESTO_MIN` min, Shorts, jäsenille, `NETTI_KANAVA_SUODATIN`): loki kertoo syyn (`ohitetaan`). (5) Luettelon haku epäonnistuu (loki: `luettelon haku epaonnistui`, ks. [YouTube](#5-youtube)). (6) Edellinen ajo on kesken: uusi lähetys huomataan sen jälkeen. (7) Video on jo ajettu tai epäonnistui kymmenen kertaa (`kasitellyt.json`, rivi `lista:yt_<tunnus>`) |
 | `Permission denied` / tiedostot root-omisteisia | `PUID`/`PGID` eivät vastaa jakokansion omistajaa; Unraid: 99/100. Kontti vaihtaa vain kansioiden `ulos`, `video`, `kalibroinnit` omistajan, ei tiedostoja |
 | Kontti ei käynnisty, Docker kertoo `port is already allocated` | Palvelimen portti on jo toisella kontilla tai palvelulla: vaihda portin yhdistyksessä palvelimen puoli (Unraid: *Host Port*) |
 | Selainnäkymä ei aukea | Ajoa ei ole käynnissä (valvonnan odotus; näkymä on vain ajon aikana), väärä portti osoitteessa, tai `host`-verkossa portti on varattu (loki: `Web-porttia … ei voitu avata`) |
@@ -291,6 +329,7 @@ Analyysi ajetaan tavallisena käyttäjänä (`PUID`/`PGID`, Unraidissa `nobody:u
 | `docker build` | Docker Hub (`ubuntu:24.04`), Ubuntun pakettipalvelimet, PyPI | kuvan rakennus |
 | Videotiedoston analyysi | ei minnekään | ajo onnistuu täysin ilman verkkoa (testattu verkottomassa nimiavaruudessa) |
 | YouTube-linkki tai live | YouTuben ja Googlen palvelimet (esim. `youtube.com`, `googlevideo.com`) | videon ja äänen haku (yt-dlp) |
+| Seurattu YouTube-kanava | `youtube.com` (vain osoitteet muodossa `youtube.com/@kanava`, `/channel/…`, `/c/…`, `/user/…`) | kanavan luettelon haku `NETTI_KANAVA_VALI_MIN` minuutin välein (yt-dlp; ei videoita) |
 | Muu verkko-osoite, `rtsp://` | itse antamasi osoite | virran luku |
 | `YTDLP_PAIVITA=1` | PyPI | yt-dlp:n päivitys käynnistyksessä (oletus pois) |
 | Selainnäkymä | vastaanottaa yhteyksiä portissa 63884 | katselu |
