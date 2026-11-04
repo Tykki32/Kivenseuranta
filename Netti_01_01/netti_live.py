@@ -1103,6 +1103,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                 tilasto["puskuri_max"] = max(tilasto["puskuri_max"], it.pituus_s)
                 if kiri_tila:                                             # VOD-virta (kiri): analyysi ei odota reaaliaikaa vaan etenee niin nopeasti kuin ehtii; kuvan aikataulu on piirtosaikeella.
                     while piirtoa_tarvitaan and len(jono) >= kiri_jono_max and not (pysayta.is_set() or piirto_valmis.is_set()):
+                        an.keraa_taustatulokset()                         # kuva voi odottaa valmista estimaattia / kierron tulosta (kiri_odotus_raja): keratään ne tassa, ei vasta seuraavan ruudun syotossa
                         time.sleep(0.005)                                 # vastapaine: etumatka kuvaan on rajattu (viivepuskurin muisti), joten odotetaan kunnes kuva on kuluttanut jonoa
                         jaettu["puskuri_s"] = it.pituus_s                 # (lukija taydentaa esilatauspuskuria odotuksen aikana: kuvan aikataulu tarvitsee tuoreen arvon)
                     erapaiva = time.time()
@@ -1193,9 +1194,10 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                     aikataulu_ok = erapaiva_nyt <= nyt
                     analyysi_ok = not an.toistettava or lopetettu.is_set() or viim_f >= f0 + D_ruutua - 3          # toistettavassa ajossa kuva odottaa analyysia (piirrokset tulevat analyysista)
                     nayta = aikataulu_ok and analyysi_ok
-                    if nayta and sprintti and an.viivat_kesken(f0):    # kirissa analyysi etenee kuvaa nopeammin: heiton lopullinen viivaestimaatti (tyoprosessi) voi olla vasta tulossa -- odotetaan se (rajatusti)
+                    odotus_raja = kiri_odotus_raja(an, f0) if (nayta and sprintti) else None      # kirissa analyysi ja kuva etenevat reaaliaikaa nopeammin: taustaprosessin laskema tulos voi olla vasta tulossa -- odotetaan se (rajatusti)
+                    if odotus_raja is not None:
                         t_viivat = nyt if t_viivat is None else t_viivat
-                        if nyt - t_viivat < KIRI_VIIVAT_ODOTUS_S:
+                        if nyt - t_viivat < odotus_raja:
                             nayta = False
                             tilasto["kiri_odotus_s"] += dt_silmukka
                     elif nayta:
@@ -1299,7 +1301,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         if not a.hiljaa and kiri_tila and tilasto["analysoitu"] > 0 and tilasto["ajo_s"] > 0:
             print(f"kiri (esilatauspuskuri >= {kiri_raja_s:.0f} s): kuva eteni etuajassa {tilasto['kiri_ruutuja']} / {tilasto['piirretty']} ruudulla ({100.0 * tilasto['kiri_ruutuja'] / max(tilasto['piirretty'], 1):.0f} %), muuten 1x; "
                   f"analyysi eteni {tilasto['video_s'] / tilasto['ajo_s']:.2f}x reaaliajasta (videota {tilasto['video_s']:.0f} s, ajoa {tilasto['ajo_s']:.0f} s)"
-                  + (f"; kuva odotti lopullisia viivoja {tilasto['kiri_odotus_s']:.1f} s" if tilasto["kiri_odotus_s"] > 0.05 else ""), flush=True)
+                  + (f"; kuva odotti lopullisia viivoja ja kierteen laskentaa {tilasto['kiri_odotus_s']:.1f} s" if tilasto["kiri_odotus_s"] > 0.05 else ""), flush=True)
         if not a.hiljaa:
             print("prosessorinkaytto koko ajon ajan: " + "; ".join(x for x in (kuorma_ajo.erittely(tuore=True), tyo_kuorma.teksti()) if x), flush=True)
             if kuorma_ajo.natiivit >= NATIIVIT_VIHJE_YDINTA:
@@ -1367,6 +1369,19 @@ def pura_ruutu(laji, data):
 
 KIRI_JONO_MARGINAALI_S = 2.0                          # kiri: analyysi saa olla kuvaa edella vahintaan viive + tama (s) ennen kuin se jaa odottamaan kuvaa
 KIRI_VIIVAT_ODOTUS_S = 3.0                           # kiri: kuva odottaa lopullista viivaestimaattia enintaan taman ajan (s)
+KIRI_KIERRE_ODOTUS_S = 8.0                           # kiri: kuva odottaa heittopaan kierron laskentaa (tavallisesti 2-5 s) enintaan taman ajan (s), jotta Kierre-rivilla on alustava luku heti paneelin ilmestyessa
+
+
+def kiri_odotus_raja(an, f0):
+    """Kirissa kuvan ruutu f0 odottaa taustaprosessien tulosta rajatusti: enintaan KIRI_KIERRE_ODOTUS_S, jos viimeisimman heiton kierron tulos on tulossa (Analyysi.kierre_kesken: lopullinen estimaatti
+    ja kierron laskenta kesken; kattaa myos viivaestimaatin odotuksen), muuten enintaan KIRI_VIIVAT_ODOTUS_S, jos jonkin heiton lopullinen viivaestimaatti on vasta tulossa
+    (Analyysi.viivat_kesken). None, jos ei odoteta. Kirin nopeudella (jopa useita x reaaliaika) laskennan seinakelloviive venyy videosekunneiksi: ilman odotusta paneelin Kierre-rivi on
+    `? mitataan` lahes koko heiton ajan ja luku tulee vasta kaukopaassa."""
+    if an.kierre_kesken(f0):
+        return KIRI_KIERRE_ODOTUS_S
+    if an.viivat_kesken(f0):
+        return KIRI_VIIVAT_ODOTUS_S
+    return None
 
 
 class KuvanAikataulu:
