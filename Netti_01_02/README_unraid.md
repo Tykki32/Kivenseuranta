@@ -16,25 +16,43 @@ GPU-koodausta. Ne ovat ensimmäisen oikean käyttökerran riskikohdat; ohjeet ni
 
 ## 1. Pikaohje (Unraid)
 
-1. **Kopioi kansio `Netti_01_02` palvelimelle**, esim. `/mnt/user/appdata/netti-build/Netti_01_02` (Windowsista jakokansion kautta, `scp -r`, tai lataa GitHubista zip ja pura).
-2. **Rakenna kuva** Unraidin terminaalissa (ensimmäisellä kerralla muutama minuutti, lataa noin 1 Gt):
+Nimet ovat vapaita; tässä oppaassa kaikki on nimetty `kivenseuranta`: jakokansio (share) `kivenseuranta`, Docker-kuva `kivenseuranta:latest` ja kontti `kivenseuranta`. Erillistä rakennuskansiota ei tarvita.
 
+1. **Luo jakokansio.** Unraidin web-käyttöliittymä → *Shares* → *Add Share* → nimeksi `kivenseuranta`. Levyksi käy array tai cache. Varmista, että SMB-jako (*Export*) on päällä ja että oma käyttäjäsi
+   saa kirjoittaa siihen. Isot mp4-tiedostot kannattaa pitää levyryhmän jaossa.
+2. **Kopioi ohjelma omalta koneeltasi.** Avaa Windowsin Resurssienhallinnassa `\\PALVELIN\kivenseuranta` (PALVELIN = Unraidin nimi, oletus `Tower`, tai IP-osoite) ja kopioi sinne koko kansio `Netti_01_02`
+   sellaisenaan. Tarkista, että tiedosto `\\PALVELIN\kivenseuranta\Netti_01_02\Dockerfile` löytyy suoraan (ei sisäkkäistä `Netti_01_02`-kansiota). Rakennuksen jälkeen kansion voi poistaa; sitä tarvitaan
+   vain päivityksissä.
+3. **Rakenna kuva** Unraidin terminaalissa (oikean yläkulman `>_`); ensimmäisellä kerralla muutama minuutti, lataa noin 1 Gt:
    ```bash
-   cd /mnt/user/appdata/netti-build/Netti_01_02
-   docker build -t netti-kivenseuranta:latest .
+   cd /mnt/user/kivenseuranta/Netti_01_02
+   docker build -t kivenseuranta:latest .
    ```
+   Lopuksi `docker images kivenseuranta` näyttää kuvan.
+4. **Kopioi mallipohja Unraidiin** (samassa terminaalissa):
+   ```bash
+   mkdir -p /boot/config/plugins/dockerMan/templates-user
+   cp /mnt/user/kivenseuranta/Netti_01_02/unraid/kivenseuranta.xml /boot/config/plugins/dockerMan/templates-user/my-kivenseuranta.xml
+   ```
+5. **Lisää kontti:** *Docker*-välilehti → *Add Container* → *Template*-valikosta `kivenseuranta` (*User templates*; päivitä sivu, jos sitä ei näy). Jätä **Lähde (NETTI_LAHDE)** tyhjäksi, niin kontti valvoo kansiota
+   `video` ja linkkilistaa `youtube.txt`. Paina *Apply*. Jos Unraid yrittää ensin ladata kuvaa verkosta ja antaa virheen `pull access denied`, se on odotettua, koska kuva on paikallinen; kontin pitäisi silti
+   syntyä. (Vaihtoehto: [`docker-compose.yml`](docker-compose.yml) Compose Managerilla tai `docker compose up -d`.)
+6. **Kokeile.** Ensimmäisen käynnistyksen jälkeen share-kansioon ilmestyvät kansiot `video`, `ulos` ja `kalibroinnit`. Kopioi videotiedosto kansioon `video`; analyysi alkaa noin 1–2 minuutin kuluttua, kun
+   tiedosto on pysynyt muuttumattomana 30 s. **YouTube-linkit** kirjoitetaan tekstitiedostoon `youtube.txt` (jakokansion juuressa), yksi per rivi: kontin ei tarvitse käynnistyä uudelleen
+   ([Käyttö c](#3-käyttö-tavallisimmat-tilanteet)). Selainnäkymä (`http://PALVELIN:63884`; *Docker*-välilehden kontin kuvake → *WebUI*) on auki **vain ajon aikana**; tyhjän kansion odotuksen aikana portti ei vastaa.
+   Portti on valittu harvinaiseksi, ettei se törmää tavallisiin palveluihin ([Asetukset](#2-asetukset-ympäristömuuttujat)). Lokin näet kontin kuvakkeesta (*Logs*); tulokset tulevat kansioon `ulos`.
+7. **Käynnistys koneen mukana:** *Docker*-välilehdellä kontin kohdalta *Autostart* päälle.
 
-3. **Luo data-kansio** (Shares → Add Share, esim. nimellä `netti`; isot mp4-tiedostot kannattaa pitää levyryhmän jaossa, ei SSD-välimuistissa). Alikansiot syntyvät itsestään, mutta voit luoda `video`-kansion
-   ja pudottaa siihen videoita valmiiksi.
-4. **Lisää kontti** jommalla kummalla tavalla:
-   * **Unraidin Docker-välilehti:** kopioi [`unraid/netti-kivenseuranta.xml`](unraid/netti-kivenseuranta.xml) palvelimelle tiedostoksi
-     `/boot/config/plugins/dockerMan/templates-user/my-netti-kivenseuranta.xml`, valitse *Docker → Add Container → Template: netti-kivenseuranta*, tarkista polku (`Data` = `/mnt/user/netti`) ja
-     paina *Apply*.
-   * **Docker Compose** (Compose Manager -lisäosa tai `docker compose`): [`docker-compose.yml`](docker-compose.yml); muokkaa polku ja asetukset, sitten `docker compose up -d`.
-5. **Avaa selainnäkymä** (`http://PALVELIN:63884`; portti on valittu harvinaiseksi, ettei se törmää tavallisiin palveluihin, ks. [Asetukset](#2-asetukset-ympäristömuuttujat)) ja katso lokia. Oletuksena kontti **valvoo kansiota `video`**: pudota sinne videotiedosto, niin kontti analysoi sen (kun tiedosto on pysynyt
-   muuttumattomana 30 s) ja kirjoittaa tulokset kansioon `ulos`.
+**Jos mallipohja ei toimi**, samat asetukset yhdellä komennolla:
 
-Lähteeksi voi antaa myös YouTube-tunnuksen tai -osoitteen ([YouTube](#5-youtube)).
+```bash
+docker run -d --name kivenseuranta --restart unless-stopped --stop-timeout 90 \
+  -p 63884:63884 -v /mnt/user/kivenseuranta:/data \
+  -e PUID=99 -e PGID=100 -e TZ=Europe/Helsinki \
+  kivenseuranta:latest
+```
+
+Lähteeksi voi antaa myös kiinteän YouTube-tunnuksen tai -osoitteen asetuksella `NETTI_LAHDE` ([YouTube](#5-youtube)), mutta helpompaa on linkkilista `youtube.txt`.
 
 ---
 
@@ -44,8 +62,9 @@ Kaikki ovat valinnaisia. Tyhjä arvo tarkoittaa samaa kuin asettamatta jättämi
 
 | Muuttuja | Oletus | Merkitys |
 |---|---|---|
-| `NETTI_LAHDE` | kansio `/data/video` (valvonta) | Mitä analysoidaan: **YouTube-tunnus tai -osoite**, suora virran osoite (`http`/`https`/`rtsp`/`m3u8`), **videotiedosto** (`/data/video/peli.mp4` tai pelkkä `peli.mp4`), **kansio** tai **kuvio** (`/data/video/*.mp4`) |
-| `NETTI_JATKUVA` | kansiolle 1, muulle 0 | Valvonta: kun ajo päättyy (video valmis, live-lähetys loppui, YouTube-lähetystä ei vielä ole), odotetaan `NETTI_ODOTUS_S` s ja yritetään uudelleen. Kansiossa uudet videot analysoidaan, valmiit eivät toistu |
+| `NETTI_LAHDE` | kansio `/data/video` ja linkkilista `/data/youtube.txt` (valvonta) | Mitä analysoidaan: **YouTube-tunnus tai -osoite**, suora virran osoite (`http`/`https`/`rtsp`/`m3u8`), **videotiedosto** (`/data/video/peli.mp4` tai pelkkä `peli.mp4`), **kansio** tai **kuvio** (`/data/video/*.mp4`). Kiinteä YouTube-lähde vaatii kontin asetusten muuttamisen aina, kun osoite vaihtuu; vaihtuville osoitteille käytä linkkilistaa (jätä tämä tyhjäksi) |
+| `NETTI_LINKIT` | `/data/youtube.txt` | Linkkilista: tekstitiedosto, jossa on yksi YouTube-tunnus tai verkko-osoite per rivi (`#` aloittaa kommentin). Luetaan joka valvontakierroksella, joten uuden linkin lisäys ei vaadi uudelleenkäynnistystä. Toimii vain kansion valvonnassa. `ei` = pois käytöstä |
+| `NETTI_JATKUVA` | kansiolle 1, muulle 0 | Valvonta: kun ajo päättyy (video valmis, live-lähetys loppui, YouTube-lähetystä ei vielä ole), odotetaan `NETTI_ODOTUS_S` s ja yritetään uudelleen. Kansiossa uudet videot ja linkkilistan uudet linkit analysoidaan, valmiit eivät toistu |
 | `NETTI_VIDEO` | 1 | Tallenna kuvallinen mp4 (`ulos/kivenseuranta_*.mp4`). 0 = vain CSV |
 | `NETTI_CSV` | 1 | Tallenna heittojen tiedot CSV:hen |
 | `NETTI_VIIVE` | 10 | Kuva tulee tämän verran (s) analyysin perässä (vaikuttaa näkymään ja tallenteen piirtoon) |
@@ -75,8 +94,8 @@ Kaikki ovat valinnaisia. Tyhjä arvo tarkoittaa samaa kuin asettamatta jättämi
 Kansiot (kontissa): `/data/video` (syötteet), `/data/ulos` (tulokset), `/data/kalibroinnit` (omat kalibroinnit). Ne voi siirtää muuttujilla `NETTI_VIDEO_KANSIO`, `NETTI_ULOS_KANSIO` ja
 `NETTI_KALIBROINNIT`.
 
-Ylimääräiset valitsimet voi antaa myös kontin komentona: `docker run … netti-kivenseuranta:latest --alku 600 --loppu 900`. Kaikki valitsimet: `docker run --rm netti-kivenseuranta:latest python /app/netti_live.py --help`.
-Asetukset ja lopullinen komento näkee ajamatta: `docker run --rm -e NETTI_LAHDE=… netti-kivenseuranta:latest --nayta`.
+Ylimääräiset valitsimet voi antaa myös kontin komentona: `docker run … kivenseuranta:latest --alku 600 --loppu 900`. Kaikki valitsimet: `docker run --rm kivenseuranta:latest python /app/netti_live.py --help`.
+Asetukset ja lopullinen komento näkee ajamatta: `docker run --rm -e NETTI_LAHDE=… kivenseuranta:latest --nayta`.
 
 ---
 
@@ -85,9 +104,9 @@ Asetukset ja lopullinen komento näkee ajamatta: `docker run --rm -e NETTI_LAHDE
 **a) Videotiedoston analyysi (kertaajo).** Laita tiedosto kansioon `video`.
 
 ```bash
-docker run --rm -v /mnt/user/netti:/data -p 63884:63884 \
+docker run --rm -v /mnt/user/kivenseuranta:/data -p 63884:63884 \
   -e NETTI_LAHDE=peli.mp4 -e NETTI_JATKUVA=0 \
-  netti-kivenseuranta:latest
+  kivenseuranta:latest
 ```
 
 Tulokset: `ulos/kivenseuranta_peli_<aika>.mp4`, `ulos/heitot_peli_<aika>.csv` ja `ulos/heitot_peli_<aika>_kivet.csv`. Compose / Unraid: aseta `NETTI_LAHDE`, `NETTI_JATKUVA=0` ja kontin
@@ -97,25 +116,45 @@ Tulokset: `ulos/kivenseuranta_peli_<aika>.mp4`, `ulos/heitot_peli_<aika>.csv` ja
 `ulos/kasitellyt.json` (tiedosto, koko ja muokkausaika), joten uudelleenkäynnistys ei aja niitä uudestaan; jos haluat ajaa videon uudelleen, poista sen rivi (tai koko tiedosto). Analyysi, joka
 epäonnistuu kolme kertaa, jää pois (rikkinäinen tiedosto ei silmukoi ikuisesti).
 
-**c) YouTube-video tai live-lähetys.**
+**c) YouTube-linkit ilman uudelleenkäynnistystä (linkkilista).** Kun kontti valvoo kansiota (kohta b, oletus), se lukee myös tekstitiedostoa `youtube.txt` jakokansion juuresta
+(`\\PALVELIN\kivenseuranta\youtube.txt`; Windowsin Muistio kelpaa). Kirjoita tai liimaa tiedostoon YouTube-osoite tai -tunnus, yksi per rivi, ja tallenna: kontti huomaa uuden rivin noin minuutissa, eikä sitä
+tarvitse käynnistää uudelleen eikä sen asetuksia muuttaa. Esimerkki:
+
+```text
+# Matarmaan peli
+https://www.youtube.com/watch?v=hnTTLqHr5x8
+https://youtu.be/abcdefghijk   # toinen peli (kommentti rivin lopussa)
+```
+
+* Videot ja linkit käsitellään **yksi kerrallaan**: ensin kansion `video` tiedostot, sitten linkit tiedoston järjestyksessä. Jos jokin ajo on käynnissä (pitkä live-lähetys voi kestää tunteja), uusi rivi odottaa
+  vuoroaan ja huomataan ajon päätyttyä.
+* Jokainen linkki ajetaan **kerran**; sama video eri osoitemuodoissa (tunnus, `watch?v=`, `youtu.be`) lasketaan samaksi. Valmiit kirjataan tiedostoon `ulos/kasitellyt.json` (rivi `lista:yt_<tunnus>`), joten
+  uudelleenkäynnistys ei aja niitä uudestaan. Vanhat rivit voi jättää tiedostoon muistilistaksi. Ajaaksesi videon uudelleen poista sen rivi tiedostosta `kasitellyt.json` (tekstieditorilla; muut rivit jäävät).
+* Linkki voi olla valmis video, käynnissä oleva live-lähetys (analysoidaan reaaliajassa ja ajo päättyy lähetyksen mukana) tai tuleva lähetys. Jos lähetys ei ole vielä alkanut tai haku epäonnistuu, kontti yrittää
+  uudelleen 1, 2, 4 ja 8 minuutin ja sen jälkeen 15 minuutin välein; kymmenen epäonnistumisen (noin 1,5 tuntia) jälkeen rivi jää pois, ja lokiin tulee siitä merkintä.
+* Rivi on joko verkko-osoite (muu teksti sen perässä ohitetaan; esim. `rtsp://…` ja `https://….m3u8` kelpaavat myös) tai YouTube-tunnus **yksin rivillä**. Muut rivit ohitetaan, ja lokiin tulee niistä yksi huomautus.
+* Kanavan live-osoitteen (`…/@KANAVA/live`) voi lisätä, mutta sekin ajetaan vain kerran. Jos haluat, että kontti odottaa kanavan jokaista uutta lähetystä, käytä kiinteää lähdettä (kohta d).
+* Polun voi vaihtaa muuttujalla `NETTI_LINKIT` (`ei` = linkkilista pois). Linkkilista toimii vain kansion valvonnassa, ei silloin kun `NETTI_LAHDE` on yksittäinen YouTube-osoite tai tiedosto tai ajo on kertaajo.
+
+**d) Kiinteä YouTube-video tai live-lähetys (`NETTI_LAHDE`).** Osoite annetaan kontin asetuksella, joten sen vaihtaminen vaatii asetuksen muuttamisen (Unraid: Edit → Apply; kuvaa ei tarvitse rakentaa uudelleen).
 
 ```bash
-docker run --rm -v /mnt/user/netti:/data -p 63884:63884 \
+docker run --rm -v /mnt/user/kivenseuranta:/data -p 63884:63884 \
   -e NETTI_LAHDE=hnTTLqHr5x8 -e NETTI_JATKUVA=0 \
-  netti-kivenseuranta:latest
+  kivenseuranta:latest
 ```
 
 Live-lähetyksen odotus: `NETTI_LAHDE=https://www.youtube.com/@KANAVA/live`, `NETTI_JATKUVA=1`, Restart = `unless-stopped`. Kontti yrittää uudelleen minuutin välein (toistuvasta epäonnistumisesta
 alkaen harvemmin), analysoi lähetyksen ja jatkaa odottamaan seuraavaa. Tavallinen YouTube-**video** (ei live) analysoidaan valvonnassa vain kerran.
 
-**d) Katso tallenne kuin lähetystä.** Tiedostolle `NETTI_NOPEA=0`: video etenee reaaliajassa ja selainnäkymä näyttää kuvan viiveellä (`NETTI_VIIVE`).
+**e) Katso tallenne kuin lähetystä.** Tiedostolle `NETTI_NOPEA=0`: video etenee reaaliajassa ja selainnäkymä näyttää kuvan viiveellä (`NETTI_VIIVE`).
 
-**e) Apuohjelmat kontissa.** Nopeusmittaus, tarkistukset ja testit:
+**f) Apuohjelmat kontissa.** Nopeusmittaus, tarkistukset ja testit:
 
 ```bash
-docker run --rm -v /mnt/user/netti:/data netti-kivenseuranta:latest python /app/tools/mittaa_nopeus.py /data/video/peli.mp4 --alku 300 --loppu 360
-docker run --rm netti-kivenseuranta:latest testaa
-docker run --rm -it -v /mnt/user/netti:/data netti-kivenseuranta:latest bash
+docker run --rm -v /mnt/user/kivenseuranta:/data kivenseuranta:latest python /app/tools/mittaa_nopeus.py /data/video/peli.mp4 --alku 300 --loppu 360
+docker run --rm kivenseuranta:latest testaa
+docker run --rm -it -v /mnt/user/kivenseuranta:/data kivenseuranta:latest bash
 ```
 
 ---
@@ -138,10 +177,11 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 
 ## 5. YouTube
 
+* Helpoin tapa antaa YouTube-osoite on linkkilista `youtube.txt` ([Käyttö c](#3-käyttö-tavallisimmat-tilanteet)): ei uudelleenkäynnistystä.
 * Kuvassa ovat `yt-dlp`, sen JavaScript-ajuri (`deno`) ja `yt-dlp-ejs`; YouTuben muutokset rikkovat yt-dlp:n aika ajoin. **Ensimmäinen keino kaikkiin YouTube-ongelmiin: `YTDLP_PAIVITA=1`**
   (päivittää yt-dlp:n joka käynnistyksellä) tai kuvan uudelleenrakennus (`docker build --no-cache …`).
 * Virheilmoitus *Sign in to confirm you're not a bot* tai ikärajaviesti: YouTube vaatii kirjautumisen. Vie selaimesta (kirjautuneena) evästeet Netscape-muodossa tiedostoon
-  `/mnt/user/netti/cookies.txt` (esim. selainlaajennus "Get cookies.txt") ja aseta `YTDLP_KEKSIT=/data/cookies.txt`. Tiedostoa ei muuteta (ohjelma käyttää kopiota). Käytä mieluiten erillistä
+  `/mnt/user/kivenseuranta/cookies.txt` (esim. selainlaajennus "Get cookies.txt") ja aseta `YTDLP_KEKSIT=/data/cookies.txt`. Tiedostoa ei muuteta (ohjelma käyttää kopiota). Käytä mieluiten erillistä
   tiliä: evästeet antavat pääsyn tiliin.
 * Live-virralle yt-dlp antaa HLS-osoitteen, jota OpenCV lukee; jos katko pitää lähetyksen, ohjelma yrittää avata virran uudelleen viisi kertaa.
 * Reaaliaikainen live-analyysi vaatii, että kone jaksaa analysoida 30 ruutua sekunnissa ([Resurssit](#7-resurssit-ja-suorituskyky)); muuten kuvan viive kasvaa ja ruutuja ohitetaan.
@@ -157,7 +197,7 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 | `kivenseuranta_<lähde>_<aika>.mp4` | Alkuperäinen kuva piirroksineen (liuku- ja irroituslinjat, tietopaneeli, joukkueiden kello) lähdevideon aikajanalla ja mittasuhteilla (1920 × 1080). Linjat näkyvät heti heiton alusta, koska analyysi on `NETTI_VIIVE` s kuvaa edellä. Noin 1,5 Gt tunnissa |
 | `heitot_<lähde>_<aika>.csv` | Yksi rivi heittoa kohti: viivaestimaatti, nopeus, hidastuvuus, kierre, hog–hog-aika, kaukopään pysähtyminen, kiven vakiot, kello. Sarakkeiden selitykset: [`README_netti.md`](README_netti.md) |
 | `heitot_<lähde>_<aika>_kivet.csv` | Kivikohtaiset vakiot (kitkataso A, kaarto kappa) |
-| `kasitellyt.json` | Valvonnan muisti (vain valvontatilassa) |
+| `kasitellyt.json` | Valvonnan muisti (vain valvontatilassa): valmiit videot ja linkit, epäonnistuneiden yritykset |
 
 CSV päivittyy ajon aikana heiton valmistuttua. Ajon päätyttyä tai pysäytyksen (`docker stop`, Unraidin Stop) yhteydessä tallenne suljetaan ja CSV kirjoitetaan valmiiksi.
 
@@ -189,7 +229,7 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 
 ## 8. Päivitys
 
-* **Ohjelman päivitys:** kopioi uusi `Netti_01_02` palvelimelle, aja `docker build -t netti-kivenseuranta:latest .` uudelleen ja käynnistä kontti uudelleen (Unraid: *Force update* / poista ja luo kontti).
+* **Ohjelman päivitys:** kopioi uusi `Netti_01_02` palvelimelle, aja `docker build -t kivenseuranta:latest .` uudelleen ja käynnistä kontti uudelleen (Unraid: *Force update* / poista ja luo kontti).
   Data (`/data`) säilyy.
 * **yt-dlp:** `YTDLP_PAIVITA=1` tai `docker build --no-cache`.
 * Rakennus tarvitsee verkon (Ubuntun paketit, PyPI). Kuva on noin 1,1 Gt.
@@ -203,6 +243,7 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 | Kontti sammuu heti, loki: `asetusvirhe: …` | Virheellinen ympäristömuuttuja; viesti kertoo, mikä. Paluukoodi 2 |
 | Loki: `ei analysoitavia videoita` (kertaajo) | Kansiossa ei ole videota; valvonnassa (`NETTI_JATKUVA=1`) kontti odottaa |
 | Video ei käynnisty valvonnassa | Tiedosto on vielä muuttunut viimeisen `NETTI_VAKAUS_S` sekunnin aikana, tai se on jo `kasitellyt.json`:ssa |
+| Linkkilistan rivi ei käynnisty | (1) Tiedoston nimen on oltava täsmälleen `youtube.txt` jakokansion juuressa; Windows voi piilottaa päätteen ja tallentaa nimellä `youtube.txt.txt`. (2) Kontin lähde-asetus (`NETTI_LAHDE`) on oltava tyhjä (tai kansio). (3) Rivi on osoite tai yksin rivillä oleva 11 merkin tunnus; muut rivit mainitaan lokissa. (4) Edellinen ajo on kesken: uusi rivi huomataan sen jälkeen. (5) Rivi on jo ajettu (`kasitellyt.json`) tai odottaa uutta yritystä (loki kertoo ajan) |
 | `Permission denied` / tiedostot root-omisteisia | `PUID`/`PGID` eivät vastaa jakokansion omistajaa; Unraid: 99/100. Kontti vaihtaa vain kansioiden `ulos`, `video`, `kalibroinnit` omistajan, ei tiedostoja |
 | Kontti ei käynnisty, Docker kertoo `port is already allocated` | Palvelimen portti on jo toisella kontilla tai palvelulla: vaihda portin yhdistyksessä palvelimen puoli (Unraid: *Host Port*) |
 | Selainnäkymä ei aukea | Ajoa ei ole käynnissä (valvonnan odotus; näkymä on vain ajon aikana), väärä portti osoitteessa, tai `host`-verkossa portti on varattu (loki: `Web-porttia … ei voitu avata`) |
@@ -213,13 +254,13 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 | Kontti kuolee ilman virhettä | Muistin loppuminen: pienennä `NETTI_LATAUS` (8) tai anna kontille lisää muistia |
 | Lokin käynnistysrivi | `N ydinta kaytossa (koneessa M…)`, `muistia X Gt`, lähde, valvonta, kansiot ja portti: tarkista, että rajat ovat odotetut |
 
-Lokit: Unraidin Docker-välilehti → kontin *Logs*, tai `docker logs -f netti-kivenseuranta`; selainnäkymän Loki-osa näyttää saman.
+Lokit: Unraidin Docker-välilehti → kontin *Logs*, tai `docker logs -f kivenseuranta`; selainnäkymän Loki-osa näyttää saman.
 
 ---
 
 ## 10. Mitä eroaa `Netti_01_01`:stä
 
-* **Uudet tiedostot:** `Dockerfile`, `entrypoint.sh`, `docker-compose.yml`, `unraid/netti-kivenseuranta.xml`, `requirements.txt`, `.dockerignore`, `.gitattributes`, `netti_palvelin.py` (käynnistäjä,
+* **Uudet tiedostot:** `Dockerfile`, `entrypoint.sh`, `docker-compose.yml`, `unraid/kivenseuranta.xml`, `requirements.txt`, `.dockerignore`, `.gitattributes`, `netti_palvelin.py` (käynnistäjä,
   asetukset, valvonta), `netti_web.py` (selainnäkymä), `netti_ymparisto.py` (kontin ydin- ja muistirajat), `tools/testaa_palvelin.py`.
 * **Muutetut tiedostot (vain palvelinominaisuudet):** `netti_live.py` (valitsimet `--web`, `--web-leveys`, `--web-fps`, `--web-laatu`, `--tila-tiedosto`; SIGTERM käsitellään kuten Ctrl-C; simulaation
   keskeytys viimeistelee kirjauksen; työprosessien oletusmäärä ja muistin tunnistus kontin rajoilla; oma kalibrointikansio `NETTI_KALIBROINNIT`; YouTube-evästeet), `kalibrointi_valinta.py` (oma
@@ -233,8 +274,8 @@ Lokit: Unraidin Docker-välilehti → kontin *Logs*, tai `docker logs -f netti-k
 ## Testaus
 
 ```bash
-docker run --rm netti-kivenseuranta:latest testaa                      # koko testisarja (tools/testaa_vakiot.py), useita minuutteja
-docker run --rm netti-kivenseuranta:latest python /app/tools/testaa_palvelin.py   # palvelinversion testit (alle 10 s)
+docker run --rm kivenseuranta:latest testaa                      # koko testisarja (tools/testaa_vakiot.py), useita minuutteja
+docker run --rm kivenseuranta:latest python /app/tools/testaa_palvelin.py   # palvelinversion testit (alle 10 s)
 ```
 
 Palvelinversion testit kattavat: asetusten luku ja virheilmoitukset, lähteen tunnistus, komentorivin rakennus, kansion valvonta ja muisti, ajosilmukka (kertaajo, valvonta, uudelleenyritykset,

@@ -204,20 +204,33 @@ def testaa_tiedostot_ja_muisti():
 class EsiPysaytys:
     """Testi-Pysaytys: nuku() ei odota oikeasti; pysaytys pyydetaan n:nnella nukkumisella."""
 
-    def __init__(self, pysayta_nukkumisella=None):
+    def __init__(self, pysayta_nukkumisella=None, kello=None):
         self.tapahtuma = threading.Event()
         self.signaali = None
         self.nukkumiset = []
         self.raja = pysayta_nukkumisella
+        self.kello = kello                                      # EsiKello: etenee nukutun ajan verran
 
     def pyydetty(self):
         return self.tapahtuma.is_set()
 
     def nuku(self, s):
         self.nukkumiset.append(s)
+        if self.kello is not None:
+            self.kello.t += s
         if self.raja is not None and len(self.nukkumiset) >= self.raja:
             self.tapahtuma.set()
         return self.tapahtuma.is_set()
+
+
+class EsiKello:
+    """Testikello: kello() palauttaa t:n; EsiPysaytys.nuku() kasvattaa sita."""
+
+    def __init__(self, t=1_800_000_000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
 
 
 def testaa_silmukka():
@@ -337,6 +350,124 @@ def testaa_silmukka():
 
         rc = np_.palvele(a, ps, ajuri_pysaytetty, 32.0, lambda: nyt)
         tarkista("pysaytys kesken ajon: paluukoodi 0, ajoa ei kirjata valmiiksi", rc == 0 and not np_.Kasitellyt(a.kasitellyt_polku).valmis("tiedostot", os.path.join(v, "a.mp4")))
+
+
+def testaa_linkkilista():
+    print("linkkilista (youtube.txt): YouTube-osoitteet ilman kontin uudelleenkaynnistysta")
+    with tempfile.TemporaryDirectory() as t:
+        p = os.path.join(t, "youtube.txt")
+        kirjoita(p, "\ufeff# Matarmaa-peli\r\nhnTTLqHr5x8\r\n\r\nhttps://www.youtube.com/watch?v=abcdefghijk&t=30s   # toinen peli\r\nhttps://youtu.be/hnTTLqHr5x8\r\n"
+                    "Matarmaa osa 1\r\nrtsp://kamera.lan/virta\r\nhttps://example.com/live/a.m3u8 jotain tekstia\r\nHyvinkaa_pe ja tekstia\r\nhttps://www.youtube.com/@kanava/live\r\n")
+        huom = set()
+        rivit = np_.lue_linkit(p, huom)
+        tarkista("lue_linkit: BOM, CRLF, kommentit, tyhjat rivit, #t= sailyy, sama video eri muodoissa vain kerran",
+                 rivit == [("youtube", "hnTTLqHr5x8"), ("youtube", "https://www.youtube.com/watch?v=abcdefghijk&t=30s"), ("url", "rtsp://kamera.lan/virta"), ("url", "https://example.com/live/a.m3u8"),
+                           ("youtube", "https://www.youtube.com/@kanava/live")], str(rivit))
+        tarkista("lue_linkit: tuntematon teksti ja 11 merkin sana tekstin kanssa ohitetaan ja ilmoitetaan kerran", huom == {"Matarmaa osa 1", "Hyvinkaa_pe ja tekstia"}, str(sorted(huom)))
+        tarkista("lue_linkit: sama virheellinen rivi ei ilmoiteta uudelleen", (np_.lue_linkit(p, huom), len(huom))[1] == 2)
+        tarkista("lue_linkit: puuttuva tiedosto ja None ovat tyhja lista", np_.lue_linkit(os.path.join(t, "ei_ole.txt")) == [] and np_.lue_linkit(None) == [])
+        kirjoita(p, "https://youtu.be/hnTTLqHr5x8\n")
+        tarkista("lue_linkit: pelkka osoite ilman rivinvaihtoa / kommenttia", np_.lue_linkit(p) == [("youtube", "https://youtu.be/hnTTLqHr5x8")])
+        tarkista("linkin_avain: tunnus, watch?v= ja youtu.be ovat sama video", np_.linkin_avain("youtube", "hnTTLqHr5x8") == np_.linkin_avain("youtube", "https://www.youtube.com/watch?v=hnTTLqHr5x8&t=5")
+                 == np_.linkin_avain("youtube", "https://youtu.be/hnTTLqHr5x8") == "yt_hnTTLqHr5x8")
+        tarkista("linkin_avain: kanavan osoite ja muu verkko-osoite sellaisenaan", np_.linkin_avain("youtube", "https://www.youtube.com/@k/live") == "https://www.youtube.com/@k/live" and np_.linkin_avain("url", "rtsp://x") == "rtsp://x")
+
+        # valvonnan muisti: rivikohtainen odotus ja yritysraja
+        k = np_.Kasitellyt(os.path.join(t, "ulos", "kasitellyt.json"))
+        nyt = 1_800_000_000.0
+        tarkista("avain: tunnus ja osoite jakavat avaimen", k.avain("youtube_lista", "hnTTLqHr5x8") == k.avain("youtube_lista", "https://youtu.be/hnTTLqHr5x8") == "lista:yt_hnTTLqHr5x8")
+        odotukset = []
+        for i in range(1, np_.LINKKI_YRITYKSIA_MAX + 1):
+            r = k.kirjaa("youtube_lista", "hnTTLqHr5x8", False, nyt, 60.0)
+            odotukset.append(r["seuraava"] - nyt)
+            tarkista(f"epaonnistuminen {i}: " + ("rivi jaa pois" if i >= np_.LINKKI_YRITYKSIA_MAX else "yritetaan uudelleen"), k.valmis("youtube_lista", "hnTTLqHr5x8") == (i >= np_.LINKKI_YRITYKSIA_MAX))
+        tarkista("odotus pitenee 60, 120, 240, 480, 900 s ja pysyy 900 s:ssa", odotukset[:7] == [60.0, 120.0, 240.0, 480.0, 900.0, 900.0, 900.0] and max(odotukset) == np_.ODOTUS_MAX_S, str(odotukset))
+        k.kirjaa("youtube_lista", "abcdefghijk", False, nyt, 60.0)
+        tarkista("odottaa(): ennen seuraavaa yritysta tosi, sen jalkeen epatosi", k.odottaa("youtube_lista", "abcdefghijk", nyt + 59) and not k.odottaa("youtube_lista", "abcdefghijk", nyt + 60))
+        r = k.kirjaa("youtube_lista", "abcdefghijk", True, nyt + 61, 60.0)
+        tarkista("onnistuminen: valmis, ei odotusta, yrityslaskuri nollattu, linkki talteen", k.valmis("youtube_lista", "abcdefghijk") and "seuraava" not in r and r["yrityksia"] == 0 and r["linkki"] == "abcdefghijk")
+        tarkista("tiedostojen kirjaus ei muutu (3 yritysta, ei odotusta)", "seuraava" not in k.kirjaa("tiedostot", os.path.join(t, "x.mp4"), False))
+
+    with tempfile.TemporaryDirectory() as t:
+        nyt = time.time()
+        kirjoita(os.path.join(t, "video", "a.mp4"), "a", nyt - 100)
+        lista = os.path.join(t, "youtube.txt")
+        kirjoita(lista, "hnTTLqHr5x8\nhttps://www.youtube.com/watch?v=abcdefghijk\n")
+        a = np_.Asetukset(dict(NETTI_DATA=t))
+        tarkista("NETTI_LINKIT: oletuspolku on <data>/youtube.txt", a.linkit_polku == lista)
+        tarkista("lahteet: videot ensin, sitten linkit tiedoston jarjestyksessa", np_.lahteet(a, None, nyt) == [("tiedostot", os.path.join(t, "video", "a.mp4")), ("youtube_lista", "hnTTLqHr5x8"), ("youtube_lista", "https://www.youtube.com/watch?v=abcdefghijk")],
+                 str(np_.lahteet(a, None, nyt)))
+        for env, selitys in ((dict(NETTI_LINKIT="ei"), "NETTI_LINKIT=ei"), (dict(NETTI_JATKUVA="0"), "kertaajo (ei valvontaa)"), (dict(NETTI_LAHDE=os.path.join(t, "video", "a.mp4")), "yksittainen tiedosto"), (dict(NETTI_LAHDE="hnTTLqHr5x8"), "yksittainen YouTube-lahde")):
+            a2 = np_.Asetukset(dict(dict(NETTI_DATA=t), **env))
+            tarkista(f"lahteet: ei linkkilistaa, kun {selitys}", all(not l.endswith("_lista") for l, _ in np_.lahteet(a2, None, nyt)), str(np_.lahteet(a2, None, nyt)))
+        a3 = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LINKIT=os.path.join(t, "muu.txt")))
+        kirjoita(a3.linkit_polku, "rtsp://kamera.lan/x\n")
+        tarkista("NETTI_LINKIT: oma polku", np_.lahteet(a3, None, nyt)[-1] == ("url_lista", "rtsp://kamera.lan/x"))
+        a4 = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LINKIT=""))
+        tarkista("NETTI_LINKIT tyhja = oletus (Unraid valittaa tyhjat)", a4.linkit_polku == lista)
+        k = np_.Kasitellyt(a.kasitellyt_polku)
+        k.kirjaa("youtube_lista", "https://youtu.be/hnTTLqHr5x8", True)
+        k.kirjaa("youtube_lista", "abcdefghijk", False, nyt, 60.0)
+        tarkista("lahteet: valmis (eri osoitemuodossa kirjattu) ja odottava rivi jaavat pois", np_.lahteet(a, k, nyt) == [("tiedostot", os.path.join(t, "video", "a.mp4"))], str(np_.lahteet(a, k, nyt)))
+        tarkista("lahteet: odotuksen jalkeen rivi palaa mukaan", ("youtube_lista", "https://www.youtube.com/watch?v=abcdefghijk") in np_.lahteet(a, k, nyt + 61))
+        # komento
+        c = np_.rakenna_komento(a, "youtube_lista", "hnTTLqHr5x8", "20260101_120000", None, 32.0)
+        tarkista("komento: youtube_lista -> --youtube TUNNUS, ei --nopea, tulostiedostojen tunniste yt_<tunnus>", c[c.index("--youtube") + 1] == "hnTTLqHr5x8" and "--nopea" not in c and "--lahde" not in c
+                 and os.path.join(a.ulos_kansio, "kivenseuranta_yt_hnTTLqHr5x8_20260101_120000.mp4") in c, " ".join(c[3:6]))
+        c = np_.rakenna_komento(a, "url_lista", "rtsp://kamera.lan/x", "x", None, 4.0)
+        tarkista("komento: url_lista -> --url OSOITE, vahan muistia: --lataus 8", c[c.index("--url") + 1] == "rtsp://kamera.lan/x" and c[c.index("--lataus") + 1] == "8")
+
+    # ajosilmukka: linkit ajetaan kerran, lisatty rivi huomataan, epaonnistuminen pidentaa odotusta
+    with tempfile.TemporaryDirectory() as t:
+        ek = EsiKello()
+        lista = os.path.join(t, "youtube.txt")
+        kirjoita(lista, "hnTTLqHr5x8\n")
+        a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_ODOTUS_S="60"))
+        ajot = []
+
+        def ajuri(cmd, env=None, cwd=None):
+            ref = cmd[cmd.index("--youtube") + 1] if "--youtube" in cmd else cmd[cmd.index("--url") + 1]
+            ajot.append((ek.t, ref))
+            if len(ajot) == 1:
+                with open(lista, "a") as f:                                       # kesken ensimmaisen ajon kayttaja lisaa uuden linkin tiedostoon (kontin kaynnistysta ei tarvita)
+                    f.write("https://youtu.be/abcdefghijk\n")
+            return 0
+
+        ps = EsiPysaytys(pysayta_nukkumisella=5, kello=ek)
+        rc = np_.palvele(a, ps, ajuri, 32.0, ek)
+        tarkista("silmukka: molemmat linkit ajetaan, kumpikin kerran, lisatty rivi huomataan ilman uudelleenkaynnistysta", rc == 0 and [r for _, r in ajot] == ["hnTTLqHr5x8", "https://youtu.be/abcdefghijk"], str(ajot))
+        tarkista("silmukka: valmiit kirjattu muistiin (kasitellyt.json)", np_.Kasitellyt(a.kasitellyt_polku).valmis("youtube_lista", "hnTTLqHr5x8") and np_.Kasitellyt(a.kasitellyt_polku).valmis("youtube_lista", "abcdefghijk"))
+        ajot.clear()
+        np_.palvele(a, EsiPysaytys(pysayta_nukkumisella=3, kello=ek), ajuri, 32.0, ek)
+        tarkista("silmukka: uudelleenkaynnistys ei aja valmiita linkkeja uudelleen", ajot == [])
+
+    with tempfile.TemporaryDirectory() as t:
+        ek = EsiKello()
+        kirjoita(os.path.join(t, "youtube.txt"), "hnTTLqHr5x8\n")
+        a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_ODOTUS_S="60"))
+        ajat = []
+
+        def ajuri_vika(cmd, env=None, cwd=None):
+            ajat.append(ek.t - 1_800_000_000.0)
+            return 1                                                              # esim. lahetys ei ole viela alkanut
+
+        np_.palvele(a, EsiPysaytys(pysayta_nukkumisella=120, kello=ek), ajuri_vika, 32.0, ek)
+        tarkista(f"epaonnistuva linkki: {np_.LINKKI_YRITYKSIA_MAX} yritysta pidentyvin valein (0, 60, 180, 420, 900, 1800 ... s), sitten rivi jaa pois", ajat == [0, 60, 180, 420, 900, 1800, 2700, 3600, 4500, 5400], str(ajat))
+        tarkista("epaonnistunut linkki ei kuormita: muisti sailyy ja rivi on 'valmis' (ohitettu)", np_.Kasitellyt(a.kasitellyt_polku).valmis("youtube_lista", "hnTTLqHr5x8"))
+
+    with tempfile.TemporaryDirectory() as t:
+        ek = EsiKello()
+        kirjoita(os.path.join(t, "youtube.txt"), "hnTTLqHr5x8\nabcdefghijk\n")
+        a = np_.Asetukset(dict(NETTI_DATA=t))
+        ps = EsiPysaytys(kello=ek)
+
+        def ajuri_pysaytetty(cmd, env=None, cwd=None):
+            ps.tapahtuma.set()                                                    # docker stop kesken linkin ajon
+            return 0
+
+        rc = np_.palvele(a, ps, ajuri_pysaytetty, 32.0, ek)
+        k = np_.Kasitellyt(a.kasitellyt_polku)
+        tarkista("pysaytys kesken linkin ajon: paluukoodi 0, linkkia ei kirjata valmiiksi (ajetaan uudestaan kaynnistyksen jalkeen)", rc == 0 and not k.valmis("youtube_lista", "hnTTLqHr5x8") and not k.data)
 
 
 def testaa_lapsiprosessi():
@@ -604,7 +735,7 @@ def testaa_netti_live_palvelinosat():
 
 
 def main():
-    for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat):
+    for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat):
         t()
     print()
     if VIRHEITA:

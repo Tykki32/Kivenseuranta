@@ -11,6 +11,9 @@ Lahde (NETTI_LAHDE):
                                                                                        (valmiit kirjataan tiedostoon <ulos>/kasitellyt.json eika niita ajeta uudelleen)
   Oletus (NETTI_LAHDE puuttuu): kansio /data/video valvontatilassa.
 
+Linkkilista (kansion valvonnassa): tiedosto /data/youtube.txt (NETTI_LINKIT), yksi YouTube-tunnus tai verkko-osoite per rivi (# aloittaa kommentin). Tiedostoa luetaan jokaisella valvontakierroksella,
+joten uuden linkin lisaaminen ei vaadi kontin uudelleenkaynnistysta; jokainen linkki ajetaan kerran (kirjataan kasitellyt.json:iin), epaonnistuneita yritetaan uudelleen pidentyvin valein.
+
 NETTI_JATKUVA=1 = valvonta: kun ajo paattyy (live-lahetys loppui, tai YouTube-lahetysta ei viela ole) odotetaan NETTI_ODOTUS_S sekuntia ja yritetaan uudelleen; toistuvissa
 nopeissa epaonnistumisissa odotus kaksinkertaistuu (enintaan 15 min), jotta YouTubea ei kuormiteta.
 
@@ -39,6 +42,10 @@ EPATOTUUS = {"0", "false", "no", "off", "ei", "e", "n", "f"}
 NOPEA_EPAONNISTUMINEN_S = 120.0          # ajo, joka paattyy virheeseen nopeammin: lahde ei ole saatavilla (esim. lahetys ei ole alkanut) -> odotus pitenee
 ODOTUS_MAX_S = 900.0
 YRITYKSIA_MAX = 3                        # tiedosto, jonka analyysi epaonnistuu nain monta kertaa, ohitetaan valvonnassa
+LINKKI_YRITYKSIA_MAX = 10                # linkkilistan rivi, jonka analyysi epaonnistuu nain monta kertaa, jaa pois (valit 60, 120, 240, 480, 900 ... s: yhteensa noin 1,5 h; lahetys voi alkaa vasta myohemmin)
+LISTALAJIT = ("youtube_lista", "url_lista")   # linkkilistan rivien lajit (youtube / url + "_lista"): ajetaan kerran, epaonnistuminen pidentaa odotusta rivikohtaisesti
+YOUTUBE_OSOITE = re.compile(r"youtube\.com|youtu\.be|youtube-nocookie\.com", re.IGNORECASE)
+YT_TUNNUS_OSOITTEESTA = re.compile(r"(?:v=|youtu\.be/|/live/|/shorts/|/embed/)([A-Za-z0-9_-]{11})")
 
 
 class AsetusVirhe(Exception):
@@ -123,6 +130,8 @@ class Asetukset:
         jatkuva_oletus = self.lahde is None or self.laji == "tiedostot" and self.arvo.get("kokoelma", False)
         self.jatkuva = _totuus(env, "NETTI_JATKUVA", jatkuva_oletus)
         self.kasitellyt_polku = os.path.join(self.ulos_kansio, "kasitellyt.json")
+        linkit = _teksti(env, "NETTI_LINKIT", os.path.join(self.data, "youtube.txt"))
+        self.linkit_polku = None if linkit.lower() in ("ei", "0", "false", "off") else linkit        # linkkilista (vain kansion valvonnassa); "ei" = pois kaytosta
 
 
 def luokittele_lahde(lahde, video_kansio):
@@ -131,7 +140,7 @@ def luokittele_lahde(lahde, video_kansio):
         return "tiedostot", dict(kuvio=os.path.join(video_kansio, "*"), kokoelma=True, kansio=True)
     s = lahde.strip().strip('"').strip("'")
     if VERKKO.match(s):
-        return ("youtube", s) if re.search(r"youtube\.com|youtu\.be|youtube-nocookie\.com", s, re.IGNORECASE) else ("url", s)
+        return ("youtube", s) if YOUTUBE_OSOITE.search(s) else ("url", s)
     polku = s if os.path.isabs(s) else os.path.join(video_kansio, s)
     if os.path.isdir(polku):
         return "tiedostot", dict(kuvio=os.path.join(glob.escape(polku), "*"), kokoelma=True, kansio=True)
@@ -169,11 +178,66 @@ def tiedostot(arvo, nyt=None, vakaus_s=0.0):
     return out
 
 
+def yt_tunnus(ref):
+    """YouTube-videon 11 merkin tunnus tunnuksesta tai osoitteesta (watch?v=, youtu.be/, /live/, /shorts/, /embed/); None, jos sita ei loydy (esim. kanavan /live-osoite)."""
+    m = YT_TUNNUS_OSOITTEESTA.search(ref) or re.fullmatch(r"([A-Za-z0-9_-]{11})", ref)
+    return m.group(1) if m else None
+
+
+def luokittele_rivi(s):
+    """Linkkilistan rivin lahde: ('youtube', ref) | ('url', osoite) | None (ei tunnistettu)."""
+    s = s.strip().strip('"').strip("'")
+    if VERKKO.match(s):
+        return ("youtube", s) if YOUTUBE_OSOITE.search(s) else ("url", s)
+    if YOUTUBE_TUNNUS.match(s):
+        return "youtube", s
+    return None
+
+
+def linkin_avain(laji, ref):
+    """Linkin tunnus valvonnan muistia ja kaksoiskappaleiden poistoa varten: sama video eri osoitemuodoissa (tunnus, watch?v=, youtu.be) on sama linkki."""
+    tunnus = yt_tunnus(ref) if laji == "youtube" else None
+    return "yt_" + tunnus if tunnus else ref
+
+
+def lue_linkit(polku, huomautetut=None):
+    """Linkkilistan (esim. /data/youtube.txt) rivit: [(laji, ref)] tiedoston jarjestyksessa, sama video vain kerran. Tyhjat rivit, #-kommenttirivit ja rivin lopun ' #'-kommentti ohitetaan (osoitteen
+    #t=-osa ei ala valilyonnilla, joten se sailyy). Rivi on joko verkko-osoite (perassa voi olla muuta tekstia) tai pelkka YouTube-tunnus; muut rivit ohitetaan ja ilmoitetaan lokiin kerran
+    (huomautetut = jo ilmoitetut rivit). Puuttuva tiedosto = tyhja lista; Windowsin muistion BOM ja CRLF-rivinvaihdot kelpaavat."""
+    if not polku:
+        return []
+    try:
+        with open(polku, "r", encoding="utf-8-sig", errors="replace") as f:
+            rivit = f.read().splitlines()
+    except OSError:
+        return []
+    out, nahty = [], set()
+    for rivi in rivit:
+        rivi = re.split(r"\s+#", rivi.strip(), maxsplit=1)[0].strip()
+        if not rivi or rivi.startswith("#"):
+            continue
+        osat = rivi.split()
+        kohde = luokittele_rivi(osat[0])
+        if kohde is not None and not VERKKO.match(kohde[1]) and len(osat) > 1:
+            kohde = None                                    # 11 merkin sana, jonka perassa on tekstia: voi olla tavallinen sana, ei tunnus (tunnus on rivilla yksin tai osoitteen muodossa)
+        if kohde is None:
+            if huomautetut is not None and rivi not in huomautetut:
+                huomautetut.add(rivi)
+                loki(f"linkkilista {os.path.basename(polku)}: rivi ei ole YouTube-tunnus eika verkko-osoite, ohitetaan: {rivi[:80]!r}")
+            continue
+        avain = linkin_avain(*kohde)
+        if avain in nahty:
+            continue
+        nahty.add(avain)
+        out.append(kohde)
+    return out
+
+
 def tunniste(laji, arvo):
     """Lyhyt tunniste tulostiedostojen nimiin."""
     if laji == "youtube":
-        m = re.search(r"(?:v=|youtu\.be/|/live/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", arvo) or re.fullmatch(r"([A-Za-z0-9_-]{11})", arvo)
-        return "yt_" + m.group(1) if m else "yt"
+        tunnus = yt_tunnus(arvo)
+        return "yt_" + tunnus if tunnus else "yt"
     if laji == "url":
         return "virta"
     return re.sub(r"[^0-9A-Za-z_-]+", "_", os.path.splitext(os.path.basename(arvo))[0])[:60].strip("_") or "video"
@@ -187,7 +251,9 @@ def valitse_lataus(muisti_gt):
 
 
 def rakenna_komento(a, laji, arvo, leima, tila_polku=None, muisti_gt=None, lisa=()):
-    """netti_live.py:n komentorivi yhdelle ajolle."""
+    """netti_live.py:n komentorivi yhdelle ajolle. laji: youtube | url | tiedostot (tai linkkilistan rivi: youtube_lista | url_lista)."""
+    if laji in LISTALAJIT:
+        laji = laji[:-len("_lista")]
     tag = tunniste(laji, arvo)
     cmd = [sys.executable, "-u", os.path.join(HERE, "netti_live.py"), {"youtube": "--youtube", "url": "--url", "tiedostot": "--lahde"}[laji], arvo, "--ei-ikkunaa"]
     if a.web_portti:
@@ -244,6 +310,8 @@ class Kasitellyt:
 
     @staticmethod
     def avain(laji, arvo):
+        if laji in LISTALAJIT:                                 # linkkilistan rivi: sama video eri osoitemuodoissa on sama avain
+            return "lista:" + linkin_avain(laji[:-len("_lista")], arvo)
         return ("yt:" if laji == "youtube" else "url:" if laji == "url" else "tiedosto:") + arvo
 
     @staticmethod
@@ -262,14 +330,26 @@ class Kasitellyt:
             return False
         if laji == "tiedostot" and r.get("sormenjalki") != self._sormenjalki(laji, arvo):
             return False                                       # tiedosto on vaihtunut
-        return r.get("tila") == "ok" or (r.get("tila") == "virhe" and r.get("yrityksia", 0) >= YRITYKSIA_MAX)
+        raja = LINKKI_YRITYKSIA_MAX if laji in LISTALAJIT else YRITYKSIA_MAX
+        return r.get("tila") == "ok" or (r.get("tila") == "virhe" and r.get("yrityksia", 0) >= raja)
 
-    def kirjaa(self, laji, arvo, onnistui):
+    def odottaa(self, laji, arvo, nyt):
+        """Linkkilistan rivi, jonka seuraava yritys on vasta myohemmin (epaonnistumisen jalkeinen odotus)."""
+        r = self.data.get(self.avain(laji, arvo))
+        return bool(r) and r.get("tila") == "virhe" and r.get("seuraava", 0) > nyt
+
+    def kirjaa(self, laji, arvo, onnistui, nyt=None, odotus_s=60.0):
+        """Kirjaa ajon tuloksen. Linkkilistan rivin epaonnistuminen asettaa seuraavan yrityksen ajan (odotus_s, kaksinkertaistuu joka yrityksella, enintaan ODOTUS_MAX_S)."""
         a = self.avain(laji, arvo)
         r = self.data.get(a, {})
         if laji == "tiedostot" and r.get("sormenjalki") != self._sormenjalki(laji, arvo):
             r = {}                                             # uusi tiedosto samalla nimella: laskuri alusta
-        r = dict(tila="ok" if onnistui else "virhe", yrityksia=0 if onnistui else r.get("yrityksia", 0) + 1, aika=time.strftime("%Y-%m-%d %H:%M:%S"), sormenjalki=self._sormenjalki(laji, arvo))
+        yrityksia = 0 if onnistui else r.get("yrityksia", 0) + 1
+        r = dict(tila="ok" if onnistui else "virhe", yrityksia=yrityksia, aika=time.strftime("%Y-%m-%d %H:%M:%S"), sormenjalki=self._sormenjalki(laji, arvo))
+        if laji in LISTALAJIT:
+            r["linkki"] = arvo
+            if not onnistui:
+                r["seuraava"] = (time.time() if nyt is None else nyt) + min(odotus_s * 2 ** (yrityksia - 1), ODOTUS_MAX_S)
         self.data[a] = r
         self.tallenna()
         return r
@@ -351,14 +431,18 @@ def lue_tila(polku):
 # ---------------------------------------------------------------------------------------------------------------------
 # PAASILMUKKA
 # ---------------------------------------------------------------------------------------------------------------------
-def lahteet(a, kasitellyt=None, nyt=None):
-    """Taman kierroksen ajettavat lahteet: [(laji, arvo)]. Valvonnassa jo kasitellyt jaavat pois."""
+def lahteet(a, kasitellyt=None, nyt=None, huomautetut=None):
+    """Taman kierroksen ajettavat lahteet: [(laji, arvo)]. Kansion valvonnassa videotiedostojen jalkeen tulevat linkkilistan rivit (youtube_lista / url_lista); valvonnassa jo kasitellyt ja
+    epaonnistumisen jalkeista odotusta pitavat jaavat pois."""
     if a.laji != "tiedostot":
         jono = [(a.laji, a.arvo)]
     else:
         jono = [("tiedostot", p) for p in tiedostot(a.arvo, nyt, a.vakaus_s if a.arvo["kokoelma"] else 0.0)]
+        if a.arvo["kokoelma"] and a.jatkuva and a.linkit_polku:
+            jono += [(laji + "_lista", ref) for laji, ref in lue_linkit(a.linkit_polku, huomautetut)]
     if kasitellyt is not None and a.jatkuva:
-        jono = [(l, v) for l, v in jono if not kasitellyt.valmis(l, v)]
+        t = time.time() if nyt is None else nyt
+        jono = [(l, v) for l, v in jono if not kasitellyt.valmis(l, v) and not kasitellyt.odottaa(l, v, t)]
     return jono
 
 
@@ -390,15 +474,16 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
     vikoja = 0
     paluu = 0
     viim_tyhja_ilmoitus = None
+    huomautetut = set()                                             # linkkilistan jo ilmoitetut virheelliset rivit (ilmoitetaan kerran, ei joka kierroksella)
     while True:
-        jono = lahteet(a, kasitellyt, kello())
+        jono = lahteet(a, kasitellyt, kello(), huomautetut)
         if not jono:
             if not a.jatkuva:
                 loki("ei analysoitavia videoita" + (f" (kansio {os.path.dirname(a.arvo['kuvio'])})" if a.laji == "tiedostot" else ""))
                 return paluu or 3
             nyt = time.monotonic()
             if viim_tyhja_ilmoitus is None or nyt - viim_tyhja_ilmoitus > 1800:
-                loki(f"valvonta: ei uusia videoita, tarkistetaan {a.odotus_s:.0f} s valein" + (f" ({os.path.dirname(a.arvo['kuvio'])})" if a.laji == "tiedostot" else ""))
+                loki(f"valvonta: ei uusia videoita, tarkistetaan {a.odotus_s:.0f} s valein" + (f" ({os.path.dirname(a.arvo['kuvio'])}" + (f", linkkilista {a.linkit_polku}" if a.linkit_polku and a.arvo["kokoelma"] else "") + ")" if a.laji == "tiedostot" else ""))
                 viim_tyhja_ilmoitus = nyt
             if pysaytys.nuku(a.odotus_s):
                 return 0
@@ -425,6 +510,15 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
             if rc != 0:
                 paluu = rc
             if not a.jatkuva:
+                continue
+            if laji in LISTALAJIT:                                  # linkkilistan rivi: ajetaan kerran; epaonnistuminen -> uusi yritys pidentyvin valein, rajallinen maara
+                r = kasitellyt.kirjaa(laji, arvo, rc == 0, kello(), a.odotus_s)
+                if rc == 0:
+                    loki("linkki analysoitu: sita ei ajeta uudelleen (poista rivi tiedostosta kasitellyt.json, jos haluat ajaa sen uudelleen)")
+                elif r["yrityksia"] >= LINKKI_YRITYKSIA_MAX:
+                    loki(f"linkin analyysi epaonnistui {r['yrityksia']} kertaa: ei yriteta enaa ({arvo[:80]})")
+                else:
+                    loki(f"linkin analyysi epaonnistui (yritys {r['yrityksia']} / {LINKKI_YRITYKSIA_MAX}): uusi yritys {r['seuraava'] - kello():.0f} s kuluttua")
                 continue
             if laji == "tiedostot":
                 r = kasitellyt.kirjaa(laji, arvo, rc == 0)
@@ -461,7 +555,8 @@ def main(argv=None):
         return 2
     muisti = ny.muisti_gt()
     loki(f"{ny.kuvaus()}; lahde: {a.laji} {a.arvo if a.laji != 'tiedostot' else a.arvo['kuvio']}; valvonta {'paalla' if a.jatkuva else 'pois'}; tulokset: {a.ulos_kansio}"
-         + (f"; selain: portti {a.web_portti}" if a.web_portti else "; selainnakyma pois"))
+         + (f"; selain: portti {a.web_portti}" if a.web_portti else "; selainnakyma pois")
+         + (f"; linkkilista: {a.linkit_polku}" + (" (loytyy)" if os.path.isfile(a.linkit_polku) else " (ei viela: luo tiedosto ja kirjoita siihen linkit)") if a.laji == "tiedostot" and a.arvo["kokoelma"] and a.jatkuva and a.linkit_polku else ""))
     if omat.nayta:
         jono = lahteet(a, None, None) or [(a.laji, a.arvo if a.laji != "tiedostot" else "<video>")]
         loki("komento: " + " ".join(shlex.quote(x) for x in rakenna_komento(a, jono[0][0], jono[0][1], time.strftime("%Y%m%d_%H%M%S"), None, muisti, lisa)))
