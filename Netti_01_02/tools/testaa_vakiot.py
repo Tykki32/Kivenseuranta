@@ -2507,8 +2507,188 @@ def testaa_kiri_kierre_odotus():
     tarkista("kierto_aloitus: laskentaprosessi kaatunut -> tila 'virhe' ja syy, ei jonoon", h.kierto_tila == "virhe" and "laskentaprosessi ei vastaa" in h.kierto["virhe"] and pilke.kierto_tyot == [], str((h.kierto_tila, h.kierto)))
 
 
+def testaa_kopiojono_lukko():
+    print("kopioruutujono ei lukitse kuvaa ja analyysia (YouTube-ajo jumittui hiljaiseen taukoon: kuva odotti analyysia, analyysi vastapaineessa kuvaa); turvaverkko ja jumivahti")
+    import collections
+    import concurrent.futures
+    import contextlib
+    import io
+    import threading
+    import time
+    import types
+    import netti_live as nl
+
+    # Analyysi.syota: kopioruutu paivittaa syotetty_f:n (analyysin eteneminen kuvalle) mutta ei viim_f:aa (seuranta ei muutu)
+    yks = np.zeros((4, 4, 3), np.uint8)
+    kop = yks.copy()
+    kop[0, 0, 0] = 255
+    s = types.SimpleNamespace(aika=collections.defaultdict(float), kopioita=0, yksilollisia=0, viim_f=None, syotetty_f=None, _fps_auto=False, merkit=None, paat={}, saapumiset=[], kaukoseurannat=[], lepohaut=[], heitot=[],
+                              toistettava=False, synkroninen=False, viive_b=0, _kopio=lambda r: int(r[0, 0, 0]) == 255, merkki_valmiit=lambda f: None, odota=lambda f=None: None, paivita_viivat=lambda h, f: None)
+    ns.Analyysi.syota(s, 1, yks)
+    ns.Analyysi.syota(s, 2, kop)
+    ns.Analyysi.syota(s, 3, kop)
+    tarkista("syota: kopioruutu paivittaa syotetty_f:n mutta ei viim_f:aa (seuranta ei muutu)", s.syotetty_f == 3 and s.viim_f == 1 and s.kopioita == 2 and s.yksilollisia == 1, str((s.syotetty_f, s.viim_f)))
+    ns.Analyysi.syota(s, 4, yks)
+    tarkista("syota: yksilollinen ruutu paivittaa molemmat", s.syotetty_f == 4 and s.viim_f == 4)
+    tarkista("analyysin_etenema: syotetty_f (myos kopioruutu); puuttuessa viim_f; muuten 0",
+             nl.analyysin_etenema(types.SimpleNamespace(syotetty_f=120, viim_f=100)) == 120 and nl.analyysin_etenema(types.SimpleNamespace(viim_f=100)) == 100
+             and nl.analyysin_etenema(types.SimpleNamespace(syotetty_f=None, viim_f=None)) == 0)
+
+    # oikea aja_reaaliaika kiri-tilassa (VOD-virta, toistettava ajo) pienilla ruuduilla: syota on oikea Analyysi.syota (kopioruudun kasittely), muu analyysi tyhja. Kopioruutu = vasen ylakulma 255.
+    # Viive 1 s (30 ruutua), etumatka 1 s: analyysi on enintaan ~96 ruutua kuvan edella, mutta kuva odottaa analyysia ruutuun f0 + 27 asti -> 150 ruudun kopioruutujono lukitsee vanhalla ehdolla.
+    def aja_putki(kopiojono=(100, 250), n=350, fps=30.0, vanha_ehto=False, odotus_max=None, jumi_s=4.0):
+        """-> (naytetyt ruudut, jumittuiko, stderr, kesto s). Jumi = kuvat eivat etene jumi_s sekuntiin: ajo keskeytetaan."""
+        class Lahde:
+            live = False
+
+            def __init__(self):
+                self.fps = fps
+
+            def ruudut(self):
+                for f in range(n):
+                    fr = np.zeros((48, 64, 3), np.uint8)
+                    if kopiojono[0] <= f < kopiojono[1]:
+                        fr[0, 0, 0] = 255
+                    yield f, fr
+
+        class An:
+            toistettava = True
+            M = {"x": types.SimpleNamespace(sovitin="C++")}
+            saikeet = 1
+            merkit, _fps_auto, synkroninen, viive_b = None, False, False, 0
+
+            def __init__(self):
+                self.aika, self.kopioita, self.yksilollisia, self.viim_f, self.syotetty_f = collections.defaultdict(float), 0, 0, None, None
+                self.paat, self.saapumiset, self.kaukoseurannat, self.lepohaut, self.heitot = {}, [], [], [], []
+
+            def _kopio(self, ruutu):
+                return int(ruutu[0, 0, 0]) == 255
+
+            def syota(self, f, ruutu):
+                ns.Analyysi.syota(self, f, ruutu)
+
+            def merkki_valmiit(self, f):
+                pass
+
+            def odota(self, f=None):
+                pass
+
+            def paivita_viivat(self, h, f):
+                pass
+
+            def tyoprosessit(self):
+                return []
+
+            def keraa_taustatulokset(self):
+                pass
+
+            def ohita(self):
+                pass
+
+            def viimeistele(self):
+                pass
+
+            def kierre_kesken(self, f):
+                return False
+
+            def viivat_kesken(self, f):
+                return False
+
+        class Naytto:
+            def __init__(self):
+                self.n_nayt, self.jumi = 0, False
+
+            def anna(self, kuva):
+                self.n_nayt += 1
+
+            def paasilmukka(self, pysayta, valmis, ilmoitus):
+                edell, t_edell = -1, time.time()
+                while not valmis():
+                    if self.n_nayt != edell:
+                        edell, t_edell = self.n_nayt, time.time()
+                    elif time.time() - t_edell > jumi_s:
+                        self.jumi = True
+                        pysayta.set()
+                        break
+                    time.sleep(0.01)
+
+        a = types.SimpleNamespace(debug_viive=False, ei_tahdistusta=False, esilataus=24, etumatka=1.0, hiljaa=True, jpeg=92, kiri=0.5, lataus=2.0, max_myohassa=None, puskuri="auto", url="http://testi/video.mp4", viive=1.0, youtube=None)
+        piirtaja = types.SimpleNamespace(viive_nyt=0.0, puskuri_s=None, piirra=lambda kuva, f, an: kuva)
+        kirjaaja = types.SimpleNamespace(paivita=lambda an, lopuksi=False: None, loppuyhteenveto=lambda an: None)
+        naytto = Naytto()
+        vanha = (nl.analyysin_etenema, nl.ANALYYSI_ODOTUS_MAX_S)
+        if vanha_ehto:
+            nl.analyysin_etenema = lambda an: an.viim_f or 0                      # vanha ehto: analyysin eteneminen = viim_f (ei kopioruutuja)
+        if odotus_max is not None:
+            nl.ANALYYSI_ODOTUS_MAX_S = odotus_max
+        virhe = io.StringIO()
+        t0 = time.time()
+        try:
+            with contextlib.redirect_stderr(virhe):
+                nl.aja_reaaliaika(a, Lahde(), An(), piirtaja, naytto, None, kirjaaja)
+        finally:
+            nl.analyysin_etenema, nl.ANALYYSI_ODOTUS_MAX_S = vanha
+        return naytto.n_nayt, naytto.jumi, virhe.getvalue(), time.time() - t0
+
+    n_nayt, jumi, err, kesto = aja_putki()
+    tarkista("aja_reaaliaika (kiri, toistettava): 150 ruudun kopioruutujono ei lukitse kuvaa: kaikki 350 ruutua nakyvat, ei turvaverkon varoitusta", n_nayt == 350 and not jumi and "analyysi ei ole edennyt" not in err,
+             f"{n_nayt} ruutua, jumi {jumi}, {kesto:.1f} s: {err[-200:]}")
+    n_v, jumi_v, _, _ = aja_putki(vanha_ehto=True, odotus_max=1e9)
+    tarkista("vanha ehto (analyysin eteneminen = viim_f) lukkiutuu samalla syotteella: testi toistaa vian (kuva odottaa analyysia, analyysi kuvaa)", jumi_v and n_v < 350, f"{n_v} ruutua, jumi {jumi_v}")
+    n_t, jumi_t, err_t, kesto_t = aja_putki(vanha_ehto=True, odotus_max=1.0)
+    tarkista("turvaverkko: vaikka analyysin eteneminen mitattaisiin vaarin (lukko), kuva jatkuu odottamatta ANALYYSI_ODOTUS_MAX_S jalkeen ja ilmoittaa siita kerran",
+             n_t == 350 and not jumi_t and err_t.count("Huom: analyysi ei ole edennyt") == 1, f"{n_t} ruutua, {kesto_t:.1f} s, jumi {jumi_t}: {err_t[-200:]}")
+    n_l, jumi_l, err_l, _ = aja_putki(kopiojono=(100, 130))
+    tarkista("lyhyt kopioruutujono (alle etumatkan ja viiveen eron) ei viivasta kuvaa", n_l == 350 and not jumi_l and "analyysi ei ole edennyt" not in err_l)
+
+    # Jumivahti: raportti, kun ajo ei etene; uudelleen 5x / 15x / 60x ajan jalkeen; eteneminen (laskuri, lisalaskuri, vaihe) aloittaa alusta
+    kello, laskuri, tulosteet = [1000.0], [0], []
+    v = nl.Jumivahti(lambda: laskuri[0], 10.0, tulosta=tulosteet.append, kello=lambda: kello[0])
+    v.kuvaus = lambda: "tilateksti"
+    v.tarkista(1000.0)
+    tarkista("jumivahti: ei raporttia ennen rajaa", v.tarkista(1009.0) is None and not tulosteet)
+    r = v.tarkista(1010.0)
+    tarkista("jumivahti: raportti rajan tayttyessa: aika, vaihe, tila ja saikeiden pinot", r is not None and "ei ole edennyt 10 s" in r and "vaihe: ajo" in r and "Tila: tilateksti" in r and "[MainThread]" in r and tulosteet == [r], (r or "")[:200])
+    tarkista("jumivahti: samaa rajaa ei toisteta; uudet raportit 5x, 15x ja 60x ajan jalkeen, sen jalkeen ei enempaa",
+             v.tarkista(1030.0) is None and v.tarkista(1050.0) is not None and v.tarkista(1149.0) is None and v.tarkista(1150.0) is not None and v.tarkista(1600.0) is not None and v.tarkista(5000.0) is None and v.raportteja == 4)
+    laskuri[0] += 1
+    tarkista("jumivahti: eteneminen (laskuri) aloittaa alusta", v.tarkista(1700.0) is None and v.tarkista(1709.0) is None and v.tarkista(1710.0) is not None)
+    v.vaihe("tallenteen viimeistely")
+    tarkista("jumivahti: vaiheen vaihtuminen on etenemista ja vaihe nakyy raportissa", v.tarkista(1800.0) is None and "vaihe: tallenteen viimeistely" in (v.tarkista(1810.0) or ""))
+    piirretty = [0]
+    v.lisalaskurit.append(lambda: piirretty[0])
+    v.tarkista(2000.0)
+    piirretty[0] += 5
+    tarkista("jumivahti: lisalaskuri (piirretyt ruudut) on etenemista", v.tarkista(2009.0) is None and v.tarkista(2018.0) is None and v.tarkista(2020.0) is not None)
+    v2 = nl.Jumivahti(lambda: 1 / 0, 10.0, tulosta=tulosteet.append, kello=lambda: kello[0])
+    v2.tarkista(0.0)
+    tarkista("jumivahti: tilaa ei voi lukea -> ei raportoida", v2.tarkista(100.0) is None and v2.tarkista(1000.0) is None)
+    v3 = nl.Jumivahti(lambda: 0, 10.0, tulosta=lambda t: None, kello=lambda: 0.0)
+    v3.kuvaus = lambda: 1 / 0
+    v3.tarkista(0.0)
+    tarkista("jumivahti: tilan lukuvirhe ei estaa raporttia (pinot tulevat silti)", "Tilan luku epaonnistui" in (v3.tarkista(10.0) or "") and "Saikeiden pinot" in v3.raportti(10.0))
+    # saikeiden_pinot: odottava saie nakyy, joutilas laskentapoolin tyosaie ei
+    seis = threading.Event()
+    odottaja = threading.Thread(target=seis.wait, name="testi-odottaja", daemon=True)
+    odottaja.start()
+    pooli = concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix="testipooli")
+    pooli.submit(lambda: 1).result()
+    time.sleep(0.05)
+    rivit = nl.saikeiden_pinot()
+    tarkista("saikeiden_pinot: odottava saie ja paasaie nakyvat, joutilas poolisaie ei", any("[testi-odottaja]" in x and "wait" in x for x in rivit) and any("[MainThread]" in x for x in rivit) and not any("testipooli" in x for x in rivit), "\n".join(rivit)[:400])
+    seis.set()
+    pooli.shutdown()
+    # jumivahti-saie: raportoi itse (eika raportoi omaa pinoaan)
+    saie_tulosteet = []
+    vs = nl.Jumivahti(lambda: 0, 0.3, tulosta=saie_tulosteet.append, vali_s=0.05).kaynnista()
+    time.sleep(1.0)
+    vs.sulje()
+    tarkista("jumivahti-saie: raportoi, kun ajo ei etene, eika oma saie ole pinoissa", len(saie_tulosteet) >= 1 and "[jumivahti]" not in saie_tulosteet[0] and "vaihe: ajo" in saie_tulosteet[0], (saie_tulosteet or [""])[0][:200])
+    tarkista("jumivahti 0 = pois: saietta ei kaynnisteta", nl.Jumivahti(lambda: 0, 0).kaynnista()._saie is None)
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre, testaa_kiri_kierre_odotus):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre, testaa_kiri_kierre_odotus, testaa_kopiojono_lukko):
         t()
     print()
     if VIRHEITA:

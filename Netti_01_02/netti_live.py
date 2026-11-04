@@ -188,6 +188,7 @@ class Esilataus:
         self.fps = float(fps)
         self.pakattu = pitka_s > 0 and n > 0
         self.t_luettu = time.time()
+        self.t_lahde, self.f_lahde = time.time(), None         # lahteen (verkko / dekoodaus) viimeisin onnistunut luku ja sen ruutu (jumivahti: onko lahde jumissa vai kuluttaja)
         self._kapasiteetti = max(self.n, int(round(pitka_s * self.fps))) if self.pakattu else self.n
         self._loppu, self._virhe, self._seis = object(), [], threading.Event()
         self._jono = None
@@ -219,6 +220,7 @@ class Esilataus:
     def _lue(self):
         try:
             for f, fr in self.it:
+                self.t_lahde, self.f_lahde = time.time(), f
                 x = (f, cv2.cvtColor(fr, cv2.COLOR_BGR2YUV_I420), True, time.time()) if self.pakattu else (f, fr, False, time.time())
                 if not self._laita(x):
                     return
@@ -585,6 +587,7 @@ class Kirjoittaja:
                 self.n += 1
             except Exception as e:
                 self.virhe = e
+                print(f"Tallennusvirhe ({self.nimi}): {e!r}; tallennus keskeytyy, analyysi ja kuva jatkuvat (levy taynna tai kooderi kaatui?)", file=sys.stderr, flush=True)
 
     def kirjoita(self, kuva):
         self.q.put(kuva)
@@ -1044,7 +1047,7 @@ def aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
 # ---------------------------------------------------------------------------------------------------------------------
 # REAALIAIKA: lukija + analyysi (saie), piirto (saie), tallennus (saie), ikkuna (paasaie)
 # ---------------------------------------------------------------------------------------------------------------------
-def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
+def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja, vahti=None):
     fps = lahde.fps
     t_ajo = time.time()
     saikeet_kuorma = SaieKuorma()                    # saiekohtainen prosessorinkaytto (diagnostiikka): tilarivit ja loppuyhteenveto
@@ -1058,7 +1061,18 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
     tilasto = dict(analysoitu=0, ohitettu=0, virheita=0, piirretty=0, myohassa_max=0.0, luku_s=0.0, luku_max=0.0, pysahdyksia=0, syota_s=0.0, syota_ms=[], viive_max=0.0, puskuri_max=0.0, analyysia_odotettu_s=0.0,
                   piirto_s=0.0, purku_odotus_s=0.0, kirjoitus_odotus_s=0.0, tallennus=(kirjoittaja.nimi if kirjoittaja is not None else None),      # piirtosaikeen ajankaytto: piirto, pakkauksen odotus, tallennusjonon odotus
                   syota_cpu_s=0.0, piirto_cpu_s=0.0, kirj_s=0.0, kirj_cpu_s=0.0, kirj_n=0.0, kiri_ruutuja=0, kiri_odotus_s=0.0, video_s=0.0, ajo_s=0.0)       # saikeiden prosessoriaika (verrattuna seinakelloon: odottaako saie vai laskeeko se) ja tallennussaikeen syotto kooderille
-    jaettu = dict(puskuri_s=0.0)                     # analyysisaie -> piirtosaie: esilatauspuskurin pituus (s)
+    jaettu = dict(puskuri_s=0.0, luettu_f=None, piirto_f=None, odottaa_n=0, esilataus=None)      # saikeiden valilla: esilatauspuskurin pituus (s, analyysi -> piirto); jumivahdin tilatiedot (viimeisin luettu / piirrettava ruutu jne.)
+
+    def jumin_tila():
+        """Jumivahdin raporttiin: mita jono, lukija, analyysi ja piirto tekevat (kuka odottaa ketakin)."""
+        e = jaettu["esilataus"]
+        return (f"analyysi: syotetty ruutu {getattr(an, 'syotetty_f', None)}, yksilollinen (viim_f) {getattr(an, 'viim_f', None)}, kopioruutuja {getattr(an, 'kopioita', None)}; "
+                f"lukija: ruutu {jaettu['luettu_f']}" + (f", lahteesta luettu viimeksi {time.time() - e.t_lahde:.1f} s sitten (ruutu {e.f_lahde})" if e is not None else "") + "; "
+                f"piirto: piirretty {tilasto['piirretty']} ruutua, seuraava ruutu {jaettu['piirto_f']}, jonossa {len(jono)} + odottaa {jaettu['odottaa_n']}; "
+                f"esilatauspuskuri {jaettu['puskuri_s']:.1f} s; toistettava {getattr(an, 'toistettava', None)}, kiri {kiri_tila}, lahde loppui {lopetettu.is_set()}")
+    if vahti is not None:
+        vahti.lisalaskurit.append(lambda: tilasto["piirretty"])
+        vahti.kuvaus = jumin_tila
     pitka_s = a.lataus if (a.youtube or a.url) and a.esilataus > 0 else 0.0              # virta: video ladataan jatkuvasti enintaan taman verran analyysin edelle
     max_myohassa = a.max_myohassa if a.max_myohassa is not None else (0.8 if pitka_s <= 0 else min(6.0, max(0.8, a.viive - 3.0)))     # ruutu ohitetaan (ei analysoida), jos analyysi on taman verran myohassa
     piirtoa_tarvitaan = naytto is not None or kirjoittaja is not None
@@ -1093,6 +1107,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         it = None
         try:
             it = esilataus(lahde.ruudut(), a.esilataus, pitka_s, fps)
+            jaettu["esilataus"] = it
             while True:
                 t_luku0 = time.perf_counter()
                 try:
@@ -1113,6 +1128,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                     f_ensin = f
                     t_alku = t_ensin_ajo = time.time()                # tahdistuksen alku: ensimmaisen ruudun saapuminen (kaynnistyksen viive ei ole myohastymista)
                 viim_f_luettu = f
+                jaettu["luettu_f"] = f
                 jaettu["puskuri_s"] = it.pituus_s
                 tilasto["puskuri_max"] = max(tilasto["puskuri_max"], it.pituus_s)
                 if kiri_tila:                                             # VOD-virta (kiri): analyysi ei odota reaaliaikaa vaan etenee niin nopeasti kuin ehtii; kuvan aikataulu on piirtosaikeella.
@@ -1190,6 +1206,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         t_tila, edellinen = time.time(), tilasto_otos(tilasto)           # viive-tilarivi: viimeisin tulostus ja silloinen tilasto
         kuorma = KoneenKuorma(saikeet_kuorma)                            # koko koneen ja tamän ohjelman prosessorinkaytto (saie saikeelta) tilariveille
         t_viivat = None                                                  # kiri: hetki, jolloin jonon ensimmainen kuva alkoi odottaa lopullista viivaestimaattia
+        f_etenema, t_etenema, ohitus_ilmoitettu = None, time.time(), False       # analyysin eteneminen ja sen viimeisin muutos (turvaverkko: kuva ei odota analyysia ikuisesti)
         try:
             while not pysayta.is_set():
                 nyt = time.time()
@@ -1198,15 +1215,25 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
                     f, t_s, tulevaisuus, erapaiva_ruutu = jono.popleft()
                     odottaa.append((f, t_s + a.viive, purku.submit(pura, tulevaisuus), erapaiva_ruutu))
                 nayta, sprintti, aikataulu_ok, analyysi_ok = False, False, False, True
+                jaettu["odottaa_n"] = len(odottaa)
                 if odottaa:
                     f0 = odottaa[0][0]
-                    viim_f = getattr(an, "viim_f", None) or 0
+                    jaettu["piirto_f"] = f0
+                    viim_f = analyysin_etenema(an)                      # (ei Analyysi.viim_f: se ei etene kopioruutujen aikana, ks. analyysin_etenema)
                     if kiri_tila:                                      # kiri: kuvalla oma aikataulu (1x tasaisesti; kiri vain kun esilatauspuskurissa >= raja s tai lahde loppui)
                         erapaiva_nyt, sprintti = aikataulu.aika(f0, nyt, jaettu["puskuri_s"], odottaa[0][1], lopetettu.is_set())
                     else:
                         erapaiva_nyt = odottaa[0][1]
                     aikataulu_ok = erapaiva_nyt <= nyt
                     analyysi_ok = not an.toistettava or lopetettu.is_set() or viim_f >= f0 + D_ruutua - 3          # toistettavassa ajossa kuva odottaa analyysia (piirrokset tulevat analyysista)
+                    if analyysi_ok or viim_f != f_etenema:             # analyysi etenee (tai sita ei odoteta): odotuksen kello alkaa alusta
+                        f_etenema, t_etenema, ohitus_ilmoitettu = viim_f, nyt, False
+                    elif nyt - t_etenema > ANALYYSI_ODOTUS_MAX_S:      # turvaverkko: analyysi ei ole edennyt ANALYYSI_ODOTUS_MAX_S sekuntiin (lukko tai jumittunut lahde): kuva jatkuu odottamatta
+                        analyysi_ok = True
+                        if not ohitus_ilmoitettu:
+                            ohitus_ilmoitettu = True
+                            print(f"Huom: analyysi ei ole edennyt {nyt - t_etenema:.0f} s (ruutu {viim_f}; kuva odottaisi ruutua {f0 + D_ruutua - 3}): kuva jatkuu odottamatta. Lahde jumissa vai lukko? Ks. Jumivahti-raportti.",
+                                  file=sys.stderr, flush=True)
                     nayta = aikataulu_ok and analyysi_ok
                     odotus_raja = kiri_odotus_raja(an, f0) if (nayta and sprintti) else None      # kirissa analyysi ja kuva etenevat reaaliaikaa nopeammin: taustaprosessin laskema tulos voi olla vasta tulossa -- odotetaan se (rajatusti)
                     if odotus_raja is not None:
@@ -1302,6 +1329,8 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
             s2.join(timeout=10.0)
         pakkaus.shutdown(wait=False, cancel_futures=True)
         purku.shutdown(wait=False, cancel_futures=True)
+        if vahti is not None:
+            vahti.vaihe("analyysin viimeistely (taustatyot)")
         an.viimeistele()
         kirjaaja.paivita(an, lopuksi=True)
         kirjaaja.loppuyhteenveto(an)
@@ -1396,6 +1425,110 @@ def kiri_odotus_raja(an, f0):
     if an.viivat_kesken(f0):
         return KIRI_VIIVAT_ODOTUS_S
     return None
+
+
+ANALYYSI_ODOTUS_MAX_S = 20.0                          # toistettava ajo: kuva odottaa analyysia enintaan taman ajan (s) ilman analyysin etenemista; sen jalkeen kuva jatkuu (turvaverkko: ei lukkiutumista)
+JUMIVAHTI_OLETUS_S = 60.0                             # --jumivahti: ajo ei ole edennyt taman ajan (s) -> tila ja saikeiden pinot lokiin (uudelleen 5x, 15x ja 60x ajan jalkeen)
+JUMIVAHTI_JOUTILAAT = {("thread.py", "_worker"), ("queues.py", "_feed"), ("process.py", "wait_result_broken_or_wakeup")}       # laskentapoolien joutilaat saikeet: ei kiinnosta jumiraportissa
+
+
+def analyysin_etenema(an):
+    """Analyysin eteneminen kuvalle: viimeisin analyysille syotetty ruutu, myos kopioruutu (Analyysi.syotetty_f). Analyysi.viim_f ei kelpaa: se paivittyy vain yksilollisista ruuduista, joten
+    pitkan kopioruutujonon (hiljainen tauko, pysaytetty kuva: ruudut ovat toistensa kopioita) ajaksi se jaa jalkeen. Toistettavassa ajossa kuva odottaa analyysia (viim_f >= f0 + viive - 3), ja
+    kirissa analyysi taas odottaa vastapaineessa kuvaa (etumatka kuvaan on rajattu): jos analyysin etenemisena kaytetaan viim_f:aa, kopioruutujono pidempi kuin etumatkan ja viiveen
+    ero lukitsee molemmat (YouTube-ajo jumittui nain taukoon heittojen 64 ja 65 valilla: 520 kopioruudun jono, 'Ajo kaynnissa', ei virheilmoitusta)."""
+    f = getattr(an, "syotetty_f", None)
+    if f is None:
+        f = getattr(an, "viim_f", None)
+    return f or 0
+
+
+def saikeiden_pinot(syvyys=4, ohita=()):
+    """Kaikkien saikeiden pinot riveina (jumivahti): '[saie] tiedosto:rivi funktio < kutsuja ...', sisin kehys ensin. Laskentapoolien joutilaat saikeet jatetaan pois."""
+    nimet = {t.ident: t.name for t in threading.enumerate()}
+    rivit = []
+    for tid, kehys in sys._current_frames().items():
+        if tid in ohita:
+            continue
+        pino = traceback.extract_stack(kehys)
+        if not pino or any((os.path.basename(k.filename), k.name) in JUMIVAHTI_JOUTILAAT for k in pino[-3:]):
+            continue
+        rivit.append(f"  [{nimet.get(tid, tid)}] " + " < ".join(f"{os.path.basename(k.filename)}:{k.lineno} {k.name}" for k in reversed(pino[-syvyys:])))
+    return rivit
+
+
+class Jumivahti:
+    """Jumivahti: oma saie, joka kirjoittaa lokiin (stderr: konsoli, docker logs ja selaimen loki) ajon tilan ja kaikkien saikeiden pinot, kun ajo ei ole edennyt raja_s sekuntiin
+    (uudelleen 5x, 15x ja 60x ajan jalkeen). Hiljainen jumi (palvelimella 'Ajo kaynnissa', ei virheilmoitusta, ei prosessorinkayttoa) saadaan nain diagnosoitavaksi: pinot kertovat, mita
+    kukin saie odottaa. Ajon eteneminen = laskuri() (analysoidut ruudut) + lisalaskurit (esim. piirretyt ruudut) + vaiheen vaihtuminen (vaihe(): lopetuksen vaiheet ovat pitkia).
+    kuvaus(): ajon tila tekstina (jonojen pituudet jne.). Vahti vain lukee tilaa: se ei puutu ajoon."""
+    KERTOIMET = (1.0, 5.0, 15.0, 60.0)
+
+    def __init__(self, laskuri, raja_s=JUMIVAHTI_OLETUS_S, tulosta=None, vali_s=1.0, kello=time.time):
+        self.laskuri, self.raja_s, self.vali_s, self.kello = laskuri, float(raja_s), float(vali_s), kello
+        self.tulosta = tulosta if tulosta is not None else (lambda teksti: print(teksti, file=sys.stderr, flush=True))
+        self.kuvaus = None
+        self.lisalaskurit = []
+        self.raportteja = 0
+        self._vaihe, self._vaihe_n = "ajo", 0
+        self._edell, self._t_edennyt, self._seuraava = None, self.kello(), 0
+        self._seis = threading.Event()
+        self._saie = None
+
+    def vaihe(self, nimi):
+        """Ajon vaihe raporttiin; vaiheen vaihtuminen on etenemista."""
+        self._vaihe, self._vaihe_n = nimi, self._vaihe_n + 1
+
+    def _merkki(self):
+        try:
+            return (self.laskuri(), tuple(laskuri() for laskuri in self.lisalaskurit), self._vaihe_n)
+        except Exception:
+            return object()                                   # tilaa ei voi lukea (alustus / lopetus): ei raportoida
+
+    def tarkista(self, nyt=None):
+        """Yksi vartiointikierros: tulostaa raportin, kun ajo ei ole edennyt seuraavaan rajaan mennessa. Palauttaa tulostetun tekstin tai None."""
+        nyt = self.kello() if nyt is None else nyt
+        merkki = self._merkki()
+        if self._edell is None or merkki != self._edell:
+            self._edell, self._t_edennyt, self._seuraava = merkki, nyt, 0
+            return None
+        ika = nyt - self._t_edennyt
+        if self._seuraava < len(self.KERTOIMET) and ika >= self.raja_s * self.KERTOIMET[self._seuraava]:
+            self._seuraava += 1
+            self.raportteja += 1
+            teksti = self.raportti(ika)
+            self.tulosta(teksti)
+            return teksti
+        return None
+
+    def raportti(self, ika):
+        rivit = [f"Jumivahti: ajo ei ole edennyt {ika:.0f} s (vaihe: {self._vaihe})."]
+        if self._vaihe != "ajo":
+            rivit.append("Lopetuksen vaihe voi olla hidas (iso tallenne, aanen lataus): jos ajo paattyy itsestaan, tama on normaalia.")
+        if self.kuvaus is not None:
+            try:
+                rivit.append("Tila: " + self.kuvaus())
+            except Exception as e:
+                rivit.append(f"Tilan luku epaonnistui: {e!r}")
+        rivit.append("Saikeiden pinot (sisin kehys ensin):")
+        rivit += saikeiden_pinot(ohita=(self._saie.ident,) if self._saie is not None else ())
+        return "\n".join(rivit)
+
+    def _silmukka(self):
+        while not self._seis.wait(self.vali_s):
+            try:
+                self.tarkista()
+            except Exception:
+                traceback.print_exc()
+
+    def kaynnista(self):
+        if self.raja_s > 0 and self._saie is None:
+            self._saie = threading.Thread(target=self._silmukka, name="jumivahti", daemon=True)
+            self._saie.start()
+        return self
+
+    def sulje(self):
+        self._seis.set()
 
 
 class KuvanAikataulu:
@@ -1959,6 +2092,8 @@ def main():
     ap.add_argument("--hiljaa", action="store_true")
     ap.add_argument("--ei-kalibrointitarkistusta", action="store_true", help="ei tarkisteta (tiedostolahde), sopiiko --kansio:n kalibrointi ja moodikuva videon kamera-asentoon (tools/tarkista_kalibrointi.py)")
     ap.add_argument("--debug-viive", action="store_true", help="tulosta hitaat analyysiruudut (selvittaa miksi ruutuja ohitetaan)")
+    ap.add_argument("--jumivahti", type=float, default=JUMIVAHTI_OLETUS_S, help="jumivahti: jos ajo ei ole edennyt taman ajan (s), lokiin tulostuu ajon tila ja kaikkien saikeiden pinot (uudelleen 5x, 15x ja 60x ajan jalkeen); "
+                    "0 = pois. Oletus 60 s")
     ap.add_argument("--ohita-myohassa", action="store_true", help="reaaliaika: ohita analyysista ruutuja, kun kone ei jaksa (vanha tapa; tulokset riippuvat koneen nopeudesta). Oletus tiedostolla ja YouTube-toistolla: "
                     "kaikki ruudut analysoidaan ja tulos on toistettava (sama kuin --nopea), kuva odottaa analyysia")
     ap.add_argument("--aani", default="auto", help="aani tallenteeseen (--ulos): auto = YouTube: oma aanivirta (yt_dlp bestaudio), ladataan taustalla ajon aikana ja liitetaan lopuksi, tiedosto: tiedoston oma aani jos on, --url: sama osoite; ei = ei aanta; POLKU / URL = oma aanilahde "
@@ -2063,17 +2198,22 @@ def main():
               + (f"Tallennus: {a.ulos} ({kirjoittaja.nimi})" if kirjoittaja else "Ei tallennusta (lisaa --ulos)."), flush=True)
         print(f"Heittojen tiedot: {a.csv} (kivikohtaiset vakiot: {os.path.splitext(a.csv)[0]}_kivet.csv)" if a.csv else "Ei CSV-tallennusta (--ei-csv).", flush=True)
     kirjaaja = Kirjaaja(a.csv, a.hiljaa, lahde.fps, a.tapahtumat, a.radat)
+    vahti = Jumivahti(lambda: an.yksilollisia + an.kopioita, a.jumivahti).kaynnista()      # hiljainen jumi (ei virhetta, ei etenemista) -> tila ja saikeiden pinot lokiin
     try:
         if sim:
             aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja)
         else:
-            aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja)
+            aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja, vahti=vahti)
     finally:
+        vahti.vaihe("analyysin sulku")
         an.sulje()
         if kirjoittaja is not None:
+            vahti.vaihe("tallenteen viimeistely (faststart, aani)")
             kirjoittaja.sulje()
         if naytto is not None:
+            vahti.vaihe("selainnakyman / ikkunan sulku")
             naytto.sulje()
+        vahti.sulje()
         if a.ulos and not a.hiljaa:
             print(f"kirjoitettu {a.ulos} ({kirjoittaja.n} ruutua)")
 
