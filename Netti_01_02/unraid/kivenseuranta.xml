@@ -1,10 +1,10 @@
 <?xml version="1.0"?>
 <!-- Unraidin Docker-mallipohja (Netti_01_02). Kopioi tiedosto palvelimelle:
-       /boot/config/plugins/dockerMan/templates-user/my-netti-kivenseuranta.xml
-     ja valitse Docker-valilehdella Add Container -> Template: netti-kivenseuranta. Kuva netti-kivenseuranta:latest on rakennettava ensin (README_unraid.md: docker build). -->
+       /boot/config/plugins/dockerMan/templates-user/my-kivenseuranta.xml
+     ja valitse Docker-valilehdella Add Container -> Template: kivenseuranta. Kuva kivenseuranta:latest on rakennettava ensin (README_unraid.md: docker build). -->
 <Container version="2">
-  <Name>netti-kivenseuranta</Name>
-  <Repository>netti-kivenseuranta:latest</Repository>
+  <Name>kivenseuranta</Name>
+  <Repository>kivenseuranta:latest</Repository>
   <Registry/>
   <Network>bridge</Network>
   <MyIP/>
@@ -25,7 +25,7 @@
   <DonateLink/>
   <Requires/>
   <Config Name="Selainnakyma (portti)" Target="63884" Default="63884" Mode="tcp" Description="Web-kayttoliittyman portti (kuva, loki, tulostiedostot). Jos portti on varattu, vaihda vain isantaportti (Host Port); kontin portti pysyy 63884. Ala avaa internetiin: ei kirjautumista, ellei salasanaa aseteta." Type="Port" Display="always" Required="true" Mask="false">63884</Config>
-  <Config Name="Data" Target="/data" Default="/mnt/user/netti" Mode="rw" Description="Kansio, jossa on video/ (syotevideot), ulos/ (tulokset: mp4 ja CSV) ja kalibroinnit/ (omat kalibroinnit). Kansiot luodaan automaattisesti." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/netti</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/kivenseuranta" Mode="rw" Description="Kansio, jossa on video/ (syotevideot), ulos/ (tulokset: mp4 ja CSV) ja kalibroinnit/ (omat kalibroinnit). Kansiot luodaan automaattisesti." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/kivenseuranta</Config>
   <Config Name="Lahde (NETTI_LAHDE)" Target="NETTI_LAHDE" Default="" Mode="" Description="Tyhja = kansion video valvonta ja linkkilista youtube.txt (jakokansion juuressa: yksi YouTube-linkki per rivi, ei uudelleenkaynnistysta). Tai kiintea lahde: YouTube-tunnus / -osoite (video tai kanavan .../live), http / rtsp -osoite tai tiedosto (/data/video/peli.mp4)." Type="Variable" Display="always" Required="false" Mask="false"/>
   <Config Name="Valvonta (NETTI_JATKUVA)" Target="NETTI_JATKUVA" Default="" Mode="" Description="1 = ajon paatyttya odotetaan ja yritetaan uudelleen (uudet videot, live-lahetyksen alkaminen). Tyhja = automaattinen (kansio: paalla, muuten pois). Kertaajossa aseta kontin Restart-asetukseksi no." Type="Variable" Display="always" Required="false" Mask="false"/>
   <Config Name="Tallenna video (NETTI_VIDEO)" Target="NETTI_VIDEO" Default="1" Mode="" Description="1 = kuvallinen mp4 (noin 1,5 Gt tunnissa), 0 = vain CSV." Type="Variable" Display="always" Required="false" Mask="false">1</Config>

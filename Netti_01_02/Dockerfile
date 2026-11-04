@@ -1,5 +1,5 @@
 # Kivenseuranta (Netti_01_02): palvelinversio Dockerille / Unraidille. Vain perinteisia Dockerfile-ominaisuuksia (toimii myos ilman BuildKitia).
-#   docker build -t netti-kivenseuranta:latest .            (ks. README_unraid.md)
+#   docker build -t kivenseuranta:latest .            (ks. README_unraid.md)
 #
 # Pohja: Ubuntu 24.04 (Python 3.12, sama versio kuin kehityskoneella). Kolme vaihetta:
 #   perus      ajonaikaiset paketit (Python, ffmpeg, OpenCV:n C++-kirjastot C++-sovittimelle)
