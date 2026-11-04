@@ -138,7 +138,7 @@ def testaa_komento():
         c = np_.rakenna_komento(a, a.laji, a.arvo["kuvio"], "20260101_120000", "/tmp/tila.json")
         j = " ".join(c)
         tarkista("netti_live.py ajetaan -u:lla ja ilman ikkunaa", c[1] == "-u" and c[2].endswith("netti_live.py") and "--ei-ikkunaa" in c)
-        tarkista("tiedosto: --lahde ja --nopea", c[c.index("--lahde") + 1].endswith("Matarmaa osa 1 (2).mp4") and "--nopea" in c)
+        tarkista("tiedosto: --lahde ja --nopea", lahde_komennosta(c)[1].endswith("Matarmaa osa 1 (2).mp4") and "--nopea" in c)
         tarkista("tulostiedostojen nimet: tunniste + aikaleima", os.path.join(t, "ulos", "kivenseuranta_Matarmaa_osa_1_2_20260101_120000.mp4") in c and os.path.join(t, "ulos", "heitot_Matarmaa_osa_1_2_20260101_120000.csv") in c)
         tarkista("web-valitsimet ja tilatiedosto", "--web 63884" in j and "--web-leveys 1280" in j and "--tila-tiedosto /tmp/tila.json" in j)
         tarkista("tiedostolle ei --lataus eika --kiri", "--lataus" not in c and "--kiri" not in c)
@@ -148,7 +148,7 @@ def testaa_komento():
         tarkista("ei videota: ei --ulos; ei csv: --ei-csv; ei webia: ei --web", "--ulos" not in c and "--ei-csv" in c and "--csv" not in c and "--web" not in c)
         a = np_.Asetukset(dict(env, NETTI_LAHDE="hnTTLqHr5x8", NETTI_KIRI="0", NETTI_LISAVALITSIMET="--etumatka 5"))
         c = np_.rakenna_komento(a, a.laji, a.arvo, "x", None, 32.0, ["--debug-viive"])
-        tarkista("YouTube: --youtube TUNNUS, ei --nopea, --kiri 0", c[c.index("--youtube") + 1] == "hnTTLqHr5x8" and "--nopea" not in c and c[c.index("--kiri") + 1] == "0")
+        tarkista("YouTube: --youtube TUNNUS, ei --nopea, --kiri 0", lahde_komennosta(c) == ("--youtube", "hnTTLqHr5x8") and "--nopea" not in c and c[c.index("--kiri") + 1] == "0")
         tarkista("runsaasti muistia: netti_live:n oma --lataus-oletus", "--lataus" not in c)
         tarkista("ylimaaraiset valitsimet perassa (ensin ymparistomuuttujasta, sitten komentorivilta)", c[-3:] == ["--etumatka", "5", "--debug-viive"], str(c[-3:]))
         tarkista("yt-tunniste", np_.tunniste("youtube", "hnTTLqHr5x8") == "yt_hnTTLqHr5x8" and np_.tunniste("youtube", "https://www.youtube.com/watch?v=hnTTLqHr5x8&t=5") == "yt_hnTTLqHr5x8")
@@ -161,6 +161,16 @@ def testaa_komento():
         a = np_.Asetukset(dict(env, NETTI_LAHDE="hnTTLqHr5x8", NETTI_LATAUS="20"))
         c = np_.rakenna_komento(a, a.laji, a.arvo, "x", None, 4.0)
         tarkista("NETTI_LATAUS ohittaa muistiperusteen", c[c.index("--lataus") + 1] == "20")
+        c = np_.rakenna_komento(a, "youtube", "-Z4JPPqtlmU", "x", None, 32.0)
+        tarkista("viivalla alkava YouTube-tunnus (noin 1,6 % tunnuksista): lahde yhtena argumenttina --youtube=-Z4JPPqtlmU", "--youtube=-Z4JPPqtlmU" in c and "--youtube" not in c and lahde_komennosta(c) == ("--youtube", "-Z4JPPqtlmU"))
+        tarkista("lahteen arvo ei jaa omaksi argumentikseen", "-Z4JPPqtlmU" not in c)
+        ymp = dict(os.environ, HTTPS_PROXY="http://127.0.0.1:9", https_proxy="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9", http_proxy="http://127.0.0.1:9", NO_PROXY="", no_proxy="")
+        pr = subprocess.run([sys.executable, os.path.join(KOTI, "netti_live.py"), "--youtube=-Z4JPPqtlmU", "--ei-ikkunaa", "--hiljaa"], capture_output=True, text=True, timeout=120, env=ymp)
+        ulos = pr.stdout + pr.stderr
+        tarkista("netti_live hyvaksyy --youtube=-Z4JPPqtlmU (tunnus ei ole valitsin; ajo yrittaa hakea virran, ja haku epaonnistuu, koska verkko on poissa)",
+                 "unrecognized arguments" not in ulos and ("watch?v=-Z4JPPqtlmU" in ulos or "yt_dlp puuttuu" in ulos), ulos.strip().splitlines()[-1][:110] if ulos.strip() else "")
+        pr = subprocess.run([sys.executable, os.path.join(KOTI, "netti_live.py"), "--youtube", "-Z4JPPqtlmU", "--ei-ikkunaa", "--hiljaa"], capture_output=True, text=True, timeout=120, env=ymp)
+        tarkista("vertailu: erillisena argumenttina viivalla alkava tunnus hylataan (siksi yhtena argumenttina)", "unrecognized arguments" in (pr.stdout + pr.stderr))
 
 
 def testaa_tiedostot_ja_muisti():
@@ -199,6 +209,15 @@ def testaa_tiedostot_ja_muisti():
         tarkista("YouTube-lahde kirjataan tunnuksella", np_.Kasitellyt(k.polku).valmis("youtube", "abcdefghijk") and not k.valmis("youtube", "toinen_id_11"))
         kirjoita(k.polku, "{ rikki")
         tarkista("rikkinainen muistitiedosto: aloitetaan tyhjasta", not np_.Kasitellyt(k.polku).data)
+
+
+def lahde_komennosta(cmd):
+    """(valitsin, arvo) netti_live-komennosta: lahde annetaan yhtena argumenttina (--youtube=ARVO / --url=ARVO / --lahde=ARVO), jotta viivalla alkava arvo ei tulkittu valitsimeksi."""
+    for t in cmd:
+        for v in ("--youtube", "--url", "--lahde"):
+            if t.startswith(v + "="):
+                return v, t[len(v) + 1:]
+    return None, None
 
 
 class EsiPysaytys:
@@ -248,13 +267,13 @@ def testaa_silmukka():
 
         a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LAHDE=v, NETTI_JATKUVA="0"))
         rc = np_.palvele(a, EsiPysaytys(), ajuri_ok, 32.0, lambda: nyt)
-        tarkista("kertaajo kansiolle: molemmat videot, paluukoodi 0", rc == 0 and [c[c.index("--lahde") + 1].rsplit("/", 1)[1] for c in ajot] == ["a.mp4", "b.mp4"], str([c[c.index("--lahde") + 1][-8:] for c in ajot]))
+        tarkista("kertaajo kansiolle: molemmat videot, paluukoodi 0", rc == 0 and [lahde_komennosta(c)[1].rsplit("/", 1)[1] for c in ajot] == ["a.mp4", "b.mp4"], str([lahde_komennosta(c)[1][-8:] for c in ajot]))
         tarkista("ulos- ja tyokansiot luotu", os.path.isdir(a.ulos_kansio) and os.path.isdir(a.tyo_kansio))
         ajot.clear()
 
         def ajuri_vika(cmd, env=None, cwd=None):
             ajot.append(cmd)
-            return 7 if cmd[cmd.index("--lahde") + 1].endswith("b.mp4") else 0
+            return 7 if lahde_komennosta(cmd)[1].endswith("b.mp4") else 0
 
         rc = np_.palvele(a, EsiPysaytys(), ajuri_vika, 32.0, lambda: nyt)
         tarkista("kertaajo: yhden videon virhe ei estä toista, paluukoodi = virhekoodi", rc == 7 and len(ajot) == 2)
@@ -268,23 +287,23 @@ def testaa_silmukka():
         ps = EsiPysaytys(pysayta_nukkumisella=2)
         rc = np_.palvele(a, ps, ajuri_vika, 32.0, lambda: nyt)
         tarkista("valvonta: pysaytys kesken odotuksen -> paluukoodi 0", rc == 0)
-        a_ajot = [c[c.index("--lahde") + 1].rsplit("/", 1)[1] for c in ajot]
+        a_ajot = [lahde_komennosta(c)[1].rsplit("/", 1)[1] for c in ajot]
         tarkista("valvonta: a.mp4 valmis kerran, b.mp4 (epaonnistuu) yritetaan uudelleen", a_ajot.count("a.mp4") == 1 and a_ajot.count("b.mp4") >= 2, str(a_ajot))
         tarkista("valvonta: odotusaika asetuksen mukainen", all(s == 5.0 for s in ps.nukkumiset), str(ps.nukkumiset))
         ajot.clear()
         ps = EsiPysaytys(pysayta_nukkumisella=6)
         np_.palvele(a, ps, ajuri_vika, 32.0, lambda: nyt)
         k = np_.Kasitellyt(a.kasitellyt_polku)
-        b_ajot = [c[c.index("--lahde") + 1].endswith("b.mp4") for c in ajot].count(True)
+        b_ajot = [lahde_komennosta(c)[1].endswith("b.mp4") for c in ajot].count(True)
         tarkista("valvonta (uusi kaynnistys): b.mp4 saa kolmannen ja viimeisen yrityksen, sen jalkeen se jaa pois", b_ajot == 1 and k.valmis("tiedostot", os.path.join(v, "b.mp4")), str(b_ajot))
-        tarkista("valvonta: a.mp4 ei aja uudelleen uudessa kaynnistyksessa", [c[c.index("--lahde") + 1].endswith("a.mp4") for c in ajot].count(True) == 0)
+        tarkista("valvonta: a.mp4 ei aja uudelleen uudessa kaynnistyksessa", [lahde_komennosta(c)[1].endswith("a.mp4") for c in ajot].count(True) == 0)
         ajot.clear()
         np_.palvele(a, EsiPysaytys(pysayta_nukkumisella=3), ajuri_vika, 32.0, lambda: nyt)
         tarkista("valvonta: yritysrajan ylittanytta b.mp4:aa ei enaa ajeta", ajot == [])
         kirjoita(os.path.join(v, "c.mp4"), "c", nyt - 100)
         ajot.clear()
         np_.palvele(a, EsiPysaytys(pysayta_nukkumisella=1), ajuri_ok, 32.0, lambda: nyt)
-        tarkista("valvonta: uusi video c.mp4 havaitaan ja ajetaan", [c[c.index("--lahde") + 1].rsplit("/", 1)[1] for c in ajot] == ["c.mp4"])
+        tarkista("valvonta: uusi video c.mp4 havaitaan ja ajetaan", [lahde_komennosta(c)[1].rsplit("/", 1)[1] for c in ajot] == ["c.mp4"])
 
         # YouTube-lahteen valvonta: VOD kirjataan valmiiksi, live ajetaan uudelleen
         ulos = os.path.join(t, "ulos2")
@@ -412,10 +431,10 @@ def testaa_linkkilista():
         tarkista("lahteet: odotuksen jalkeen rivi palaa mukaan", ("youtube_lista", "https://www.youtube.com/watch?v=abcdefghijk") in np_.lahteet(a, k, nyt + 61))
         # komento
         c = np_.rakenna_komento(a, "youtube_lista", "hnTTLqHr5x8", "20260101_120000", None, 32.0)
-        tarkista("komento: youtube_lista -> --youtube TUNNUS, ei --nopea, tulostiedostojen tunniste yt_<tunnus>", c[c.index("--youtube") + 1] == "hnTTLqHr5x8" and "--nopea" not in c and "--lahde" not in c
+        tarkista("komento: youtube_lista -> --youtube TUNNUS, ei --nopea, tulostiedostojen tunniste yt_<tunnus>", lahde_komennosta(c) == ("--youtube", "hnTTLqHr5x8") and "--nopea" not in c and "--lahde" not in c
                  and os.path.join(a.ulos_kansio, "kivenseuranta_yt_hnTTLqHr5x8_20260101_120000.mp4") in c, " ".join(c[3:6]))
         c = np_.rakenna_komento(a, "url_lista", "rtsp://kamera.lan/x", "x", None, 4.0)
-        tarkista("komento: url_lista -> --url OSOITE, vahan muistia: --lataus 8", c[c.index("--url") + 1] == "rtsp://kamera.lan/x" and c[c.index("--lataus") + 1] == "8")
+        tarkista("komento: url_lista -> --url OSOITE, vahan muistia: --lataus 8", lahde_komennosta(c) == ("--url", "rtsp://kamera.lan/x") and c[c.index("--lataus") + 1] == "8")
 
     # ajosilmukka: linkit ajetaan kerran, lisatty rivi huomataan, epaonnistuminen pidentaa odotusta
     with tempfile.TemporaryDirectory() as t:
@@ -426,7 +445,7 @@ def testaa_linkkilista():
         ajot = []
 
         def ajuri(cmd, env=None, cwd=None):
-            ref = cmd[cmd.index("--youtube") + 1] if "--youtube" in cmd else cmd[cmd.index("--url") + 1]
+            ref = lahde_komennosta(cmd)[1]
             ajot.append((ek.t, ref))
             if len(ajot) == 1:
                 with open(lista, "a") as f:                                       # kesken ensimmaisen ajon kayttaja lisaa uuden linkin tiedostoon (kontin kaynnistysta ei tarvita)
@@ -724,7 +743,11 @@ def testaa_netti_live_palvelinosat():
         try:
             k = na.keksitiedosto()
             tarkista("keksitiedosto: kopio tilapaiseen paikkaan (alkuperaista ei kosketa)", k and k != alku and open(k).read() == open(alku).read())
+            tarkista("keksitiedosto: kopio on vain omistajan luettavissa (0600)", oct(os.stat(k).st_mode & 0o777) == "0o600", oct(os.stat(k).st_mode & 0o777))
             os.remove(k)
+            pr = subprocess.run([sys.executable, "-c", "import netti_aani as na; print(na.keksitiedosto())"], capture_output=True, text=True, timeout=60, cwd=KOTI, env=dict(os.environ, YTDLP_KEKSIT=alku))
+            kopio = pr.stdout.strip()
+            tarkista("keksitiedosto: kopio poistuu, kun prosessi paattyy (ei jaa /tmp-kansioon)", pr.returncode == 0 and kopio.endswith(".txt") and not os.path.exists(kopio), kopio)
             os.environ["YTDLP_KEKSIT"] = os.path.join(t, "ei_ole.txt")
             tarkista("keksitiedosto: puuttuva tiedosto -> None", na.keksitiedosto() is None)
         finally:

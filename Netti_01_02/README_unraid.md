@@ -181,7 +181,7 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 * Kuvassa ovat `yt-dlp`, sen JavaScript-ajuri (`deno`) ja `yt-dlp-ejs`; YouTuben muutokset rikkovat yt-dlp:n aika ajoin. **Ensimmäinen keino kaikkiin YouTube-ongelmiin: `YTDLP_PAIVITA=1`**
   (päivittää yt-dlp:n joka käynnistyksellä) tai kuvan uudelleenrakennus (`docker build --no-cache …`).
 * Virheilmoitus *Sign in to confirm you're not a bot* tai ikärajaviesti: YouTube vaatii kirjautumisen. Vie selaimesta (kirjautuneena) evästeet Netscape-muodossa tiedostoon
-  `/mnt/user/kivenseuranta/cookies.txt` (esim. selainlaajennus "Get cookies.txt") ja aseta `YTDLP_KEKSIT=/data/cookies.txt`. Tiedostoa ei muuteta (ohjelma käyttää kopiota). Käytä mieluiten erillistä
+  `/mnt/user/kivenseuranta/cookies.txt` (jakokansion juureen, **ei** kansioon `ulos`; esim. selainlaajennus "Get cookies.txt") ja aseta `YTDLP_KEKSIT=/data/cookies.txt`. Tiedostoa ei muuteta (ohjelma käyttää kopiota). Käytä mieluiten erillistä
   tiliä: evästeet antavat pääsyn tiliin.
 * Live-virralle yt-dlp antaa HLS-osoitteen, jota OpenCV lukee; jos katko pitää lähetyksen, ohjelma yrittää avata virran uudelleen viisi kertaa.
 * Reaaliaikainen live-analyysi vaatii, että kone jaksaa analysoida 30 ruutua sekunnissa ([Resurssit](#7-resurssit-ja-suorituskyky)); muuten kuvan viive kasvaa ja ruutuja ohitetaan.
@@ -206,7 +206,7 @@ kuuluu ajoon: **kun yksikään ajo ei ole käynnissä** (valvonnassa odotusaikan
 
 **Turvallisuus:** selainnäkymässä ei ole oletuksena kirjautumista, ja se näyttää tulostiedostot. Käytä sitä kotiverkossa äläkä avaa porttia internetiin. `NETTI_WEB_KAYTTAJA` ja `NETTI_WEB_SALASANA`
 lisäävät HTTP Basic -tunnistuksen (salasana kulkee salaamatta; internetiin vain TLS-päätteisen käänteisen välityspalvelimen takaa). Näkymä antaa vain
-lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suoraan kansiossa `ulos`).
+lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suoraan kansiossa `ulos`). Lisää: [Tietoturva ja verkkoyhteydet](#11-tietoturva-ja-verkkoyhteydet).
 
 ---
 
@@ -268,6 +268,53 @@ Lokit: Unraidin Docker-välilehti → kontin *Logs*, tai `docker logs -f kivense
 * **Mukana ei ole:** vanhat kameraohjelmat (`live.py`, `main.py` …), opetus- ja kehitystyökalut, kulmaverkon painot (niitä ei käytetä ajossa), ikkunanäkymä (`--nayttotila`) ei ole käytössä (OpenCV on ilman ikkunatukea); palvelimella
   käytetään `--web`-näkymää.
 * Kuvan Python on 3.12 (Ubuntu 24.04) ja OpenCV `opencv-python-headless` (ei ikkunatukea).
+
+---
+
+## 11. Tietoturva ja verkkoyhteydet
+
+**Lyhyesti.** Kontti on tavallinen rajattu sovelluskontti: se ei ole `privileged`, sillä ei ole `docker.sock`-liitosta, laitteita eikä `host`-verkkoa, ja se näkee vain yhden jakokansion (`/data`).
+Analyysi ajetaan tavallisena käyttäjänä (`PUID`/`PGID`, Unraidissa `nobody:users`); root-oikeuksia käytetään vain käynnistyksen alussa kansioiden ja käyttäjän luontiin. Suurin käytännön riski on
+**selainnäkymän portti**, jos se päätyy julkiseen verkkoon.
+
+**Milloin kontti ottaa yhteyttä verkkoon**
+
+| Tilanne | Minne | Mihin tarvitaan |
+|---|---|---|
+| `docker build` | Docker Hub (`ubuntu:24.04`), Ubuntun pakettipalvelimet, PyPI | kuvan rakennus |
+| Videotiedoston analyysi | ei minnekään | ajo onnistuu täysin ilman verkkoa (testattu verkottomassa nimiavaruudessa) |
+| YouTube-linkki tai live | YouTuben ja Googlen palvelimet (esim. `youtube.com`, `googlevideo.com`) | videon ja äänen haku (yt-dlp) |
+| Muu verkko-osoite, `rtsp://` | itse antamasi osoite | virran luku |
+| `YTDLP_PAIVITA=1` | PyPI | yt-dlp:n päivitys käynnistyksessä (oletus pois) |
+| Selainnäkymä | vastaanottaa yhteyksiä portissa 63884 | katselu |
+
+Ohjelmassa ei ole telemetriaa, eikä se lähetä tuloksia minnekään. Omassa koodissa ainoa verkkopalvelu on selainnäkymä; ulosmenevät yhteydet tekevät yt-dlp (YouTube), OpenCV / FFmpeg (annettu virta)
+ja valinnaisesti pip. Kontin ulosmenevää liikennettä ei ole rajoitettu: se voi ottaa yhteyden mihin tahansa osoitteeseen, joka kirjoitetaan linkkilistaan tai asetukseen `NETTI_LAHDE`.
+
+**Selainnäkymä.** Se kuuntelee kaikkia verkkorajapintoja (portti 63884), oletuksena ilman salasanaa ja ilman salausta (HTTP). Se näyttää kuvan, lokin (polut ja osoitteet), ajon tilan ja kansion `ulos`
+tulostiedostot (`mp4`, `csv`, `json`, `txt`, `log`; vain luku). Se ei anna pääsyä muuhun jakokansioon, ei voi ajaa komentoja eikä ota vastaan tiedostoja; polkuhyökkäysten esto on testattu.
+Älä silti avaa porttia internetiin.
+
+**Suositukset (tärkeimmästä alkaen)**
+
+1. **Älä avaa selainnäkymän porttia internetiin** (ei portinavausta reitittimessä, ei DMZ:tä, ei UPnP:tä). Etäkäyttöön VPN (esim. Unraidin WireGuard tai Tailscale).
+2. **Aseta salasana** (`NETTI_WEB_KAYTTAJA` ja `NETTI_WEB_SALASANA`), jos kotiverkossa on laitteita, joihin et luota (vierasverkko, älylaitteet), tai poista selainnäkymä (`NETTI_WEB_PORTTI=0`).
+   Salasana kulkee HTTP:ssä salaamatta ja näkyy kontin asetuksissa ja `docker inspect`-tulosteessa, joten se sopii vain kotiverkkoon.
+3. **Rajaa jakokansion kirjoitusoikeus.** Kansioon `video` ja tiedostoon `youtube.txt` kirjoittava päättää, mitä kontti analysoi ja mihin osoitteisiin se ottaa yhteyttä.
+4. **Analysoi vain luotettuja videoita ja osoitteita.** Videon purku (FFmpeg / OpenCV) on tyypillinen hyökkäyspinta, jossa on aika ajoin haavoittuvuuksia. YouTube ja omat tallenteet ovat tavallisesti
+   turvallisia; tuntemattomalta saatu tiedosto tai `rtsp://`-osoite ei ole.
+5. **Päivitä kuva silloin tällöin:** `docker build --no-cache -t kivenseuranta:latest .` tuo Ubuntun tietoturvapäivitykset (esim. ffmpeg). Python-kirjastot numpy, scipy ja opencv on kiinnitetty
+   versioihin (`requirements.txt`), joten niiden päivitys vaatii tiedoston muuttamista; yt-dlp ja deno ovat rakennushetken uusimmat.
+6. **YouTube-evästeet** (`YTDLP_KEKSIT`) antavat pääsyn Google-tiliin. Käytä erillistä tiliä, pidä `cookies.txt` jakokansion juuressa (ei kansiossa `ulos`, jonka tiedostoja selainnäkymä tarjoaa) ja rajaa
+   sen oikeudet. Ohjelma käyttää tiedostosta kopiota (oikeudet 0600), joka poistetaan ajon päättyessä.
+7. **`YTDLP_PAIVITA=1`** asentaa paketin PyPI:stä kontin root-oikeuksilla käynnistyksessä. Pidä se pois päältä (oletus), ellet tarvitse päivitystä.
+
+**YouTuben JavaScript.** YouTube edellyttää nykyisin, että yt-dlp ratkaisee sivun JavaScript-haasteita. Se tehdään `deno`-ajurilla, joka ajaa koodin ilman tiedosto-, verkko- tai ympäristöoikeuksia:
+yt-dlp antaa `deno`lle vain valitsimet `--no-prompt --no-remote ...` eikä yhtään `--allow-*`-lupaa. Kokeessa tällainen ajo ei päässyt lukemaan tiedostoa eikä avaamaan verkkoyhteyttä (`NotCapable`),
+eikä `deno` ottanut itse yhteyttä verkkoon.
+
+**Mitä tässä ei ole:** ulosmenevän liikenteen rajoitusta, selainnäkymän salausta (TLS), kirjautumisyritysten rajoitusta eikä riippuvuuksien hash-tarkistusta. Raskaamman eristyksen (esim. `--cap-drop`,
+`--read-only`) vaikutusta ei ole testattu kokonaisella analyysiajolla, joten sitä ei suositella tässä.
 
 ---
 

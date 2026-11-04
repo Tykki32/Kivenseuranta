@@ -8,6 +8,7 @@ Vanha tapa haki aanen ffmpegilla suoraan YouTube-osoitteesta vasta ajon lopuksi:
 tallenteen lyhyella. Nyt: yt_dlp lataa aanen taustasaikeessa heti ajon alussa (palasittain, uudelleenyrityksin) analyysin kanssa rinnakkain, lopuksi liitetaan paikallinen tiedosto
 sekunneissa, aani tayteteen mykalla (apad) kuvan mittaiseksi eika kuvaa koskaan lyhenneta, ja tulos tarkistetaan (kuva- ja aaniraita, kesto) ennen kuin alkuperainen tallenne
 korvataan. Jos aanta ei saada, kuvatallenne jaa aanettomana ja ehjana ja ladattu aani jaa tiedostoon (liitos jalkikateen: tools/liita_aani.py)."""
+import atexit
 import os
 import re
 import shutil
@@ -45,6 +46,16 @@ def onko_youtube(ref):
     return "youtube.com" in s or "youtu.be" in s
 
 
+_KEKSIKOPIOT = set()
+
+
+def _poista_tiedosto(polku):
+    try:
+        os.remove(polku)
+    except OSError:
+        pass
+
+
 def keksitiedosto():
     """yt-dlp:n keksitiedosto (Netscape cookies.txt) ymparistomuuttujasta YTDLP_KEKSIT tai None. Tiedosto kopioidaan tilapaiseen paikkaan, koska yt-dlp kirjoittaa keksit takaisin
     tiedostoon ajon lopussa: kirjoitussuojattu tai jaettu alkuperainen (kontin volyymi) ei saa aiheuttaa virhetta eika muuttua."""
@@ -57,6 +68,10 @@ def keksitiedosto():
     try:
         kopio = os.path.join(tempfile.gettempdir(), f"yt_keksit_{os.getpid()}.txt")
         shutil.copyfile(polku, kopio)
+        os.chmod(kopio, 0o600)                                   # evasteet ovat kirjautumistieto: vain ajavan kayttajan luettavissa
+        if kopio not in _KEKSIKOPIOT:
+            _KEKSIKOPIOT.add(kopio)
+            atexit.register(_poista_tiedosto, kopio)             # kopio poistetaan prosessin paattyessa, ettei se jaa kontin /tmp-kansioon
         return kopio
     except OSError as e:
         print(f"Huom: keksitiedostoa ei voitu kopioida ({e}), keksejä ei käytetä.", file=sys.stderr)
