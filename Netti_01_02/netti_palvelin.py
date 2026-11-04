@@ -255,7 +255,9 @@ def rakenna_komento(a, laji, arvo, leima, tila_polku=None, muisti_gt=None, lisa=
     if laji in LISTALAJIT:
         laji = laji[:-len("_lista")]
     tag = tunniste(laji, arvo)
-    cmd = [sys.executable, "-u", os.path.join(HERE, "netti_live.py"), {"youtube": "--youtube", "url": "--url", "tiedostot": "--lahde"}[laji], arvo, "--ei-ikkunaa"]
+    valitsin = {"youtube": "--youtube", "url": "--url", "tiedostot": "--lahde"}[laji]
+    # lahde yhtena argumenttina (--youtube=ARVO): erillisena argumenttina viivalla alkava arvo (noin 1,6 % YouTube-tunnuksista alkaa viivalla) tulkittaisiin valitsimeksi ja ajo epaonnistuisi
+    cmd = [sys.executable, "-u", os.path.join(HERE, "netti_live.py"), f"{valitsin}={arvo}", "--ei-ikkunaa"]
     if a.web_portti:
         cmd += ["--web", str(a.web_portti), "--web-leveys", str(a.web_leveys), "--web-fps", f"{a.web_fps:g}", "--web-laatu", str(a.web_laatu)]
     if a.tallenna_video:

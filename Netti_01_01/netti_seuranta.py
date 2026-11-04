@@ -2202,7 +2202,8 @@ class Analyysi:
         self._kopio_kaista = None                    # edellisen ruudun kopiotestin kaista (viite; ruutuja ei muokata syotön jalkeen) ...
         self._kopio_harmaat = [None] * KOPIO_KAISTOJA        # ... ja sen kaistojen harmaasavyt, kun ne on jo laskettu
         self._kopio_ensin = 0                        # kaista, jossa edellisen ruudun ero todettiin: tutkitaan ensin
-        self.viim_f = None
+        self.viim_f = None                           # viimeisin YKSILOLLINEN (ei kopio) analysoitu ruutu
+        self.syotetty_f = None                       # viimeisin analyysille syotetty ruutu, myos kopioruutu: analyysin eteneminen kuvalle (netti_live: toistettavassa ajossa kuva odottaa analyysia)
         self.kopioita = 0
         self.yksilollisia = 0
         self.tapahtumat = []
@@ -2951,7 +2952,8 @@ class Analyysi:
 
     # ---- paasilmukka -----------------------------------------------------------------------------------------------
     def syota(self, f, ruutu):
-        """Yksi ruutu (BGR, 1920 x 1080). Kopioruudut ohitetaan."""
+        """Yksi ruutu (BGR, 1920 x 1080). Kopioruudut ohitetaan: seuranta ei muutu eika viim_f paivity, mutta syotetty_f paivittyy (kopioruutujono voi olla pitka: hiljainen tauko, pysaytetty
+        kuva). Kuva odottaa analyysia syotetty_f:n mukaan: viim_f:n mukaan se jaisi odottamaan kopioruutujonon ajaksi ja lukkiutuisi analyysin vastapaineeseen (netti_live)."""
         pc = time.perf_counter
         t0 = pc()
         kopio = self._kopio(ruutu)
@@ -2959,9 +2961,10 @@ class Analyysi:
         self.aika["kopio"] += t1 - t0
         if kopio:
             self.kopioita += 1
+            self.syotetty_f = f
             return
         self.yksilollisia += 1
-        self.viim_f = f
+        self.viim_f = self.syotetty_f = f
         if self._fps_auto and self.yksilollisia + self.kopioita >= 150:
             self._paata_fps_lahde()
         if self.merkit is not None:
