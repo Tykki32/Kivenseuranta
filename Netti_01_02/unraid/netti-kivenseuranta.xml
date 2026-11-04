@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<!-- Unraidin Docker-mallipohja (Netti_01_02). Kopioi tiedosto palvelimelle:
+       /boot/config/plugins/dockerMan/templates-user/my-netti-kivenseuranta.xml
+     ja valitse Docker-valilehdella Add Container -> Template: netti-kivenseuranta. Kuva netti-kivenseuranta:latest on rakennettava ensin (README_unraid.md: docker build). -->
+<Container version="2">
+  <Name>netti-kivenseuranta</Name>
+  <Repository>netti-kivenseuranta:latest</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project/>
+  <Overview>Kivenseuranta (curling): analysoi pelivideon (tiedosto, YouTube-video tai live-lahetys), mittaa kivien liun, irroituksen, nopeuden ja kierteen ja kirjoittaa tulokset CSV-tiedostoon seka kuvalliseen mp4-videoon. Selainnakyma: kuva, loki ja tulostiedostot. Oletus: kansion video valvonta.</Overview>
+  <Category>Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams>--stop-timeout 90</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Selainnakyma (portti)" Target="8080" Default="8080" Mode="tcp" Description="Web-kayttoliittyman portti (kuva, loki, tulostiedostot). Ala avaa internetiin: ei kirjautumista, ellei salasanaa aseteta." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/netti" Mode="rw" Description="Kansio, jossa on video/ (syotevideot), ulos/ (tulokset: mp4 ja CSV) ja kalibroinnit/ (omat kalibroinnit). Kansiot luodaan automaattisesti." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/netti</Config>
+  <Config Name="Lahde (NETTI_LAHDE)" Target="NETTI_LAHDE" Default="" Mode="" Description="Tyhja = kansion video valvonta. Tai YouTube-tunnus / -osoite (video tai kanavan .../live), http / rtsp -osoite tai tiedosto (/data/video/peli.mp4)." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Valvonta (NETTI_JATKUVA)" Target="NETTI_JATKUVA" Default="" Mode="" Description="1 = ajon paatyttya odotetaan ja yritetaan uudelleen (uudet videot, live-lahetyksen alkaminen). Tyhja = automaattinen (kansio: paalla, muuten pois). Kertaajossa aseta kontin Restart-asetukseksi no." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Tallenna video (NETTI_VIDEO)" Target="NETTI_VIDEO" Default="1" Mode="" Description="1 = kuvallinen mp4 (noin 1,5 Gt tunnissa), 0 = vain CSV." Type="Variable" Display="always" Required="false" Mask="false">1</Config>
+  <Config Name="Kuvan viive (NETTI_VIIVE)" Target="NETTI_VIIVE" Default="10" Mode="" Description="Kuva tulee taman verran (s) analyysin perassa." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
+  <Config Name="Kalibrointikansio (NETTI_KANSIO)" Target="NETTI_KANSIO" Default="" Mode="" Description="Tyhja = valitaan videon mukaan automaattisesti (oma kalibrointi luodaan tarvittaessa kansioon /data/kalibroinnit). Tai kansion nimi / polku." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Lisavalitsimet (NETTI_LISAVALITSIMET)" Target="NETTI_LISAVALITSIMET" Default="" Mode="" Description="Mika tahansa netti_live.py:n valitsin, esim. --kiri 0 --lataus 15 (python netti_live.py --help)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Web-kayttaja (NETTI_WEB_KAYTTAJA)" Target="NETTI_WEB_KAYTTAJA" Default="" Mode="" Description="Selainnakyman salasanasuojaus: kayttajatunnus (kumpikin pakollinen, jotta suojaus on paalla)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Web-salasana (NETTI_WEB_SALASANA)" Target="NETTI_WEB_SALASANA" Default="" Mode="" Description="Selainnakyman salasana." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Paivita yt-dlp (YTDLP_PAIVITA)" Target="YTDLP_PAIVITA" Default="0" Mode="" Description="1 = paivita yt-dlp kontin kaynnistyessa (YouTube muuttuu usein; tarvitsee verkon)." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="YouTube-keksit (YTDLP_KEKSIT)" Target="YTDLP_KEKSIT" Default="" Mode="" Description="Jos YouTube vaatii kirjautumisen: selaimesta viety cookies.txt, esim. /data/cookies.txt." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Kayttaja, jonka oikeuksilla ajetaan (Unraid: 99 = nobody)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Ryhma, jonka oikeuksilla ajetaan (Unraid: 100 = users)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="Luotavien tiedostojen oikeusmaski." Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+  <Config Name="Aikavyohyke (TZ)" Target="TZ" Default="Europe/Helsinki" Mode="" Description="Lokin ja tiedostonimien aikaleimojen aikavyohyke." Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Helsinki</Config>
+</Container>

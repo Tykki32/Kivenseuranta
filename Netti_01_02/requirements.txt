@@ -1,0 +1,10 @@
+# Netti_01_02 (palvelinversio): Python-riippuvuudet kontin virtuaaliymparistoon (Dockerfile asentaa nama ja pybind11:n C++-sovittimen kaannokseen).
+# Kiinnitetyt versiot ovat ne, joilla testit ja koeajot on ajettu; ylempi versio toimii todennakoisesti, mutta ei ole testattu.
+numpy==2.5.3
+scipy==1.18.1
+opencv-python-headless==5.0.0.93
+
+# YouTube: yt-dlp rikkoutuu aika ajoin, kun YouTube muuttuu, joten sita ei kiinnitetty (tuorein asennetaan kuvan rakennuksessa; ymparistomuuttuja YTDLP_PAIVITA=1 paivittaa sen kontin kaynnistyessa).
+# [default] tuo mukaan yt-dlp-ejs:n (YouTuben haasteiden ratkaisu), joka tarvitsee JavaScript-ajurin: deno-paketti tuo sen valmiina polulle.
+yt-dlp[default]
+deno

@@ -1,0 +1,375 @@
+"""Aani tallenteeseen (--ulos): YouTube-aanen lataus taustalla ajon aikana ja liitos valmiiseen kuvatiedostoon.
+
+Kuvatallenne tehdaan ensin aanettomana (ffmpeg-putki: kuva ei riipu aanesta) ja aani liitetaan vasta lopuksi (kuva kopioidaan sellaisenaan, aani koodataan AAC:ksi). Aani on lahdevideon
+aikajanalla (ruutu f <-> aani f / fps), joten se pysyy samassa kohdassa kuin kuva.
+
+Vanha tapa haki aanen ffmpegilla suoraan YouTube-osoitteesta vasta ajon lopuksi: (1) YouTube rajoittaa suoratoiston nopeutta, joten koko ohjelman pituisen aanen haku kesti kauan, ja
+(2) jos aanivirta loppui kesken (verkkokatko, YouTube katkaisi yhteyden), `-shortest` lyhensi valmiin kuvatallenteen aanen pituiseksi: ffmpeg palautti silti 0 ja ohjelma korvasi
+tallenteen lyhyella. Nyt: yt_dlp lataa aanen taustasaikeessa heti ajon alussa (palasittain, uudelleenyrityksin) analyysin kanssa rinnakkain, lopuksi liitetaan paikallinen tiedosto
+sekunneissa, aani tayteteen mykalla (apad) kuvan mittaiseksi eika kuvaa koskaan lyhenneta, ja tulos tarkistetaan (kuva- ja aaniraita, kesto) ennen kuin alkuperainen tallenne
+korvataan. Jos aanta ei saada, kuvatallenne jaa aanettomana ja ehjana ja ladattu aani jaa tiedostoon (liitos jalkikateen: tools/liita_aani.py)."""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+YT_AANI_FORMAATIT = ["bestaudio[ext=m4a][protocol=https]/bestaudio[protocol=https]",        # suora https-lataus (nopea, palasittain)
+                     "bestaudio[ext=m4a]/bestaudio",                                         # mika tahansa aaniformaatti (esim. HLS)
+                     "bestaudio/best"]                                                       # viimeinen vaihtoehto: kuva + aani -tiedosto (aani poimitaan liitoksessa)
+KELPAA_MIN_OSUUS = 0.9                                           # ladatun aanen dekoodattu kesto vahintaan taman osuus videon kestosta (muuten kokeillaan seuraavaa formaattia)
+MYKKA_DB = -60.0                                                 # keskivoimakkuus, jonka alla aani on (lahes) mykka
+_KESTO = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+_EI_IKKUNAA = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def etsi_ffmpeg(polku=None):
+    """ffmpeg-ohjelma: annettu polku, PATH tai imageio-ffmpeg-paketin mukana tuleva (pip install imageio-ffmpeg); None jos ei loydy."""
+    if polku:
+        return polku if shutil.which(polku) or os.path.exists(polku) else None
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def onko_youtube(ref):
+    s = str(ref)
+    return "youtube.com" in s or "youtu.be" in s
+
+
+def keksitiedosto():
+    """yt-dlp:n keksitiedosto (Netscape cookies.txt) ymparistomuuttujasta YTDLP_KEKSIT tai None. Tiedosto kopioidaan tilapaiseen paikkaan, koska yt-dlp kirjoittaa keksit takaisin
+    tiedostoon ajon lopussa: kirjoitussuojattu tai jaettu alkuperainen (kontin volyymi) ei saa aiheuttaa virhetta eika muuttua."""
+    polku = os.environ.get("YTDLP_KEKSIT")
+    if not polku:
+        return None
+    if not os.path.isfile(polku):
+        print(f"Huom: YTDLP_KEKSIT={polku} ei ole tiedosto, keksejä ei käytetä.", file=sys.stderr)
+        return None
+    try:
+        kopio = os.path.join(tempfile.gettempdir(), f"yt_keksit_{os.getpid()}.txt")
+        shutil.copyfile(polku, kopio)
+        return kopio
+    except OSError as e:
+        print(f"Huom: keksitiedostoa ei voitu kopioida ({e}), keksejä ei käytetä.", file=sys.stderr)
+        return None
+
+
+def tiedot(exe, polku, aikaraja_s=120):
+    """(kesto s tai None, on aaniraita, on kuvaraita) ffmpeg -i:n tulosteesta (paikallinen tiedosto tai osoite)."""
+    try:
+        r = subprocess.run([exe, "-hide_banner", "-i", str(polku)], capture_output=True, text=True, errors="replace", timeout=aikaraja_s, creationflags=_EI_IKKUNAA)
+    except Exception:
+        return None, False, False
+    s = r.stderr
+    m = _KESTO.search(s)
+    kesto = None if m is None else 3600.0 * int(m.group(1)) + 60.0 * int(m.group(2)) + float(m.group(3))
+    return kesto, "Audio:" in s, "Video:" in s
+
+
+def virrat(exe, polku, aikaraja_s=120):
+    """Tiedoston kesto- ja virtarivit ffmpeg -i:n tulosteesta (diagnostiikka): [rivi, ...]."""
+    try:
+        r = subprocess.run([exe, "-hide_banner", "-i", str(polku)], capture_output=True, text=True, errors="replace", timeout=aikaraja_s, creationflags=_EI_IKKUNAA)
+    except Exception:
+        return []
+    return [x.strip() for x in r.stderr.splitlines() if "Duration:" in x or "Stream #" in x]
+
+
+_KESTO_AJO = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_AANI_RIVI = re.compile(r"Audio:\s*(\w+)[^,]*,\s*(\d+) Hz,\s*([^,]+)")
+
+
+def aanen_tila(exe, polku, alku_s=0.0, kesto_s=None, aikaraja_s=1800, matala=False):
+    """Aanen todellinen tila dekoodaamalla (ei metatietojen varaan: HLS / katkenneen latauksen tiedoston kesto voi olla N/A tai vaara): dict(koodekki, taajuus, kanavat, kesto [s, dekoodattu valilta
+    [alku, alku + kesto_s]], keski_db, huippu_db) tai None, jos aanta ei voitu dekoodata. keski_db <= -60 = (lahes) mykka."""
+    cmd = [exe, "-hide_banner", "-nostdin"] + (["-ss", f"{alku_s:.3f}"] if alku_s else []) + (["-t", f"{kesto_s:.3f}"] if kesto_s else []) + ["-i", str(polku), "-vn", "-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"]
+    lisa = {}
+    if matala:                                                  # taustalla ajon aikana: ei vie prosessoria analyysilta
+        if os.name == "nt":
+            lisa = dict(creationflags=_EI_IKKUNAA | 0x00004000)           # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            cmd = (["nice", "-n", "10"] if shutil.which("nice") else []) + cmd
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=aikaraja_s, **({"creationflags": _EI_IKKUNAA} if not lisa else lisa))
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    t = _KESTO_AJO.findall(r.stderr)
+    m_ka, m_hu, m_a = re.search(r"mean_volume:\s*(-?[\d.]+|-inf) dB", r.stderr), re.search(r"max_volume:\s*(-?[\d.]+|-inf) dB", r.stderr), _AANI_RIVI.search(r.stderr)
+    if not t or m_ka is None:
+        return None
+    h, m, sek = t[-1]
+    db = lambda x: None if x is None else (-120.0 if x.group(1) == "-inf" else float(x.group(1)))
+    return dict(koodekki=m_a.group(1) if m_a else "?", taajuus=int(m_a.group(2)) if m_a else None, kanavat=m_a.group(3).strip() if m_a else "?",
+                kesto=3600.0 * int(h) + 60.0 * int(m) + float(sek), keski_db=db(m_ka), huippu_db=db(m_hu))
+
+
+def aani_teksti(t):
+    """aanen_tila-tuloksen yhden rivin kuvaus."""
+    return f"{t['koodekki']} {t['taajuus']} Hz {t['kanavat']}, kesto {t['kesto']:.0f} s, keskivoimakkuus {t['keski_db']:.1f} dB, huippu {t['huippu_db']:.1f} dB".replace(".", ",")
+
+
+def _poista(polku):
+    try:
+        os.remove(polku)
+    except OSError:
+        pass
+
+
+def liita(exe, kuva, osoite, alku_s=0.0, otsakkeet=None, aikaraja_s=3600, ulos=None, tila=None):
+    """Liittaa aanen (paikallinen tiedosto tai http-osoite; alku_s = aanen kohta, joka vastaa kuvan ensimmaista ruutua) valmiiseen kuvatiedostoon. Palauttaa (ok, viesti): onnistuessa
+    viesti on mahdollinen huomautus (esim. aani loppuu ennen kuvaa), muuten epaonnistumisen syy.
+    Kuva kopioidaan sellaisenaan ja aani tayteteen mykalla kuvan mittaiseksi (-af apad, -t kuvan kesto): lyhyt tai kesken katkennut aani ei lyhenna kuvaa. Alkuperainen tiedosto
+    korvataan vasta, kun tulos on tarkistettu (kuva- ja aaniraita, kesto vahintaan kuvan mittainen); muuten se jaa ennalleen. ulos = oma tulostiedosto (kuvatiedosto jaa koskematta). tila = valmiiksi laskettu aanen_tila koko tiedostolle (muuten dekoodataan tassa)."""
+    kuva_kesto, _, kuvaa = tiedot(exe, kuva)
+    if not kuvaa:
+        return False, "kuvatiedostoa ei voitu lukea"
+    verkko = str(osoite).startswith(("http://", "https://"))
+    huom = ""
+    if not verkko:
+        if not os.path.exists(osoite):
+            return False, f"aanitiedostoa ei loydy ({osoite})"
+        _, aanta, _ = tiedot(exe, osoite)
+        if not aanta:
+            return False, f"aanilahteessa ei ole aaniraitaa ({osoite})"
+        if tila is not None:
+            tila = dict(tila, kesto=max(tila["kesto"] - alku_s, 0.0))                    # valmiiksi laskettu (koko tiedosto): aanen alusta alku_s pois
+        else:
+            tila = aanen_tila(exe, osoite, alku_s, kuva_kesto)                           # dekoodataan: todellinen kesto ja voimakkuus (metatiedot voivat puuttua tai olla vaarin)
+        if tila is None:
+            return False, f"aanta ei voitu dekoodata ({osoite})"
+        varoitukset = []
+        if kuva_kesto and tila["kesto"] < kuva_kesto - 2.0:
+            varoitukset.append(f"aani loppuu {kuva_kesto - tila['kesto']:.0f} s ennen kuvaa, loppu on mykka")
+        if tila["keski_db"] is None or tila["keski_db"] <= MYKKA_DB:
+            varoitukset.append("liitetty aani on mykka: tarkista aanilahde")
+        huom = f" ({aani_teksti(tila)}" + "".join(f"; huom: {v}" for v in varoitukset) + ")"
+    kohde = str(ulos or kuva)
+    tmp = kohde + ".aani.mp4"
+    cmd = [exe, "-hide_banner", "-loglevel", "error", "-y", "-i", str(kuva)]
+    if verkko:                                                                          # verkkosyote: otsakkeet ja uudelleenyhdistys katkoissa (vain http-syotteille)
+        if otsakkeet:
+            cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in otsakkeet.items())]
+        cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
+    if alku_s:
+        cmd += ["-ss", f"{alku_s:.3f}"]
+    cmd += ["-i", str(osoite), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-af", "apad"]
+    cmd += ["-t", f"{kuva_kesto:.3f}"] if kuva_kesto else ["-shortest"]
+    cmd += ["-movflags", "+faststart", tmp]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=aikaraja_s, creationflags=_EI_IKKUNAA)
+    except Exception as e:
+        _poista(tmp)
+        return False, f"ffmpeg ei toiminut ({e!r})"
+    if r.returncode != 0 or not os.path.exists(tmp):
+        _poista(tmp)
+        return False, (r.stderr.strip()[-300:] or f"ffmpeg paattyi virhekoodiin {r.returncode}")
+    t_kesto, aanta, kuvaa2 = tiedot(exe, tmp)
+    if not (aanta and kuvaa2):
+        _poista(tmp)
+        return False, "valmiissa tiedostossa ei ole seka kuva- etta aaniraitaa"
+    if kuva_kesto and t_kesto is not None and t_kesto < kuva_kesto - max(1.0, 0.001 * kuva_kesto):
+        _poista(tmp)
+        return False, f"tulos olisi lyhyempi kuin kuva ({t_kesto:.1f} s < {kuva_kesto:.1f} s)"
+    try:
+        os.replace(tmp, kohde)
+    except OSError as e:
+        return False, f"tiedostoa ei voitu korvata ({e}); aanellinen versio on tiedostossa {tmp}"
+    return True, huom
+
+
+class AaniLataus:
+    """YouTube-aanen lataus taustasaikeessa (yt_dlp: palasittain, uudelleenyrityksin): YouTube rajoittaa suoratoiston nopeutta, joten lataus tehdaan analyysin aikana eika vasta lopuksi.
+    ref = YouTube-tunnus tai -osoite; kohde = tiedostopolku ilman paatetta (yt_dlp lisaa paatteen); lataa(kohde, edistys) = oma latausfunktio (testaus): palauttaa tiedostopolun
+    ja ilmoittaa etenemisen kutsulla edistys(tavua, yhteensa tai None)."""
+
+    def __init__(self, ref, kohde, ffmpeg=None, lataa=None):
+        self.ref, self.kohde, self.ffmpeg = ref, kohde, ffmpeg
+        self.polku = None
+        self.virhe = None
+        self.tavua = 0
+        self.yht = None
+        self.viestit = []                                       # yt_dlp:n varoitukset ja virheet (diagnostiikka)
+        self.muoto = None                                       # ladatun formaatin kuvaus
+        self.tila = None                                        # ladatun aanen dekoodattu tila (aanen_tila), jos tarkistettu
+        self.t_alku = time.time()
+        self.t_edistys = self.t_alku
+        self.valmis = threading.Event()
+        self._lataa = lataa or self._yt_dlp
+        threading.Thread(target=self._aja, name="aanen-lataus", daemon=True).start()
+
+    def _edistys(self, tavua, yht=None):
+        if tavua > self.tavua:
+            self.t_edistys = time.time()
+        self.tavua = tavua
+        if yht:
+            self.yht = yht
+
+    def _aja(self):
+        try:
+            self.polku = self._lataa(self.kohde, self._edistys)
+            if not self.polku or not os.path.exists(self.polku):
+                raise RuntimeError("ladattua aanitiedostoa ei loydy")
+        except Exception as e:
+            self.virhe = e
+        finally:
+            self.valmis.set()
+
+    def _yt_dlp(self, kohde, edistys):
+        """Lataa aanen yt_dlp:lla: kokeilee formaatteja YT_AANI_FORMAATIT jarjestyksessa ja tarkistaa jokaisen ladatun aanen dekoodaamalla (kesto >= KELPAA_MIN_OSUUS x videon kesto, ei mykka); ensimmainen
+        kelvollinen hyvaksytaan, muuten paras (pisin ei-mykka) tai virhe. Puuttuvat fragmentit ovat virhe (muuten HLS-lataus voisi onnistua tyhjana), ja yt_dlp:n varoitukset talletetaan (viestit)."""
+        import yt_dlp
+        url = self.ref if (onko_youtube(self.ref) or str(self.ref).startswith(("http://", "https://"))) else f"https://www.youtube.com/watch?v={self.ref}"
+        viestit = self.viestit
+
+        class Loki:
+            def debug(self, msg):
+                pass
+
+            def info(self, msg):
+                pass
+
+            def warning(self, msg):
+                viestit.append(str(msg))
+
+            def error(self, msg):
+                viestit.append(str(msg))
+
+        def koukku(d):
+            if d.get("status") == "downloading":
+                edistys(int(d.get("downloaded_bytes") or 0), d.get("total_bytes") or d.get("total_bytes_estimate"))
+
+        kokeiltu, parhaat = [], []
+        for i, formaatti in enumerate(YT_AANI_FORMAATIT):
+            opts = {"format": formaatti, "outtmpl": f"{kohde}.{i}.%(ext)s", "quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True, "js_runtimes": {"deno": {}},
+                    "http_chunk_size": 10 << 20, "retries": 10, "fragment_retries": 10, "skip_unavailable_fragments": False, "socket_timeout": 30, "progress_hooks": [koukku], "logger": Loki()}
+            if self.ffmpeg:
+                opts["ffmpeg_location"] = self.ffmpeg
+            keksit = keksitiedosto()
+            if keksit:
+                opts["cookiefile"] = keksit
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    if kokeiltu:                                                    # sama formaatti kuin jo kokeiltu: ei ladata uudelleen
+                        if ydl.extract_info(url, download=False).get("format_id") in kokeiltu:
+                            continue
+                    info = ydl.extract_info(url, download=True)
+                    ladatut = info.get("requested_downloads") or []
+                    polku = (ladatut[0].get("filepath") if ladatut else None) or ydl.prepare_filename(info)
+                    kokeiltu.append((ladatut[0].get("format_id") if ladatut else None) or info.get("format_id"))
+                    muoto = f"{kokeiltu[-1]} {info.get('ext') or ''} ({info.get('protocol') or '?'}, {info.get('acodec') or '?'}, {info.get('abr') or '?'} kbps)".replace("  ", " ")
+            except Exception as e:
+                viestit.append(f"formaatti {formaatti!r}: {str(e)[:200]}")
+                continue
+            tila = aanen_tila(self.ffmpeg, polku, matala=True) if self.ffmpeg else None
+            kesto = info.get("duration")
+            kelpaa = tila is None or (tila["keski_db"] is not None and tila["keski_db"] > MYKKA_DB and (not kesto or tila["kesto"] >= KELPAA_MIN_OSUUS * float(kesto)))
+            if kelpaa:
+                self.muoto, self.tila = muoto, tila
+                for _, _, p, _ in parhaat:
+                    _poista(p)
+                return polku
+            viestit.append(f"ladattu aani ei kelvannut ({muoto}: " + ("dekoodaus ei onnistunut" if tila is None else f"kesto {tila['kesto']:.0f} s / {kesto or '?'} s, keskivoimakkuus {tila['keski_db']} dB") + ")")
+            parhaat.append((tila["kesto"] if tila and tila["keski_db"] is not None and tila["keski_db"] > MYKKA_DB else -1.0, i, polku, (muoto, tila)))
+        if parhaat:                                                                 # mikaan ei kelvannut: paras (pisin ei-mykka), liitos varoittaa
+            parhaat.sort(key=lambda x: -x[0])
+            paras = parhaat[0]
+            for x in parhaat[1:]:
+                _poista(x[2])
+            self.muoto, self.tila = paras[3]
+            return paras[2]
+        raise RuntimeError("; ".join(viestit[-3:]) or "aanta ei saatu ladattua")
+
+    def edistys_teksti(self):
+        if not self.tavua:
+            return "Odotetaan aanen latausta (haetaan tietoja) ..."
+        mt = self.tavua / 1e6
+        if self.yht:
+            return f"Odotetaan aanen latausta: {100.0 * self.tavua / self.yht:.0f} % ({mt:.0f} / {self.yht / 1e6:.0f} Mt) ..."
+        return f"Odotetaan aanen latausta: {mt:.0f} Mt ..."
+
+    def odota(self, ei_edistysta_s=180.0, raportti_s=5.0, loki=print):
+        """Odottaa latauksen valmistumista (raportoi etenemisen). True = ladattu. Keskeytyy, kun lataus ei etene ei_edistysta_s sekuntiin tai kayttaja painaa Ctrl-C (False)."""
+        t_rap = 0.0
+        try:
+            while not self.valmis.wait(0.5):
+                nyt = time.time()
+                if nyt - self.t_edistys > ei_edistysta_s:
+                    loki(f"Aanen lataus ei ole edennyt {ei_edistysta_s:.0f} sekuntiin; lopetetaan odotus.")
+                    return False
+                if nyt - t_rap >= raportti_s:
+                    t_rap = nyt
+                    loki(self.edistys_teksti())
+        except KeyboardInterrupt:
+            loki("Aanen odotus keskeytetty (Ctrl-C).")
+            return False
+        return self.virhe is None and self.polku is not None
+
+
+class Aanilahde:
+    """Tallenteen aanilahde. laji: 'tiedosto' (paikallinen tiedosto: lahdevideon oma aani tai --aani POLKU), 'verkko' (http-osoite: ffmpeg lukee suoraan) tai 'youtube' (yt_dlp lataa
+    aanen taustalla heti kaynnista():sta). alku_s = aanen kohta, joka vastaa kuvan ensimmaista ruutua (lahdevideon aikajanalla)."""
+
+    def __init__(self, laji, osoite, alku_s=0.0, otsakkeet=None):
+        self.laji, self.osoite, self.alku_s, self.otsakkeet = laji, osoite, alku_s, otsakkeet
+        self.lataus = None
+        self.kohde = None
+
+    def kaynnista(self, kohde, exe=None, lataa=None):
+        """YouTube-lahteella kaynnistaa latauksen taustasaikeessa (kohde = ladatun tiedoston polku ilman paatetta); muille ei tee mitaan."""
+        if self.laji == "youtube" and self.lataus is None:
+            self.kohde = kohde
+            self.lataus = AaniLataus(self.osoite, kohde, exe, lataa)
+
+    def valmista(self, loki=print):
+        """(osoite, alku_s, otsakkeet) liitettavaksi tai None (syy lokiin): youtube-lahteella odottaa latauksen valmistumista."""
+        if self.laji != "youtube":
+            return self.osoite, self.alku_s, self.otsakkeet
+        if self.lataus is None:
+            return None
+        if not self.lataus.valmis.is_set():
+            loki("Aanta ladataan viela; odotetaan (Ctrl-C jattaa kuvan aanettomaksi ja ehjaksi) ...")
+        if not self.lataus.odota(loki=loki):
+            if self.lataus.virhe is not None:
+                loki(f"Huom: aanen lataus epaonnistui ({str(self.lataus.virhe)[:300]}).")
+            return None
+        return self.lataus.polku, self.alku_s, None
+
+    def siivoa(self):
+        """Ladattu aanitiedosto pois, kun liitos onnistui (epaonnistuessa se jaa: liitos jalkikateen tools/liita_aani.py)."""
+        if self.lataus is not None and self.lataus.polku:
+            _poista(self.lataus.polku)
+
+
+def liita_tallenteeseen(exe, kuva, lahde, loki=print, ulos=None):
+    """Valmiin kuvatallenteen aanen liitos (Kirjoittaja.sulje): odottaa tarvittaessa latauksen, liittaa ja tarkistaa. Palauttaa True, jos aani liitettiin; muuten kuvatallenne jaa
+    aanettomana ja ehjana. ulos = oma tulostiedosto (kuvatallenne jaa koskematta)."""
+    loki(f"Liitetaan aani tallenteeseen ({os.path.basename(str(kuva))}) ...")
+    a = lahde.valmista(loki)
+    if a is None:
+        jalki = f" Ladattu aani on tiedostossa {lahde.lataus.polku} (liitos: python tools/liita_aani.py {kuva} --aani {lahde.lataus.polku})." if lahde.lataus is not None and lahde.lataus.polku else ""
+        loki(f"Huom: aanta ei saatu liitettya; kuvatallenne on aaneton ja ehja.{jalki}")
+        return False
+    lataus = lahde.lataus
+    if lataus is not None and lataus.muoto:
+        loki(f"Ladattu aani: {lataus.muoto}.")
+    ok, viesti = liita(exe, kuva, *a, ulos=ulos, tila=(lataus.tila if lataus is not None else None))
+    if lataus is not None and lataus.viestit and (not ok or "huom:" in viesti):
+        loki("yt_dlp:n viestit: " + " | ".join(m.strip()[:200] for m in lataus.viestit[:4]))
+    if ok:
+        lahde.siivoa()
+        loki("Aani liitetty." + viesti)
+        return True
+    jalki = f" Ladattu aani on tiedostossa {a[0]}." if lahde.laji == "youtube" else ""
+    loki(f"Huom: aanta ei saatu liitettya ({viesti}); kuvatallenne on aaneton ja ehja.{jalki}")
+    return False

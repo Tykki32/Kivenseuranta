@@ -1,0 +1,21 @@
+{
+ "A_cm": 10.1,
+ "B_cm": 9.9,
+ "z0_cm": 15.0,
+ "sigma_px": 2.1,
+ "w_yli": 0.6,
+ "siirto_px": {
+  "keltainen": [
+   0.362,
+   0.683
+  ],
+  "punainen": [
+   -0.494,
+   0.683
+  ]
+ },
+ "jaannos_px": 0.407,
+ "loo_px": 0.537,
+ "merkittuja": 8,
+ "lahde": "kasin merkityt ellipsit (kahva_ellipsit_kasin.json)"
+}

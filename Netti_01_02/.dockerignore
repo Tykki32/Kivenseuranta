@@ -1,0 +1,11 @@
+# Docker-kuvan rakennuskonteksti: vain ohjelma, ei kehitysjatteita
+**/__pycache__
+**/*.pyc
+*.so
+*.pyd
+build
+.git
+heitot_*.csv
+kivenseuranta_*.mp4
+*.mp4
+tulokset_auto_*
