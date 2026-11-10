@@ -214,16 +214,26 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 
 **Pelaajakohtainen tilasto selaimessa.** Sivun oikeassa yläkulmassa on nappi **Pelaajatilasto**. Se avaa ikkunan, jossa
 1. **valitaan heitto-CSV** (lista näyttää kansion `ulos` heitto-CSV:t uusin ensin; `_kivet.csv`, `_pelaajat.csv` ja muut CSV:t jätetään pois). Jos haluat laskea muualta saadun CSV:n, kopioi se ensin kansioon `ulos`;
-2. kirjoitetaan **kummankin joukkueen pelaajamäärä** (`4`, `3`, `2` tai kivijako `2,3,3`; oletus 4; luvut muistetaan selaimessa) ja valitaan tarvittaessa **Ohita vajaat päät**;
-3. painetaan **Laske** (tai Enter kentässä): ikkunaan tulee taulukko pelaajaa kohti, kuten Excelissä: **Mediaani** ja **STD** sarakkeille `liun_hidastuvuus_m_s2`, `irroitus_delta_cm` ja `irroitus vauhti`
-   (= nopeus irroituksen jälkeen miinus ennen), sekä huomautukset päistä, joissa heittoja on vähemmän kuin joukkueen kiviä.
+2. kirjoitetaan **kummankin joukkueen pelaajamäärä** (`4`, `3`, `2` tai kivijako `2,3,3`; oletus 4) ja valitaan tarvittaessa **Hidastuvuus** (*liukuvaiheen*, oletus, tai *vapaan lennon*) ja **Ohita vajaat päät**; valinnat muistetaan selaimessa;
+3. painetaan **Laske** (tai Enter kentässä): ikkunaan tulee taulukko pelaajaa kohti, kuten Excelissä: ryhmät **Myötä** (myötäpäivään pyörivät kivet) ja **Vasta** (vastapäivään pyörivät), kummassakin **Liuku**, **Heitto** ja **Tönäisy**,
+   sekä **Hidastuvuus** (kaikki heitot); kustakin luvusta **Mediaani** ja **STD**. Tunnisteiden perässä ovat pelaajan heittomäärät (`heittoja`, `n myötä`, `n vasta`), ja hiiren osoitin luvun päällä kertoo, montako heittoa sen laskentaan käytettiin.
 
-**Kopioi Exceliin** kopioi taulukon leikepöydälle (liitä suoraan Exceliin; desimaalipilkku), **Lataa CSV (Excel)** lataa saman `…_pelaajat.csv`-tiedostona (puolipiste, desimaalipilkku, UTF-8 BOM; lopussa n-sarakkeet: monestako
-heitosta kukin luku laskettiin). Ikkunan sulkee **Sulje**, Esc tai napsautus ikkunan ulkopuolelle. Laskenta ei kirjoita mitään levylle, ja se lukee vain kansion `ulos` heitto-CSV:itä. Tilaston voi laskea myös kesken ajon
-(CSV päivittyy heiton valmistuttua; kesken oleva pää näkyy huomautuksena). Laskentasäännöt (joukkue = kiven väri, pelaaja = kivinumero, STD = otoskeskihajonta n − 1) ovat samat kuin komentorivityökalussa:
-`docker exec -it kivenseuranta python /app/tools/pelaajatilasto.py /data/ulos/heitot_<…>.csv --pelaajia 4` tulostaa taulukon ja tallentaa sen samaan kansioon (`…_pelaajat.csv`; `--fi` = Excelille puolipiste ja
-desimaalipilkku; joukkueittain `--keltainen 4 --punainen 3`, ilman niitä ohjelma kysyy). Kuvaus ja huomautukset: [`README_netti.md`](README_netti.md). Käyttöliittymä on kokeiltu Chromiumilla (vaalea ja tumma
-teema, puhelimen kokoinen näkymä, leikepöytä, tiedostonimet joissa on heittomerkki, lainausmerkki tai HTML-merkkejä), ja tulokset täsmäävät komentorivityökalun tuloksiin; ajoa Unraid-koneella ei ole kokeiltu.
+Luvut tarkoittavat:
+
+| Luku | Mitä se on (CSV:n sarake) |
+|---|---|
+| **Myötä / Vasta** | Kierron suunta, sama kuin kuvan paneelin *Kierre*: **+ = myötäpäivään (Myötä), − = vastapäivään (Vasta)**; sarakkeen `kierre` etumerkki. Jos `kierre` puuttuu, suunta päätellään sarakkeista `irroitus_delta_cm`, `heitto_T_cm` ja `liuku_T_cm`. Heitto, jonka suuntaa ei tiedetä, ei ole Myötä- eikä Vasta-luvuissa (huomautus kertoo määrän) |
+| **Liuku**, **Heitto** | Kuvan paneelin arvot (cm): liukulinjan ja irroituslinjan osuma kaukopään T-viivalla **merkistä** (maalimerkki = kipparin harjanpää), + = kierteestä ulospäin (`liuku_merkista_cm`, `heitto_merkista_cm`). Heitolta, jolta merkki puuttuu, ei ole lukua. Vanhassa CSV:ssä näitä sarakkeita ei ole: silloin luvut ovat keskiviivasta (`liuku_T_cm`, `heitto_T_cm`; + = heittäjän oikealle) ja ikkuna huomauttaa siitä |
+| **Tönäisy** | Nopeus irroituksen jälkeen − nopeus ennen irroitusta (m/s; `nopeus_jalkeen_m_s` − `nopeus_ennen_m_s`) |
+| **Hidastuvuus** | *Liukuvaiheen* (oletus): hidastuvuus liu'un aikana ennen irroitusta (m/s²; `liun_hidastuvuus_m_s2`). *Vapaan lennon*: hidastuvuus irroituksen jälkeen (`hidastuvuus_m_s2`), kuten kuvan paneelissa: vain vakaat heitot ja arvot 0–0,25 m/s². Ei jaeta suunnan mukaan |
+
+STD on otoskeskihajonta (n − 1, kuten Excelin STDEV.S); yhdestä arvosta ei synny hajontaa. **Kopioi Exceliin** kopioi taulukon kolmine otsikkoriveineen (Myötä / Vasta, suureet, Mediaani / STD) leikepöydälle (liitä suoraan Exceliin; desimaalipilkku),
+**Lataa CSV (Excel)** lataa saman `…_pelaajat.csv`-tiedostona (puolipiste, desimaalipilkku, UTF-8 BOM; lopussa n-sarakkeet: monestako heitosta kukin luku laskettiin). Ikkunan sulkee **Sulje**, Esc tai napsautus ikkunan ulkopuolelle.
+Laskenta ei kirjoita mitään levylle, ja se lukee vain kansion `ulos` heitto-CSV:itä. Tilaston voi laskea myös kesken ajon (CSV päivittyy heiton valmistuttua; kesken oleva pää näkyy huomautuksena). Laskentasäännöt (joukkue = kiven väri,
+pelaaja = kivinumero) ovat samat kuin komentorivityökalussa: `docker exec -it kivenseuranta python /app/tools/pelaajatilasto.py /data/ulos/heitot_<…>.csv --pelaajia 4` tulostaa taulukon ja tallentaa sen samaan kansioon (`…_pelaajat.csv`;
+`--fi` = Excelille puolipiste ja desimaalipilkku; joukkueittain `--keltainen 4 --punainen 3`, ilman niitä ohjelma kysyy; `--hidastuvuus vapaa` = vapaan lennon hidastuvuus). Kuvaus ja huomautukset: [`README_netti.md`](README_netti.md).
+Käyttöliittymä on kokeiltu Chromiumilla (vaalea ja tumma teema, puhelimen kokoinen näkymä, leikepöytä, tiedostonimet joissa on heittomerkki, lainausmerkki tai HTML-merkkejä), ja tulokset täsmäävät komentorivityökalun tuloksiin;
+ajoa Unraid-koneella ei ole kokeiltu.
 
 **Tiedostojen nimet.** YouTube-lähteellä (`youtube.txt`, `NETTI_LAHDE`) videon nimi lisätään tiedostojen nimiin, jotta oikean pelin löytää helposti: yt-dlp kertoo nimen samalla kutsulla kuin virran osoitteen (ei lisäkutsuja), ja nimi näkyy
 myös selainnäkymässä (sivun tilarivi ja välilehden otsikko) sekä lokissa (`Video: …`, `ajo paattyi (…)`). Esimerkki: `kivenseuranta_Matarmaa SM-finaali 2026_yt_hnTTLqHr5x8_20261104_163130.mp4`. `<lähde>` on `yt_<tunnus>` (YouTube),
@@ -283,8 +293,10 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 | `Permission denied` / tiedostot root-omisteisia | `PUID`/`PGID` eivät vastaa jakokansion omistajaa; Unraid: 99/100. Kontti vaihtaa vain kansioiden `ulos`, `video`, `kalibroinnit` omistajan, ei tiedostoja |
 | Kontti ei käynnisty, Docker kertoo `port is already allocated` | Palvelimen portti on jo toisella kontilla tai palvelulla: vaihda portin yhdistyksessä palvelimen puoli (Unraid: *Host Port*) |
 | Selainnäkymä ei aukea | Ajo on juuri alkamassa (portti on kiinni, kunnes analyysi on käynnistynyt; YouTube-videolla kalibroinnin ajan 0,5–2 min), väärä portti osoitteessa, tai `host`-verkossa portti on varattu (loki: `Web-porttia … ei voitu avata` tai `selainnakyma ajojen valissa ei kaynnistynyt`) |
-| Pelaajatilaston valitsimessa lukee `Ei heitto-CSV-tiedostoja` | Kansiossa `ulos` ei ole vielä heitto-CSV:tä (se syntyy ajon alussa ja täydentyy heitoittain), tai tiedosto ei ole `netti_live.py`:n heitto-CSV (otsikkorivillä on oltava mm. `vari`, `kivi_nro`, `liun_hidastuvuus_m_s2`, `irroitus_delta_cm`, `nopeus_ennen_m_s`, `nopeus_jalkeen_m_s`) |
+| Pelaajatilaston valitsimessa lukee `Ei heitto-CSV-tiedostoja` | Kansiossa `ulos` ei ole vielä heitto-CSV:tä (se syntyy ajon alussa ja täydentyy heitoittain), tai tiedosto ei ole `netti_live.py`:n heitto-CSV (otsikkorivillä on oltava mm. `vari`, `kivi_nro`, `liuku_T_cm`, `heitto_T_cm`, `nopeus_ennen_m_s`, `nopeus_jalkeen_m_s`) |
 | Pelaajatilasto: `tools/pelaajatilasto.py puuttuu` | Ohjelmakansio on päivitetty vain osittain (alikansio `tools/` jäi kopioimatta): kopioi koko `Netti_01_02` ja rakenna kuva uudelleen. Muu sivu toimii |
+| Pelaajatilaston huomautus `CSV:ssa ei ole merkistä laskettuja sarakkeita … vanha CSV` | CSV on tehty ohjelmaversiolla, joka ei vielä kirjannut maalimerkkiä (`liuku_merkista_cm`, `heitto_merkista_cm`): Liuku ja Heitto lasketaan silloin keskiviivasta (+ = heittäjän oikealle), ei merkistä. Uudella versiolla ajettu CSV sisältää sarakkeet |
+| Pelaajatilaston huomautus `N heitolta puuttuu kierron suunta` (ja `n myötä` + `n vasta` < `heittoja`) | Kierron suuntaa ei saatu selville (sarake `kierre` tyhjä): heitot eivät ole Myötä- eikä Vasta-luvuissa, mutta ne ovat mukana Hidastuvuudessa. Samoin kuvan paneelissa Kierre-kohdassa on silloin `?` |
 | Pelaajatilaston huomautus `paa N: heittoja punainen 7 / 8` | Päässä N on vähemmän heittoja kuin joukkueen kivet (video alkoi tai loppui kesken päätä tai seuranta ohitti heiton): kivinumerot ja pelaajajako voivat olla siinä päässä väärin; **Ohita vajaat päät** jättää tällaiset päät pois |
 | `YouTube-virran haku epäonnistui` | [YouTube](#5-youtube): päivitä yt-dlp, tarkista verkko; live-lähetys ei ehkä ole alkanut (valvonnassa kontti yrittää uudelleen) |
 | Kuvan viive kasvaa / `Huom: piirto / ikkuna on N s jäljessä` | Kone ei jaksa reaaliaikaa: lisää ytimiä, `NETTI_X264_PRESET=ultrafast`, pienempi `NETTI_WEB_LEVEYS`, tiedostolle `NETTI_NOPEA=1` |

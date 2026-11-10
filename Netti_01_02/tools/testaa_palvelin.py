@@ -897,12 +897,24 @@ def testaa_web_videon_nimi():
             w.sulje()
 
 
-HEITTO_KENTAT = ["heitto", "vari", "kivi_nro", "puoli", "paa", "liun_hidastuvuus_m_s2", "irroitus_delta_cm", "nopeus_ennen_m_s", "nopeus_jalkeen_m_s"]
+HEITTO_KENTAT = ["heitto", "vari", "kivi_nro", "puoli", "paa", "kierre", "irroitus_delta_cm", "liuku_T_cm", "heitto_T_cm", "merkki_T_cm", "liuku_merkista_cm", "heitto_merkista_cm",
+                 "nopeus_ennen_m_s", "nopeus_jalkeen_m_s", "liun_hidastuvuus_m_s2", "hidastuvuus_m_s2", "vakaa"]
+
+
+def heitto_arvot(e, vari, k):
+    """Synteettisen heiton arvot: riippuvat paasta e, pelaajasta p (4 + 4 pelaajaa: kivet 1-2, 3-4, 5-6, 7-8; punaisella p + 4), kivesta k ja kierron suunnasta s (kivi pariton = myotapaivaan,
+    s = -1 (Myötä); parillinen = vastapaivaan, s = +1 (Vasta)), joten tilaston oikeellisuus voidaan laskea tasta erikseen."""
+    p = (k + 1) // 2 + (4 if vari == "punainen" else 0)
+    s = -1 if k % 2 else 1
+    liuku_m = 2.0 * p + 0.5 * e + 0.1 * k + (3.0 if s < 0 else -3.0)
+    heitto_m = liuku_m + 1.5 + 0.2 * e
+    T = 5.0 + k
+    return dict(p=p, s=s, liuku_m=liuku_m, heitto_m=heitto_m, T=T, liuku_T=T + liuku_m * s, heitto_T=T + heitto_m * s, delta=heitto_m - liuku_m, kierre=-s * (2.0 + 0.1 * k), ennen=2.0 + 0.01 * p,
+                tonaisy=0.002 * p + 0.001 * e + (0.004 if s < 0 else 0.0), liu_hid=0.01 * p + 0.001 * e + 0.0001 * k, vap_hid=0.05 + 0.002 * p + 0.0005 * e)
 
 
 def heitto_rivit(paita=3, pois=()):
-    """Synteettisen pelin heitto-CSV:n rivit: paita paata, molemmilla joukkueilla 8 kivea / paa. Arvot riippuvat pelaajasta (4 + 4 pelaajaa: kivet 1-2, 3-4, 5-6, 7-8) ja paasta,
-    joten tilaston oikeellisuus voidaan laskea tasta erikseen. pois: {(paa, vari, kivi)} jaavat pois (puutteellinen paa)."""
+    """Synteettisen pelin heitto-CSV:n rivit (heitto_arvot): paita paata, molemmilla joukkueilla 8 kivea / paa. pois: {(paa, vari, kivi)} jaavat pois (puutteellinen paa)."""
     rivit, n = [], 0
     for e in range(1, paita + 1):
         for k in range(1, 9):
@@ -910,9 +922,9 @@ def heitto_rivit(paita=3, pois=()):
                 n += 1
                 if (e, vari, k) in pois:
                     continue
-                p = (k + 1) // 2 + (4 if vari == "punainen" else 0)
-                rivit.append([n, vari, k, "vasen" if e % 2 else "oikea", e, f"{0.01 * p + 0.001 * e + 0.0001 * k:.5f}", f"{10.0 * p - e + 0.5 * k:.2f}",
-                              f"{2.0 + 0.01 * p:.4f}", f"{2.0 + 0.01 * p + 0.002 * p + 0.001 * e:.4f}"])
+                a = heitto_arvot(e, vari, k)
+                rivit.append([n, vari, k, "vasen" if e % 2 else "oikea", e, f"{a['kierre']:.1f}", f"{a['delta']:.1f}", f"{a['liuku_T']:.1f}", f"{a['heitto_T']:.1f}", f"{a['T']:.1f}", f"{a['liuku_m']:.1f}", f"{a['heitto_m']:.1f}",
+                              f"{a['ennen']:.2f}", f"{a['ennen'] + a['tonaisy']:.3f}", f"{a['liu_hid']:.4f}", f"{a['vap_hid']:.4f}", "1"])
     return rivit
 
 
@@ -983,16 +995,22 @@ def testaa_web_tilasto():
                      [x["nimi"] for x in lista] == ["tyhja_heitot.csv", nimi_aak, "heitot_puutteellinen.csv", "heitot_peli.csv"], str([x["nimi"] for x in lista]))
             tarkista("tilasto_tiedostot: koko ja muokkausaika mukana", all(x["koko"] > 0 and x["muutettu"] > 0 for x in lista))
             d = w.tilasto("heitot_peli.csv")
-            tarkista("tilasto: oletus 4 + 4 pelaajaa: 48 heittoa, 8 riviä, ei varoituksia, sarakeotsikot ja desimaalit mukana", d["tiedosto"] == "heitot_peli.csv" and d["heittoja"] == 48 and len(d["rivit"]) == 8 and d["varoitukset"] == []
-                     and d["otsikot"] == list(pt.MITAT) and d["desimaalit"] == list(pt.DES_TULOSTE), str({k: d[k] for k in ("heittoja", "varoitukset", "otsikot", "desimaalit")}))
+            tarkista("tilasto: oletus 4 + 4 pelaajaa: 48 heittoa, 8 riviä, ei varoituksia; ryhmat Myötä (Liuku, Heitto, Tönäisy), Vasta (sama) ja Hidastuvuus kuten Excelissa, desimaalit suureittain",
+                     d["tiedosto"] == "heitot_peli.csv" and d["heittoja"] == 48 and len(d["rivit"]) == 8 and d["varoitukset"] == [] and d["hidastuvuus"] == "liuku" and d["desimaalit"] == [1, 1, 3, 1, 1, 3, 3]
+                     and d["ryhmat"] == [dict(nimi="Myötä", suureet=["Liuku", "Heitto", "Tönäisy"]), dict(nimi="Vasta", suureet=["Liuku", "Heitto", "Tönäisy"]), dict(nimi="", suureet=["Hidastuvuus"])], str({k: d[k] for k in ("heittoja", "varoitukset", "ryhmat", "desimaalit")}))
             tarkista("tilasto: joukkueet, pelaajamaarat ja kivijaot (kivet 1-2, 3-4, 5-6, 7-8)", d["joukkueet"] == [dict(vari=v, pelaajia=4, kivet=["1-2", "3-4", "5-6", "7-8"]) for v in ("keltainen", "punainen")], str(d["joukkueet"]))
             tarkista("tilasto: vastaus on JSON-kelpoinen (tuplat listoiksi)", json.loads(json.dumps(d))["rivit"][0]["joukkue"] == "keltainen")
-            odotettu = [0.01 * 2 + 0.001 * e + 0.0001 * k for e in (1, 2, 3) for k in (3, 4)]
-            r2 = d["rivit"][1]
-            tarkista("tilasto: keltainen pelaaja 2 (kivet 3-4, 6 heittoa): liun hidastuvuuden mediaani ja STD (n - 1) samat kuin statistics-moduulilla erikseen laskettuna",
-                     (r2["joukkue"], r2["pelaaja"], r2["kivet"], r2["heittoja"]) == ("keltainen", 2, "3-4", 6) and abs(r2["mediaani"][0] - statistics.median(odotettu)) < 1e-9 and abs(r2["std"][0] - statistics.stdev(odotettu)) < 1e-9, str(r2))
-            vauhdit = [0.002 * 2 + 0.001 * e for e in (1, 2, 3) for _ in (3, 4)]
-            tarkista("tilasto: irroitusvauhti = nopeus jalkeen - ennen", abs(r2["mediaani"][2] - statistics.median(vauhdit)) < 1e-9 and abs(r2["std"][2] - statistics.stdev(vauhdit)) < 1e-9)
+            r2 = d["rivit"][1]                                                                      # keltainen pelaaja 2: kivet 3 (pariton: Myötä) ja 4 (parillinen: Vasta), kolmessa paassa
+            odota = lambda k, avain, suure: [heitto_arvot(e, "keltainen", k)[avain] for e in (1, 2, 3)]       # noqa: E731
+            tarkista("tilasto: keltainen pelaaja 2 (kivet 3-4, 6 heittoa, 3 Myötä + 3 Vasta): Myötä-Liuku, Vasta-Heitto, Myötä-Tönäisy ja Hidastuvuus (liukuvaiheen) Mediaani ja STD (n - 1) samat kuin statistics-moduulilla erikseen laskettuna",
+                     (r2["joukkue"], r2["pelaaja"], r2["kivet"], r2["heittoja"], r2["myota"], r2["vasta"]) == ("keltainen", 2, "3-4", 6, 3, 3)
+                     and all(abs(r2["mediaani"][i] - statistics.median(v)) < 1e-9 and abs(r2["std"][i] - statistics.stdev(v)) < 1e-9 for i, v in ((0, odota(3, "liuku_m", 0)), (4, odota(4, "heitto_m", 0)), (2, odota(3, "tonaisy", 0)),
+                                                                                                                                             (6, odota(3, "liu_hid", 0) + odota(4, "liu_hid", 0)))) and list(r2["n"]) == [3, 3, 3, 3, 3, 3, 6], str(r2))
+            tarkista("tilasto: Myötä ja Vasta eri luvut (kierron suunta erottaa heitot)", r2["mediaani"][0] != r2["mediaani"][3] and r2["mediaani"][2] != r2["mediaani"][5])
+            dv = w.tilasto("heitot_peli.csv", hidastuvuus="vapaa")
+            tarkista("tilasto: hidastuvuus='vapaa' -> Hidastuvuus = hidastuvuus_m_s2 (kuten paneelissa); muut luvut samat", dv["hidastuvuus"] == "vapaa" and abs(dv["rivit"][1]["mediaani"][6] - statistics.median(odota(3, "vap_hid", 0) + odota(4, "vap_hid", 0))) < 1e-9
+                     and dv["rivit"][1]["mediaani"][:6] == r2["mediaani"][:6] and dv["rivit"][1]["mediaani"][6] != r2["mediaani"][6])
+            tarkista("tilasto: virheellinen hidastuvuus -> ValueError", "hidastuvuus" in (virheena(w.tilasto, "heitot_peli.csv", hidastuvuus="x") or ""))
             d2 = w.tilasto("heitot_peli.csv", keltainen="3", punainen="2,3,3")
             tarkista("tilasto: keltainen 3 pelaajaa (kivet 1-3, 4-6, 7-8) ja punaisella oma kivijako 2,3,3 (1-2, 3-5, 6-8)", [(j["vari"], j["pelaajia"], j["kivet"]) for j in d2["joukkueet"]]
                      == [("keltainen", 3, ["1-3", "4-6", "7-8"]), ("punainen", 3, ["1-2", "3-5", "6-8"])] and len(d2["rivit"]) == 6, str(d2["joukkueet"]))
@@ -1003,18 +1021,21 @@ def testaa_web_tilasto():
             d5 = w.tilasto("heitot_peli.csv", keltainen="2,2")
             tarkista("tilasto: kivijako, jonka kivet eivat ole yhteensa 8 (2,2) -> huomautus ensimmaisena", d5["varoitukset"] and "kivijako 2,2 on yhteensa 4 kivea" in d5["varoitukset"][0], str(d5["varoitukset"][:2]))
             d6 = w.tilasto(nimi_aak)
-            odotettu_fi = [0.01 * 1 + 0.001 * e + 0.0001 * k for e in (1, 2) for k in (1, 2)]
+            odotettu_fi = [heitto_arvot(e, "keltainen", 1)["liuku_m"] for e in (1, 2)]               # keltainen pelaaja 1, kivi 1 (Myötä), kaksi paata
             tarkista("tilasto: heittomerkki, ajatusviiva ja ääkköset nimessa; puolipisteerotin, desimaalipilkut ja BOM luetaan oikein (2 paata = 32 heittoa)", d6["heittoja"] == 32 and d6["tiedosto"] == nimi_aak
-                     and abs(d6["rivit"][0]["mediaani"][0] - statistics.median(odotettu_fi)) < 1e-9, str(d6["rivit"][0]))
+                     and abs(d6["rivit"][0]["mediaani"][0] - statistics.median(odotettu_fi)) < 1e-9 and list(d6["rivit"][0]["n"]) == [2, 2, 2, 2, 2, 2, 4], str(d6["rivit"][0]))
             nimi, data = w.tilasto_csv("heitot_peli.csv", keltainen="4", punainen="3")
             rivit_fi = list(csv.reader(io.StringIO(data.decode("utf-8-sig")), delimiter=";"))
-            tarkista("tilasto_csv (fi): tiedostonimi <syote>_pelaajat.csv, UTF-8 BOM, erotin ;, desimaalipilkku, ryhmarivi + otsikkorivi + 7 pelaajaa", nimi == "heitot_peli_pelaajat.csv" and data.startswith(b"\xef\xbb\xbf") and rivit_fi[0][4] == "Mediaani" and rivit_fi[0][7] == "STD"
-                     and rivit_fi[1][4:7] == list(pt.MITAT) and len(rivit_fi) == 9 and "," in rivit_fi[2][4] and "." not in rivit_fi[2][4], str(rivit_fi[:3]))
+            tarkista("tilasto_csv (fi): tiedostonimi <syote>_pelaajat.csv, UTF-8 BOM, erotin ;, desimaalipilkku; kolme otsikkoriviä (Myötä / Vasta, Liuku Heitto Tönäisy ... Hidastuvuus, Mediaani STD) + 7 pelaajaa", nimi == "heitot_peli_pelaajat.csv" and data.startswith(b"\xef\xbb\xbf")
+                     and rivit_fi[0][6] == "Myötä" and rivit_fi[0][12] == "Vasta" and rivit_fi[1][6:20] == ["Liuku", "", "Heitto", "", "Tönäisy", "", "Liuku", "", "Heitto", "", "Tönäisy", "", "Hidastuvuus", ""] and rivit_fi[2][6:20] == ["Mediaani", "STD"] * 7
+                     and len(rivit_fi) == 10 and "," in rivit_fi[3][6] and "." not in rivit_fi[3][6], str(rivit_fi[:4]))
             d7 = w.tilasto("heitot_peli.csv", keltainen="4", punainen="3")
-            tarkista("tilasto_csv: arvot samat kuin ruudulla (neljan desimaalin tarkkuudella)", abs(float(rivit_fi[2][4].replace(",", ".")) - round(d7["rivit"][0]["mediaani"][0], 4)) < 1e-9)
+            tarkista("tilasto_csv: arvot samat kuin ruudulla (kahden desimaalin tarkkuudella)", abs(float(rivit_fi[3][6].replace(",", ".")) - round(d7["rivit"][0]["mediaani"][0], 2)) < 1e-9)
+            nimi3, data3 = w.tilasto_csv("heitot_peli.csv", hidastuvuus="vapaa")
+            tarkista("tilasto_csv: hidastuvuus='vapaa' vaihtaa vain Hidastuvuus-sarakkeet", data3 != w.tilasto_csv("heitot_peli.csv")[1] and nimi3 == "heitot_peli_pelaajat.csv")
             nimi2, data2 = w.tilasto_csv(nimi_aak, fi=False)
             rivit_en = list(csv.reader(io.StringIO(data2.decode("utf-8")), delimiter=","))
-            tarkista("tilasto_csv (fi=False): ei BOM:ia, pilkkuerotin ja desimaalipiste; nimi sailyy (heittomerkki, ääkköset)", nimi2 == nimi_aak[:-4] + "_pelaajat.csv" and not data2.startswith(b"\xef\xbb\xbf") and "." in rivit_en[2][4] and len(rivit_en) == 10, str(rivit_en[2]))
+            tarkista("tilasto_csv (fi=False): ei BOM:ia, pilkkuerotin ja desimaalipiste; nimi sailyy (heittomerkki, ääkköset)", nimi2 == nimi_aak[:-4] + "_pelaajat.csv" and not data2.startswith(b"\xef\xbb\xbf") and "." in rivit_en[3][6] and len(rivit_en) == 11, str(rivit_en[3]))
             # virheelliset syotteet
             huonot = ["", None, "ei_ole.csv", "../" + os.path.basename(ulkona), "..\\x.csv", "/etc/passwd", "/etc/passwd.csv", os.path.join(t, "heitot_peli.csv"), "ali/heitot_ali.csv", ".piilo.csv", "k.mp4", "heitot_peli.csv\0"]
             if linkki:
@@ -1022,7 +1043,7 @@ def testaa_web_tilasto():
             viestit = {n: virheena(w.tilasto, n) for n in huonot}
             tarkista("tilasto: polkuerottimet, ylahakemisto, absoluuttinen polku, alikansio, piilotiedosto, linkki, ei-CSV, puuttuva ja tyhja nimi -> ValueError, eika tiedostoa luettu (ei vuoda ulkopuolisen sisaltoa)",
                      all(v and "löydy" in v for v in viestit.values()), str({k: v for k, v in viestit.items() if not (v and "löydy" in v)}))
-            tarkista("tilasto: tiedosto ilman tilaston sarakkeita -> selkea virhe sarakkeiden nimilla", "puuttuvat sarakkeet" in (virheena(w.tilasto, "muu.csv") or "") and "liun_hidastuvuus_m_s2" in (virheena(w.tilasto, "muu.csv") or ""))
+            tarkista("tilasto: tiedosto ilman tilaston sarakkeita -> selkea virhe sarakkeiden nimilla", "puuttuvat sarakkeet" in (virheena(w.tilasto, "muu.csv") or "") and "liuku_T_cm" in (virheena(w.tilasto, "muu.csv") or ""))
             tarkista("tilasto: pelkka otsikko (ei heittoja) -> selkea virhe", "ei ole heittoja" in (virheena(w.tilasto, "tyhja_heitot.csv") or ""))
             v_rikki = virheena(w.tilasto, "rikki.csv") or ""
             tarkista("tilasto: ei-UTF-8-tiedosto -> selkea virhe (ei teknista UnicodeDecodeErroria)", "ei voi lukea" in v_rikki and "codec" not in v_rikki, v_rikki)
@@ -1048,9 +1069,17 @@ def testaa_web_tilasto():
             hp = json.loads(pyyda(p, "/tilasto?tiedosto=heitot_puutteellinen.csv")[2])
             ho = json.loads(pyyda(p, "/tilasto?tiedosto=heitot_puutteellinen.csv&ohita=1")[2])
             tarkista("/tilasto: puutteellinen paa -> varoitus; &ohita=1 -> paa pois (4 heittoa pelaajaa kohti)", len(hp["varoitukset"]) == 1 and all(r["heittoja"] == 4 for r in ho["rivit"]), str(hp["varoitukset"]))
+            hv = json.loads(pyyda(p, "/tilasto?tiedosto=heitot_peli.csv&hid=vapaa")[2])
+            hl = json.loads(pyyda(p, "/tilasto?tiedosto=heitot_peli.csv&hid=liuku")[2])
+            tarkista("/tilasto: &hid=vapaa -> Hidastuvuus = vapaan lennon hidastuvuus (muut luvut samat); &hid=liuku ja ilman parametria = liukuvaiheen", hv["hidastuvuus"] == "vapaa" and hv["rivit"][1]["mediaani"][6] != hl["rivit"][1]["mediaani"][6] and hv["rivit"][1]["mediaani"][:6] == hl["rivit"][1]["mediaani"][:6]
+                     and hl == json.loads(pyyda(p, "/tilasto?tiedosto=heitot_peli.csv")[2]) and hv == json.loads(json.dumps(w.tilasto("heitot_peli.csv", hidastuvuus="vapaa"))))
+            sh, hh, bh = pyyda(p, "/tilasto?tiedosto=heitot_peli.csv&hid=x")
+            sh2, _, bh2 = pyyda(p, "/tilasto.csv?tiedosto=heitot_peli.csv&hid=x")
+            tarkista("/tilasto ja /tilasto.csv: virheellinen &hid -> 400 + JSON {virhe}", sh == 400 and sh2 == 400 and "hidastuvuus" in json.loads(bh)["virhe"] and hh["Content-Type"].startswith("application/json"), str(bh))
             s, h, b = pyyda(p, "/tilasto.csv?tiedosto=heitot_peli.csv&kel=4&pun=3&fi=1")
             tarkista("/tilasto.csv?fi=1: 200, text/csv, liitteena (filename*), BOM + ; + desimaalipilkku", s == 200 and h["Content-Type"] == "text/csv; charset=utf-8" and h["Content-Disposition"] == "attachment; filename*=UTF-8''heitot_peli_pelaajat.csv" and b == data, str(h))
             s, h, b = pyyda(p, "/tilasto.csv?tiedosto=" + urllib.parse.quote(nimi_aak) + "&fi=0")
+            tarkista("/tilasto.csv?hid=vapaa: CSV-lataus noudattaa valintaa", pyyda(p, "/tilasto.csv?tiedosto=heitot_peli.csv&kel=4&pun=3&fi=1&hid=vapaa")[2] != data and pyyda(p, "/tilasto.csv?tiedosto=heitot_peli.csv&kel=4&pun=3&fi=1&hid=liuku")[2] == data)
             tarkista("/tilasto.csv?fi=0: pilkkuerotin, desimaalipiste, ei BOM:ia; aakkosnimi Content-Dispositionissa koodattuna", s == 200 and not b.startswith(b"\xef\xbb\xbf") and b == data2 and urllib.parse.quote(nimi_aak[:-4] + "_pelaajat.csv") in h["Content-Disposition"], str(h.get("Content-Disposition")))
             kielletyt = ["/tilasto", "/tilasto?tiedosto=", "/tilasto?tiedosto=ei_ole.csv", "/tilasto?tiedosto=..%2f" + urllib.parse.quote(os.path.basename(ulkona)), "/tilasto?tiedosto=%2e%2e%2f%2e%2e%2fetc%2fpasswd", "/tilasto?tiedosto=%2fetc%2fpasswd",
                          "/tilasto?tiedosto=" + urllib.parse.quote(os.path.join(t, "heitot_peli.csv")), "/tilasto?tiedosto=ali%2fheitot_ali.csv", "/tilasto?tiedosto=.piilo.csv", "/tilasto?tiedosto=k.mp4", "/tilasto?tiedosto=heitot_peli.csv%00",
@@ -1071,7 +1100,10 @@ def testaa_web_tilasto():
             tarkista("HTTP-kutsut eivat kirjoita levylle", sorted(os.listdir(t)) == sisalto_ennen, str(sorted(os.listdir(t))))
             # sivu: nappi, valitsin ja ikkuna; tiedostonimi ei saa paasta HTML:aan merkkijonona attribuuttiin (heittomerkki rikkoisi value-attribuutin)
             sivu = pyyda(p, "/")[2].decode("utf-8")
-            tarkista("sivu: Pelaajatilasto-nappi, ikkuna, tiedostovalitsin, joukkueiden pelaajakentat, vajaiden paiden valinta, Laske ja Sulje", all(f'id="{x}"' in sivu for x in ("ts-avaa", "tilasto", "ts-tiedosto", "ts-kel", "ts-pun", "ts-ohita", "ts-laske", "ts-tulos", "ts-sulje")) and ">Pelaajatilasto<" in sivu)
+            tarkista("sivu: Pelaajatilasto-nappi, ikkuna, tiedostovalitsin, joukkueiden pelaajakentat, vajaiden paiden valinta, Laske ja Sulje", all(f'id="{x}"' in sivu for x in ("ts-avaa", "tilasto", "ts-tiedosto", "ts-kel", "ts-pun", "ts-hid", "ts-ohita", "ts-laske", "ts-tulos", "ts-sulje")) and ">Pelaajatilasto<" in sivu)
+            tarkista("sivu: Hidastuvuus-valitsin (liukuvaiheen / vapaan lennon), valinta kulkee kyselyssa (&hid=) ja muistetaan selaimessa", 'value="liuku"' in sivu and 'value="vapaa"' in sivu and '"&hid="' in sivu and 'tsMuisti("ts_hid"' in sivu)
+            tarkista("sivu: taulukko rakennetaan palvelimen ryhmista (Myötä / Vasta / Hidastuvuus), Mediaani ja STD kustakin suureesta, heittomaarat n kunkin luvun title-vihjeena; leikepoyta samoilla kolmella otsikkorivilla",
+                     "d.ryhmat" in sivu and "<th>Mediaani</th><th>STD</th>" in sivu and "n myötä" in sivu and "n vasta" in sivu and "title='n = " in sivu and 'c.push("Mediaani","STD")' in sivu and "r.mediaani[i]" in sivu and "d.otsikot" not in sivu)
             tarkista("sivu: kutsuu /tilasto/tiedostot ja /tilasto, kopiointi Exceliin ja CSV-lataus (fi=1)", "tilasto/tiedostot" in sivu and '"tilasto?"' in sivu and "tsKopioi" in sivu and "&fi=1" in sivu and "tilasto.csv?" in sivu)
             tarkista("sivu: esc() muuttaa myos lainausmerkit; valitsimen option-elementit ja CSV-linkki rakennetaan DOM:illa, ei merkkijonoattribuutilla (tiedostonimen heittomerkki ei riko value / href)",
                      '.replace(/"/g,"&quot;").replace(/\'/g,"&#39;")' in sivu and 'createElement("option")' in sivu and "<option value='" not in sivu and '$("ts-csv").href=' in sivu and "href='tilasto.csv" not in sivu)

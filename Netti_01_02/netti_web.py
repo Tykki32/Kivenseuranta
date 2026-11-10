@@ -10,7 +10,7 @@ netti_live.py --web PORTTI korvaa ikkunan (Naytto) talla: WebNaytto tarjoaa sama
   /tiedostot/        tulostiedostot (mp4, csv); /tiedostot/<nimi> lataa (mp4 toistuu selaimessa, Range-tuki)
   /tiedostot.json    sama JSON:na
   /tilasto/tiedostot pelaajatilastoon kelpaavat heitto-CSV:t (JSON); nappi "Pelaajatilasto" sivulla
-  /tilasto           pelaajakohtainen mediaani ja STD valitusta heitto-CSV:sta (JSON): ?tiedosto=<nimi>&kel=<pelaajat>&pun=<pelaajat>[&ohita=1] (tools/pelaajatilasto.py)
+  /tilasto           pelaajakohtainen mediaani ja STD valitusta heitto-CSV:sta (JSON): ?tiedosto=<nimi>&kel=<pelaajat>&pun=<pelaajat>[&ohita=1][&hid=liuku|vapaa] (tools/pelaajatilasto.py)
   /tilasto.csv       sama CSV-tiedostona (Excel: erotin ;, desimaalipilkku; &fi=0: pilkkuerotin ja desimaalipiste)
 
 Ei kirjautumista oletuksena: tarkoitettu kotiverkkoon. Salasana: ymparistomuuttujat NETTI_WEB_KAYTTAJA ja NETTI_WEB_SALASANA (HTTP Basic); ala avaa porttia internetiin.
@@ -61,10 +61,10 @@ a{color:var(--korostus);text-decoration:none}a:hover{text-decoration:underline}.
 .lomake{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 18px;margin:14px 0 8px}.lomake label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--himmea)}
 .lomake label.valinta{flex-direction:row;align-items:center;gap:6px;color:var(--teksti);padding-bottom:8px}
 .lomake select,.lomake input[type=text]{font:inherit;color:var(--teksti);background:var(--laatikko);border:1px solid var(--reuna);border-radius:8px;padding:7px 9px}
-.lomake label:first-child{flex:1 1 100%}.lomake select{width:100%;min-width:0}.lomake input[type=text]{width:7em}
+.lomake label:first-child{flex:1 1 100%}.lomake select{width:100%;min-width:0}.lomake label.hid select{width:auto;max-width:100%}@media (max-width:700px){.lomake label.hid{flex:1 1 100%}.lomake label.hid select{width:100%}}.lomake input[type=text]{width:7em}
 #ts-tulos{overflow-x:auto}#ts-tulos .himmea{color:var(--himmea);margin:8px 0}
-table.ts{border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}table.ts th,table.ts td{border:1px solid var(--reuna);padding:4px 8px;white-space:nowrap}
-table.ts th{background:var(--laatikko);font-weight:600}table.ts td.n{text-align:right}
+table.ts{border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}table.ts th,table.ts td{border:1px solid var(--reuna);padding:3px 5px;white-space:nowrap}
+table.ts th{background:var(--laatikko);font-weight:600;text-align:center}table.ts td.n{text-align:right}
 .huom{background:var(--laatikko);border:1px solid var(--reuna);border-radius:8px;padding:8px 12px;margin:12px 0 0;color:var(--himmea);font-size:13px}.virhe{color:#c62828;margin:8px 0}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .virhe{color:#ff8a80}}
 </style></head><body><main>
@@ -81,6 +81,7 @@ table.ts th{background:var(--laatikko);font-weight:600}table.ts td.n{text-align:
 <label>Heitto-CSV (tulostiedostot)<select id="ts-tiedosto"><option>Ladataan...</option></select></label>
 <label>Keltaisen joukkueen pelaajat<input type="text" id="ts-kel" value="4" placeholder="4 tai 3,3,2" autocomplete="off"></label>
 <label>Punaisen joukkueen pelaajat<input type="text" id="ts-pun" value="4" placeholder="4 tai 3,3,2" autocomplete="off"></label>
+<label class="hid">Hidastuvuus<select id="ts-hid"><option value="liuku">liukuvaiheen (ennen irroitusta)</option><option value="vapaa">vapaan lennon (irroituksen jälkeen, kuten kuvan paneelissa)</option></select></label>
 <label class="valinta"><input type="checkbox" id="ts-ohita"> Ohita vajaat päät</label>
 <button type="button" class="nappi" id="ts-laske" disabled>Laske</button>
 </div>
@@ -110,13 +111,14 @@ async function paivita(){
 }
 let tsTulos=null;
 function tsMuisti(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
-function tsKysely(){return "tiedosto="+encodeURIComponent($("ts-tiedosto").value)+"&kel="+encodeURIComponent($("ts-kel").value.trim())+"&pun="+encodeURIComponent($("ts-pun").value.trim())+($("ts-ohita").checked?"&ohita=1":"")}
+function tsKysely(){return "tiedosto="+encodeURIComponent($("ts-tiedosto").value)+"&kel="+encodeURIComponent($("ts-kel").value.trim())+"&pun="+encodeURIComponent($("ts-pun").value.trim())+($("ts-ohita").checked?"&ohita=1":"")+"&hid="+encodeURIComponent($("ts-hid").value)}
 function tsNum(x,des){return x==null?"-":x.toFixed(des).replace(".",",")}
 async function tsAvaa(){
   $("tilasto").hidden=false;document.body.style.overflow="hidden";
-  const kel=tsMuisti("ts_kel"),pun=tsMuisti("ts_pun");
+  const kel=tsMuisti("ts_kel"),pun=tsMuisti("ts_pun"),hid=tsMuisti("ts_hid");
   if(kel)$("ts-kel").value=kel;
   if(pun)$("ts-pun").value=pun;
+  if(hid==="liuku"||hid==="vapaa")$("ts-hid").value=hid;
   const v=$("ts-tiedosto"),edellinen=v.value;
   try{
     const r=await fetch("tilasto/tiedostot",{cache:"no-store"}),d=await r.json();
@@ -133,7 +135,7 @@ async function tsAvaa(){
 function tsSulje(){$("tilasto").hidden=true;document.body.style.overflow=""}
 async function tsLaske(){
   const nappi=$("ts-laske");nappi.disabled=true;$("ts-tulos").innerHTML="<p class='himmea'>Lasketaan...</p>";
-  tsMuisti("ts_kel",$("ts-kel").value.trim());tsMuisti("ts_pun",$("ts-pun").value.trim());
+  tsMuisti("ts_kel",$("ts-kel").value.trim());tsMuisti("ts_pun",$("ts-pun").value.trim());tsMuisti("ts_hid",$("ts-hid").value);
   try{
     const r=await fetch("tilasto?"+tsKysely(),{cache:"no-store"}),d=await r.json();
     if(!r.ok){$("ts-tulos").innerHTML="<p class='virhe'>"+esc(d.virhe||("Virhe "+r.status))+"</p>";return}
@@ -143,10 +145,16 @@ async function tsLaske(){
 }
 function tsNayta(d){
   tsTulos=d;
-  const o=d.otsikot,des=d.desimaalit,sar=x=>"<th>"+esc(x)+"</th>";
-  let h="<p class='himmea'>"+esc(d.tiedosto)+": "+d.heittoja+" heittoa; "+d.joukkueet.map(j=>esc(j.vari)+" "+j.pelaajia+" pelaajaa (kivet "+j.kivet.join(", ")+")").join("; ")+"</p>";
-  h+="<table class='ts'><thead><tr><th colspan='4'></th><th colspan='3'>Mediaani</th><th colspan='3'>STD</th></tr><tr><th>joukkue</th><th>pelaaja</th><th>kivet</th><th>heittoja</th>"+o.map(sar).join("")+o.map(sar).join("")+"</tr></thead><tbody>";
-  for(const r of d.rivit)h+="<tr><td>"+esc(r.joukkue)+"</td><td class='n'>"+r.pelaaja+"</td><td>"+esc(r.kivet)+"</td><td class='n'>"+r.heittoja+"</td>"+r.mediaani.map((x,i)=>"<td class='n'>"+tsNum(x,des[i])+"</td>").join("")+r.std.map((x,i)=>"<td class='n'>"+tsNum(x,des[i])+"</td>").join("")+"</tr>";
+  const des=d.desimaalit;
+  let a="<th colspan='6'></th>",b="<th colspan='6'></th>",c="<th>joukkue</th><th>pelaaja</th><th>kivet</th><th>heittoja</th><th>n myötä</th><th>n vasta</th>";
+  for(const g of d.ryhmat){a+="<th colspan='"+2*g.suureet.length+"'>"+esc(g.nimi)+"</th>";for(const s of g.suureet){b+="<th colspan='2'>"+esc(s)+"</th>";c+="<th>Mediaani</th><th>STD</th>"}}
+  let h="<p class='himmea'>"+esc(d.tiedosto)+": "+d.heittoja+" heittoa; "+d.joukkueet.map(j=>esc(j.vari)+" "+j.pelaajia+" pelaajaa (kivet "+j.kivet.join(", ")+")").join("; ")+"; Hidastuvuus: "+(d.hidastuvuus==="vapaa"?"vapaan lennon":"liukuvaiheen")+"</p>";
+  h+="<table class='ts'><thead><tr>"+a+"</tr><tr>"+b+"</tr><tr>"+c+"</tr></thead><tbody>";
+  for(const r of d.rivit){
+    h+="<tr><td>"+esc(r.joukkue)+"</td><td class='n'>"+r.pelaaja+"</td><td>"+esc(r.kivet)+"</td><td class='n'>"+r.heittoja+"</td><td class='n'>"+r.myota+"</td><td class='n'>"+r.vasta+"</td>";
+    for(let i=0;i<r.mediaani.length;i++){const t=" title='n = "+r.n[i]+"'";h+="<td class='n'"+t+">"+tsNum(r.mediaani[i],des[i])+"</td><td class='n'"+t+">"+tsNum(r.std[i],des[i])+"</td>"}
+    h+="</tr>";
+  }
   h+="</tbody></table>";
   if(d.varoitukset.length)h+="<div class='huom'>"+d.varoitukset.map(v=>"<div>Huom: "+esc(v)+"</div>").join("")+"</div>";
   h+="<p><button type='button' class='nappi toinen' id='ts-kopioi'>Kopioi Exceliin</button> <a class='nappi toinen' id='ts-csv' href='#'>Lataa CSV (Excel)</a></p>";
@@ -155,9 +163,11 @@ function tsNayta(d){
   $("ts-kopioi").onclick=()=>tsKopioi($("ts-kopioi"));
 }
 function tsTsv(d){
-  const T=String.fromCharCode(9),N=String.fromCharCode(10),o=d.otsikot,des=d.desimaalit;
-  const rivit=[["","","","","Mediaani","","","STD","",""],["joukkue","pelaaja","kivet","heittoja"].concat(o,o)];
-  for(const r of d.rivit)rivit.push([r.joukkue,r.pelaaja,r.kivet,r.heittoja].concat(r.mediaani.map((x,i)=>x==null?"":tsNum(x,des[i]+1)),r.std.map((x,i)=>x==null?"":tsNum(x,des[i]+1))));
+  const T=String.fromCharCode(9),N=String.fromCharCode(10),des=d.desimaalit;
+  const a=["","","","","",""],b=["","","","","",""],c=["joukkue","pelaaja","kivet","heittoja","n myötä","n vasta"];
+  for(const g of d.ryhmat){a.push(g.nimi);for(let i=1;i<2*g.suureet.length;i++)a.push("");for(const s of g.suureet){b.push(s,"");c.push("Mediaani","STD")}}
+  const rivit=[a,b,c];
+  for(const r of d.rivit){const x=[r.joukkue,r.pelaaja,r.kivet,r.heittoja,r.myota,r.vasta];for(let i=0;i<r.mediaani.length;i++)x.push(r.mediaani[i]==null?"":tsNum(r.mediaani[i],des[i]+1),r.std[i]==null?"":tsNum(r.std[i],des[i]+1));rivit.push(x)}
   return rivit.map(r=>r.join(T)).join(N)+N;
 }
 async function tsKopioi(nappi){
@@ -430,22 +440,25 @@ class WebNaytto:
                 out.append(t)
         return out
 
-    def _tilasto_laskettu(self, nimi, keltainen, punainen, ohita):
+    def _tilasto_laskettu(self, nimi, keltainen, punainen, ohita, hidastuvuus):
         pt = _tilasto_moduuli()
         polku = self.tiedoston_polku(nimi) if nimi and nimi.lower().endswith(".csv") else None
         if polku is None:
             raise ValueError("tiedostoa ei löydy tulostiedostoista")
-        return pt, pt.laske_tiedosto(polku, {"keltainen": keltainen, "punainen": punainen}, ohita_puutteelliset=ohita)
+        return pt, pt.laske_tiedosto(polku, {"keltainen": keltainen, "punainen": punainen}, ohita_puutteelliset=ohita, hidastuvuus=hidastuvuus or "liuku")
 
-    def tilasto(self, nimi, keltainen=None, punainen=None, ohita=False):
-        """Pelaajatilasto valitusta heitto-CSV:sta (JSON-kelpoinen dict). keltainen / punainen: pelaajien maara tai kivijako (3,3,2); puuttuvalle 4. ValueError, jos tiedosto tai maarat eivat kelpaa."""
-        pt, t = self._tilasto_laskettu(nimi, keltainen, punainen, ohita)
-        return dict(tiedosto=t["tiedosto"], heittoja=t["heittoja"], otsikot=list(pt.MITAT), desimaalit=list(pt.DES_TULOSTE), rivit=t["tulokset"], varoitukset=t["varoitukset"],
+    def tilasto(self, nimi, keltainen=None, punainen=None, ohita=False, hidastuvuus="liuku"):
+        """Pelaajatilasto valitusta heitto-CSV:sta (JSON-kelpoinen dict): ryhmat (Myötä / Vasta / Hidastuvuus suureineen, kuten Excelissa), desimaalit suureittain ja pelaajarivit (Mediaani, STD ja heittomaara n
+        suureittain). keltainen / punainen: pelaajien maara tai kivijako (3,3,2); puuttuvalle 4. hidastuvuus: 'liuku' (liukuvaiheen) tai 'vapaa' (vapaan lennon, kuten paneelissa).
+        ValueError, jos tiedosto, maarat tai hidastuvuus eivat kelpaa."""
+        pt, t = self._tilasto_laskettu(nimi, keltainen, punainen, ohita, hidastuvuus)
+        return dict(tiedosto=t["tiedosto"], heittoja=t["heittoja"], hidastuvuus=hidastuvuus or "liuku", ryhmat=[dict(nimi=r, suureet=list(ss)) for r, ss in pt.RYHMAT], desimaalit=list(pt.DES_TULOSTE),
+                    rivit=t["tulokset"], varoitukset=t["varoitukset"],
                     joukkueet=[dict(vari=v, pelaajia=len(lohkot), kivet=[pt.kivet_tekstina(sum(lohkot[:i]) + 1, n) for i, n in enumerate(lohkot)]) for v, lohkot in t["jaot"].items()])
 
-    def tilasto_csv(self, nimi, keltainen=None, punainen=None, ohita=False, fi=True):
+    def tilasto_csv(self, nimi, keltainen=None, punainen=None, ohita=False, fi=True, hidastuvuus="liuku"):
         """(ladattavan tiedoston nimi, CSV-tavut); fi: Excelille erotin ; ja desimaalipilkku (UTF-8 BOM)."""
-        pt, t = self._tilasto_laskettu(nimi, keltainen, punainen, ohita)
+        pt, t = self._tilasto_laskettu(nimi, keltainen, punainen, ohita, hidastuvuus)
         return os.path.splitext(nimi)[0] + "_pelaajat.csv", pt.csv_tavuina(t["tulokset"], fi)
 
     def tunnistettu(self, otsake):
@@ -591,10 +604,10 @@ class _Kasittelija(http.server.BaseHTTPRequestHandler):
             self._virhe_json(503, str(e), head)
 
     def _tilasto(self, n, polku, kysely, head):
-        """/tilasto?tiedosto=<nimi>&kel=<pelaajat>&pun=<pelaajat>[&ohita=1]: pelaajatilasto JSON:na; /tilasto.csv: sama CSV-tiedostona (&fi=0: pilkkuerotin ja desimaalipiste). Laskenta ei kirjoita mitaan levylle."""
+        """/tilasto?tiedosto=<nimi>&kel=<pelaajat>&pun=<pelaajat>[&ohita=1][&hid=liuku|vapaa]: pelaajatilasto JSON:na; /tilasto.csv: sama CSV-tiedostona (&fi=0: pilkkuerotin ja desimaalipiste). Laskenta ei kirjoita mitaan levylle."""
         q = {k: v[0] for k, v in urllib.parse.parse_qs(kysely, keep_blank_values=True).items()}
         try:
-            args = dict(nimi=q.get("tiedosto", ""), keltainen=q.get("kel") or None, punainen=q.get("pun") or None, ohita=q.get("ohita") == "1")
+            args = dict(nimi=q.get("tiedosto", ""), keltainen=q.get("kel") or None, punainen=q.get("pun") or None, ohita=q.get("ohita") == "1", hidastuvuus=q.get("hid") or "liuku")
             if polku == "/tilasto.csv":
                 nimi, data = n.tilasto_csv(fi=q.get("fi", "1") != "0", **args)
                 self._vastaa(200, data, "text/csv; charset=utf-8", [("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(nimi)}")], head)
