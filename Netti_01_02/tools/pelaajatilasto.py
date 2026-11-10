@@ -1,21 +1,29 @@
-"""Pelaajakohtainen tilasto heitto-CSV:sta (netti_live.py --csv): mediaani ja STD sarakkeille liun_hidastuvuus_m_s2, irroitus_delta_cm ja irroitus vauhti.
+"""Pelaajakohtainen tilasto heitto-CSV:sta (netti_live.py --csv): Mediaani ja STD sarakkeille Liuku, Heitto ja Tönäisy (kierron suunnan mukaan: Myötä / Vasta) sekä Hidastuvuus.
 
     python tools/pelaajatilasto.py heitot.csv                            # kysyy pelaajamaarat
     python tools/pelaajatilasto.py heitot.csv --pelaajia 4               # kummassakin joukkueessa 4 pelaajaa
     python tools/pelaajatilasto.py heitot.csv --keltainen 4 --punainen 3
     python tools/pelaajatilasto.py heitot.csv --punainen 3,3,2           # 3 pelaajaa, kivet 1-3, 4-6 ja 7-8 (sama kuin oletus kolmelle pelaajalle)
     python tools/pelaajatilasto.py heitot.csv --fi                       # Excelille: erotin ;, desimaalipilkku, UTF-8 BOM
+    python tools/pelaajatilasto.py heitot.csv --hidastuvuus vapaa        # Hidastuvuus = vapaan lennon hidastuvuus (kuten kuvan paneelissa)
 
 Joukkue = kiven vari (CSV:n sarake vari). Pelaaja lasketaan kiven numerosta (sarake kivi_nro 1-8, vareittain per paa, kuten kuvassa nakyva "Keltainen 3"): pelaajat heittavat kivensa
 perakkain numerojarjestyksessa. Oletusjako: 4 pelaajaa = kivet 1-2, 3-4, 5-6, 7-8 (pelaaja 1 = ensimmainen heittaja, pelaaja 4 = viimeinen); 3 pelaajaa = 1-3, 4-6, 7-8; 2 pelaajaa = 1-4, 5-8.
 Muu jako annetaan kivimaarina pilkulla erotettuna (esim. --punainen 2,3,3: ensimmainen heittaa kaksi kivea, toinen ja kolmas kolme).
 
-Taulukko pelaajaa kohti, kuten Excelissa: Mediaani | STD sarakkeille
-    liun_hidastuvuus_m_s2   liun hidastuvuus (m/s2, sarake liun_hidastuvuus_m_s2)
-    irroitus_delta_cm       irroituksen delta (cm, sarake irroitus_delta_cm)
-    irroitus vauhti         nopeus irroituksen jalkeen - nopeus ennen irroitusta (m/s, nopeus_jalkeen_m_s - nopeus_ennen_m_s)
-STD on otoskeskihajonta (n - 1, kuten Excelin STDEV.S; --std-populaatio: jakaja n). Kunkin luvun laskentaan kaytetaan heittoja, joilta kyseinen mittaus on olemassa (n_ sarakkeet); yksittaisesta
-arvosta ei saa hajontaa (tyhja). Tulos tulostetaan ja tallennetaan CSV:ksi (oletus <syote>_pelaajat.csv; --ei-tallenna: vain tuloste).
+Taulukko pelaajaa kohti, kuten Excelissa; kustakin suureesta Mediaani ja STD:
+    Myötä   Liuku   Heitto   Tönäisy        kierroltaan myotapaivaan pyorivat kivet
+    Vasta   Liuku   Heitto   Tönäisy        kierroltaan vastapaivaan pyorivat kivet
+    Hidastuvuus                              kaikki heitot (ei jaeta suunnan mukaan)
+Kierron suunta on CSV:n sarakkeen kierre etumerkki, kuten kuvan paneelin Kierre: + myotapaivaan (Myötä), - vastapaivaan (Vasta). Jos kierre puuttuu, suunta paatellaan sarakkeista
+irroitus_delta_cm = (heitto_T_cm - liuku_T_cm) * suunta; jos suuntaa ei saada selville, heitto ei ole Myötä- eika Vasta-luvuissa (huomautus kertoo maaran).
+    Liuku, Heitto   kuvan paneelin arvot (cm): liukulinjan ja irroituslinjan osuma kaukopaan T-viivalla MERKISTA (maalimerkki = kipparin harjanpaa), + = kierteesta ulospain (sarakkeet
+                    liuku_merkista_cm ja heitto_merkista_cm). Vanhassa CSV:ssa niita ei ole: silloin keskiviivasta (liuku_T_cm, heitto_T_cm; + = heittajan oikealle), ja huomautus kertoo sen
+    Tönäisy         nopeus irroituksen jalkeen - nopeus ennen irroitusta (m/s, nopeus_jalkeen_m_s - nopeus_ennen_m_s)
+    Hidastuvuus     oletus (--hidastuvuus liuku): liukuvaiheen hidastuvuus ennen irroitusta (m/s2, liun_hidastuvuus_m_s2); --hidastuvuus vapaa: vapaan lennon hidastuvuus irroituksen jalkeen
+                    (hidastuvuus_m_s2) kuten paneelissa, eli vain vakaat heitot (vakaa = 1) ja arvot 0 ... 0,25
+STD on otoskeskihajonta (n - 1, kuten Excelin STDEV.S; --std-populaatio: jakaja n). Kunkin luvun laskentaan kaytetaan heittoja, joilta kyseinen mittaus on olemassa (CSV:n lopussa n-sarakkeet);
+yksittaisesta arvosta ei saa hajontaa (tyhja). Tulos tulostetaan ja tallennetaan CSV:ksi (oletus <syote>_pelaajat.csv; --ei-tallenna: vain tuloste).
 
 Huom: kivinumero tulee seurannasta. Jos paassa on vahemman kuin joukkueen kivet (video alkoi tai loppui kesken paan, tai seuranta ohitti heiton), varoitus kertoo paan; --ohita-puutteelliset
 jattaa tallaiset paat pois. Jos analyysi aloitettiin kesken paan, ensimmaisen paan kivinumerot ovat aluksi vaarin (korjaa kivi_nro CSV:ssa tai ohita se).
@@ -30,10 +38,14 @@ import sys
 
 KIVIA_PAASSA = 8                       # joukkueen kivet / paa (kuten netti_seuranta.KIVIA_PAASSA: kivi_nro 1-8)
 OLETUS_PELAAJIA = 4
-MITAT = ("liun_hidastuvuus_m_s2", "irroitus_delta_cm", "irroitus vauhti")          # sarakeotsikot kuten Excelissa
-DES_TULOSTE = (3, 1, 3)                # desimaalit tulosteessa
-DES_CSV = (4, 2, 4)                    # desimaalit tallennettavassa CSV:ssa
-PAKOLLISET = ("vari", "kivi_nro", "liun_hidastuvuus_m_s2", "irroitus_delta_cm", "nopeus_ennen_m_s", "nopeus_jalkeen_m_s")
+RYHMAT = (("Myötä", ("Liuku", "Heitto", "Tönäisy")), ("Vasta", ("Liuku", "Heitto", "Tönäisy")), ("", ("Hidastuvuus",)))       # otsikot kuten Excelissa: ryhma (kierron suunta) ja sen suureet
+SARAKKEET = tuple((ryhma, suure) for ryhma, suureet in RYHMAT for suure in suureet)       # 7 suuretta: 0-2 Myötä, 3-5 Vasta, 6 Hidastuvuus; kustakin Mediaani ja STD
+DES_TULOSTE = (1, 1, 3, 1, 1, 3, 3)    # desimaalit tulosteessa (cm, cm, m/s, cm, cm, m/s, m/s2)
+DES_CSV = (2, 2, 4, 2, 2, 4, 4)        # desimaalit tallennettavassa CSV:ssa
+TUNNISTEET = ("joukkue", "pelaaja", "kivet", "heittoja", "n myötä", "n vasta")           # pelaajarivin tunnistetiedot ennen lukuja (n myötä / n vasta = heittoja kierron suunnan mukaan)
+HIDASTUVUUS_SARAKE = {"liuku": "liun_hidastuvuus_m_s2", "vapaa": "hidastuvuus_m_s2"}          # Hidastuvuus-sarakkeen lahde
+VAPAA_MAX = 0.25                       # vapaan lennon hidastuvuus: suurempi arvo on kohinaa (kuten paneelissa)
+PAKOLLISET = ("vari", "kivi_nro", "liuku_T_cm", "heitto_T_cm", "nopeus_ennen_m_s", "nopeus_jalkeen_m_s")
 
 
 def luku(s):
@@ -111,15 +123,51 @@ def hajonta(x, populaatio=False):
     return statistics.stdev(x) if len(x) >= 2 else None
 
 
-def mitat(r):
-    """(liun hidastuvuus, irroituksen delta, irroitusvauhti = nopeus jalkeen - nopeus ennen) yhdelta heitolta; puuttuva mittaus on None."""
+def kierron_suunta(r):
+    """Heiton kierron suunta: +1 vastapaivaan (Vasta), -1 myotapaivaan (Myötä), 0 tuntematon. Kuten kuvan paneelin Kierre: sarakkeen kierre etumerkki (+ myotapaivaan, - vastapaivaan; tyhja, ellei
+    suuntaa tai kierrosmaaraa tunneta). Jos kierre puuttuu, mutta irroitus_delta_cm on, suunta paatellaan siita: irroitus_delta_cm = (heitto_T_cm - liuku_T_cm) * suunta (netti_seuranta.heiton_suureet)."""
+    k = luku(r.get("kierre"))
+    if k is not None and k != 0:
+        return -1 if k > 0 else 1
+    d, h, l = luku(r.get("irroitus_delta_cm")), luku(r.get("heitto_T_cm")), luku(r.get("liuku_T_cm"))
+    if d is not None and h is not None and l is not None and abs(d) >= 0.2 and abs(h - l) >= 0.2:            # alle 0,2 cm: pyoristys (CSV:ssa 0,1 cm:n tarkkuus) tekee etumerkista epavarman
+        return (1 if d > 0 else -1) * (1 if h > l else -1)
+    return 0
+
+
+def mitta_asetukset(kentat, hidastuvuus="liuku"):
+    """(asetukset, huomautukset): mista CSV:n sarakkeista Liuku, Heitto ja Hidastuvuus luetaan. Liuku ja Heitto ovat kuvan paneelin arvot: suorien osuma kaukopaan T-viivalla maalimerkista, + = kierteesta
+    ulospain (sarakkeet liuku_merkista_cm ja heitto_merkista_cm); vanhassa CSV:ssa niita ei ole, ja silloin kaytetaan keskiviivasta mitattuja arvoja (liuku_T_cm, heitto_T_cm; + = heittajan oikealle).
+    hidastuvuus: 'liuku' (liukuvaiheen hidastuvuus, liun_hidastuvuus_m_s2) tai 'vapaa' (vapaan lennon hidastuvuus, hidastuvuus_m_s2, kuten paneelissa). ValueError, jos muu."""
+    if hidastuvuus not in HIDASTUVUUS_SARAKE:
+        raise ValueError(f"hidastuvuus: {' tai '.join(HIDASTUVUUS_SARAKE)} (annettu {hidastuvuus!r})")
+    huom = []
+    if "liuku_merkista_cm" in kentat and "heitto_merkista_cm" in kentat:
+        liuku, heitto = "liuku_merkista_cm", "heitto_merkista_cm"
+    else:
+        liuku, heitto = "liuku_T_cm", "heitto_T_cm"
+        huom.append("CSV:ssa ei ole merkista laskettuja sarakkeita (liuku_merkista_cm, heitto_merkista_cm; vanha CSV): Liuku ja Heitto ovat keskiviivasta, + = heittajan oikealle")
+    hid = HIDASTUVUUS_SARAKE[hidastuvuus]
+    if hid not in kentat:
+        huom.append(f"CSV:ssa ei ole saraketta {hid}: Hidastuvuus jaa tyhjaksi")
+    return dict(liuku=liuku, heitto=heitto, hid=hid, vapaa=(hidastuvuus == "vapaa"), vakaa="vakaa" in kentat), huom
+
+
+def mitat(r, a):
+    """(suunta, [liuku, heitto, tonaisy], hidastuvuus) yhdelta heitolta (a = mitta_asetukset); puuttuva mittaus on None. suunta: +1 Vasta (vastapaivaan), -1 Myötä (myotapaivaan), 0 tuntematon.
+    Tönäisy = nopeus irroituksen jalkeen - nopeus ennen. Vapaan lennon hidastuvuus kuten paneelissa: vain vakaasta heitosta ja arvoilla 0 ... 0,25 (muuten ? eli ei lukua)."""
     ennen, jalkeen = luku(r.get("nopeus_ennen_m_s")), luku(r.get("nopeus_jalkeen_m_s"))
-    return luku(r.get("liun_hidastuvuus_m_s2")), luku(r.get("irroitus_delta_cm")), (None if ennen is None or jalkeen is None else jalkeen - ennen)
+    hid = luku(r.get(a["hid"]))
+    if a["vapaa"] and hid is not None and not (0.0 <= hid <= VAPAA_MAX and (not a["vakaa"] or luku(r.get("vakaa")) == 1)):
+        hid = None
+    return kierron_suunta(r), [luku(r.get(a["liuku"])), luku(r.get(a["heitto"])), None if ennen is None or jalkeen is None else jalkeen - ennen], hid
 
 
-def laske(rivit, kentat, jaot, ohita_puutteelliset=False, populaatio=False):
-    """(tulokset, varoitukset). jaot: {vari: [pelaajan kivimaara, ...]}. tulokset: [dict(joukkue, pelaaja, kivet, heittoja, n, mediaani, std)] joukkueittain ja pelaajajarjestyksessa."""
-    varoitukset = []
+def laske(rivit, kentat, jaot, ohita_puutteelliset=False, populaatio=False, hidastuvuus="liuku"):
+    """(tulokset, varoitukset). jaot: {vari: [pelaajan kivimaara, ...]}. tulokset: [dict(joukkue, pelaaja, kivet, heittoja, myota, vasta, n, mediaani, std)] joukkueittain ja pelaajajarjestyksessa;
+    heittoja = pelaajan heitot, myota / vasta = niista kierroltaan myotapaivaan / vastapaivaan pyorivat; n, mediaani ja std = tuplat SARAKKEET-jarjestyksessa (Myötä: Liuku, Heitto, Tönäisy; Vasta: sama;
+    Hidastuvuus kaikista heitoista). hidastuvuus: 'liuku' tai 'vapaa' (ks. mitta_asetukset)."""
+    asetus, varoitukset = mitta_asetukset(kentat, hidastuvuus)
     paat = paa_numerot(rivit, kentat)
     lasku = {}                                                       # (paa, vari) -> heittoja
     for r, p in zip(rivit, paat):
@@ -145,15 +193,19 @@ def laske(rivit, kentat, jaot, ohita_puutteelliset=False, populaatio=False):
         if nro is None or not (1 <= int(nro) <= len(pelaaja_kivelle[v])):
             varoitukset.append(f"heitto {r.get('heitto', '?')} ({v}, kivi_nro {r.get('kivi_nro') or 'puuttuu'}): ei kuulu kenellekaan pelaajalle, ohitettu")
             continue
-        keratty.setdefault((v, pelaaja_kivelle[v][int(nro) - 1]), []).append(mitat(r))
+        keratty.setdefault((v, pelaaja_kivelle[v][int(nro) - 1]), []).append(mitat(r, asetus))
+    tuntematon = sum(1 for lista in keratty.values() for m in lista if m[0] == 0)
+    if tuntematon:
+        varoitukset.append(f"{tuntematon} heitolta puuttuu kierron suunta (sarake kierre tyhja): ne eivat ole Myötä- eika Vasta-luvuissa, mutta Hidastuvuuteen ne otetaan")
     tulokset = []
     for v, lohkot in jaot.items():
         alku = 1
         for p, n in enumerate(lohkot, 1):
             heitot = keratty.get((v, p), [])
-            sarakkeet = [[m[i] for m in heitot if m[i] is not None] for i in range(3)]
-            tulokset.append(dict(joukkue=v, pelaaja=p, kivet=kivet_tekstina(alku, n), heittoja=len(heitot), n=tuple(len(s) for s in sarakkeet),
-                                 mediaani=tuple(mediaani(s) for s in sarakkeet), std=tuple(hajonta(s, populaatio) for s in sarakkeet)))
+            ryhmat = ([m for m in heitot if m[0] < 0], [m for m in heitot if m[0] > 0])                 # Myötä, Vasta
+            sarakkeet = [[m[1][i] for m in ryhma if m[1][i] is not None] for ryhma in ryhmat for i in range(3)] + [[m[2] for m in heitot if m[2] is not None]]
+            tulokset.append(dict(joukkue=v, pelaaja=p, kivet=kivet_tekstina(alku, n), heittoja=len(heitot), myota=len(ryhmat[0]), vasta=len(ryhmat[1]), n=tuple(len(x) for x in sarakkeet),
+                                 mediaani=tuple(mediaani(x) for x in sarakkeet), std=tuple(hajonta(x, populaatio) for x in sarakkeet)))
             alku += n
     return tulokset, varoitukset
 
@@ -163,30 +215,67 @@ def _muoto(x, des, pilkku=False):
     return s.replace(".", ",") if pilkku else s
 
 
+def otsikkorivit(n_lohko=False):
+    """Kolme otsikkoriviä kuten Excelissa: ryhmat (Myötä, Vasta), suureet ja Mediaani / STD (tunnisteiden nimet alimmalla rivilla); ryhma- ja suurenimi on sarakeparin ensimmaisessa sarakkeessa, toinen tyhja.
+    n_lohko: lisaa loppuun heittomaarasarakkeet n (montako heittoa kunkin luvun laskentaan kaytettiin)."""
+    r1, r2, r3 = [""] * len(TUNNISTEET), [""] * len(TUNNISTEET), list(TUNNISTEET)
+    for ryhma, suureet in RYHMAT:
+        r1 += [ryhma] + [""] * (2 * len(suureet) - 1)
+        for suure in suureet:
+            r2 += [suure, ""]
+            r3 += ["Mediaani", "STD"]
+    if n_lohko:
+        r1 += ["n"] + [""] * (len(SARAKKEET) - 1)
+        r2 += [""] * len(SARAKKEET)
+        r3 += [(ryhma + " " + suure).strip() for ryhma, suure in SARAKKEET]
+    return r1, r2, r3
+
+
+def pelaajarivi(t, des, pilkku=False, n_lohko=False):
+    """Pelaajan rivi otsikkorivien mukaan: tunnisteet, Mediaani ja STD kustakin suureesta (des = desimaalit suureittain), halutessa heittomaarat n."""
+    solut = [t["joukkue"], t["pelaaja"], t["kivet"], t["heittoja"], t["myota"], t["vasta"]]
+    for i in range(len(SARAKKEET)):
+        solut += [_muoto(t["mediaani"][i], des[i], pilkku), _muoto(t["std"][i], des[i], pilkku)]
+    return solut + (list(t["n"]) if n_lohko else [])
+
+
 def taulukko(tulokset):
-    """Tulosteen rivit (Mediaani / STD -ryhmaotsikko, sarakeotsikot, pelaajarivit), sarakkeet tasattu."""
-    otsikot = ["joukkue", "pelaaja", "kivet", "heittoja"] + list(MITAT) + list(MITAT)
-    rivit = [[t["joukkue"], str(t["pelaaja"]), t["kivet"], str(t["heittoja"])] + [(_muoto(x, d) or "-") for x, d in zip(t["mediaani"], DES_TULOSTE)] +
-             [(_muoto(x, d) or "-") for x, d in zip(t["std"], DES_TULOSTE)] for t in tulokset]
-    leveys = [max(len(otsikot[i]), *(len(r[i]) for r in rivit)) if rivit else len(otsikot[i]) for i in range(len(otsikot))]
+    """Tulosteen rivit: kolme otsikkoriviä (Myötä / Vasta, suureet, Mediaani / STD) ja pelaajarivit; sarakkeet tasattu, ryhma- ja suurenimet keskitetty sarakkeidensa ylle."""
+    _, _, r3 = otsikkorivit()
+    rivit = [[str(x) if i < len(TUNNISTEET) else (str(x) or "-") for i, x in enumerate(pelaajarivi(t, DES_TULOSTE))] for t in tulokset]
+    n = len(r3)
+    leveys = [max(len(r3[i]), *(len(r[i]) for r in rivit)) if rivit else len(r3[i]) for i in range(n)]
+    alut = [sum(leveys[:i]) + 2 * i for i in range(n)]               # sarakkeen alkukohta rivilla
+    kokonaisleveys = alut[-1] + leveys[-1]
 
     def rivi(solut):
         return "  ".join(s.ljust(leveys[i]) if i < 3 else s.rjust(leveys[i]) for i, s in enumerate(solut))
-    alku_med = sum(leveys[:4]) + 2 * 4
-    alku_std = alku_med + sum(leveys[4:7]) + 2 * 3
-    ryhma = " " * alku_med + "Mediaani".ljust(alku_std - alku_med) + "STD"
-    return [ryhma.rstrip(), rivi(otsikot)] + [rivi(r) for r in rivit]
+
+    def otsikko(kohdat):                                             # [(ensimmainen sarake, sarakkeita, teksti)]: teksti keskitetaan sarakkeidensa ylle
+        ulos = [" "] * kokonaisleveys
+        for i, lkm, teksti in kohdat:
+            alku, loppu = alut[i], alut[i + lkm - 1] + leveys[i + lkm - 1]
+            x = alku + max(0, (loppu - alku - len(teksti)) // 2)
+            ulos[x:x + len(teksti)] = list(teksti)
+        return "".join(ulos).rstrip()
+    ryhmat, suureet, i = [], [], len(TUNNISTEET)
+    for ryhma, suurenimet in RYHMAT:
+        if ryhma:
+            ryhmat.append((i, 2 * len(suurenimet), ryhma))
+        for suure in suurenimet:
+            suureet.append((i, 2, suure))
+            i += 2
+    return [otsikko(ryhmat), otsikko(suureet), rivi(r3)] + [rivi(r) for r in rivit]
 
 
 def kirjoita_csv_virtaan(fh, tulokset, fi=False):
-    """Kirjoittaa taulukon tiedostomaiseen virtaan (newline=""): ensimmainen rivi ryhmat (Mediaani, STD), toinen sarakeotsikot, sitten pelaajat; viimeiset sarakkeet n_* kertovat, montako heittoa kunkin
-    luvun laskentaan kaytettiin. fi: erotin ; ja desimaalipilkku."""
+    """Kirjoittaa taulukon tiedostomaiseen virtaan (newline=""): kolme otsikkoriviä (Myötä / Vasta, suureet, Mediaani / STD), sitten pelaajat; lopussa n-sarakkeet kertovat, montako heittoa kunkin luvun
+    laskentaan kaytettiin. fi: erotin ; ja desimaalipilkku."""
     w = csv.writer(fh, delimiter=";" if fi else ",")
-    w.writerow(["", "", "", "", "Mediaani", "", "", "STD", "", "", "n", "", ""])
-    w.writerow(["joukkue", "pelaaja", "kivet", "heittoja"] + list(MITAT) + list(MITAT) + ["liun_hidastuvuus_m_s2", "irroitus_delta_cm", "irroitus vauhti"])
+    for rivi in otsikkorivit(n_lohko=True):
+        w.writerow(rivi)
     for t in tulokset:
-        w.writerow([t["joukkue"], t["pelaaja"], t["kivet"], t["heittoja"]] + [_muoto(x, d, fi) for x, d in zip(t["mediaani"], DES_CSV)] +
-                   [_muoto(x, d, fi) for x, d in zip(t["std"], DES_CSV)] + list(t["n"]))
+        w.writerow(pelaajarivi(t, DES_CSV, fi, n_lohko=True))
 
 
 def kirjoita_csv(polku, tulokset, fi=False):
@@ -207,9 +296,10 @@ def jakohuomautukset(jaot):
     return [f"joukkueen '{v}' kivijako {','.join(str(n) for n in lohkot)} on yhteensa {sum(lohkot)} kivea (paassa oletetaan {KIVIA_PAASSA})" for v, lohkot in jaot.items() if sum(lohkot) != KIVIA_PAASSA]
 
 
-def laske_tiedosto(polku, maaraykset=None, oletus=OLETUS_PELAAJIA, ohita_puutteelliset=False, populaatio=False):
+def laske_tiedosto(polku, maaraykset=None, oletus=OLETUS_PELAAJIA, ohita_puutteelliset=False, populaatio=False, hidastuvuus="liuku"):
     """Koko tilasto tiedostosta (selainnakyma kayttaa tata; komentorivi tekee saman vaiheittain, koska se kysyy maarat): dict(tiedosto, heittoja, jaot, tulokset, varoitukset).
-    maaraykset: {vari: pelaajien maara tai kivijako}; puuttuvalle joukkueelle oletus. ValueError (selkea viesti), jos tiedosto tai maaraykset eivat kelpaa."""
+    maaraykset: {vari: pelaajien maara tai kivijako}; puuttuvalle joukkueelle oletus. hidastuvuus: 'liuku' tai 'vapaa' (ks. mitta_asetukset).
+    ValueError (selkea viesti), jos tiedosto, maaraykset tai hidastuvuus eivat kelpaa."""
     rivit, kentat = lue(polku)
     puuttuu = [k for k in PAKOLLISET if k not in kentat]
     if puuttuu:
@@ -226,7 +316,7 @@ def laske_tiedosto(polku, maaraykset=None, oletus=OLETUS_PELAAJIA, ohita_puuttee
             jaot[v] = jako(maaare)
         except ValueError as e:
             raise ValueError(f"joukkue '{v}': {e}") from None
-    tulokset, varoitukset = laske(rivit, kentat, jaot, ohita_puutteelliset, populaatio)
+    tulokset, varoitukset = laske(rivit, kentat, jaot, ohita_puutteelliset, populaatio, hidastuvuus)
     return dict(tiedosto=os.path.basename(polku), heittoja=len(rivit), jaot=jaot, tulokset=tulokset, varoitukset=jakohuomautukset(jaot) + varoitukset)
 
 
@@ -261,7 +351,14 @@ def main(argv=None, syotto=input, interaktiivinen=None):
     ap.add_argument("--fi", action="store_true", help="suomalainen Excel: erotin ;, desimaalipilkku ja UTF-8 BOM tulostiedostoon")
     ap.add_argument("--ohita-puutteelliset", action="store_true", help="jata pois paat, joissa jonkin joukkueen heittojen maara ei ole sama kuin sen kivet (video alkoi / loppui kesken paan tai heitto jai tunnistamatta)")
     ap.add_argument("--std-populaatio", action="store_true", help="STD jakajalla n (oletus n - 1, kuten Excelin STDEV.S)")
+    ap.add_argument("--hidastuvuus", choices=list(HIDASTUVUUS_SARAKE), default="liuku",
+                    help="Hidastuvuus-sarakkeen lahde: liuku = liukuvaiheen hidastuvuus ennen irroitusta (oletus), vapaa = vapaan lennon hidastuvuus irroituksen jalkeen (kuten kuvan paneelissa)")
     a = ap.parse_args(argv)
+    for virta in (sys.stdout, sys.stderr):
+        try:
+            virta.reconfigure(errors="replace")                      # Myötä / Tönäisy: konsoli, joka ei osaa ääkkösiä, ei kaada tulostusta
+        except (AttributeError, ValueError, OSError):
+            pass
     if not os.path.isfile(a.csv):
         print(f"tiedostoa ei loydy: {a.csv}", file=sys.stderr)
         return 2
@@ -298,7 +395,7 @@ def main(argv=None, syotto=input, interaktiivinen=None):
             ap.error(f"joukkue '{v}': {e}")
     for huomautus in jakohuomautukset(jaot):
         print("Huom:", huomautus, file=sys.stderr)
-    tulokset, varoitukset = laske(rivit, kentat, jaot, a.ohita_puutteelliset, a.std_populaatio)
+    tulokset, varoitukset = laske(rivit, kentat, jaot, a.ohita_puutteelliset, a.std_populaatio, a.hidastuvuus)
     print(f"{os.path.basename(a.csv)}: {len(rivit)} heittoa; " + "; ".join(f"{v}: {len(l)} pelaajaa (kivet {', '.join(kivet_tekstina(sum(l[:i]) + 1, n) for i, n in enumerate(l))})" for v, l in jaot.items()))
     print("\n".join(taulukko(tulokset)))
     for v in varoitukset:

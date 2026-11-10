@@ -3041,13 +3041,21 @@ def testaa_kopiojono_lukko():
 
 
 def testaa_pelaajatilasto():
-    print("pelaajatilasto (tools/pelaajatilasto.py): pelaajakohtainen mediaani ja STD (liun hidastuvuus, irroituksen delta, irroitusvauhti = nopeus jalkeen - ennen) heitto-CSV:sta")
+    print("pelaajatilasto (tools/pelaajatilasto.py): pelaajakohtainen Mediaani ja STD: Myötä / Vasta (kierron suunta) x Liuku, Heitto, Tönäisy (= nopeus jalkeen - ennen) ja Hidastuvuus, heitto-CSV:sta")
     import contextlib
+    import csv as csv_mod
     import io
     import shutil
     import statistics
     import tempfile
     import pelaajatilasto as pt
+
+    def virhe_viesti(fn, *a, **k):
+        try:
+            fn(*a, **k)
+        except ValueError as e:
+            return str(e)
+        return None
     # pelaajajako
     tarkista("jako: 4 pelaajaa = kivet 2+2+2+2, 3 = 3+3+2, 2 = 4+4, 1 = 8, 5 = 2+2+2+1+1; 2,3,3 sellaisenaan", [pt.jako(x) for x in ("4", "3", "2", "1", "5", "2,3,3")] == [[2, 2, 2, 2], [3, 3, 2], [4, 4], [8], [2, 2, 2, 1, 1], [2, 3, 3]])
     virheet = 0
@@ -3057,105 +3065,213 @@ def testaa_pelaajatilasto():
         except ValueError:
             virheet += 1
     tarkista("jako: virheelliset maarat hylataan (0, 9, teksti, tyhja, nolla tai negatiivinen kivimaara)", virheet == 6, str(virheet))
-    tarkista("mitat: irroitusvauhti = nopeus jalkeen - nopeus ennen; puuttuva nopeus -> None", pt.mitat({"liun_hidastuvuus_m_s2": "0,05", "irroitus_delta_cm": "12.5", "nopeus_ennen_m_s": "2.000", "nopeus_jalkeen_m_s": "2.040"}) == (0.05, 12.5, 0.04) or
-             all(abs(a - b) < 1e-12 for a, b in zip(pt.mitat({"liun_hidastuvuus_m_s2": "0,05", "irroitus_delta_cm": "12.5", "nopeus_ennen_m_s": "2.000", "nopeus_jalkeen_m_s": "2.040"}), (0.05, 12.5, 0.04))))
-    tarkista("mitat: puuttuva nopeus tai tyhja arvo -> None", pt.mitat({"liun_hidastuvuus_m_s2": "", "irroitus_delta_cm": "1", "nopeus_ennen_m_s": "2.0", "nopeus_jalkeen_m_s": ""}) == (None, 1.0, None))
-    # synteettinen peli: 3 paata, molemmat joukkueet 8 kivea / paa, vuorotellen; arvot riippuvat pelaajasta ja paasta (tunnetut mediaanit ja hajonnat)
-    kentat = ["heitto", "vari", "kivi_nro", "puoli", "paa", "liun_hidastuvuus_m_s2", "irroitus_delta_cm", "nopeus_ennen_m_s", "nopeus_jalkeen_m_s"]
+    # kierron suunta: Myötä = myotapaivaan (kierre +), Vasta = vastapaivaan (kierre -), kuten kuvan paneelissa
+    tarkista("kierron suunta: kierre + = myotapaivaan (Myötä, -1), - = vastapaivaan (Vasta, +1); desimaalipilkku kelpaa", [pt.kierron_suunta({"kierre": x}) for x in ("2.5", "-0,5", "+3")] == [-1, 1, -1])
+    tarkista("kierron suunta: kierre puuttuu -> paatellaan: irroitus_delta_cm = (heitto_T_cm - liuku_T_cm) * suunta", pt.kierron_suunta({"kierre": "", "irroitus_delta_cm": "12.0", "heitto_T_cm": "30.0", "liuku_T_cm": "18.0"}) == 1
+             and pt.kierron_suunta({"kierre": "", "irroitus_delta_cm": "12.0", "heitto_T_cm": "18.0", "liuku_T_cm": "30.0"}) == -1 and pt.kierron_suunta({"irroitus_delta_cm": "-12", "heitto_T_cm": "18", "liuku_T_cm": "30"}) == 1)
+    tarkista("kierron suunta: ei suuntaa tai epavarma (ei sarakkeita, kierre 0 ja tyhja delta, heiton ja liun ero alle 0,2 cm) -> 0", pt.kierron_suunta({}) == 0 and pt.kierron_suunta({"kierre": "0", "irroitus_delta_cm": ""}) == 0
+             and pt.kierron_suunta({"irroitus_delta_cm": "0.1", "heitto_T_cm": "30.1", "liuku_T_cm": "30.0"}) == 0 and pt.kierron_suunta({"irroitus_delta_cm": "5", "heitto_T_cm": "30.0", "liuku_T_cm": "30.1"}) == 0)
+    tarkista("kierron suunta: kierre ratkaisee ensin (ristiriitainen delta ei yliaja sita)", pt.kierron_suunta({"kierre": "-1.0", "irroitus_delta_cm": "12", "heitto_T_cm": "18", "liuku_T_cm": "30"}) == 1)
+    # synteettinen peli: 3 paata, molemmat joukkueet 8 kivea / paa; kivi pariton = myotapaivaan (Myötä), parillinen = vastapaivaan (Vasta), joten jokaisella pelaajalla 3 + 3 heittoa; arvot riippuvat pelaajasta, paasta,
+    # kivesta ja suunnasta (tunnetut mediaanit ja hajonnat, laskettu alla kaavoista erikseen)
+    kentat = ["heitto", "vari", "kivi_nro", "puoli", "paa", "kierre", "irroitus_delta_cm", "liuku_T_cm", "heitto_T_cm", "merkki_T_cm", "liuku_merkista_cm", "heitto_merkista_cm",
+              "nopeus_ennen_m_s", "nopeus_jalkeen_m_s", "liun_hidastuvuus_m_s2", "hidastuvuus_m_s2", "vakaa"]
+    vanhat_kentat = [k for k in kentat if k not in ("merkki_T_cm", "liuku_merkista_cm", "heitto_merkista_cm")]                 # vanha CSV: ei merkista laskettuja sarakkeita
 
-    def peli(paita=3, pois=(), tyhja=()):
+    def arvot(e, vari, k):
+        p = (k + 1) // 2 + (4 if vari == "punainen" else 0)
+        s = -1 if k % 2 else 1                                                                  # kierron suunta kuten kierron_merkki: +1 vastapaivaan, -1 myotapaivaan
+        liuku_m = 2.0 * p + 0.5 * e + 0.1 * k + (3.0 if s < 0 else -3.0)
+        heitto_m = liuku_m + 1.5 + 0.2 * e
+        T = 5.0 + k                                                                             # maalimerkin paikka T-viivalla keskiviivasta
+        ero_v = 0.002 * p + 0.001 * e + (0.004 if s < 0 else 0.0)
+        return dict(p=p, s=s, liuku_m=liuku_m, heitto_m=heitto_m, T=T, liuku_T=T + liuku_m * s, heitto_T=T + heitto_m * s, delta=heitto_m - liuku_m, kierre=-s * (2.0 + 0.1 * k), ennen=2.0 + 0.01 * p, ero_v=ero_v,
+                    tonaisy=ero_v, liu_hid=0.01 * p + 0.001 * e + 0.0001 * k, vap_hid=0.05 + 0.002 * p + 0.0005 * e)
+
+    def peli(paita=3, pois=(), kierre_pois=(), suunta_pois=(), merkki_pois=(), vapaa_huono=(), epavakaa=()):
+        """Heitto-CSV:n rivit (dict). pois: puuttuvat heitot (paa, vari, kivi); kierre_pois: kierre tyhja, mutta irroitus_delta_cm on (suunta paatellaan); suunta_pois: suunta tuntematon (kierre, delta ja merkista-sarakkeet
+        tyhjia); merkki_pois: maalimerkki puuttuu (merkki_T_cm, liuku_merkista_cm, heitto_merkista_cm tyhjia); vapaa_huono: vapaan lennon hidastuvuus negatiivinen; epavakaa: vakaa = 0."""
         rivit, n = [], 0
         for e in range(1, paita + 1):
             for k in range(1, 9):
                 for vari in ("keltainen", "punainen"):
                     n += 1
-                    if (e, vari, k) in pois:
+                    x = (e, vari, k)
+                    if x in pois:
                         continue
-                    p = (k + 1) // 2                                                      # 4 pelaajaa: kivet 1-2 -> 1 ...
-                    if vari == "punainen":
-                        p += 4
+                    a = arvot(e, vari, k)
+                    tuntematon, ei_merkkia = x in suunta_pois, x in merkki_pois
                     rivit.append({"heitto": str(n), "vari": vari, "kivi_nro": str(k), "puoli": "vasen" if e % 2 else "oikea", "paa": str(e),
-                                  "liun_hidastuvuus_m_s2": "" if (e, vari, k) in tyhja else f"{0.01 * p + 0.001 * e + 0.0001 * k:.5f}", "irroitus_delta_cm": f"{10.0 * p - e + 0.5 * k:.2f}",
-                                  "nopeus_ennen_m_s": f"{2.0 + 0.01 * p:.4f}", "nopeus_jalkeen_m_s": f"{2.0 + 0.01 * p + 0.002 * p + 0.001 * e:.4f}"})
+                                  "kierre": "" if (x in kierre_pois or tuntematon) else f"{a['kierre']:.1f}", "irroitus_delta_cm": "" if tuntematon else f"{a['delta']:.1f}", "liuku_T_cm": f"{a['liuku_T']:.1f}", "heitto_T_cm": f"{a['heitto_T']:.1f}",
+                                  "merkki_T_cm": "" if ei_merkkia else f"{a['T']:.1f}", "liuku_merkista_cm": "" if (ei_merkkia or tuntematon) else f"{a['liuku_m']:.1f}", "heitto_merkista_cm": "" if (ei_merkkia or tuntematon) else f"{a['heitto_m']:.1f}",
+                                  "nopeus_ennen_m_s": f"{a['ennen']:.2f}", "nopeus_jalkeen_m_s": f"{a['ennen'] + a['ero_v']:.3f}", "liun_hidastuvuus_m_s2": f"{a['liu_hid']:.4f}",
+                                  "hidastuvuus_m_s2": f"{-0.02 if x in vapaa_huono else a['vap_hid']:.4f}", "vakaa": "0" if x in epavakaa else "1"})
         return rivit
+    SUUNNAT = (-1, -1, -1, 1, 1, 1, None)                                                       # sarakkeiden jarjestys: Myötä Liuku, Heitto, Tönäisy; Vasta Liuku, Heitto, Tönäisy; Hidastuvuus
+    LIUKU_M = ("liuku_m", "heitto_m", "tonaisy", "liuku_m", "heitto_m", "tonaisy", "liu_hid")
+    LIUKU_T = ("liuku_T", "heitto_T", "tonaisy", "liuku_T", "heitto_T", "tonaisy", "liu_hid")
+    VAPAA_M = ("liuku_m", "heitto_m", "tonaisy", "liuku_m", "heitto_m", "tonaisy", "vap_hid")
+
+    def vertaa(t, vari, q, mittarit=LIUKU_M, pois=(), suunta_pois=(), merkki_pois=(), vapaa_pois=(), populaatio=False, paat=(1, 2, 3)):
+        """Vertaa pelaajan (vari, q = 1-4: kivet 2q-1 ja 2q) tulosrivia generaattorin kaavoista erikseen laskettuihin Mediaaniin, STD:hen ja n:aan (kaikki 7 saraketta); palauttaa '' tai virheen kuvauksen."""
+        for i in range(7):
+            lukuja = []
+            for e in paat:
+                for k in (2 * q - 1, 2 * q):
+                    x = (e, vari, k)
+                    a = arvot(e, vari, k)
+                    if x in pois or (SUUNNAT[i] is not None and (x in suunta_pois or a["s"] != SUUNNAT[i])) or (i in (0, 1, 3, 4) and x in merkki_pois) or (i == 6 and x in vapaa_pois):
+                        continue
+                    lukuja.append(a[mittarit[i]])
+            med = statistics.median(lukuja) if lukuja else None
+            std = (statistics.pstdev(lukuja) if lukuja else None) if populaatio else (statistics.stdev(lukuja) if len(lukuja) >= 2 else None)
+            ok = t["n"][i] == len(lukuja) and (t["mediaani"][i] is None) == (med is None) and (t["std"][i] is None) == (std is None)
+            ok = ok and (med is None or abs(t["mediaani"][i] - med) < 1e-9) and (std is None or abs(t["std"][i] - std) < 1e-9)
+            if not ok:
+                return f"{vari} {q} sarake {i}: n {t['n'][i]} / {len(lukuja)}, mediaani {t['mediaani'][i]} / {med}, STD {t['std'][i]} / {std}"
+        return ""
+
+    def vertaa_kaikki(tulokset, **k):
+        return "; ".join(x for x in (vertaa(t, t["joukkue"], t["pelaaja"], **k) for t in tulokset) if x)
     jaot4 = {"keltainen": pt.jako("4"), "punainen": pt.jako("4")}
+    a_liu, huom_liu = pt.mitta_asetukset(kentat)
+    tarkista("mitta_asetukset: merkista laskettu Liuku ja Heitto, Hidastuvuus = liun_hidastuvuus_m_s2, ei huomautuksia", (a_liu["liuku"], a_liu["heitto"], a_liu["hid"], a_liu["vapaa"]) == ("liuku_merkista_cm", "heitto_merkista_cm", "liun_hidastuvuus_m_s2", False) and huom_liu == [], str(a_liu))
+    a_vap, _ = pt.mitta_asetukset(kentat, "vapaa")
+    r0 = {"kierre": "1.5", "liuku_merkista_cm": "4.0", "heitto_merkista_cm": "6,5", "nopeus_ennen_m_s": "2.000", "nopeus_jalkeen_m_s": "2.040", "liun_hidastuvuus_m_s2": "0,05", "hidastuvuus_m_s2": "0.07", "vakaa": "1"}
+    m = pt.mitat(r0, a_liu)
+    tarkista("mitat: suunta (kierre + = Myötä), Liuku ja Heitto merkista, Tönäisy = nopeus jalkeen - nopeus ennen, Hidastuvuus = liun_hidastuvuus_m_s2", m[0] == -1 and m[1][:2] == [4.0, 6.5] and abs(m[1][2] - 0.04) < 1e-12 and m[2] == 0.05, str(m))
+    tarkista("mitat: vapaa -> Hidastuvuus = hidastuvuus_m_s2", pt.mitat(r0, a_vap)[2] == 0.07)
+    tarkista("mitat: vapaa: epavakaa heitto, negatiivinen tai yli 0,25 -> ei lukua (kuten paneelin ?); liuku-tilassa liun hidastuvuus kelpaa silti", all(pt.mitat(dict(r0, **x), a_vap)[2] is None for x in ({"vakaa": "0"}, {"hidastuvuus_m_s2": "-0.01"}, {"hidastuvuus_m_s2": "0.26"}))
+             and pt.mitat(dict(r0, hidastuvuus_m_s2="-0.01", vakaa="0"), a_liu)[2] == 0.05)
+    tarkista("mitat: puuttuva nopeus -> Tönäisy tyhja; tyhja Liuku -> tyhja", pt.mitat(dict(r0, nopeus_jalkeen_m_s=""), a_liu)[1][2] is None and pt.mitat(dict(r0, liuku_merkista_cm=""), a_liu)[1][0] is None)
     tulokset, var = pt.laske(peli(), kentat, jaot4)
-    tarkista("4 + 4 pelaajaa: kahdeksan riviä, 6 heittoa pelaajaa kohti (3 paata x 2 kivea), ei varoituksia", len(tulokset) == 8 and all(t["heittoja"] == 6 for t in tulokset) and var == [], f"{[t['heittoja'] for t in tulokset]} {var}")
-    t2 = tulokset[1]                                                                     # keltainen, pelaaja 2 (kivet 3-4)
-    odotettu = [0.01 * 2 + 0.001 * e + 0.0001 * k for e in (1, 2, 3) for k in (3, 4)]
-    tarkista("pelaaja 2 (kivet 3-4): liun hidastuvuuden mediaani ja otoskeskihajonta (n - 1) kuten statistics", t2["kivet"] == "3-4" and abs(t2["mediaani"][0] - statistics.median(odotettu)) < 1e-9 and abs(t2["std"][0] - statistics.stdev(odotettu)) < 1e-9,
-             f"{t2['mediaani'][0]:.6f} {t2['std'][0]:.6f} vs {statistics.median(odotettu):.6f} {statistics.stdev(odotettu):.6f}")
-    vauhdit = [0.002 * 2 + 0.001 * e for e in (1, 2, 3) for _ in (3, 4)]
-    tarkista("irroitusvauhti = nopeus jalkeen - nopeus ennen (mediaani ja STD)", abs(t2["mediaani"][2] - statistics.median(vauhdit)) < 1e-9 and abs(t2["std"][2] - statistics.stdev(vauhdit)) < 1e-9)
-    deltat = [10.0 * 2 - e + 0.5 * k for e in (1, 2, 3) for k in (3, 4)]
-    tarkista("irroituksen delta: mediaani ja STD", abs(t2["mediaani"][1] - statistics.median(deltat)) < 1e-9 and abs(t2["std"][1] - statistics.stdev(deltat)) < 1e-9)
+    tarkista("4 + 4 pelaajaa: kahdeksan riviä, 6 heittoa pelaajaa kohti (3 Myötä + 3 Vasta), n = 3 jokaisessa Myötä- ja Vasta-luvussa ja 6 Hidastuvuudessa, ei varoituksia",
+             len(tulokset) == 8 and all((t["heittoja"], t["myota"], t["vasta"], t["n"]) == (6, 3, 3, (3, 3, 3, 3, 3, 3, 6)) for t in tulokset) and var == [], f"{[(t['heittoja'], t['myota'], t['vasta'], t['n']) for t in tulokset[:2]]} {var}")
+    tarkista("kaikki 7 saraketta (Mediaani, STD, n) kaikille 8 pelaajalle samat kuin generaattorin kaavoista erikseen laskettuina (statistics: STD n - 1)", vertaa_kaikki(tulokset) == "", vertaa_kaikki(tulokset))
+    t2 = tulokset[1]                                                                             # keltainen, pelaaja 2 (kivet 3-4)
+    tarkista("pelaaja 2 (kivet 3-4): Myötä-Liuku = kivi 3 (pariton), Vasta-Liuku = kivi 4; Myötä- ja Vasta-lukujen erotus nakyy (mediaanit eri)", t2["kivet"] == "3-4" and t2["mediaani"][0] != t2["mediaani"][3] and abs(t2["mediaani"][0] - statistics.median([arvot(e, "keltainen", 3)["liuku_m"] for e in (1, 2, 3)])) < 1e-9
+             and abs(t2["mediaani"][3] - statistics.median([arvot(e, "keltainen", 4)["liuku_m"] for e in (1, 2, 3)])) < 1e-9, str(t2["mediaani"]))
+    tarkista("Tönäisy = nopeus irroituksen jalkeen - ennen (Myötä ja Vasta erikseen)", abs(t2["mediaani"][2] - statistics.median([arvot(e, "keltainen", 3)["tonaisy"] for e in (1, 2, 3)])) < 1e-9 and abs(t2["mediaani"][5] - statistics.median([arvot(e, "keltainen", 4)["tonaisy"] for e in (1, 2, 3)])) < 1e-9)
     tpop, _ = pt.laske(peli(), kentat, jaot4, populaatio=True)
-    tarkista("STD populaationa (jakaja n): --std-populaatio", abs(tpop[1]["std"][0] - statistics.pstdev(odotettu)) < 1e-9)
+    tarkista("STD populaationa (jakaja n): --std-populaatio, kaikki sarakkeet", vertaa_kaikki(tpop, populaatio=True) == "", vertaa_kaikki(tpop, populaatio=True))
     punainen_p1 = tulokset[4]
-    tarkista("toinen joukkue lasketaan omana ryhmanaan (punainen pelaaja 1 = kivet 1-2)", punainen_p1["joukkue"] == "punainen" and punainen_p1["pelaaja"] == 1 and punainen_p1["kivet"] == "1-2" and abs(punainen_p1["mediaani"][0] - statistics.median([0.01 * 5 + 0.001 * e + 0.0001 * k for e in (1, 2, 3) for k in (1, 2)])) < 1e-9)
+    tarkista("toinen joukkue lasketaan omana ryhmanaan (punainen pelaaja 1 = kivet 1-2)", punainen_p1["joukkue"] == "punainen" and punainen_p1["pelaaja"] == 1 and punainen_p1["kivet"] == "1-2")
     # eri pelaajamaarat joukkueittain: keltaisessa 4, punaisessa 3 (kivet 1-3, 4-6, 7-8)
     t43, _ = pt.laske(peli(), kentat, {"keltainen": pt.jako("4"), "punainen": pt.jako("3")})
     pun = [t for t in t43 if t["joukkue"] == "punainen"]
     tarkista("keltaisessa 4 ja punaisessa 3 pelaajaa: punaisen kivet 1-3, 4-6, 7-8 ja heittoja 9, 9, 6", len(t43) == 7 and [t["kivet"] for t in pun] == ["1-3", "4-6", "7-8"] and [t["heittoja"] for t in pun] == [9, 9, 6], str([(t["kivet"], t["heittoja"]) for t in pun]))
+    tarkista("kolmen pelaajan jaossa Myötä + Vasta = kaikki heitot (kivet 1-3: pariton-parillinen-pariton = 6 Myötä + 3 Vasta)", [(t["myota"], t["vasta"]) for t in pun] == [(6, 3), (3, 6), (3, 3)], str([(t["myota"], t["vasta"]) for t in pun]))
     t_oma, _ = pt.laske(peli(), kentat, {"keltainen": pt.jako("4"), "punainen": pt.jako("2,3,3")})
     tarkista("oma kivijako 2,3,3: kivet 1-2, 3-5, 6-8", [t["kivet"] for t in t_oma if t["joukkue"] == "punainen"] == ["1-2", "3-5", "6-8"])
     # puutteellinen paa: varoitus ja --ohita-puutteelliset
     huono = peli(pois={(2, "punainen", 5)})
     tv, var = pt.laske(huono, kentat, jaot4)
     tarkista("puutteellinen paa (punaiselta puuttuu heitto paassa 2): varoitus nimeaa paan ja joukkueen", len(var) == 1 and "paa 2" in var[0] and "punainen 7 / 8" in var[0], str(var))
+    tarkista("puutteellisen paan tulokset: puuttuvan kiven pelaajalla 5 heittoa (Myötä 2, Vasta 3), muut luvut samat kuin kaavoista", vertaa_kaikki(tv, pois={(2, "punainen", 5)}) == "" and (tv[6]["heittoja"], tv[6]["myota"], tv[6]["vasta"]) == (5, 2, 3), vertaa_kaikki(tv, pois={(2, "punainen", 5)}))
     to, var2 = pt.laske(huono, kentat, jaot4, ohita_puutteelliset=True)
-    tarkista("--ohita-puutteelliset: paan 2 heitot pois kaikilta (4 heittoa pelaajaa kohti), varoitus silti", all(t["heittoja"] == 4 for t in to) and len(var2) == 1, str([t["heittoja"] for t in to]))
-    # puuttuvat mittaukset: n ja tilastot laskevat vain saatavilla olevista; yksi arvo -> ei hajontaa; ei arvoja -> ei mediaania
-    tt, _ = pt.laske(peli(tyhja={(1, "keltainen", 1), (2, "keltainen", 1), (3, "keltainen", 1), (1, "keltainen", 2), (2, "keltainen", 2)}), kentat, jaot4)
-    k1 = tt[0]
-    tarkista("puuttuvia liun hidastuvuuksia: n = 1, mediaani olemassa, STD tyhja (yksi arvo); muut mittaukset kaikilta heitoilta (n = 6)", k1["heittoja"] == 6 and k1["n"] == (1, 6, 6) and k1["mediaani"][0] is not None and k1["std"][0] is None and k1["std"][1] is not None, str(k1["n"]))
-    tt0, _ = pt.laske(peli(tyhja={(e, "keltainen", k) for e in (1, 2, 3) for k in (1, 2)}), kentat, jaot4)
-    tarkista("ei yhtaan liun hidastuvuutta: mediaani ja STD tyhjia, heittoja silti 6", tt0[0]["n"][0] == 0 and tt0[0]["mediaani"][0] is None and tt0[0]["std"][0] is None and tt0[0]["heittoja"] == 6)
+    tarkista("--ohita-puutteelliset: paan 2 heitot pois kaikilta (4 heittoa pelaajaa kohti), varoitus silti", all(t["heittoja"] == 4 for t in to) and len(var2) == 1 and vertaa_kaikki(to, paat=(1, 3)) == "", str([t["heittoja"] for t in to]))
+    # kierron suunta tuntematon: ei Myötä- eika Vasta-luvuissa, mutta Hidastuvuudessa; huomautus kertoo maaran
+    tunt = {(2, "keltainen", 3), (3, "keltainen", 3), (1, "keltainen", 4)}
+    tt, var3 = pt.laske(peli(suunta_pois=tunt), kentat, jaot4)
+    tarkista("suunta tuntematon 3 heitolla: pois Myötä- ja Vasta-luvuista (myos Liuku ja Heitto), Hidastuvuudessa mukana (n = 6); huomautus", vertaa_kaikki(tt, suunta_pois=tunt) == "" and (tt[1]["heittoja"], tt[1]["myota"], tt[1]["vasta"]) == (6, 1, 2)
+             and tt[1]["n"] == (1, 1, 1, 2, 2, 2, 6) and len(var3) == 1 and var3[0].startswith("3 heitolta puuttuu kierron suunta"), f"{vertaa_kaikki(tt, suunta_pois=tunt)} {var3}")
+    # kierre tyhja, mutta irroitus_delta_cm on: suunta paatellaan, tulos sama kuin taydellisella aineistolla
+    kp = {(1, "keltainen", 3), (2, "punainen", 6), (3, "punainen", 5)}
+    tk, var4 = pt.laske(peli(kierre_pois=kp), kentat, jaot4)
+    tarkista("kierre tyhja kolmella heitolla: suunta paatellaan irroitus_delta_cm:sta ja heiton / liun erotuksesta, tulos tasmalleen sama kuin taydellisella aineistolla, ei huomautuksia", tk == tulokset and var4 == [], str(var4))
+    # maalimerkki puuttuu: Liuku ja Heitto tyhjia, Tönäisy ja Hidastuvuus ennallaan
+    mp = {(1, "keltainen", 3), (2, "keltainen", 3), (3, "keltainen", 4)}
+    tm, var5 = pt.laske(peli(merkki_pois=mp), kentat, jaot4)
+    tarkista("maalimerkki puuttuu kolmelta heitolta: pois Liuku- ja Heitto-luvuista (n pienempi), Tönäisy, Hidastuvuus ja heittomaarat ennallaan", vertaa_kaikki(tm, merkki_pois=mp) == "" and tm[1]["n"] == (1, 1, 3, 2, 2, 3, 6) and tm[1]["heittoja"] == 6 and var5 == [], f"{vertaa_kaikki(tm, merkki_pois=mp)} {tm[1]['n']}")
+    # vanha CSV (ei merkista laskettuja sarakkeita): Liuku ja Heitto keskiviivasta, huomautus
+    vanha_rivit = [{k: r[k] for k in vanhat_kentat} for r in peli()]
+    tvk, var6 = pt.laske(vanha_rivit, vanhat_kentat, jaot4)
+    tarkista("vanha CSV (ei liuku_merkista_cm / heitto_merkista_cm): Liuku ja Heitto keskiviivasta (liuku_T_cm, heitto_T_cm), suunnat ja muut luvut ennallaan, huomautus ensimmaisena", vertaa_kaikki(tvk, mittarit=LIUKU_T) == "" and len(var6) == 1 and "vanha CSV" in var6[0] and "keskiviivasta" in var6[0], f"{vertaa_kaikki(tvk, mittarit=LIUKU_T)} {var6}")
+    # Hidastuvuus: vapaan lennon arvo (kuten paneelissa): vain vakaat heitot ja arvot 0 ... 0,25
+    vh = {(1, "keltainen", 3), (2, "keltainen", 4)}
+    ev = {(3, "keltainen", 3), (3, "punainen", 2)}
+    tvp, var7 = pt.laske(peli(vapaa_huono=vh, epavakaa=ev), kentat, jaot4, hidastuvuus="vapaa")
+    tarkista("Hidastuvuus = vapaa: hidastuvuus_m_s2, pois negatiiviset ja epavakaat heitot (pelaajalla 2: 6 - 3 = 3); Liuku, Heitto ja Tönäisy ennallaan", vertaa_kaikki(tvp, mittarit=VAPAA_M, vapaa_pois=vh | ev) == "" and tvp[1]["n"][6] == 3 and var7 == [], f"{vertaa_kaikki(tvp, mittarit=VAPAA_M, vapaa_pois=vh | ev)} {tvp[1]['n']}")
+    tl, _ = pt.laske(peli(vapaa_huono=vh, epavakaa=ev), kentat, jaot4)
+    tarkista("Hidastuvuus = liuku (oletus): vapaan lennon epaluotettavuus ei vaikuta (liun_hidastuvuus_m_s2, n = 6)", tl == tulokset)
+    tarkista("hidastuvuus: virheellinen arvo -> ValueError", "hidastuvuus" in (virhe_viesti(pt.laske, peli(), kentat, jaot4, hidastuvuus="x") or "") and "hidastuvuus" in (virhe_viesti(pt.mitta_asetukset, kentat, "") or ""))
+    ilman_hid = [k for k in kentat if k not in ("liun_hidastuvuus_m_s2", "hidastuvuus_m_s2", "vakaa")]
+    th, var8 = pt.laske([{k: r[k] for k in ilman_hid} for r in peli()], ilman_hid, jaot4)
+    tarkista("CSV:ssa ei hidastuvuus-saraketta: Hidastuvuus tyhja (n = 0) ja huomautus; muut luvut ennallaan", all(t["n"][6] == 0 and t["mediaani"][6] is None for t in th) and any("liun_hidastuvuus_m_s2" in v for v in var8) and [t["mediaani"][:6] for t in th] == [t["mediaani"][:6] for t in tulokset], str(var8))
+    ilman_vakaa = [k for k in kentat if k != "vakaa"]
+    tnv, _ = pt.laske([{k: r[k] for k in ilman_vakaa} for r in peli(vapaa_huono=vh)], ilman_vakaa, jaot4, hidastuvuus="vapaa")
+    tarkista("Hidastuvuus = vapaa, CSV:ssa ei vakaa-saraketta: vain arvoalue 0 ... 0,25 rajaa (pelaajalla 2 negatiiviset pois: 6 - 2 = 4)", tnv[1]["n"][6] == 4, str(tnv[1]["n"]))
+    # puuttuvia mittauksia: n ja tilastot laskevat vain saatavilla olevista; yksi arvo -> ei hajontaa; ei arvoja -> ei mediaania
+    rivit_t = peli()
+    for r in rivit_t:
+        if r["vari"] == "keltainen" and r["kivi_nro"] == "1" and r["paa"] in ("1", "2"):
+            r["nopeus_jalkeen_m_s"] = ""
+    tt1, _ = pt.laske(rivit_t, kentat, jaot4)
+    tarkista("puuttuvia nopeuksia: Tönäisy-n pienempi (1 arvo -> mediaani olemassa, STD tyhja), muut luvut ja heittoja ennallaan", tt1[0]["n"] == (3, 3, 1, 3, 3, 3, 6) and tt1[0]["mediaani"][2] is not None and tt1[0]["std"][2] is None and tt1[0]["std"][0] is not None and tt1[0]["heittoja"] == 6)
+    for r in rivit_t:
+        if r["vari"] == "keltainen" and r["kivi_nro"] == "1":
+            r["nopeus_jalkeen_m_s"] = ""
+    tt0, _ = pt.laske(rivit_t, kentat, jaot4)
+    tarkista("ei yhtaan Tönäisya (Myötä): mediaani ja STD tyhjia, heittoja silti 6", tt0[0]["n"][2] == 0 and tt0[0]["mediaani"][2] is None and tt0[0]["std"][2] is None and tt0[0]["heittoja"] == 6)
     # paa vanhoissa CSV:issa: ilman saraketta paa vaihtuu heittosuunnan (puoli) mukana
     ilman_paata = [{k: v for k, v in r.items() if k != "paa"} for r in peli()]
     tarkista("ilman paa-saraketta paat paatellaan puolesta (3 paata)", sorted(set(pt.paa_numerot(ilman_paata, list(ilman_paata[0])))) == [1, 2, 3])
+    # taulukon tuloste: otsikkorivit kuten Excelissa
+    rivit_tul = pt.taulukko(tulokset)
+    r0_, r1_, r2_ = rivit_tul[:3]
+    mediaaneja = [i for i in range(len(r2_)) if r2_.startswith("Mediaani", i)]
+    tarkista("taulukko: otsikkorivit Myötä / Vasta, Liuku Heitto Tönäisy Liuku Heitto Tönäisy Hidastuvuus ja 7 x Mediaani + STD; 8 pelaajariviä", len(rivit_tul) == 11 and "Myötä" in r0_ and "Vasta" in r0_ and "Liuku" not in r0_ and r1_.split() == ["Liuku", "Heitto", "Tönäisy", "Liuku", "Heitto", "Tönäisy", "Hidastuvuus"]
+             and r2_.count("Mediaani") == 7 and r2_.count("STD") == 7 and r2_.startswith("joukkue"), "\n".join(rivit_tul[:4]))
+    tarkista("taulukko: Myötä keskitetty ensimmaisen kolmen sarakeparin ylle ja Vasta seuraavien kolmen ylle", len(mediaaneja) == 7 and mediaaneja[0] <= r0_.index("Myötä") < mediaaneja[3] and mediaaneja[3] <= r0_.index("Vasta") < mediaaneja[6], f"{mediaaneja} {r0_.index('Myötä')} {r0_.index('Vasta')}")
     # CSV-tiedostot: pilkku- ja puolipisteerotin, desimaalipilkku, UTF-8 BOM; oletustulostiedosto; --fi
     tmp = tempfile.mkdtemp()
     try:
         rivit = peli()
+
+        def kirjoita_peli(polku, rivit_, kenttalista, fi=False):
+            with open(polku, "w", newline="", encoding="utf-8-sig" if fi else "utf-8") as fh:
+                w = csv_mod.writer(fh, delimiter=";" if fi else ",")
+                w.writerow(kenttalista + ["muu"])
+                for r in rivit_:
+                    w.writerow([r[k].replace(".", ",") if fi and k not in ("heitto", "vari", "kivi_nro", "puoli", "paa") else r[k] for k in kenttalista] + ["x"])
         pol = os.path.join(tmp, "heitot_peli.csv")
-        with open(pol, "w", newline="", encoding="utf-8") as fh:
-            w = csv_ = __import__("csv").writer(fh)
-            w.writerow(kentat + ["muu"])
-            for r in rivit:
-                w.writerow([r[k] for k in kentat] + ["x"])
+        kirjoita_peli(pol, rivit, kentat)
         pol_fi = os.path.join(tmp, "heitot_fi.csv")
-        with open(pol_fi, "w", newline="", encoding="utf-8-sig") as fh:
-            w = __import__("csv").writer(fh, delimiter=";")
-            w.writerow(kentat)
-            for r in rivit:
-                w.writerow([r[k].replace(".", ",") if k in ("liun_hidastuvuus_m_s2", "irroitus_delta_cm", "nopeus_ennen_m_s", "nopeus_jalkeen_m_s") else r[k] for k in kentat])
+        kirjoita_peli(pol_fi, rivit, kentat, fi=True)
         ulos = io.StringIO()
         with contextlib.redirect_stdout(ulos):
             rc = pt.main([pol, "--pelaajia", "4"])
         teksti = ulos.getvalue()
-        tarkista("main: tulostaa taulukon (Mediaani, STD, sarakeotsikot, 8 pelaajaa) ja tallentaa <syote>_pelaajat.csv", rc == 0 and "Mediaani" in teksti and "STD" in teksti and "liun_hidastuvuus_m_s2" in teksti and "irroitus vauhti" in teksti and
-                 teksti.count("keltainen  ") + teksti.count("punainen   ") >= 8 and os.path.isfile(os.path.join(tmp, "heitot_peli_pelaajat.csv")), teksti[:300])
+        tarkista("main: tulostaa taulukon (Myötä, Vasta, Liuku, Heitto, Tönäisy, Hidastuvuus, Mediaani, STD, 8 pelaajaa) ja tallentaa <syote>_pelaajat.csv", rc == 0 and all(x in teksti for x in ("Myötä", "Vasta", "Liuku", "Heitto", "Tönäisy", "Hidastuvuus", "Mediaani", "STD"))
+                 and teksti.count("keltainen  ") + teksti.count("punainen   ") >= 8 and os.path.isfile(os.path.join(tmp, "heitot_peli_pelaajat.csv")), teksti[:400])
         with open(os.path.join(tmp, "heitot_peli_pelaajat.csv"), newline="", encoding="utf-8") as fh:
-            rivit_ulos = list(__import__("csv").reader(fh))
-        tarkista("tulos-CSV: ryhmarivi (Mediaani, STD), sarakeotsikot kuten Excelissa ja 8 pelaajariviä", rivit_ulos[0][4] == "Mediaani" and rivit_ulos[0][7] == "STD" and rivit_ulos[1][4:7] == ["liun_hidastuvuus_m_s2", "irroitus_delta_cm", "irroitus vauhti"] and
-                 rivit_ulos[1][7:10] == ["liun_hidastuvuus_m_s2", "irroitus_delta_cm", "irroitus vauhti"] and len(rivit_ulos) == 10 and rivit_ulos[2][:4] == ["keltainen", "1", "1-2", "6"], str(rivit_ulos[:3]))
-        arvo = float(rivit_ulos[3][4])
-        tarkista("tulos-CSV: arvot desimaalipisteella ja samat kuin laskennassa", abs(arvo - round(tulokset[1]["mediaani"][0], 4)) < 1e-9, f"{arvo}")
+            rivit_ulos = list(csv_mod.reader(fh))
+        tarkista("tulos-CSV: ryhmarivi (Myötä 6 sarakkeen paalla, Vasta 6:n), suurerivi ja Mediaani / STD -rivi kuten Excelissa; n-lohko lopussa; 3 otsikkoriviä + 8 pelaajariviä",
+                 len(rivit_ulos) == 11 and rivit_ulos[0][6] == "Myötä" and rivit_ulos[0][12] == "Vasta" and all(x == "" for i, x in enumerate(rivit_ulos[0][:20]) if i not in (6, 12)) and rivit_ulos[0][20] == "n"
+                 and rivit_ulos[1][6:20] == ["Liuku", "", "Heitto", "", "Tönäisy", "", "Liuku", "", "Heitto", "", "Tönäisy", "", "Hidastuvuus", ""] and rivit_ulos[2][:6] == ["joukkue", "pelaaja", "kivet", "heittoja", "n myötä", "n vasta"]
+                 and rivit_ulos[2][6:20] == ["Mediaani", "STD"] * 7 and rivit_ulos[2][20:27] == ["Myötä Liuku", "Myötä Heitto", "Myötä Tönäisy", "Vasta Liuku", "Vasta Heitto", "Vasta Tönäisy", "Hidastuvuus"], str(rivit_ulos[:3]))
+        tarkista("tulos-CSV: pelaajarivi: tunnisteet, heittomaarat, 14 lukua ja n-lohko", rivit_ulos[3][:6] == ["keltainen", "1", "1-2", "6", "3", "3"] and len(rivit_ulos[3]) == 27 and rivit_ulos[3][20:] == ["3", "3", "3", "3", "3", "3", "6"], str(rivit_ulos[3]))
+        tarkista("tulos-CSV: arvot desimaalipisteella (2 / 2 / 4 desimaalia) ja samat kuin laskennassa", abs(float(rivit_ulos[3][6]) - round(tulokset[0]["mediaani"][0], 2)) < 1e-9 and abs(float(rivit_ulos[3][10]) - round(tulokset[0]["mediaani"][2], 4)) < 1e-9
+                 and abs(float(rivit_ulos[3][18]) - round(tulokset[0]["mediaani"][6], 4)) < 1e-9, str(rivit_ulos[3][6:20]))
         with contextlib.redirect_stdout(io.StringIO()):
             rc2 = pt.main([pol_fi, "--keltainen", "4", "--punainen", "3", "--fi", "--ulos", os.path.join(tmp, "fi_ulos.csv")])
         with open(os.path.join(tmp, "fi_ulos.csv"), "rb") as fh:
             raaka = fh.read()
         with open(os.path.join(tmp, "fi_ulos.csv"), newline="", encoding="utf-8-sig") as fh:
-            rivit_fi = list(__import__("csv").reader(fh, delimiter=";"))
-        tarkista("puolipisteeroteltu syote desimaalipilkuilla luetaan; --fi: erotin ;, desimaalipilkku ja BOM; 4 + 3 pelaajaa = 7 riviä", rc2 == 0 and raaka.startswith(b"\xef\xbb\xbf") and len(rivit_fi) == 9 and "," in rivit_fi[2][4] and "." not in rivit_fi[2][4], str(rivit_fi[2]))
+            rivit_fi = list(csv_mod.reader(fh, delimiter=";"))
+        tarkista("puolipisteeroteltu syote desimaalipilkuilla luetaan; --fi: erotin ;, desimaalipilkku ja BOM; 4 + 3 pelaajaa = 7 riviä", rc2 == 0 and raaka.startswith(b"\xef\xbb\xbf") and len(rivit_fi) == 10 and "," in rivit_fi[3][6] and "." not in rivit_fi[3][6] and rivit_fi[0][6] == "Myötä", str(rivit_fi[3]))
         ulos = io.StringIO()
         with contextlib.redirect_stdout(ulos):
             pt.main([pol, "--pelaajia", "4", "--ei-tallenna", "--ulos", os.path.join(tmp, "ei_pitaisi.csv")])
         tarkista("--ei-tallenna: ei kirjoita tiedostoa", not os.path.exists(os.path.join(tmp, "ei_pitaisi.csv")))
+        ulos_v = io.StringIO()
+        with contextlib.redirect_stdout(ulos_v):
+            pt.main([pol, "--pelaajia", "4", "--ei-tallenna", "--hidastuvuus", "vapaa"])
+        tarkista("--hidastuvuus vapaa: Hidastuvuus-luvut eri kuin oletuksessa (hidastuvuus_m_s2 vs liun_hidastuvuus_m_s2), muu taulukko sama", ulos_v.getvalue() != teksti and ulos_v.getvalue().splitlines()[4].split()[:18] == teksti.splitlines()[4].split()[:18] and ulos_v.getvalue().splitlines()[4].split()[-2:] != teksti.splitlines()[4].split()[-2:], ulos_v.getvalue()[:300])
         # interaktiivinen kysely (Enter = 4; virheellinen syote kysytaan uudelleen) ja ei-interaktiivinen oletus
         vastaukset = iter(["", "x", "9", "3"])
         kysytty = []
+
         def syotto(kysymys):
             kysytty.append(kysymys)
             return next(vastaukset)
@@ -3188,30 +3304,19 @@ def testaa_pelaajatilasto():
             rc6 = pt.main([os.path.join(tmp, "ei_ole.csv"), "--pelaajia", "4"])
         finally:
             sys.stderr = vanha_err
-        tarkista("puuttuva sarake / tiedosto: selva virheilmoitus ja paluukoodi 2", rc5 == 2 and "liun_hidastuvuus_m_s2" in ilm5 and rc6 == 2)
+        tarkista("puuttuva sarake / tiedosto: selva virheilmoitus ja paluukoodi 2", rc5 == 2 and "liuku_T_cm" in ilm5 and rc6 == 2)
         # selainnakyman kayttamat funktiot: laske_tiedosto, csv_tavuina, jakohuomautukset (komentorivi tekee saman vaiheittain)
-        import csv as csv_mod
         lt = pt.laske_tiedosto(pol, {"keltainen": "4", "punainen": "3"})
         tarkista("laske_tiedosto: tiedosto, 48 heittoa, jaot ja 7 pelaajaa; tulokset samat kuin laske()-funktiolla, ei varoituksia", lt["tiedosto"] == "heitot_peli.csv" and lt["heittoja"] == 48 and lt["jaot"] == {"keltainen": [2, 2, 2, 2], "punainen": [3, 3, 2]} and len(lt["tulokset"]) == 7
                  and lt["varoitukset"] == [] and lt["tulokset"] == pt.laske(peli(), kentat, {"keltainen": pt.jako("4"), "punainen": pt.jako("3")})[0])
         tarkista("laske_tiedosto: puuttuva tai tyhja maara -> oletus (4, tai oletus-parametri); oma kivijako sellaisenaan", [len(x) for x in pt.laske_tiedosto(pol)["jaot"].values()] == [4, 4] and pt.laske_tiedosto(pol, {"punainen": "2,3,3"})["jaot"]["punainen"] == [2, 3, 3]
                  and pt.laske_tiedosto(pol, {"keltainen": "", "punainen": None}, oletus=3)["jaot"]["keltainen"] == [3, 3, 2])
         pol_vajaa = os.path.join(tmp, "vajaa.csv")
-        with open(pol_vajaa, "w", newline="", encoding="utf-8") as fh:
-            w = csv_mod.writer(fh)
-            w.writerow(kentat)
-            for r in peli(pois={(2, "punainen", 5)}):
-                w.writerow([r[k] for k in kentat])
+        kirjoita_peli(pol_vajaa, peli(pois={(2, "punainen", 5)}), kentat)
         lv, lo, lp = pt.laske_tiedosto(pol_vajaa), pt.laske_tiedosto(pol_vajaa, ohita_puutteelliset=True), pt.laske_tiedosto(pol, populaatio=True)
-        tarkista("laske_tiedosto: vajaa paa -> varoitus; ohita_puutteelliset: 4 heittoa pelaajaa kohti; populaatio: STD jakajalla n", len(lv["varoitukset"]) == 1 and "paa 2" in lv["varoitukset"][0] and all(t["heittoja"] == 4 for t in lo["tulokset"])
-                 and abs(lp["tulokset"][1]["std"][0] - statistics.pstdev(odotettu)) < 1e-9)
-
-        def virhe_viesti(fn, *a, **k):
-            try:
-                fn(*a, **k)
-            except ValueError as e:
-                return str(e)
-            return None
+        tarkista("laske_tiedosto: vajaa paa -> varoitus; ohita_puutteelliset: 4 heittoa pelaajaa kohti; populaatio: STD jakajalla n", len(lv["varoitukset"]) == 1 and "paa 2" in lv["varoitukset"][0] and all(t["heittoja"] == 4 for t in lo["tulokset"]) and vertaa_kaikki(lp["tulokset"], populaatio=True) == "")
+        lvap = pt.laske_tiedosto(pol, hidastuvuus="vapaa")
+        tarkista("laske_tiedosto: hidastuvuus='vapaa' (Hidastuvuus = hidastuvuus_m_s2); virheellinen arvo -> ValueError", vertaa_kaikki(lvap["tulokset"], mittarit=VAPAA_M) == "" and "hidastuvuus" in (virhe_viesti(pt.laske_tiedosto, pol, hidastuvuus="x") or ""))
         pol_tyhja = os.path.join(tmp, "tyhja.csv")
         with open(pol_tyhja, "w", newline="", encoding="utf-8") as fh:
             fh.write(",".join(kentat) + "\n")
@@ -3244,7 +3349,8 @@ def testaa_pelaajatilasto():
         with open(os.path.join(tmp, "verrokki_fi.csv"), "rb") as fh1, open(os.path.join(tmp, "verrokki_en.csv"), "rb") as fh2:
             tarkista("csv_tavuina: tavu tavulta sama kuin kirjoita_csv-tiedosto (fi: UTF-8 BOM, ;, desimaalipilkku; muuten pilkkuerotin ja piste)", tavut_fi == fh1.read() and tavut_en == fh2.read() and tavut_fi.startswith(b"\xef\xbb\xbf") and not tavut_en.startswith(b"\xef\xbb\xbf"))
         luettu = list(csv_mod.reader(io.StringIO(tavut_fi.decode("utf-8-sig")), delimiter=";"))
-        tarkista("csv_tavuina: ryhmarivi, sarakeotsikot ja 7 pelaajariviä; n-sarakkeet lopussa", len(luettu) == 9 and luettu[0][4] == "Mediaani" and luettu[0][10] == "n" and luettu[1][:4] == ["joukkue", "pelaaja", "kivet", "heittoja"] and luettu[2][10:13] == ["6", "6", "6"], str(luettu[:3]))
+        tarkista("csv_tavuina: kolme otsikkoriviä, 7 pelaajariviä ja n-lohko lopussa", len(luettu) == 10 and luettu[0][6] == "Myötä" and luettu[0][12] == "Vasta" and luettu[0][20] == "n" and luettu[1][6] == "Liuku" and luettu[2][:6] == ["joukkue", "pelaaja", "kivet", "heittoja", "n myötä", "n vasta"]
+                 and luettu[3][20:] == ["3", "3", "3", "3", "3", "3", "6"], str(luettu[:4]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
