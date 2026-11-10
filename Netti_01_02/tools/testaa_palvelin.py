@@ -147,7 +147,7 @@ def testaa_komento():
         tarkista("netti_live.py ajetaan -u:lla ja ilman ikkunaa", c[1] == "-u" and c[2].endswith("netti_live.py") and "--ei-ikkunaa" in c)
         tarkista("tiedosto: --lahde ja --nopea", lahde_komennosta(c)[1].endswith("Matarmaa osa 1 (2).mp4") and "--nopea" in c)
         tarkista("tulostiedostojen nimet: tunniste + aikaleima", os.path.join(t, "ulos", "kivenseuranta_Matarmaa_osa_1_2_20260101_120000.mp4") in c and os.path.join(t, "ulos", "heitot_Matarmaa_osa_1_2_20260101_120000.csv") in c)
-        tarkista("web-valitsimet ja tilatiedosto", "--web 63884" in j and "--web-leveys 1280" in j and "--tila-tiedosto /tmp/tila.json" in j)
+        tarkista("web-valitsimet ja tilatiedosto", "--web 63884" in j and "--web-leveys 1920" in j and "--tila-tiedosto /tmp/tila.json" in j)
         tarkista("tiedostolle ei --lataus eika --kiri", "--lataus" not in c and "--kiri" not in c)
         tarkista("kalibrointi: oletuksena ei --kalibrointi eika --kansio (netti_live kalibroi videon aina uudelleen)", "--kalibrointi" not in c and "--kansio" not in c)
         c = np_.rakenna_komento(np_.Asetukset(dict(env, NETTI_LAHDE="Matarmaa osa 1 (2).mp4", NETTI_KALIBROINTI="valitse")), "tiedostot", a.arvo["kuvio"], "x")
@@ -834,6 +834,38 @@ def testaa_videon_nimi_palvelin():
         tarkista("ajosilmukan loki: ilman nimea kuten ennen", "ajo paattyi: koodi 0" in ulos_loki.getvalue(), ulos_loki.getvalue()[-200:])
 
 
+def testaa_web_resoluutio():
+    print("selainnakyma: kuva oletuksena taydella resoluutiolla (1920 px), ei pienennetty 1280 px:aan")
+    import cv2
+    a = np_.Asetukset({})
+    tarkista("NETTI_WEB_LEVEYS oletus 1920 (analysoitu kuva sellaisenaan)", a.web_leveys == 1920 and np_.Asetukset(dict(NETTI_WEB_LEVEYS="1280")).web_leveys == 1280, str(a.web_leveys))
+    with tempfile.TemporaryDirectory() as t:
+        w = nw.WebNaytto(0, t, fps=25, tila=lambda: dict(lahde="testi"))                         # leveys oletuksella
+        p = w.portti
+        try:
+            kuva = np.zeros((1080, 1920, 3), np.uint8)
+            kuva[:, :960] = (0, 200, 0)
+            kuva[::2, 1900:] = 255                                                                      # tarkka kuvio koko leveydelle: pienennys sotkisi sen
+            w._julkaise(kuva)
+            s, h, b = pyyda(p, "/kuva.jpg")
+            d = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
+            tarkista("oletusleveydella kuva menee selaimeen sellaisenaan: 1920 x 1080", s == 200 and d.shape[:2] == (1080, 1920), str(d.shape))
+            tarkista("oikean reunan hienoin kuvio sailyy (pienennetyssa kuvassa se olisi tasoittunut)", d[::2, 1905:].mean() > 200 and d[1::2, 1905:].mean() < 60, f"{d[::2, 1905:].mean():.0f} / {d[1::2, 1905:].mean():.0f}")
+            tila = json.loads(pyyda(p, "/tila")[2])
+            tarkista("/tila kertoo kuvan leveyden (sivu rajaa kuvan natiivikokoonsa)", tila["kuva_leveys"] == 1920, str(tila.get("kuva_leveys")))
+            sivu = pyyda(p, "/")[2].decode("utf-8")
+            tarkista("sivu: sisalto saa olla 1920 px leveä ja kuva rajataan tilan kuva_leveys-arvoon", "main{max-width:1920px" in sivu and "kuva_leveys" in sivu and "max-width:1280px" not in sivu)
+        finally:
+            w.sulje()
+        w2 = nw.WebNaytto(0, t, leveys=1280, fps=25, tila=lambda: dict(lahde="testi"))
+        try:
+            w2._julkaise(kuva)
+            d2 = cv2.imdecode(np.frombuffer(pyyda(w2.portti, "/kuva.jpg")[2], np.uint8), cv2.IMREAD_COLOR)
+            tarkista("NETTI_WEB_LEVEYS=1280: kuva pienennetaan (kevyempi verkolle) ja tila kertoo sen", d2.shape[:2] == (720, 1280) and json.loads(pyyda(w2.portti, "/tila")[2])["kuva_leveys"] == 1280, str(d2.shape))
+        finally:
+            w2.sulje()
+
+
 def testaa_web_videon_nimi():
     print("selainnakyma: videon nimi tilatiedossa ja aakkosia sisaltavat tiedostonimet")
     import html
@@ -864,7 +896,7 @@ def testaa_web_videon_nimi():
 
 def main():
     for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_odotuksen_ylivuoto, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
-              testaa_videon_nimi_palvelin, testaa_web_videon_nimi):
+              testaa_videon_nimi_palvelin, testaa_web_resoluutio, testaa_web_videon_nimi):
         t()
     print()
     if VIRHEITA:

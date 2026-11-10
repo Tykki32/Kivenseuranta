@@ -41,9 +41,9 @@ SIVU = """<!doctype html>
 :root{--tausta:#fff;--teksti:#1c1c1e;--himmea:#6b6b70;--reuna:#d8d8de;--laatikko:#f4f4f6;--korostus:#0a5bd3}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--tausta:#121214;--teksti:#ececf0;--himmea:#9a9aa3;--reuna:#33333a;--laatikko:#1b1b1f;--korostus:#6aa5ff}}
 body{margin:0;background:var(--tausta);color:var(--teksti);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{max-width:1280px;margin:0 auto;padding:12px 16px 40px}
+main{max-width:1920px;margin:0 auto;padding:12px 16px 40px}
 h1{font-size:20px;margin:8px 0 12px}h2{font-size:15px;margin:22px 0 8px;color:var(--himmea);text-transform:uppercase;letter-spacing:.05em}
-img{display:block;width:100%;height:auto;background:#000;border-radius:8px}
+img{display:block;width:100%;height:auto;margin:0 auto;background:#000;border-radius:8px}
 #tila{margin:10px 0;color:var(--himmea)}#tila b{color:var(--teksti)}
 pre{background:var(--laatikko);border:1px solid var(--reuna);border-radius:8px;padding:10px 12px;margin:0;max-height:340px;overflow:auto;font:12.5px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
 ul{list-style:none;margin:0;padding:0}li{padding:7px 0;border-bottom:1px solid var(--reuna);display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap}
@@ -64,6 +64,7 @@ async function paivita(){
     const t=await (await fetch("tila",{cache:"no-store"})).json();
     $("tila").innerHTML=(t.kaynnissa?"<b>Ajo kaynnissa</b>":"<b>Ajo paattynyt</b>")+" &middot; kuvia "+t.kuvia+" &middot; katsojia "+t.katsojia+(t.viim_kuva_ika_s!=null?" &middot; viimeisin kuva "+t.viim_kuva_ika_s.toFixed(1)+" s sitten":"")+(t.kaynnissa&&t.viim_kuva_ika_s!=null&&t.viim_kuva_ika_s>30?" &middot; <b>kuva ei etene: katso loki (Jumivahti)</b>":"")+((t.otsikko||t.lahde)?" &middot; "+esc(t.otsikko||t.lahde):"");
     document.title=t.otsikko?"Kivenseuranta: "+t.otsikko:"Kivenseuranta";
+    if(t.kuva_leveys)$("kuva").style.maxWidth=t.kuva_leveys+"px";
     const l=$("loki"),alhaalla=l.scrollTop+l.clientHeight>=l.scrollHeight-30;
     l.textContent=await (await fetch("loki",{cache:"no-store"})).text();
     if(alhaalla)l.scrollTop=l.scrollHeight;
@@ -131,7 +132,7 @@ class WebNaytto:
     """Ikkunan korvike: sama rajapinta kuin netti_live.Naytto (anna, nayta_heti, paasilmukka, sulje, n_nayt), kuvat selaimeen HTTP:lla.
     portti 0 = vapaa portti (testaus; todellinen portti: self.portti). ulos_kansio: kansio, jonka tiedostot ovat ladattavissa. tila: kutsuttava, joka palauttaa lisatiedot /tila-vastaukseen."""
 
-    def __init__(self, portti, ulos_kansio=None, leveys=1280, fps=8.0, laatu=75, osoite="0.0.0.0", tila=None, loki_rivit=None):
+    def __init__(self, portti, ulos_kansio=None, leveys=RUUTU_W, fps=8.0, laatu=75, osoite="0.0.0.0", tila=None, loki_rivit=None):
         self.ulos_kansio = os.path.abspath(ulos_kansio) if ulos_kansio else None
         self.leveys = max(160, min(int(leveys), RUUTU_W))
         self.fps = max(0.5, float(fps))
@@ -243,7 +244,7 @@ class WebNaytto:
             return self._katsojat
 
     def tila(self):
-        t = dict(kaynnissa=self.kaynnissa, kuvia=self.n_nayt, katsojia=self._katsojat, alkoi=self.alkoi,
+        t = dict(kaynnissa=self.kaynnissa, kuvia=self.n_nayt, katsojia=self._katsojat, alkoi=self.alkoi, kuva_leveys=self.leveys,
                  viim_kuva_ika_s=None if self._viim_t is None else round(time.time() - self._viim_t, 2))
         if self.tila_fn is not None:
             try:

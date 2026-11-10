@@ -81,7 +81,7 @@ Kaikki ovat valinnaisia. Tyhjä arvo tarkoittaa samaa kuin asettamatta jättämi
 | `NETTI_YT_FORMAATTI` | – | yt-dlp-formaattivalitsin, esim. `bestvideo[height<=1080][protocol=https][vcodec^=avc1]` |
 | `NETTI_EI_KIERRETTA`, `NETTI_EI_KELLOA`, `NETTI_HILJAA` | 0 | Ei kierteen mittausta / ei joukkueiden kelloa kuvassa / vähemmän tulostetta |
 | `NETTI_WEB_PORTTI` | 63884 | Selainnäkymän portti **kontin sisällä**; 0 = ei selainnäkymää. Jos portti on palvelimella varattu, vaihda portin yhdistyksessä vain palvelimen puoli (Unraid: *Host Port*, compose: `ports`-rivin vasen luku) ja jätä tämä ennalleen. Tämän muuttaminen on tarpeen vain, jos kontti ajetaan `host`-verkossa (silloin kontin portti on palvelimen portti) |
-| `NETTI_WEB_LEVEYS`, `NETTI_WEB_FPS`, `NETTI_WEB_LAATU` | 1280, 8, 75 | Selaimeen menevän kuvan leveys (px), enimmäistaajuus katsojaa kohden ja JPEG-laatu. Kuva pakataan vain, kun joku katsoo |
+| `NETTI_WEB_LEVEYS`, `NETTI_WEB_FPS`, `NETTI_WEB_LAATU` | 1920, 8, 75 | Selaimeen menevän kuvan leveys (px), enimmäistaajuus katsojaa kohden ja JPEG-laatu. Oletus 1920 = analysoitu kuva sellaisenaan (sama resoluutio kuin lähdevideosta luettu, ei pienennystä); pienempi leveys (esim. 1280) keventää verkkoa ja prosessoria. Kuva pakataan vain, kun joku katsoo |
 | `NETTI_WEB_KAYTTAJA`, `NETTI_WEB_SALASANA` | – | Salasana selainnäkymään (HTTP Basic; kumpikin pakollinen) |
 | `NETTI_ODOTUS_S` | 60 | Valvonta: odotus ajojen välillä. Toistuvissa nopeissa epäonnistumisissa odotus kaksinkertaistuu (enintään 15 min) |
 | `NETTI_VAKAUS_S` | 30 | Valvonta: tiedoston on oltava muuttumatta näin kauan ennen analyysia (kopiointi voi olla kesken) |
