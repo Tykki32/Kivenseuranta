@@ -152,7 +152,7 @@ def valitse(video, projekti=KOHDE, luo=True, tulosta=print, n=24, nimi=None, aik
         if not luo:
             return os.path.join(projekti, "tulokset"), f"mikaan kalibrointikansio ei sovi videoon (ikkunasiirtyma p90 px vasen/oikea, raja {tk.RAJA_PX:g}; lahimmat: {lahimmat(tulokset)})"
     ulos = os.path.join(lisakansio() or projekti, automaattinen_nimi(nimi or (virran_nimi(video) if virta else video)))      # kontissa uudet kalibroinnit kayttajan volyymiin (sailyvat paivityksissa)
-    arvio = "(virrasta: ~2-5 min, haku virrasta on hidasta)" if virta else "(~1 min)"
+    arvio = "(virrasta: ~0,5-2 min)" if virta else "(~1 min)"
     if uusi:
         tulosta(f"Kalibroidaan video uudelleen (vanhoja kalibrointeja ei kayteta) kansioon {os.path.basename(ulos)} {arvio}")
     else:

@@ -2118,7 +2118,7 @@ def main():
     ap.add_argument("--url", help="suora virran osoite (http / https / rtsp / m3u8), luetaan kuten YouTube-virta")
     ap.add_argument("--kansio", default=None, help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json). Oletus: tiedostolahde ja YouTube-video (ei live) kalibroidaan aina uudelleen kansioon tulokset_auto_<nimi> (--kalibrointi uusi; "
                     "kalibrointi_valinta.py), tai --kalibrointi valitse: sopiva vanha kansio valitaan automaattisesti (tulokset, tulokset_nettivideo2, ...); muulle lahteelle tulokset")
-    ap.add_argument("--kalibrointi", choices=("uusi", "valitse"), default="uusi", help="ilman --kansio:ta: uusi (oletus) = video kalibroidaan aina uudelleen omista ruuduistaan (tiedosto noin 1 min, YouTube-video 1-5 min; vanhoja "
+    ap.add_argument("--kalibrointi", choices=("uusi", "valitse"), default="uusi", help="ilman --kansio:ta: uusi (oletus) = video kalibroidaan aina uudelleen omista ruuduistaan (tiedosto noin 1 min, YouTube-video noin 0,5-2 min; vanhoja "
                     "kalibrointeja ei kayteta, koska kamera voi olla siirtynyt viikkojen valilla); valitse = kaytetaan ensimmaista videoon sopivaa vanhaa kalibrointia ja uusi tehdaan vain, jos mikaan ei sovi (nopeampi)")
     ap.add_argument("--viive", type=float, default=10.0, help="tulosteen viive analyysiin nahden (s); oletus 10: 97 %%:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm) kun viiva ilmestyy (5 s: 12 %%)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")

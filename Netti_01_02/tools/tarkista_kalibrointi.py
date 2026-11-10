@@ -85,8 +85,17 @@ def main():
     ap.add_argument("--kansio", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tulokset"))
     ap.add_argument("--raja", type=float, default=RAJA_PX, help="suurin sallittu ikkunasiirtyma (p90, px)")
     ap.add_argument("-n", type=int, default=24, help="mediaanikuvaan otettavien ruutujen maara")
+    ap.add_argument("--ref-ulos", metavar="NPZ", help="lue vain videon mediaanikuvat ja tallenna ne tiedostoon (ei vertailua): uusi_kalibrointi.py lukee ne virrasta jo kalibroinnin aikana, vertailu tehdaan sitten --ref:lla")
+    ap.add_argument("--ref", metavar="NPZ", help="videon mediaanikuvat valmiina (--ref-ulos): videota ei lueta uudelleen")
     a = ap.parse_args()
-    tulos = siirtymat(a.video, a.kansio, a.n)
+    if a.ref_ulos:
+        np.savez(a.ref_ulos, **kh.referenssi(a.video, n=a.n))
+        return 0
+    ref = None
+    if a.ref:
+        with np.load(a.ref) as z:
+            ref = {puoli: z[puoli] for puoli in z.files}
+    tulos = siirtymat(a.video, a.kansio, a.n, ref_video=ref)
     kaikki = []
     for puoli in ("vasen", "oikea"):
         sopii, teksti = arvioi(tulos[puoli], a.raja)

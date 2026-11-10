@@ -12,11 +12,17 @@ siirtymaa (kierto / zoomi). Tulostaa yhteenvedon (kohinataso, hajonta, ylitysten
 Etumerkki: (dx, dy) = kuinka monta pikselia ruudun sisalto on siirtynyt referenssiin nahden (+dx: oikealle, +dy: alas).
 Huom: cv2.phaseCorrelate kertoo ikkunafunktion (Hann) syotekuviin PAIKALLAAN; siksi ikkunat annetaan kopioina (muuten referenssi muuttuisi joka kutsulla)."""
 import argparse
+import os
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 
 import cv2
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+import videon_luku as vl  # noqa: E402
 
 PUOLET = {"vasen": (0, 190, 960, 890), "oikea": (960, 190, 960, 890)}          # (x0, y0, leveys, korkeus), kuten kalibrointi_netti.PUOLET
 IKKUNA = 192                       # vaihekorrelaation ikkuna (px)
@@ -35,22 +41,15 @@ def _puolisko(harmaa, nimi):
 
 
 def referenssi(video, n=96, alku_s=30.0):
-    """Puoliskojen mediaanikuvat n ruudusta, tasaisesti videon yli: {nimi: float32}."""
-    cap = cv2.VideoCapture(video)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    kok = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    """Puoliskojen mediaanikuvat n ruudusta, tasaisesti videon yli: {nimi: float32}. Ruudut haetaan usealla lukijalla rinnakkain (videon_luku.py: virrasta haku on hidasta); molemmat puoliskot samoista ruuduista."""
+    fps, kok = vl.tiedot(video)
     ruudut = np.linspace(int(alku_s * fps), kok - int(alku_s * fps), n).astype(int)
-    pino = {k: [] for k in PUOLET}
-    for r in ruudut:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(r))
-        ok, kuva = cap.read()
-        if not ok:
-            continue
+
+    def puoliskot(kuva):
         g = _harmaa(kuva)
-        for k in PUOLET:
-            pino[k].append(_puolisko(g, k))
-    cap.release()
-    return {k: np.median(np.stack(v), axis=0).astype(np.float32) for k, v in pino.items()}
+        return {k: _puolisko(g, k) for k in PUOLET}
+    luetut = [r for r in vl.lue_ruudut(video, ruudut, puoliskot) if r is not None]
+    return {k: np.median(np.stack([r[k] for r in luetut]), axis=0).astype(np.float32) for k in PUOLET}
 
 
 def valitse_ikkunat(ref, n=IKKUNOITA, koko=IKKUNA):
