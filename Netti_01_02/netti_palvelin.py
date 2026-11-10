@@ -538,7 +538,7 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
                 if rc == 0 and kasitellyt.valmis(laji, arvo):
                     loki("lahde analysoitu kokonaan (ei live-lahetys): sita ei ajeta uudelleen")
                     continue
-                odotus = min(a.odotus_s * 2 ** max(vikoja - 1, 0), ODOTUS_MAX_S)
+                odotus = min(a.odotus_s * 2 ** min(max(vikoja - 1, 0), 30), ODOTUS_MAX_S)         # eksponentin raja: muuten ~1000 perakkaisen epaonnistumisen (~11 vrk odotusta) jalkeen luku ylivuotaa ja palvelin kaatuu
                 loki(f"valvonta: uusi yritys {odotus:.0f} s kuluttua")
                 if pysaytys.nuku(odotus):
                     return 0

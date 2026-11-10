@@ -489,6 +489,28 @@ def testaa_linkkilista():
         tarkista("pysaytys kesken linkin ajon: paluukoodi 0, linkkia ei kirjata valmiiksi (ajetaan uudestaan kaynnistyksen jalkeen)", rc == 0 and not k.valmis("youtube_lista", "hnTTLqHr5x8") and not k.data)
 
 
+def testaa_odotuksen_ylivuoto():
+    print("valvonta: odotuksen kasvu ei ylivuoda (pitka jakso nopeita epaonnistumisia)")
+    import contextlib
+    with tempfile.TemporaryDirectory() as t:
+        ek = EsiKello()
+        a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LAHDE="hnTTLqHr5x8", NETTI_JATKUVA="1", NETTI_ODOTUS_S="60"))
+        ajot = []
+
+        def ajuri_ei_lahetysta(cmd, env=None, cwd=None):
+            ajot.append(lahde_komennosta(cmd))
+            return 1                                                              # nopea epaonnistuminen: lahetys ei ole alkanut
+
+        ps = EsiPysaytys(pysayta_nukkumisella=1300, kello=ek)                     # 1300 perakkaista nopeaa epaonnistumista (~15 vrk): ennen korjausta OverflowError kohdassa ~1025
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = np_.palvele(a, ps, ajuri_ei_lahetysta, 32.0, ek)
+            tarkista("odotus pysyy rajoissa 1300 perakkaisen nopean epaonnistumisen jalkeen: ei ylivuotoa, odotus enintaan 15 min", rc == 0 and len(ps.nukkumiset) == 1300 and max(ps.nukkumiset) == np_.ODOTUS_MAX_S,
+                     f"{rc} {len(ps.nukkumiset)} {max(ps.nukkumiset)}")
+        except OverflowError as e:
+            tarkista("odotus pysyy rajoissa 1300 perakkaisen nopean epaonnistumisen jalkeen: ei ylivuotoa", False, str(e))
+
+
 def testaa_lapsiprosessi():
     print("lapsiprosessi ja signaalit (netti_palvelin.aja_lapsi)")
     with tempfile.TemporaryDirectory() as t:
@@ -829,7 +851,7 @@ def testaa_web_videon_nimi():
 
 
 def main():
-    for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
+    for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_odotuksen_ylivuoto, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
               testaa_videon_nimi_palvelin, testaa_web_videon_nimi):
         t()
     print()
