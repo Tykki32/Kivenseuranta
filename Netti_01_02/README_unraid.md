@@ -211,6 +211,8 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 | `heitot_<videon nimi>_<lähde>_<aika>_kivet.csv` | Kivikohtaiset vakiot (kitkataso A, kaarto kappa) |
 | `kasitellyt.json` | Valvonnan muisti (vain valvontatilassa): valmiit videot ja linkit, epäonnistuneiden yritykset |
 
+**Pelaajakohtainen tilasto.** `docker exec -it kivenseuranta python /app/tools/pelaajatilasto.py /data/ulos/heitot_<…>.csv --pelaajia 4` laskee heitto-CSV:stä pelaajakohtaisesti mediaanin ja STD:n (liun hidastuvuus, irroituksen delta, irroitusvauhti = nopeus irroituksen jälkeen miinus ennen) ja tallentaa taulukon samaan kansioon (`…_pelaajat.csv`; `--fi` = Excelille puolipiste ja desimaalipilkku). Pelaajamäärä joukkueittain: `--keltainen 4 --punainen 3` (ilman niitä ohjelma kysyy). Kuvaus: [`README_netti.md`](README_netti.md).
+
 **Tiedostojen nimet.** YouTube-lähteellä (`youtube.txt`, `NETTI_LAHDE`) videon nimi lisätään tiedostojen nimiin, jotta oikean pelin löytää helposti: yt-dlp kertoo nimen samalla kutsulla kuin virran osoitteen (ei lisäkutsuja), ja nimi näkyy
 myös selainnäkymässä (sivun tilarivi ja välilehden otsikko) sekä lokissa (`Video: …`, `ajo paattyi (…)`). Esimerkki: `kivenseuranta_Matarmaa SM-finaali 2026_yt_hnTTLqHr5x8_20261104_163130.mp4`. `<lähde>` on `yt_<tunnus>` (YouTube),
 tiedoston nimi (videotiedosto; sen nimi on jo mukana) tai `virta` (`--url`). Nimi siistitään tiedostonimeksi: kielletyt merkit (`< > : " / \ | ? *`), `%`, `$` ja emojit jätetään pois, välilyönnit yhdistetään, ja nimi lyhennetään enintään 80 merkkiin (120 tavuun).
