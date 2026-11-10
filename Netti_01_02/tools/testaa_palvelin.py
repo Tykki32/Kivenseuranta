@@ -6,17 +6,20 @@
 Ei tarvitse videota, YouTubea eika verkkoa. Poistumiskoodi 1, jos jokin testi epaonnistuu."""
 import base64
 import collections
+import csv
 import io
 import json
 import os
 import signal
 import socket
+import statistics
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import numpy as np
@@ -894,9 +897,406 @@ def testaa_web_videon_nimi():
             w.sulje()
 
 
+HEITTO_KENTAT = ["heitto", "vari", "kivi_nro", "puoli", "paa", "liun_hidastuvuus_m_s2", "irroitus_delta_cm", "nopeus_ennen_m_s", "nopeus_jalkeen_m_s"]
+
+
+def heitto_rivit(paita=3, pois=()):
+    """Synteettisen pelin heitto-CSV:n rivit: paita paata, molemmilla joukkueilla 8 kivea / paa. Arvot riippuvat pelaajasta (4 + 4 pelaajaa: kivet 1-2, 3-4, 5-6, 7-8) ja paasta,
+    joten tilaston oikeellisuus voidaan laskea tasta erikseen. pois: {(paa, vari, kivi)} jaavat pois (puutteellinen paa)."""
+    rivit, n = [], 0
+    for e in range(1, paita + 1):
+        for k in range(1, 9):
+            for vari in ("keltainen", "punainen"):
+                n += 1
+                if (e, vari, k) in pois:
+                    continue
+                p = (k + 1) // 2 + (4 if vari == "punainen" else 0)
+                rivit.append([n, vari, k, "vasen" if e % 2 else "oikea", e, f"{0.01 * p + 0.001 * e + 0.0001 * k:.5f}", f"{10.0 * p - e + 0.5 * k:.2f}",
+                              f"{2.0 + 0.01 * p:.4f}", f"{2.0 + 0.01 * p + 0.002 * p + 0.001 * e:.4f}"])
+    return rivit
+
+
+def kirjoita_heitto_csv(polku, rivit, fi=False, mtime=None):
+    """Heitto-CSV (fi: erotin ;, desimaalipilkku ja UTF-8 BOM, kuten suomalaisen Excelin tallentama)."""
+    os.makedirs(os.path.dirname(polku), exist_ok=True)
+    with open(polku, "w", newline="", encoding="utf-8-sig" if fi else "utf-8") as fh:
+        w = csv.writer(fh, delimiter=";" if fi else ",")
+        w.writerow(HEITTO_KENTAT + ["muu"])
+        for r in rivit:
+            w.writerow([x.replace(".", ",") if fi and isinstance(x, str) and i >= 5 else x for i, x in enumerate(r)] + ["x"])
+    if mtime is not None:
+        os.utime(polku, (mtime, mtime))
+    return polku
+
+
+def vapaa_portti():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    portti = s.getsockname()[1]
+    s.close()
+    return portti
+
+
+def virheena(fn, *a, **k):
+    """ValueError-viesti, jos fn nostaa sen; None, jos ei virhetta; muu poikkeus nayttaa nimensa."""
+    try:
+        fn(*a, **k)
+    except ValueError as e:
+        return str(e)
+    except Exception as e:
+        return "ODOTTAMATON POIKKEUS " + repr(e)
+    return None
+
+
+def testaa_web_tilasto():
+    print("selainnakyma: pelaajatilasto (/tilasto/tiedostot, /tilasto, /tilasto.csv; tools/pelaajatilasto.py)")
+    pt = nw._tilasto_moduuli()
+    nyt = time.time()
+    nimi_aak = "heitot_Matarmaa's SM – Hyvinkää_yt_hnTTLqHr5x8_20260101_120000.csv"             # heittomerkki, ajatusviiva, ääkköset ja välilyönnit (YouTube-otsikko)
+    with tempfile.TemporaryDirectory() as t:
+        kirjoita_heitto_csv(os.path.join(t, "heitot_peli.csv"), heitto_rivit(3), mtime=nyt - 300)
+        kirjoita_heitto_csv(os.path.join(t, "heitot_puutteellinen.csv"), heitto_rivit(3, pois={(2, "punainen", 5)}), mtime=nyt - 200)
+        kirjoita_heitto_csv(os.path.join(t, nimi_aak), heitto_rivit(2), fi=True, mtime=nyt - 100)
+        kirjoita(os.path.join(t, "tyhja_heitot.csv"), ",".join(HEITTO_KENTAT) + "\n", nyt - 10)                  # pelkka otsikko (ajo juuri alkanut): listalla, laskenta antaa selkean virheen
+        # ei listalle:
+        kirjoita_heitto_csv(os.path.join(t, "heitot_peli_kivet.csv"), heitto_rivit(1))                           # johdetut tiedostot
+        kirjoita_heitto_csv(os.path.join(t, "heitot_peli_pelaajat.csv"), heitto_rivit(1))
+        kirjoita(os.path.join(t, "muu.csv"), "a,b\n1,2\n")
+        kirjoita(os.path.join(t, "k.mp4"), "x")
+        kirjoita_heitto_csv(os.path.join(t, ".piilo.csv"), heitto_rivit(1))
+        kirjoita(os.path.join(t, "rikki.csv"), b"\xff\xfe\x00\x81\x82\x83\n1,2\n")
+        kirjoita_heitto_csv(os.path.join(t, "ali", "heitot_ali.csv"), heitto_rivit(1))
+        ulkona = kirjoita_heitto_csv(os.path.join(os.path.dirname(t), "ulkona_" + os.path.basename(t) + ".csv"), heitto_rivit(1))
+        linkki = False
+        try:
+            os.symlink(ulkona, os.path.join(t, "linkki.csv"))
+            linkki = True
+        except OSError:
+            pass
+        sisalto_ennen = sorted(os.listdir(t))
+        w = nw.WebNaytto(0, t)
+        p = w.portti
+        try:
+            # ---- moduulitaso ------------------------------------------------------------------------------------------------
+            lista = w.tilasto_tiedostot()
+            tarkista("tilasto_tiedostot: vain heitto-CSV:t (otsikossa tilaston sarakkeet), uusin ensin; ei _kivet / _pelaajat, muuta CSV:ta, mp4:aa, piilo-, alikansio-, linkki- eika rikkinaista tiedostoa",
+                     [x["nimi"] for x in lista] == ["tyhja_heitot.csv", nimi_aak, "heitot_puutteellinen.csv", "heitot_peli.csv"], str([x["nimi"] for x in lista]))
+            tarkista("tilasto_tiedostot: koko ja muokkausaika mukana", all(x["koko"] > 0 and x["muutettu"] > 0 for x in lista))
+            d = w.tilasto("heitot_peli.csv")
+            tarkista("tilasto: oletus 4 + 4 pelaajaa: 48 heittoa, 8 riviä, ei varoituksia, sarakeotsikot ja desimaalit mukana", d["tiedosto"] == "heitot_peli.csv" and d["heittoja"] == 48 and len(d["rivit"]) == 8 and d["varoitukset"] == []
+                     and d["otsikot"] == list(pt.MITAT) and d["desimaalit"] == list(pt.DES_TULOSTE), str({k: d[k] for k in ("heittoja", "varoitukset", "otsikot", "desimaalit")}))
+            tarkista("tilasto: joukkueet, pelaajamaarat ja kivijaot (kivet 1-2, 3-4, 5-6, 7-8)", d["joukkueet"] == [dict(vari=v, pelaajia=4, kivet=["1-2", "3-4", "5-6", "7-8"]) for v in ("keltainen", "punainen")], str(d["joukkueet"]))
+            tarkista("tilasto: vastaus on JSON-kelpoinen (tuplat listoiksi)", json.loads(json.dumps(d))["rivit"][0]["joukkue"] == "keltainen")
+            odotettu = [0.01 * 2 + 0.001 * e + 0.0001 * k for e in (1, 2, 3) for k in (3, 4)]
+            r2 = d["rivit"][1]
+            tarkista("tilasto: keltainen pelaaja 2 (kivet 3-4, 6 heittoa): liun hidastuvuuden mediaani ja STD (n - 1) samat kuin statistics-moduulilla erikseen laskettuna",
+                     (r2["joukkue"], r2["pelaaja"], r2["kivet"], r2["heittoja"]) == ("keltainen", 2, "3-4", 6) and abs(r2["mediaani"][0] - statistics.median(odotettu)) < 1e-9 and abs(r2["std"][0] - statistics.stdev(odotettu)) < 1e-9, str(r2))
+            vauhdit = [0.002 * 2 + 0.001 * e for e in (1, 2, 3) for _ in (3, 4)]
+            tarkista("tilasto: irroitusvauhti = nopeus jalkeen - ennen", abs(r2["mediaani"][2] - statistics.median(vauhdit)) < 1e-9 and abs(r2["std"][2] - statistics.stdev(vauhdit)) < 1e-9)
+            d2 = w.tilasto("heitot_peli.csv", keltainen="3", punainen="2,3,3")
+            tarkista("tilasto: keltainen 3 pelaajaa (kivet 1-3, 4-6, 7-8) ja punaisella oma kivijako 2,3,3 (1-2, 3-5, 6-8)", [(j["vari"], j["pelaajia"], j["kivet"]) for j in d2["joukkueet"]]
+                     == [("keltainen", 3, ["1-3", "4-6", "7-8"]), ("punainen", 3, ["1-2", "3-5", "6-8"])] and len(d2["rivit"]) == 6, str(d2["joukkueet"]))
+            d3, d4 = w.tilasto("heitot_puutteellinen.csv"), w.tilasto("heitot_puutteellinen.csv", ohita=True)
+            tarkista("tilasto: puutteellinen paa -> varoitus nimeaa paan ja joukkueen (puuttuvan kiven pelaajalla 5 heittoa, muilla 6); ohita=True jattaa paan pois kaikilta (4 heittoa pelaajaa kohti), varoitus silti",
+                     len(d3["varoitukset"]) == 1 and "paa 2" in d3["varoitukset"][0] and "punainen 7 / 8" in d3["varoitukset"][0] and sorted({r["heittoja"] for r in d3["rivit"]}) == [5, 6]
+                     and all(r["heittoja"] == 4 for r in d4["rivit"]) and len(d4["varoitukset"]) == 1, str(d3["varoitukset"]))
+            d5 = w.tilasto("heitot_peli.csv", keltainen="2,2")
+            tarkista("tilasto: kivijako, jonka kivet eivat ole yhteensa 8 (2,2) -> huomautus ensimmaisena", d5["varoitukset"] and "kivijako 2,2 on yhteensa 4 kivea" in d5["varoitukset"][0], str(d5["varoitukset"][:2]))
+            d6 = w.tilasto(nimi_aak)
+            odotettu_fi = [0.01 * 1 + 0.001 * e + 0.0001 * k for e in (1, 2) for k in (1, 2)]
+            tarkista("tilasto: heittomerkki, ajatusviiva ja ääkköset nimessa; puolipisteerotin, desimaalipilkut ja BOM luetaan oikein (2 paata = 32 heittoa)", d6["heittoja"] == 32 and d6["tiedosto"] == nimi_aak
+                     and abs(d6["rivit"][0]["mediaani"][0] - statistics.median(odotettu_fi)) < 1e-9, str(d6["rivit"][0]))
+            nimi, data = w.tilasto_csv("heitot_peli.csv", keltainen="4", punainen="3")
+            rivit_fi = list(csv.reader(io.StringIO(data.decode("utf-8-sig")), delimiter=";"))
+            tarkista("tilasto_csv (fi): tiedostonimi <syote>_pelaajat.csv, UTF-8 BOM, erotin ;, desimaalipilkku, ryhmarivi + otsikkorivi + 7 pelaajaa", nimi == "heitot_peli_pelaajat.csv" and data.startswith(b"\xef\xbb\xbf") and rivit_fi[0][4] == "Mediaani" and rivit_fi[0][7] == "STD"
+                     and rivit_fi[1][4:7] == list(pt.MITAT) and len(rivit_fi) == 9 and "," in rivit_fi[2][4] and "." not in rivit_fi[2][4], str(rivit_fi[:3]))
+            d7 = w.tilasto("heitot_peli.csv", keltainen="4", punainen="3")
+            tarkista("tilasto_csv: arvot samat kuin ruudulla (neljan desimaalin tarkkuudella)", abs(float(rivit_fi[2][4].replace(",", ".")) - round(d7["rivit"][0]["mediaani"][0], 4)) < 1e-9)
+            nimi2, data2 = w.tilasto_csv(nimi_aak, fi=False)
+            rivit_en = list(csv.reader(io.StringIO(data2.decode("utf-8")), delimiter=","))
+            tarkista("tilasto_csv (fi=False): ei BOM:ia, pilkkuerotin ja desimaalipiste; nimi sailyy (heittomerkki, ääkköset)", nimi2 == nimi_aak[:-4] + "_pelaajat.csv" and not data2.startswith(b"\xef\xbb\xbf") and "." in rivit_en[2][4] and len(rivit_en) == 10, str(rivit_en[2]))
+            # virheelliset syotteet
+            huonot = ["", None, "ei_ole.csv", "../" + os.path.basename(ulkona), "..\\x.csv", "/etc/passwd", "/etc/passwd.csv", os.path.join(t, "heitot_peli.csv"), "ali/heitot_ali.csv", ".piilo.csv", "k.mp4", "heitot_peli.csv\0"]
+            if linkki:
+                huonot.append("linkki.csv")
+            viestit = {n: virheena(w.tilasto, n) for n in huonot}
+            tarkista("tilasto: polkuerottimet, ylahakemisto, absoluuttinen polku, alikansio, piilotiedosto, linkki, ei-CSV, puuttuva ja tyhja nimi -> ValueError, eika tiedostoa luettu (ei vuoda ulkopuolisen sisaltoa)",
+                     all(v and "löydy" in v for v in viestit.values()), str({k: v for k, v in viestit.items() if not (v and "löydy" in v)}))
+            tarkista("tilasto: tiedosto ilman tilaston sarakkeita -> selkea virhe sarakkeiden nimilla", "puuttuvat sarakkeet" in (virheena(w.tilasto, "muu.csv") or "") and "liun_hidastuvuus_m_s2" in (virheena(w.tilasto, "muu.csv") or ""))
+            tarkista("tilasto: pelkka otsikko (ei heittoja) -> selkea virhe", "ei ole heittoja" in (virheena(w.tilasto, "tyhja_heitot.csv") or ""))
+            v_rikki = virheena(w.tilasto, "rikki.csv") or ""
+            tarkista("tilasto: ei-UTF-8-tiedosto -> selkea virhe (ei teknista UnicodeDecodeErroria)", "ei voi lukea" in v_rikki and "codec" not in v_rikki, v_rikki)
+            for maara in ("0", "9", "a", "3,0,5", "-1"):
+                v = virheena(w.tilasto, "heitot_peli.csv", keltainen=maara)
+                tarkista(f"tilasto: virheellinen pelaajamaara {maara!r} -> ValueError, viestissa joukkue", v is not None and "joukkue 'keltainen'" in v, str(v))
+            w0 = nw.WebNaytto(0, None)
+            try:
+                tarkista("tilasto: ilman ulos-kansiota ei listaa eika laske", w0.tilasto_tiedostot() == [] and virheena(w0.tilasto, "heitot_peli.csv") is not None)
+            finally:
+                w0.sulje()
+            tarkista("tilasto ei kirjoita mitaan levylle (kansion sisalto muuttumaton laskujen jalkeen)", sorted(os.listdir(t)) == sisalto_ennen, str(sorted(os.listdir(t))))
+
+            # ---- HTTP ---------------------------------------------------------------------------------------------------
+            s, h, b = pyyda(p, "/tilasto/tiedostot")
+            tarkista("/tilasto/tiedostot: 200, JSON ja sama lista kuin moduulissa (aakkosnimi sailyy)", s == 200 and h["Content-Type"].startswith("application/json") and [x["nimi"] for x in json.loads(b)] == [x["nimi"] for x in lista], str(b[:200]))
+            s, h, b = pyyda(p, "/tilasto?tiedosto=heitot_peli.csv&kel=4&pun=3")
+            hd = json.loads(b)
+            tarkista("/tilasto: 200, 7 pelaajaa (4 + 3), joukkuetiedot, ei varoituksia", s == 200 and len(hd["rivit"]) == 7 and [(j["vari"], j["pelaajia"]) for j in hd["joukkueet"]] == [("keltainen", 4), ("punainen", 3)] and hd["varoitukset"] == [] and hd["heittoja"] == 48, str(hd)[:200])
+            tarkista("/tilasto: sama tulos kuin moduulifunktiolla", hd == json.loads(json.dumps(w.tilasto("heitot_peli.csv", keltainen="4", punainen="3"))))
+            s, h, b = pyyda(p, "/tilasto?tiedosto=" + urllib.parse.quote(nimi_aak))
+            tarkista("/tilasto: aakkos- ja heittomerkkinimi koodattuna osoitteessa; tyhjat kel / pun -> oletus 4 + 4", s == 200 and json.loads(b)["heittoja"] == 32 and len(json.loads(b)["rivit"]) == 8 and pyyda(p, "/tilasto?tiedosto=heitot_peli.csv&kel=&pun=")[0] == 200)
+            hp = json.loads(pyyda(p, "/tilasto?tiedosto=heitot_puutteellinen.csv")[2])
+            ho = json.loads(pyyda(p, "/tilasto?tiedosto=heitot_puutteellinen.csv&ohita=1")[2])
+            tarkista("/tilasto: puutteellinen paa -> varoitus; &ohita=1 -> paa pois (4 heittoa pelaajaa kohti)", len(hp["varoitukset"]) == 1 and all(r["heittoja"] == 4 for r in ho["rivit"]), str(hp["varoitukset"]))
+            s, h, b = pyyda(p, "/tilasto.csv?tiedosto=heitot_peli.csv&kel=4&pun=3&fi=1")
+            tarkista("/tilasto.csv?fi=1: 200, text/csv, liitteena (filename*), BOM + ; + desimaalipilkku", s == 200 and h["Content-Type"] == "text/csv; charset=utf-8" and h["Content-Disposition"] == "attachment; filename*=UTF-8''heitot_peli_pelaajat.csv" and b == data, str(h))
+            s, h, b = pyyda(p, "/tilasto.csv?tiedosto=" + urllib.parse.quote(nimi_aak) + "&fi=0")
+            tarkista("/tilasto.csv?fi=0: pilkkuerotin, desimaalipiste, ei BOM:ia; aakkosnimi Content-Dispositionissa koodattuna", s == 200 and not b.startswith(b"\xef\xbb\xbf") and b == data2 and urllib.parse.quote(nimi_aak[:-4] + "_pelaajat.csv") in h["Content-Disposition"], str(h.get("Content-Disposition")))
+            kielletyt = ["/tilasto", "/tilasto?tiedosto=", "/tilasto?tiedosto=ei_ole.csv", "/tilasto?tiedosto=..%2f" + urllib.parse.quote(os.path.basename(ulkona)), "/tilasto?tiedosto=%2e%2e%2f%2e%2e%2fetc%2fpasswd", "/tilasto?tiedosto=%2fetc%2fpasswd",
+                         "/tilasto?tiedosto=" + urllib.parse.quote(os.path.join(t, "heitot_peli.csv")), "/tilasto?tiedosto=ali%2fheitot_ali.csv", "/tilasto?tiedosto=.piilo.csv", "/tilasto?tiedosto=k.mp4", "/tilasto?tiedosto=heitot_peli.csv%00",
+                         "/tilasto?tiedosto=heitot_peli.csv&kel=9", "/tilasto?tiedosto=heitot_peli.csv&pun=a", "/tilasto?tiedosto=muu.csv", "/tilasto?tiedosto=rikki.csv"]
+            if linkki:
+                kielletyt.append("/tilasto?tiedosto=linkki.csv")
+            ongelmat = []
+            for polku in kielletyt:
+                for tarkenne in ("", ".csv"):
+                    s, h, b = pyyda(p, polku.replace("/tilasto", "/tilasto" + tarkenne, 1))
+                    if not (s == 400 and h["Content-Type"].startswith("application/json") and "virhe" in json.loads(b)):
+                        ongelmat.append((polku, tarkenne, s))
+            tarkista("/tilasto ja /tilasto.csv: virheelliset pyynnot (puuttuva / ulkopuolinen / piilo- / linkki- / ei-CSV -tiedosto, huono pelaajamaara) -> 400 + JSON {virhe} (ei CSV-latausta, ei ulkopuolisen tiedoston sisaltoa)", not ongelmat, str(ongelmat[:5]))
+            s, h, b = pyyda(p, "/tilasto/tiedostot", metodi="HEAD")
+            s2, h2, b2 = pyyda(p, "/tilasto?tiedosto=heitot_peli.csv", metodi="HEAD")
+            tarkista("HEAD: otsakkeet ilman sisaltoa", s == 200 and b == b"" and int(h["Content-Length"]) > 2 and s2 == 200 and b2 == b"" and int(h2["Content-Length"]) > 100)
+            tarkista("POST ei tuettu (ei laskentaa eika kirjoitusta)", pyyda(p, "/tilasto?tiedosto=heitot_peli.csv", metodi="POST")[0] in (501, 405))
+            tarkista("HTTP-kutsut eivat kirjoita levylle", sorted(os.listdir(t)) == sisalto_ennen, str(sorted(os.listdir(t))))
+            # sivu: nappi, valitsin ja ikkuna; tiedostonimi ei saa paasta HTML:aan merkkijonona attribuuttiin (heittomerkki rikkoisi value-attribuutin)
+            sivu = pyyda(p, "/")[2].decode("utf-8")
+            tarkista("sivu: Pelaajatilasto-nappi, ikkuna, tiedostovalitsin, joukkueiden pelaajakentat, vajaiden paiden valinta, Laske ja Sulje", all(f'id="{x}"' in sivu for x in ("ts-avaa", "tilasto", "ts-tiedosto", "ts-kel", "ts-pun", "ts-ohita", "ts-laske", "ts-tulos", "ts-sulje")) and ">Pelaajatilasto<" in sivu)
+            tarkista("sivu: kutsuu /tilasto/tiedostot ja /tilasto, kopiointi Exceliin ja CSV-lataus (fi=1)", "tilasto/tiedostot" in sivu and '"tilasto?"' in sivu and "tsKopioi" in sivu and "&fi=1" in sivu and "tilasto.csv?" in sivu)
+            tarkista("sivu: esc() muuttaa myos lainausmerkit; valitsimen option-elementit ja CSV-linkki rakennetaan DOM:illa, ei merkkijonoattribuutilla (tiedostonimen heittomerkki ei riko value / href)",
+                     '.replace(/"/g,"&quot;").replace(/\'/g,"&#39;")' in sivu and 'createElement("option")' in sivu and "<option value='" not in sivu and '$("ts-csv").href=' in sivu and "href='tilasto.csv" not in sivu)
+            tarkista("sivu: joutilastila (ei analyysia): kuva piiloon ja virta pois, status kertoo asian", 't.joutilas' in sivu and "Ei analyysia käynnissä" in sivu)
+            # puuttuva tools/pelaajatilasto.py (osittain paivitetty ohjelmakansio) ei kaada muuta sivua
+            vanha = sys.modules.get("pelaajatilasto", None)
+            sys.modules["pelaajatilasto"] = None                                                  # import nostaa ImportErrorin
+            try:
+                s1, _, b1 = pyyda(p, "/tilasto/tiedostot")
+                s2, _, b2 = pyyda(p, "/tilasto?tiedosto=heitot_peli.csv")
+                s3, _, _ = pyyda(p, "/tilasto.csv?tiedosto=heitot_peli.csv")
+                ok_muu = pyyda(p, "/")[0] == 200 and pyyda(p, "/tila")[0] == 200 and pyyda(p, "/tiedostot.json")[0] == 200
+            finally:
+                if vanha is None:
+                    del sys.modules["pelaajatilasto"]
+                else:
+                    sys.modules["pelaajatilasto"] = vanha
+            tarkista("tools/pelaajatilasto.py puuttuu: tilasto-osoitteet 503 + selkea ohje (JSON {virhe}), muu sivu toimii", (s1, s2, s3) == (503, 503, 503) and "pelaajatilasto.py puuttuu" in json.loads(b1)["virhe"] and "virhe" in json.loads(b2) and ok_muu, str((s1, s2, s3, b1[:120])))
+        finally:
+            w.sulje()
+        os.remove(ulkona)
+
+        # salasana suojaa myos tilastoa
+        os.environ["NETTI_WEB_KAYTTAJA"], os.environ["NETTI_WEB_SALASANA"] = "kaytt", "sala sana:1"
+        try:
+            w2 = nw.WebNaytto(0, t)
+        finally:
+            del os.environ["NETTI_WEB_KAYTTAJA"], os.environ["NETTI_WEB_SALASANA"]
+        try:
+            tunn = {"Authorization": "Basic " + base64.b64encode("kaytt:sala sana:1".encode()).decode()}
+            osoitteet = ["/tilasto/tiedostot", "/tilasto?tiedosto=heitot_peli.csv", "/tilasto.csv?tiedosto=heitot_peli.csv"]
+            tarkista("salasana asetettu: tilasto-osoitteet 401 ilman tunnuksia, 200 oikeilla", all(pyyda(w2.portti, o)[0] == 401 for o in osoitteet) and all(pyyda(w2.portti, o, tunn)[0] == 200 for o in osoitteet))
+        finally:
+            w2.sulje()
+
+
+def testaa_joutilas():
+    print("selainnakyma ajojen valissa (netti_web.JoutilasSivu) ja sen kaytto ajosilmukassa (netti_palvelin.palvele)")
+    import contextlib
+    import http.client
+    with tempfile.TemporaryDirectory() as t:
+        kirjoita_heitto_csv(os.path.join(t, "heitot_peli.csv"), heitto_rivit(2))
+        kirjoita(os.path.join(t, "k.mp4"), "x")
+        portti = vapaa_portti()
+        viestit = []
+        js = nw.JoutilasSivu(portti, t, loki=viestit.append)
+        js.pysayta()
+        tarkista("ennen kaynnistysta: ei avoinna eika porttia; pysayta ei tee mitaan", not js.avoinna and js.avattu_portti is None and _portti_kiinni(portti))
+        tarkista("kaynnista: True, sivu avoinna annetulla portilla", js.kaynnista() is True and js.avoinna and js.avattu_portti == portti)
+        try:
+            s, h, b = pyyda(portti, "/")
+            tarkista("sivu toimii ajojen valissa (Pelaajatilasto-nappi mukana)", s == 200 and b"ts-avaa" in b)
+            tila = json.loads(pyyda(portti, "/tila")[2])
+            tarkista("/tila: joutilas = True, ei kaynnissa, ei kuvia, viesti otsikkona", tila["joutilas"] is True and tila["kaynnissa"] is False and tila["kuvia"] == 0 and "valvonta" in tila["otsikko"], str(tila))
+            s, h, b = pyyda(portti, "/kuva.jpg")
+            tarkista("/kuva.jpg: ilmoituskuva (JPEG)", s == 200 and b[:2] == b"\xff\xd8")
+            tarkista("tiedostolista ja pelaajatilasto kaytettavissa ajojen valissa", sorted(x["nimi"] for x in json.loads(pyyda(portti, "/tiedostot.json")[2])) == ["heitot_peli.csv", "k.mp4"]
+                     and json.loads(pyyda(portti, "/tilasto?tiedosto=heitot_peli.csv")[2])["heittoja"] == 32)
+            tarkista("kaynnista kahdesti: ei uutta palvelinta (sama portti)", js.kaynnista() is True and js.avattu_portti == portti)
+            # pysyva yhteys: selain pitaa yhteyden auki ja kysyy tilaa 3 s valein; kun analyysi ottaa portin, vanha yhteys ei saa jaada vastaamaan joutilastilalla
+            yhteys = http.client.HTTPConnection("127.0.0.1", portti, timeout=10)
+            yhteys.request("GET", "/tila")
+            r = yhteys.getresponse()
+            tarkista("pysyva yhteys: ensimmainen kysely vastaa joutilastilalla", json.loads(r.read())["joutilas"] is True)
+            js.pysayta()
+            tarkista("pysayta: portti vapautuu ja avoimet asiakasyhteydet katkaistaan", not js.avoinna and js.avattu_portti is None and _portti_kiinni(portti))
+            analyysi = nw.WebNaytto(portti, t, tila=lambda: dict(lahde="analyysi"))                       # analyysilapsi ottaa saman portin
+            try:
+                try:
+                    yhteys.request("GET", "/tila")
+                    vanha = json.loads(yhteys.getresponse().read())
+                except (http.client.HTTPException, OSError):
+                    vanha = None                                                                           # yhteys katkaistu: selain avaa uuden
+                tarkista("vanha pysyva yhteys ei vastaa joutilastilalla sen jalkeen, kun analyysi on ottanut portin", vanha is None or vanha.get("lahde") == "analyysi", str(vanha))
+                tarkista("uusi yhteys saa analyysin tilan", json.loads(pyyda(portti, "/tila")[2]).get("lahde") == "analyysi")
+            finally:
+                analyysi.sulje()
+                yhteys.close()
+        finally:
+            js.pysayta()
+        tarkista("pysayta uudelleen ei tee mitaan", not js.avoinna and _portti_kiinni(portti))
+        tarkista("avaus uudelleen samaan porttiin heti sulkemisen jalkeen (analyysin jalkeen)", js.kaynnista() is True and pyyda(portti, "/tila")[0] == 200)
+        js.pysayta()
+        # portti varattu: ajoa ei saa kaataa
+        raja = socket.socket()
+        raja.bind(("0.0.0.0", 0))
+        raja.listen(1)
+        viestit.clear()
+        js2 = nw.JoutilasSivu(raja.getsockname()[1], t, loki=viestit.append)
+        try:
+            r1, r2 = js2.kaynnista(), js2.kaynnista()
+            tarkista("varattu portti: kaynnista palauttaa False eika kaada (SystemExit ei karkaa); varoitus lokiin vain kerran", r1 is False and r2 is False and not js2.avoinna and len(viestit) == 1 and "ei kaynnistynyt" in viestit[0], str(viestit))
+        finally:
+            raja.close()
+        tarkista("portin vapauduttua seuraava kaynnistys onnistuu", js2.kaynnista() is True and js2.avoinna)
+        js2.pysayta()
+
+    class EsiJoutilas:
+        """Kirjaa avaukset ja sulkemiset (vain muutokset) ajojarjestyksessa."""
+
+        def __init__(self):
+            self.auki = False
+            self.tapahtumat = []
+
+        def kaynnista(self):
+            if not self.auki:
+                self.auki = True
+                self.tapahtumat.append("auki")
+            return True
+
+        def pysayta(self):
+            if self.auki:
+                self.auki = False
+                self.tapahtumat.append("kiinni")
+
+    class JoutilasPysaytys(EsiPysaytys):
+        """EsiPysaytys, joka kirjaa joutilassivun tilan jokaisen odotuksen alussa."""
+
+        def __init__(self, joutilas, **k):
+            super().__init__(**k)
+            self.joutilas = joutilas
+            self.odotuksessa = []
+
+        def nuku(self, s):
+            self.odotuksessa.append(self.joutilas.auki)
+            return super().nuku(s)
+
+    with tempfile.TemporaryDirectory() as t:
+        nyt = time.time()
+        v = os.path.join(t, "video")
+        for n in ("a.mp4", "b.mp4"):
+            kirjoita(os.path.join(v, n), n, nyt - 100)
+        ej = EsiJoutilas()
+        ajossa = []
+
+        def ajuri(cmd, env=None, cwd=None):
+            ajossa.append(ej.auki)
+            return 7 if lahde_komennosta(cmd)[1].endswith("b.mp4") else 0
+
+        a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LAHDE=v, NETTI_ODOTUS_S="5", NETTI_VAKAUS_S="30"))
+        ps = JoutilasPysaytys(ej, pysayta_nukkumisella=2)
+        rc = np_.palvele(a, ps, ajuri, 32.0, lambda: nyt, joutilas=ej)
+        tarkista("ajosilmukka (valvonta): joutilassivu EI ole auki yhdenkaan ajon aikana (analyysi avaa portin itse)", len(ajossa) >= 3 and not any(ajossa), str(ajossa))
+        tarkista("ajosilmukka: sivu on jo auki, kun odotus alkaa (ajojen valissa)", len(ps.odotuksessa) == 2 and all(ps.odotuksessa), str(ps.odotuksessa))
+        tarkista("ajosilmukka: sivu avataan odotuksen ajaksi ja suljetaan ennen seuraavaa ajoa (auki, kiinni, auki, kiinni)", ej.tapahtumat == ["auki", "kiinni", "auki", "kiinni"] and rc == 0, str(ej.tapahtumat))
+        tarkista("ajosilmukka: lopetus sulkee sivun (portti vapautuu)", not ej.auki)
+
+        # odotus nostaa poikkeuksen, kun sivu on auki: poikkeus nousee ylos ja sivu suljetaan silti (portti ei jaa varatuksi)
+        ej2 = EsiJoutilas()
+
+        class PoikkeusPysaytys(EsiPysaytys):
+            def nuku(self, s):
+                raise RuntimeError("testivirhe")
+        a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LAHDE=v, NETTI_ODOTUS_S="5", NETTI_VAKAUS_S="30"))
+        try:
+            np_.palvele(a, PoikkeusPysaytys(), lambda cmd, env=None, cwd=None: 0, 32.0, lambda: nyt, joutilas=ej2)
+            nostettu = False
+        except RuntimeError:
+            nostettu = True
+        tarkista("ajosilmukka: poikkeus odotuksessa nousee ylos ja sivu suljetaan silti", nostettu and ej2.tapahtumat == ["auki", "kiinni"], str(ej2.tapahtumat))
+
+        # kansiot eivat kelpaa (paluukoodi 2): sivua ei avata
+        ej3 = EsiJoutilas()
+        kirjoita(os.path.join(t, "tiedosto"), "x")
+        a = np_.Asetukset(dict(NETTI_DATA=os.path.join(t, "tiedosto", "ali"), NETTI_LAHDE=v))
+        with contextlib.redirect_stderr(io.StringIO()):
+            rc3 = np_.palvele(a, EsiPysaytys(), ajuri, 32.0, lambda: nyt, joutilas=ej3)
+        tarkista("ajosilmukka: kansiovirhe (paluukoodi 2) -> sivua ei avata", rc3 == 2 and ej3.tapahtumat == [], str((rc3, ej3.tapahtumat)))
+
+        # kertaajo: sivua ei tarvita (kontti poistuu ajon jalkeen)
+        ej4 = EsiJoutilas()
+        a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LAHDE=v, NETTI_JATKUVA="0"))
+        np_.palvele(a, EsiPysaytys(), lambda cmd, env=None, cwd=None: 0, 32.0, lambda: nyt, joutilas=ej4)
+        tarkista("ajosilmukka (kertaajo): joutilassivua ei avata lainkaan", ej4.tapahtumat == [], str(ej4.tapahtumat))
+
+        # oikea sivu oikealla portilla: odotuksen aikana vastaa, ajon aikana portti vapaa (analyysi saa sen)
+        portti = vapaa_portti()
+        oikea = nw.JoutilasSivu(portti, t, loki=lambda *_: None)
+        ajon_portti, odotuksen_tila = [], []
+
+        def ajuri_portti(cmd, env=None, cwd=None):
+            ajon_portti.append(_portti_kiinni(portti))
+            return 7 if lahde_komennosta(cmd)[1].endswith("b.mp4") else 0
+
+        class PortinPysaytys(EsiPysaytys):
+            def nuku(self, s):
+                odotuksen_tila.append(pyyda(portti, "/tila")[0] == 200 and json.loads(pyyda(portti, "/tila")[2]).get("joutilas") is True)
+                return super().nuku(s)
+        a = np_.Asetukset(dict(NETTI_DATA=os.path.join(t, "data2"), NETTI_LAHDE=v, NETTI_ODOTUS_S="5", NETTI_VAKAUS_S="30", NETTI_WEB_PORTTI=str(portti)))          # oma datakansio: videot eivat ole jo kasiteltyja
+        with contextlib.redirect_stdout(io.StringIO()):
+            np_.palvele(a, PortinPysaytys(pysayta_nukkumisella=2), ajuri_portti, 32.0, lambda: nyt, joutilas=oikea)
+        tarkista("ajosilmukka + oikea sivu: portti on vapaa jokaisen ajon alkaessa (analyysi voi avata sen)", ajon_portti and all(ajon_portti), str(ajon_portti))
+        tarkista("ajosilmukka + oikea sivu: odotuksen aikana portissa vastaa joutilassivu", odotuksen_tila and all(odotuksen_tila), str(odotuksen_tila))
+        tarkista("ajosilmukka + oikea sivu: silmukan paattyessa portti on vapaa", _portti_kiinni(portti) and not oikea.avoinna)
+
+        # main(): joutilassivu luodaan ja annetaan silmukalle, kun selainportti on kaytossa (ei, kun NETTI_WEB_PORTTI=0)
+        kaapattu = []
+        vanha_palvele, vanha_pysaytys = np_.palvele, np_.Pysaytys
+
+        class EiSignaaleja:
+            def asenna(self):
+                pass
+        np_.palvele = lambda a, pysaytys, **k: (kaapattu.append((a, k.get("joutilas"))), 0)[1]
+        np_.Pysaytys = EiSignaaleja
+        env_vanha = {k: os.environ.get(k) for k in ("NETTI_DATA", "NETTI_LAHDE", "NETTI_WEB_PORTTI")}
+        try:
+            for web in (str(portti), "0"):
+                os.environ.update(NETTI_DATA=t, NETTI_LAHDE=v, NETTI_WEB_PORTTI=web)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    np_.main([])
+        finally:
+            np_.palvele, np_.Pysaytys = vanha_palvele, vanha_pysaytys
+            for k, x in env_vanha.items():
+                if x is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = x
+        tarkista("main: web-portti asetettu -> silmukka saa JoutilasSivun (portti ja tulosten kansio asetuksista, ei vielä avattu)", len(kaapattu) == 2 and isinstance(kaapattu[0][1], nw.JoutilasSivu) and kaapattu[0][1].portti == portti
+                 and kaapattu[0][1].ulos_kansio == kaapattu[0][0].ulos_kansio and not kaapattu[0][1].avoinna, str(kaapattu[:1]))
+        tarkista("main: NETTI_WEB_PORTTI=0 (selainnakyma pois) -> ei joutilassivua", len(kaapattu) == 2 and kaapattu[1][1] is None)
+
+
 def main():
     for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_odotuksen_ylivuoto, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
-              testaa_videon_nimi_palvelin, testaa_web_resoluutio, testaa_web_videon_nimi):
+              testaa_videon_nimi_palvelin, testaa_web_resoluutio, testaa_web_videon_nimi, testaa_web_tilasto, testaa_joutilas):
         t()
     print()
     if VIRHEITA:

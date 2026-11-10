@@ -3189,6 +3189,62 @@ def testaa_pelaajatilasto():
         finally:
             sys.stderr = vanha_err
         tarkista("puuttuva sarake / tiedosto: selva virheilmoitus ja paluukoodi 2", rc5 == 2 and "liun_hidastuvuus_m_s2" in ilm5 and rc6 == 2)
+        # selainnakyman kayttamat funktiot: laske_tiedosto, csv_tavuina, jakohuomautukset (komentorivi tekee saman vaiheittain)
+        import csv as csv_mod
+        lt = pt.laske_tiedosto(pol, {"keltainen": "4", "punainen": "3"})
+        tarkista("laske_tiedosto: tiedosto, 48 heittoa, jaot ja 7 pelaajaa; tulokset samat kuin laske()-funktiolla, ei varoituksia", lt["tiedosto"] == "heitot_peli.csv" and lt["heittoja"] == 48 and lt["jaot"] == {"keltainen": [2, 2, 2, 2], "punainen": [3, 3, 2]} and len(lt["tulokset"]) == 7
+                 and lt["varoitukset"] == [] and lt["tulokset"] == pt.laske(peli(), kentat, {"keltainen": pt.jako("4"), "punainen": pt.jako("3")})[0])
+        tarkista("laske_tiedosto: puuttuva tai tyhja maara -> oletus (4, tai oletus-parametri); oma kivijako sellaisenaan", [len(x) for x in pt.laske_tiedosto(pol)["jaot"].values()] == [4, 4] and pt.laske_tiedosto(pol, {"punainen": "2,3,3"})["jaot"]["punainen"] == [2, 3, 3]
+                 and pt.laske_tiedosto(pol, {"keltainen": "", "punainen": None}, oletus=3)["jaot"]["keltainen"] == [3, 3, 2])
+        pol_vajaa = os.path.join(tmp, "vajaa.csv")
+        with open(pol_vajaa, "w", newline="", encoding="utf-8") as fh:
+            w = csv_mod.writer(fh)
+            w.writerow(kentat)
+            for r in peli(pois={(2, "punainen", 5)}):
+                w.writerow([r[k] for k in kentat])
+        lv, lo, lp = pt.laske_tiedosto(pol_vajaa), pt.laske_tiedosto(pol_vajaa, ohita_puutteelliset=True), pt.laske_tiedosto(pol, populaatio=True)
+        tarkista("laske_tiedosto: vajaa paa -> varoitus; ohita_puutteelliset: 4 heittoa pelaajaa kohti; populaatio: STD jakajalla n", len(lv["varoitukset"]) == 1 and "paa 2" in lv["varoitukset"][0] and all(t["heittoja"] == 4 for t in lo["tulokset"])
+                 and abs(lp["tulokset"][1]["std"][0] - statistics.pstdev(odotettu)) < 1e-9)
+
+        def virhe_viesti(fn, *a, **k):
+            try:
+                fn(*a, **k)
+            except ValueError as e:
+                return str(e)
+            return None
+        pol_tyhja = os.path.join(tmp, "tyhja.csv")
+        with open(pol_tyhja, "w", newline="", encoding="utf-8") as fh:
+            fh.write(",".join(kentat) + "\n")
+        pol_bin = os.path.join(tmp, "binaari.csv")
+        with open(pol_bin, "wb") as fh:
+            fh.write(b"\xff\xfe\x00\x81\x82\n1,2\n")
+        tarkista("laske_tiedosto: virheellinen pelaajamaara -> ValueError, viestissa joukkue", "joukkue 'keltainen'" in (virhe_viesti(pt.laske_tiedosto, pol, {"keltainen": "9"}) or "") and "joukkue 'punainen'" in (virhe_viesti(pt.laske_tiedosto, pol, {"punainen": "x"}) or ""))
+        tarkista("laske_tiedosto: puuttuvat sarakkeet, pelkka otsikko ja ei-UTF-8-tiedosto -> selkea ValueError (ei teknista poikkeusta)", "puuttuvat sarakkeet" in (virhe_viesti(pt.laske_tiedosto, pol_vika) or "") and "ei ole heittoja" in (virhe_viesti(pt.laske_tiedosto, pol_tyhja) or "")
+                 and "ei voi lukea" in (virhe_viesti(pt.laske_tiedosto, pol_bin) or "") and "ei voi lukea" in (virhe_viesti(pt.laske_tiedosto, os.path.join(tmp, "ei_ole.csv")) or ""))
+        sys.stderr = io.StringIO()
+        try:
+            rc7 = pt.main([pol_bin, "--pelaajia", "4"])
+            ilm7 = sys.stderr.getvalue()
+        finally:
+            sys.stderr = vanha_err
+        tarkista("main: ei-UTF-8-tiedosto -> selkea virhe ja paluukoodi 2 (ei poikkeusta)", rc7 == 2 and "ei voi lukea" in ilm7, ilm7)
+        tarkista("jakohuomautukset: kivijako, jonka kivet eivat ole yhteensa 8, antaa huomautuksen; 4 pelaajaa, 3,3,2 ja 2,3,3 eivat", pt.jakohuomautukset({"keltainen": [2, 2], "punainen": [3, 3, 2], "x": [2, 3, 3]}) == ["joukkueen 'keltainen' kivijako 2,2 on yhteensa 4 kivea (paassa oletetaan 8)"])
+        tarkista("laske_tiedosto: kivijako 2,2 -> huomautus ensimmaisena, sen jalkeen paiden varoitukset", pt.laske_tiedosto(pol, {"keltainen": "2,2"})["varoitukset"][0].startswith("joukkueen 'keltainen' kivijako 2,2 on yhteensa 4 kivea") and len(pt.laske_tiedosto(pol, {"keltainen": "2,2"})["varoitukset"]) > 1)
+        sys.stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                pt.main([pol, "--keltainen", "2,2", "--punainen", "4", "--ei-tallenna"])
+            ilm8 = sys.stderr.getvalue()
+        finally:
+            sys.stderr = vanha_err
+        tarkista("main: kivijaon summa != 8 -> huomautus stderriin (kuten ennen)", "Huom: joukkueen 'keltainen' kivijako 2,2 on yhteensa 4 kivea" in ilm8, ilm8)
+        tavut_fi, tavut_en = pt.csv_tavuina(lt["tulokset"], fi=True), pt.csv_tavuina(lt["tulokset"], fi=False)
+        pt.kirjoita_csv(os.path.join(tmp, "verrokki_fi.csv"), lt["tulokset"], fi=True)
+        pt.kirjoita_csv(os.path.join(tmp, "verrokki_en.csv"), lt["tulokset"], fi=False)
+        with open(os.path.join(tmp, "verrokki_fi.csv"), "rb") as fh1, open(os.path.join(tmp, "verrokki_en.csv"), "rb") as fh2:
+            tarkista("csv_tavuina: tavu tavulta sama kuin kirjoita_csv-tiedosto (fi: UTF-8 BOM, ;, desimaalipilkku; muuten pilkkuerotin ja piste)", tavut_fi == fh1.read() and tavut_en == fh2.read() and tavut_fi.startswith(b"\xef\xbb\xbf") and not tavut_en.startswith(b"\xef\xbb\xbf"))
+        luettu = list(csv_mod.reader(io.StringIO(tavut_fi.decode("utf-8-sig")), delimiter=";"))
+        tarkista("csv_tavuina: ryhmarivi, sarakeotsikot ja 7 pelaajariviä; n-sarakkeet lopussa", len(luettu) == 9 and luettu[0][4] == "Mediaani" and luettu[0][10] == "n" and luettu[1][:4] == ["joukkue", "pelaaja", "kivet", "heittoja"] and luettu[2][10:13] == ["6", "6", "6"], str(luettu[:3]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
