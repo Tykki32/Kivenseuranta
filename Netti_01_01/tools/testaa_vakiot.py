@@ -1364,10 +1364,11 @@ def testaa_merkki():
     def bgr(h, s_, v):
         return tuple(int(c) for c in cv2.cvtColor(np.array([[[h, s_, v]]], np.uint8), cv2.COLOR_HSV2BGR)[0, 0])
 
-    def suorakulmio(kuva, X, Y, z, leveys_px, korkeus_px, vari, siirto_u=0.0):
+    def suorakulmio(kuva, X, Y, z, leveys_px, korkeus_px, vari, siirto_u=0.0, siirto_v=0.0):
         """Oikaistun kuvan suorakulmio maatason pisteen (X, Y, z) kohdalla (kuva on oikaistussa avaruudessa): leveys vaakasuunnassa (kentan suunta, jyrkasti lyhentynyt), korkeus pystysuunnassa."""
         u, v = (float(q[0]) for q in m.maa_oikaistuun([X], [Y], z))
         u += siirto_u
+        v += siirto_v
         cv2.rectangle(kuva, (int(round(u - leveys_px / 2)), int(round(v - korkeus_px / 2))), (int(round(u + leveys_px / 2)), int(round(v + korkeus_px / 2))), vari, -1)
 
     def tausta():
@@ -1418,6 +1419,35 @@ def testaa_merkki():
     suorakulmio(kuva, X0, Y0, 3.0, 26, 12, bgr(10, 130, 135))                                                   # varjossa oleva ruskea harjanpaa
     maali, ehd = etsi(kuva)
     tarkista("varjossa oleva, ruskeampi harjanpaa loytyy", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0)
+    # tumman keltainen harjanpaa (Saarelainen 128: sinapinkeltainen, H ~ 12-19, S ~ 118, V ~ 126): savy yli H_MAX:n, joten H 4-17 -maski leikkasi siita puolet pois
+    for h_, s_, v_ in ((17, 118, 126), (19, 125, 125), (22, 140, 130), (26, 150, 140), (30, 130, 120)):
+        kuva = tausta()
+        suorakulmio(kuva, X0, Y0, 3.0, 26, 12, bgr(h_, s_, v_))
+        maali, ehd = etsi(kuva)
+        tarkista(f"tumman keltainen harjanpaa (H {h_}, S {s_}, V {v_}) loytyy ja on harjanpaan kokoinen", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0 and 200.0 <= maali["ala_cm2"] <= 700.0,
+                 "ei maalia: " + str([(round(e["X"]), round(e["Y"]), round(e["ala_cm2"]), e["syy"]) for e in ehd]) if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f}) ala {maali['ala_cm2']:.0f}")
+    kuva = tausta()
+    suorakulmio(kuva, X0, Y0, 3.0, 13, 12, bgr(14, 150, 130), siirto_u=-6.5)                                    # harjanpaan sävy vaihtelee: toinen puoli H 14, toinen H 20 (yksi alue, ei kahta puolikasta)
+    suorakulmio(kuva, X0, Y0, 3.0, 13, 12, bgr(20, 130, 125), siirto_u=6.5)
+    maali, ehd = etsi(kuva)
+    tarkista("harjanpaa, jonka sävy ylittaa H_MAX:n vain toisessa paassa, on yksi alue (ala ~ koko harjanpaa)", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0 and maali["ala_cm2"] >= 200.0,
+             "ei maalia" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f}) ala {maali['ala_cm2']:.0f}")
+    kirkas = bgr(21, 150, 205)                                                                                  # kirkkaan keltainen kiven kahva (V ~ 200, H ~ 21): sama sävy kuin keltainen harjanpaa, mutta kirkkaampi kuin tumma keltainen
+    for nimi, osat in (("kiinni paassa", ((22, 10, 0.0, 0.0), (16, 34, 19.0, 0.0))), ("kyljessa", ((24, 10, 0.0, 0.0), (18, 40, 0.0, -24.0))), ("molemmissa paissa", ((24, 10, 0.0, 0.0), (14, 30, -19.0, 0.0), (14, 30, 19.0, 0.0)))):
+        kuva = tausta()
+        for lp, kp, du, dv in osat:
+            suorakulmio(kuva, X0, Y0, 3.0, lp, kp, oranssi if (lp, kp) in ((22, 10), (24, 10)) else kirkas, siirto_u=du, siirto_v=dv)
+        maali, ehd = etsi(kuva)
+        tarkista(f"harjanpaa + iso kirkkaan keltainen kahva {nimi}: kahva ei liity harjanpaahan (ilman V-rajaa alue olisi 1400-2100 cm2 ja maali katoaisi)", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0 and maali["ala_cm2"] <= 700.0,
+                 "ei maalia: " + str([(round(e["X"]), round(e["Y"]), round(e["ala_cm2"]), e["syy"]) for e in ehd]) if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f}) ala {maali['ala_cm2']:.0f}")
+    kuva = tausta()
+    suorakulmio(kuva, 20.0, 30.0, 12.0, 12, 26, bgr(21, 140, 130))                                              # tumma keltainen, pystysuuntainen (kahva varjossa): suunta hylkaa, vari ei saa tehda siita maalia
+    maali, ehd = etsi(kuva)
+    tarkista("tumman keltainen pystysuuntainen kahva ei ole maali", maali is None and any(e["syy"] == "suunta" for e in ehd), str([(round(e["X"]), round(e["Y"]), e["syy"]) for e in ehd]))
+    kuva = tausta()
+    suorakulmio(kuva, X0, Y0, 3.0, 26, 12, bgr(34, 150, 130))                                                   # yli H_TUMMA_MAX:n (keltavihrea): ei harjanpaa
+    maali, ehd = etsi(kuva)
+    tarkista("keltavihrea (H 34) ei ole harjanpaa", maali is None and not ehd)
     kuva = tausta()
     suorakulmio(kuva, 60.0, -30.0, 3.0, 22, 10, oranssi)                                                        # pesassa (pienempi) ja pesan takana lojuva harja (suurempi)
     suorakulmio(kuva, -40.0, -260.0, 3.0, 26, 12, oranssi)
