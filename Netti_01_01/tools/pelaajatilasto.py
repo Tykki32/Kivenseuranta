@@ -18,9 +18,12 @@ STD on otoskeskihajonta (n - 1, kuten Excelin STDEV.S; --std-populaatio: jakaja 
 arvosta ei saa hajontaa (tyhja). Tulos tulostetaan ja tallennetaan CSV:ksi (oletus <syote>_pelaajat.csv; --ei-tallenna: vain tuloste).
 
 Huom: kivinumero tulee seurannasta. Jos paassa on vahemman kuin joukkueen kivet (video alkoi tai loppui kesken paan, tai seuranta ohitti heiton), varoitus kertoo paan; --ohita-puutteelliset
-jattaa tallaiset paat pois. Jos analyysi aloitettiin kesken paan, ensimmaisen paan kivinumerot ovat aluksi vaarin (korjaa kivi_nro CSV:ssa tai ohita se)."""
+jattaa tallaiset paat pois. Jos analyysi aloitettiin kesken paan, ensimmaisen paan kivinumerot ovat aluksi vaarin (korjaa kivi_nro CSV:ssa tai ohita se).
+
+Funktiot laske_tiedosto() ja csv_tavuina() ovat myos palvelinversion selainnakyman (Netti_01_02, netti_web.py: nappi "Pelaajatilasto") kaytossa."""
 import argparse
 import csv
+import io
 import os
 import statistics
 import sys
@@ -48,13 +51,18 @@ def luku(s):
 
 
 def lue(polku):
-    """CSV-rivit (dict). Erotin (, tai ;) tunnistetaan otsikkorivista."""
-    with open(polku, newline="", encoding="utf-8-sig") as fh:
-        ensimmainen = fh.readline()
-        fh.seek(0)
-        erotin = ";" if ensimmainen.count(";") > ensimmainen.count(",") else ","
-        lukija = csv.DictReader(fh, delimiter=erotin)
-        return list(lukija), list(lukija.fieldnames or [])
+    """CSV-rivit (dict). Erotin (, tai ;) tunnistetaan otsikkorivista. ValueError (selkea viesti), jos tiedostoa ei voi lukea tekstina."""
+    try:
+        with open(polku, newline="", encoding="utf-8-sig") as fh:
+            ensimmainen = fh.readline()
+            fh.seek(0)
+            erotin = ";" if ensimmainen.count(";") > ensimmainen.count(",") else ","
+            lukija = csv.DictReader(fh, delimiter=erotin)
+            return list(lukija), list(lukija.fieldnames or [])
+    except UnicodeDecodeError:
+        raise ValueError("tiedostoa ei voi lukea: ei UTF-8-tekstia (tiedoston pitaa olla netti_live.py:n heitto-CSV)") from None
+    except (csv.Error, OSError) as e:
+        raise ValueError(f"tiedostoa ei voi lukea: {e}") from None
 
 
 def jako(maaare, kivia=KIVIA_PAASSA):
@@ -170,15 +178,56 @@ def taulukko(tulokset):
     return [ryhma.rstrip(), rivi(otsikot)] + [rivi(r) for r in rivit]
 
 
+def kirjoita_csv_virtaan(fh, tulokset, fi=False):
+    """Kirjoittaa taulukon tiedostomaiseen virtaan (newline=""): ensimmainen rivi ryhmat (Mediaani, STD), toinen sarakeotsikot, sitten pelaajat; viimeiset sarakkeet n_* kertovat, montako heittoa kunkin
+    luvun laskentaan kaytettiin. fi: erotin ; ja desimaalipilkku."""
+    w = csv.writer(fh, delimiter=";" if fi else ",")
+    w.writerow(["", "", "", "", "Mediaani", "", "", "STD", "", "", "n", "", ""])
+    w.writerow(["joukkue", "pelaaja", "kivet", "heittoja"] + list(MITAT) + list(MITAT) + ["liun_hidastuvuus_m_s2", "irroitus_delta_cm", "irroitus vauhti"])
+    for t in tulokset:
+        w.writerow([t["joukkue"], t["pelaaja"], t["kivet"], t["heittoja"]] + [_muoto(x, d, fi) for x, d in zip(t["mediaani"], DES_CSV)] +
+                   [_muoto(x, d, fi) for x, d in zip(t["std"], DES_CSV)] + list(t["n"]))
+
+
 def kirjoita_csv(polku, tulokset, fi=False):
-    """Tallentaa taulukon: ensimmainen rivi ryhmat (Mediaani, STD), toinen sarakeotsikot, sitten pelaajat; viimeiset sarakkeet n_* kertovat, montako heittoa kunkin luvun laskentaan kaytettiin."""
+    """Tallentaa taulukon tiedostoon (fi: UTF-8 BOM, jotta suomalainen Excel avaa sen oikein)."""
     with open(polku, "w", newline="", encoding="utf-8-sig" if fi else "utf-8") as fh:
-        w = csv.writer(fh, delimiter=";" if fi else ",")
-        w.writerow(["", "", "", "", "Mediaani", "", "", "STD", "", "", "n", "", ""])
-        w.writerow(["joukkue", "pelaaja", "kivet", "heittoja"] + list(MITAT) + list(MITAT) + ["liun_hidastuvuus_m_s2", "irroitus_delta_cm", "irroitus vauhti"])
-        for t in tulokset:
-            w.writerow([t["joukkue"], t["pelaaja"], t["kivet"], t["heittoja"]] + [_muoto(x, d, fi) for x, d in zip(t["mediaani"], DES_CSV)] +
-                       [_muoto(x, d, fi) for x, d in zip(t["std"], DES_CSV)] + list(t["n"]))
+        kirjoita_csv_virtaan(fh, tulokset, fi)
+
+
+def csv_tavuina(tulokset, fi=False):
+    """Taulukko CSV-tavuina (selaimen lataus); fi: UTF-8 BOM + erotin ; + desimaalipilkku."""
+    puskuri = io.StringIO(newline="")
+    kirjoita_csv_virtaan(puskuri, tulokset, fi)
+    return (("\ufeff" if fi else "") + puskuri.getvalue()).encode("utf-8")
+
+
+def jakohuomautukset(jaot):
+    """Huomautukset kivijaoista, joiden kivet eivat ole yhteensa KIVIA_PAASSA (esim. 2,2 tai 3,3,3): jako ei vastaa paata."""
+    return [f"joukkueen '{v}' kivijako {','.join(str(n) for n in lohkot)} on yhteensa {sum(lohkot)} kivea (paassa oletetaan {KIVIA_PAASSA})" for v, lohkot in jaot.items() if sum(lohkot) != KIVIA_PAASSA]
+
+
+def laske_tiedosto(polku, maaraykset=None, oletus=OLETUS_PELAAJIA, ohita_puutteelliset=False, populaatio=False):
+    """Koko tilasto tiedostosta (selainnakyma kayttaa tata; komentorivi tekee saman vaiheittain, koska se kysyy maarat): dict(tiedosto, heittoja, jaot, tulokset, varoitukset).
+    maaraykset: {vari: pelaajien maara tai kivijako}; puuttuvalle joukkueelle oletus. ValueError (selkea viesti), jos tiedosto tai maaraykset eivat kelpaa."""
+    rivit, kentat = lue(polku)
+    puuttuu = [k for k in PAKOLLISET if k not in kentat]
+    if puuttuu:
+        raise ValueError(f"CSV:sta puuttuvat sarakkeet: {', '.join(puuttuu)} (tiedoston pitaa olla netti_live.py:n heitto-CSV)")
+    rivit = [r for r in rivit if (r.get("vari") or "").strip()]
+    if not rivit:
+        raise ValueError("CSV:ssa ei ole heittoja")
+    jaot = {}
+    for v in jarjestys(rivit):
+        maaare = (maaraykset or {}).get(v)
+        if maaare is None or str(maaare).strip() == "":
+            maaare = oletus
+        try:
+            jaot[v] = jako(maaare)
+        except ValueError as e:
+            raise ValueError(f"joukkue '{v}': {e}") from None
+    tulokset, varoitukset = laske(rivit, kentat, jaot, ohita_puutteelliset, populaatio)
+    return dict(tiedosto=os.path.basename(polku), heittoja=len(rivit), jaot=jaot, tulokset=tulokset, varoitukset=jakohuomautukset(jaot) + varoitukset)
 
 
 def jarjestys(rivit):
@@ -216,7 +265,11 @@ def main(argv=None, syotto=input, interaktiivinen=None):
     if not os.path.isfile(a.csv):
         print(f"tiedostoa ei loydy: {a.csv}", file=sys.stderr)
         return 2
-    rivit, kentat = lue(a.csv)
+    try:
+        rivit, kentat = lue(a.csv)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
     puuttuu = [k for k in PAKOLLISET if k not in kentat]
     if puuttuu:
         print(f"CSV:sta puuttuvat sarakkeet: {', '.join(puuttuu)} (tiedoston pitaa olla netti_live.py:n heitto-CSV)", file=sys.stderr)
@@ -243,9 +296,8 @@ def main(argv=None, syotto=input, interaktiivinen=None):
             jaot[v] = jako(maaare)
         except ValueError as e:
             ap.error(f"joukkue '{v}': {e}")
-    for v, lohkot in jaot.items():
-        if sum(lohkot) != KIVIA_PAASSA:
-            print(f"Huom: joukkueen '{v}' kivijako {','.join(str(n) for n in lohkot)} on yhteensa {sum(lohkot)} kivea (paassa oletetaan {KIVIA_PAASSA})", file=sys.stderr)
+    for huomautus in jakohuomautukset(jaot):
+        print("Huom:", huomautus, file=sys.stderr)
     tulokset, varoitukset = laske(rivit, kentat, jaot, a.ohita_puutteelliset, a.std_populaatio)
     print(f"{os.path.basename(a.csv)}: {len(rivit)} heittoa; " + "; ".join(f"{v}: {len(l)} pelaajaa (kivet {', '.join(kivet_tekstina(sum(l[:i]) + 1, n) for i, n in enumerate(l))})" for v, l in jaot.items()))
     print("\n".join(taulukko(tulokset)))

@@ -472,9 +472,25 @@ def valmistele_kansiot(a):
     return True, ""
 
 
-def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
-    """Ajosilmukka. Palauttaa prosessin paluukoodin (0 = kaikki hyvin tai pysaytetty signaalilla; 2 = kansiot eivat kelpaa)."""
+def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time, joutilas=None):
+    """Ajosilmukka. Palauttaa prosessin paluukoodin (0 = kaikki hyvin tai pysaytetty signaalilla; 2 = kansiot eivat kelpaa).
+    joutilas (netti_web.JoutilasSivu tai None): selainnakyma ajojen valissa; avataan odotuksen ajaksi ja suljetaan ennen jokaista ajoa (analyysi avaa saman portin itse)."""
+    try:
+        return _palvele(a, pysaytys, ajuri, muisti_gt, kello, joutilas)
+    finally:
+        if joutilas is not None:
+            joutilas.pysayta()
+
+
+def _palvele(a, pysaytys, ajuri, muisti_gt, kello, joutilas):
     ajuri = ajuri or (lambda cmd, env=None, cwd=None: aja_lapsi(cmd, pysaytys, a.sulku_s, env, cwd))
+
+    def odota(sekuntia):
+        """Keskeytettava odotus (True, jos lopetusta pyydettiin); odotuksen ajan selain nayttaa ajojen valin sivun, josta tyokalut (pelaajatilasto) ovat kaytettavissa."""
+        if joutilas is not None:
+            joutilas.kaynnista()
+        return pysaytys.nuku(sekuntia)
+
     ok, syy = valmistele_kansiot(a)
     if not ok:
         print(f"[palvelin] virhe: {syy}", file=sys.stderr, flush=True)
@@ -495,7 +511,7 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
             if viim_tyhja_ilmoitus is None or nyt - viim_tyhja_ilmoitus > 1800:
                 loki(f"valvonta: ei uusia videoita, tarkistetaan {a.odotus_s:.0f} s valein" + (f" ({os.path.dirname(a.arvo['kuvio'])}" + (f", linkkilista {a.linkit_polku}" if a.linkit_polku and a.arvo["kokoelma"] else "") + ")" if a.laji == "tiedostot" else ""))
                 viim_tyhja_ilmoitus = nyt
-            if pysaytys.nuku(a.odotus_s):
+            if odota(a.odotus_s):
                 return 0
             continue
         viim_tyhja_ilmoitus = None
@@ -509,6 +525,8 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
                 pass
             cmd = rakenna_komento(a, laji, arvo, leima, tila_polku, muisti_gt)
             loki("kaynnistetaan: " + " ".join(shlex.quote(x) for x in cmd[1:]))
+            if joutilas is not None:
+                joutilas.pysayta()                                  # analyysi avaa selainportin itse
             t0 = time.monotonic()
             rc = ajuri(cmd, env=None, cwd=a.tyo_kansio)
             kesto = time.monotonic() - t0
@@ -546,11 +564,11 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
                     continue
                 odotus = min(a.odotus_s * 2 ** min(max(vikoja - 1, 0), 30), ODOTUS_MAX_S)         # eksponentin raja: muuten ~1000 perakkaisen epaonnistumisen (~11 vrk odotusta) jalkeen luku ylivuotaa ja palvelin kaatuu
                 loki(f"valvonta: uusi yritys {odotus:.0f} s kuluttua")
-                if pysaytys.nuku(odotus):
+                if odota(odotus):
                     return 0
         if not a.jatkuva:
             return paluu
-        if a.laji == "tiedostot" and pysaytys.nuku(a.odotus_s):         # YouTube / virta: odotus (ja sen pidentyminen) on jo tehty ylempana
+        if a.laji == "tiedostot" and odota(a.odotus_s):                 # YouTube / virta: odotus (ja sen pidentyminen) on jo tehty ylempana
             return 0
 
 
@@ -574,8 +592,12 @@ def main(argv=None):
     a.lisa = list(a.lisa) + list(lisa)
     pysaytys = Pysaytys()
     pysaytys.asenna()
+    joutilas = None
+    if a.web_portti:                                               # selainnakyma ajojen valissakin: tiedostolista ja tyokalut (pelaajatilasto); loki nayttaa taman palvelimen rivit
+        import netti_web as nw
+        joutilas = nw.JoutilasSivu(a.web_portti, a.ulos_kansio, loki_rivit=nw.asenna_lokipuskuri(), loki=loki)
     try:
-        return palvele(a, pysaytys, muisti_gt=muisti)
+        return palvele(a, pysaytys, muisti_gt=muisti, joutilas=joutilas)
     except Exception as e:                                         # silmukan virhe ei saa jattaa konttia hiljaa hengittamaan
         loki(f"virhe: {e!r}")
         raise

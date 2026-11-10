@@ -39,7 +39,8 @@ Nimet ovat vapaita; tässä oppaassa kaikki on nimetty `kivenseuranta`: jakokans
    syntyä. (Vaihtoehto: [`docker-compose.yml`](docker-compose.yml) Compose Managerilla tai `docker compose up -d`.)
 6. **Kokeile.** Ensimmäisen käynnistyksen jälkeen share-kansioon ilmestyvät kansiot `video`, `ulos` ja `kalibroinnit`. Kopioi videotiedosto kansioon `video`; analyysi alkaa noin 1–2 minuutin kuluttua, kun
    tiedosto on pysynyt muuttumattomana 30 s. **YouTube-linkit** kirjoitetaan tekstitiedostoon `youtube.txt` (jakokansion juuressa), yksi per rivi: kontin ei tarvitse käynnistyä uudelleen
-   ([Käyttö c](#3-käyttö-tavallisimmat-tilanteet)). Selainnäkymä (`http://PALVELIN:63884`; *Docker*-välilehden kontin kuvake → *WebUI*) on auki **vain ajon aikana**; tyhjän kansion odotuksen aikana portti ei vastaa.
+   ([Käyttö c](#3-käyttö-tavallisimmat-tilanteet)). Selainnäkymä (`http://PALVELIN:63884`; *Docker*-välilehden kontin kuvake → *WebUI*) on auki ajon aikana ja valvonnan odotuksen aikana (silloin sivu kertoo, ettei analyysia ole käynnissä, ja siitä pääsee
+   [pelaajatilastoon](#6-tulokset-ja-selainnäkymä)); portti on hetken kiinni jokaisen ajon alussa (YouTube-videolla kalibroinnin ajan).
    Portti on valittu harvinaiseksi, ettei se törmää tavallisiin palveluihin ([Asetukset](#2-asetukset-ympäristömuuttujat)). Lokin näet kontin kuvakkeesta (*Logs*); tulokset tulevat kansioon `ulos`.
 7. **Käynnistys koneen mukana:** *Docker*-välilehdellä kontin kohdalta *Autostart* päälle.
 
@@ -211,7 +212,18 @@ Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibroi
 | `heitot_<videon nimi>_<lähde>_<aika>_kivet.csv` | Kivikohtaiset vakiot (kitkataso A, kaarto kappa) |
 | `kasitellyt.json` | Valvonnan muisti (vain valvontatilassa): valmiit videot ja linkit, epäonnistuneiden yritykset |
 
-**Pelaajakohtainen tilasto.** `docker exec -it kivenseuranta python /app/tools/pelaajatilasto.py /data/ulos/heitot_<…>.csv --pelaajia 4` laskee heitto-CSV:stä pelaajakohtaisesti mediaanin ja STD:n (liun hidastuvuus, irroituksen delta, irroitusvauhti = nopeus irroituksen jälkeen miinus ennen) ja tallentaa taulukon samaan kansioon (`…_pelaajat.csv`; `--fi` = Excelille puolipiste ja desimaalipilkku). Pelaajamäärä joukkueittain: `--keltainen 4 --punainen 3` (ilman niitä ohjelma kysyy). Kuvaus: [`README_netti.md`](README_netti.md).
+**Pelaajakohtainen tilasto selaimessa.** Sivun oikeassa yläkulmassa on nappi **Pelaajatilasto**. Se avaa ikkunan, jossa
+1. **valitaan heitto-CSV** (lista näyttää kansion `ulos` heitto-CSV:t uusin ensin; `_kivet.csv`, `_pelaajat.csv` ja muut CSV:t jätetään pois). Jos haluat laskea muualta saadun CSV:n, kopioi se ensin kansioon `ulos`;
+2. kirjoitetaan **kummankin joukkueen pelaajamäärä** (`4`, `3`, `2` tai kivijako `2,3,3`; oletus 4; luvut muistetaan selaimessa) ja valitaan tarvittaessa **Ohita vajaat päät**;
+3. painetaan **Laske** (tai Enter kentässä): ikkunaan tulee taulukko pelaajaa kohti, kuten Excelissä: **Mediaani** ja **STD** sarakkeille `liun_hidastuvuus_m_s2`, `irroitus_delta_cm` ja `irroitus vauhti`
+   (= nopeus irroituksen jälkeen miinus ennen), sekä huomautukset päistä, joissa heittoja on vähemmän kuin joukkueen kiviä.
+
+**Kopioi Exceliin** kopioi taulukon leikepöydälle (liitä suoraan Exceliin; desimaalipilkku), **Lataa CSV (Excel)** lataa saman `…_pelaajat.csv`-tiedostona (puolipiste, desimaalipilkku, UTF-8 BOM; lopussa n-sarakkeet: monestako
+heitosta kukin luku laskettiin). Ikkunan sulkee **Sulje**, Esc tai napsautus ikkunan ulkopuolelle. Laskenta ei kirjoita mitään levylle, ja se lukee vain kansion `ulos` heitto-CSV:itä. Tilaston voi laskea myös kesken ajon
+(CSV päivittyy heiton valmistuttua; kesken oleva pää näkyy huomautuksena). Laskentasäännöt (joukkue = kiven väri, pelaaja = kivinumero, STD = otoskeskihajonta n − 1) ovat samat kuin komentorivityökalussa:
+`docker exec -it kivenseuranta python /app/tools/pelaajatilasto.py /data/ulos/heitot_<…>.csv --pelaajia 4` tulostaa taulukon ja tallentaa sen samaan kansioon (`…_pelaajat.csv`; `--fi` = Excelille puolipiste ja
+desimaalipilkku; joukkueittain `--keltainen 4 --punainen 3`, ilman niitä ohjelma kysyy). Kuvaus ja huomautukset: [`README_netti.md`](README_netti.md). Käyttöliittymä on kokeiltu Chromiumilla (vaalea ja tumma
+teema, puhelimen kokoinen näkymä, leikepöytä, tiedostonimet joissa on heittomerkki, lainausmerkki tai HTML-merkkejä), ja tulokset täsmäävät komentorivityökalun tuloksiin; ajoa Unraid-koneella ei ole kokeiltu.
 
 **Tiedostojen nimet.** YouTube-lähteellä (`youtube.txt`, `NETTI_LAHDE`) videon nimi lisätään tiedostojen nimiin, jotta oikean pelin löytää helposti: yt-dlp kertoo nimen samalla kutsulla kuin virran osoitteen (ei lisäkutsuja), ja nimi näkyy
 myös selainnäkymässä (sivun tilarivi ja välilehden otsikko) sekä lokissa (`Video: …`, `ajo paattyi (…)`). Esimerkki: `kivenseuranta_Matarmaa SM-finaali 2026_yt_hnTTLqHr5x8_20261104_163130.mp4`. `<lähde>` on `yt_<tunnus>` (YouTube),
@@ -220,12 +232,16 @@ tiedoston nimi (videotiedosto; sen nimi on jo mukana) tai `virta` (`--url`). Nim
 
 CSV päivittyy ajon aikana heiton valmistuttua. Ajon päätyttyä tai pysäytyksen (`docker stop`, Unraidin Stop) yhteydessä tallenne suljetaan ja CSV kirjoitetaan valmiiksi.
 
-**Selainnäkymä** (`http://PALVELIN:63884`): kuva (MJPEG; toimii kaikissa selaimissa ja puhelimessa), viimeiset lokirivit, ajon tila ja lista tulostiedostoista. Mp4 toistuu selaimessa ja CSV latautuu. Näkymä
-kuuluu ajoon: **kun yksikään ajo ei ole käynnissä** (valvonnassa odotusaikana tai ajon päätyttyä) portti ei vastaa. Kuva pakataan vain, kun joku katsoo, joten näkymä ei kuormita ajoa, kun kukaan ei seuraa.
+**Selainnäkymä** (`http://PALVELIN:63884`): kuva (MJPEG; toimii kaikissa selaimissa ja puhelimessa), viimeiset lokirivit, ajon tila ja lista tulostiedostoista. Mp4 toistuu selaimessa ja CSV latautuu. Kuva pakataan vain, kun joku katsoo, joten näkymä ei kuormita ajoa, kun kukaan ei seuraa.
+
+**Selainnäkymä ajojen välissä.** Valvonnan odotuksen aikana (ei uusia videoita, tai ajon päätyttyä ennen seuraavaa) sama sivu on silti auki: kuvaa ei ole, tilarivillä lukee *Ei analyysia käynnissä · valvonta odottaa uusia
+videoita*, ja loki, tiedostolista ja Pelaajatilasto toimivat. Kun uusi ajo alkaa, valvoja sulkee tämän sivun ja analyysi avaa saman portin itse; selain ottaa yhteyden uudelleen ilman päivitystä, ja kuva alkaa näkyä, kun
+analyysi on käynnistynyt (YouTube-videolla kalibroinnin jälkeen, 0,5–2 min; tänä aikana portti on kiinni). Kertaajossa (`NETTI_JATKUVA=0`) kontti sammuu ajon jälkeen, eikä sivua ole. Jos portti on valvojan
+käynnistyessä jo varattu, loki kertoo asiasta (`selainnakyma ajojen valissa ei kaynnistynyt`), mutta ajo ei kaadu.
 
 **Turvallisuus:** selainnäkymässä ei ole oletuksena kirjautumista, ja se näyttää tulostiedostot. Käytä sitä kotiverkossa äläkä avaa porttia internetiin. `NETTI_WEB_KAYTTAJA` ja `NETTI_WEB_SALASANA`
 lisäävät HTTP Basic -tunnistuksen (salasana kulkee salaamatta; internetiin vain TLS-päätteisen käänteisen välityspalvelimen takaa). Näkymä antaa vain
-lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suoraan kansiossa `ulos`). Lisää: [Tietoturva ja verkkoyhteydet](#11-tietoturva-ja-verkkoyhteydet).
+lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suoraan kansiossa `ulos`); pelaajatilasto lukee vain näistä heitto-CSV:t eikä kirjoita mitään. Lisää: [Tietoturva ja verkkoyhteydet](#11-tietoturva-ja-verkkoyhteydet).
 
 ---
 
@@ -266,7 +282,10 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 | Linkkilistan rivi ei käynnisty | (1) Tiedoston nimen on oltava täsmälleen `youtube.txt` jakokansion juuressa; Windows voi piilottaa päätteen ja tallentaa nimellä `youtube.txt.txt`. (2) Kontin lähde-asetus (`NETTI_LAHDE`) on oltava tyhjä (tai kansio). (3) Rivi on osoite tai yksin rivillä oleva 11 merkin tunnus; muut rivit mainitaan lokissa. (4) Edellinen ajo on kesken: uusi rivi huomataan sen jälkeen. (5) Rivi on jo ajettu (`kasitellyt.json`) tai odottaa uutta yritystä (loki kertoo ajan) |
 | `Permission denied` / tiedostot root-omisteisia | `PUID`/`PGID` eivät vastaa jakokansion omistajaa; Unraid: 99/100. Kontti vaihtaa vain kansioiden `ulos`, `video`, `kalibroinnit` omistajan, ei tiedostoja |
 | Kontti ei käynnisty, Docker kertoo `port is already allocated` | Palvelimen portti on jo toisella kontilla tai palvelulla: vaihda portin yhdistyksessä palvelimen puoli (Unraid: *Host Port*) |
-| Selainnäkymä ei aukea | Ajoa ei ole käynnissä (valvonnan odotus; näkymä on vain ajon aikana), väärä portti osoitteessa, tai `host`-verkossa portti on varattu (loki: `Web-porttia … ei voitu avata`) |
+| Selainnäkymä ei aukea | Ajo on juuri alkamassa (portti on kiinni, kunnes analyysi on käynnistynyt; YouTube-videolla kalibroinnin ajan 0,5–2 min), väärä portti osoitteessa, tai `host`-verkossa portti on varattu (loki: `Web-porttia … ei voitu avata` tai `selainnakyma ajojen valissa ei kaynnistynyt`) |
+| Pelaajatilaston valitsimessa lukee `Ei heitto-CSV-tiedostoja` | Kansiossa `ulos` ei ole vielä heitto-CSV:tä (se syntyy ajon alussa ja täydentyy heitoittain), tai tiedosto ei ole `netti_live.py`:n heitto-CSV (otsikkorivillä on oltava mm. `vari`, `kivi_nro`, `liun_hidastuvuus_m_s2`, `irroitus_delta_cm`, `nopeus_ennen_m_s`, `nopeus_jalkeen_m_s`) |
+| Pelaajatilasto: `tools/pelaajatilasto.py puuttuu` | Ohjelmakansio on päivitetty vain osittain (alikansio `tools/` jäi kopioimatta): kopioi koko `Netti_01_02` ja rakenna kuva uudelleen. Muu sivu toimii |
+| Pelaajatilaston huomautus `paa N: heittoja punainen 7 / 8` | Päässä N on vähemmän heittoja kuin joukkueen kivet (video alkoi tai loppui kesken päätä tai seuranta ohitti heiton): kivinumerot ja pelaajajako voivat olla siinä päässä väärin; **Ohita vajaat päät** jättää tällaiset päät pois |
 | `YouTube-virran haku epäonnistui` | [YouTube](#5-youtube): päivitä yt-dlp, tarkista verkko; live-lähetys ei ehkä ole alkanut (valvonnassa kontti yrittää uudelleen) |
 | Kuvan viive kasvaa / `Huom: piirto / ikkuna on N s jäljessä` | Kone ei jaksa reaaliaikaa: lisää ytimiä, `NETTI_X264_PRESET=ultrafast`, pienempi `NETTI_WEB_LEVEYS`, tiedostolle `NETTI_NOPEA=1` |
 | Selainnäkymä sanoo `Ajo käynnissä`, mutta kuva ei etene (`viimeisin kuva N s sitten` kasvaa, sivulla `kuva ei etene`) | **Jumivahti** kirjoittaa lokiin 60 s kuluttua raportin `Jumivahti: ajo ei ole edennyt …` (ajon tila ja kaikkien säikeiden pinot): lähetä se, niin syy selviää. Raja: `NETTI_LISAVALITSIMET=--jumivahti 30` (`0` = pois). Aiemmin tämän aiheutti pitkä jono kopioruutuja (hiljainen tauko videolla: kuva ja analyysi odottivat toisiaan, korjattu), ja virran yhteyden katko näkyy raportissa kohdassa `lähteestä luettu viimeksi N s sitten` |
@@ -286,7 +305,7 @@ Lokit: Unraidin Docker-välilehti → kontin *Logs*, tai `docker logs -f kivense
 ## 10. Mitä eroaa `Netti_01_01`:stä
 
 * **Uudet tiedostot:** `Dockerfile`, `entrypoint.sh`, `docker-compose.yml`, `unraid/kivenseuranta.xml`, `requirements.txt`, `.dockerignore`, `.gitattributes`, `netti_palvelin.py` (käynnistäjä,
-  asetukset, valvonta), `netti_web.py` (selainnäkymä), `netti_ymparisto.py` (kontin ydin- ja muistirajat), `tools/testaa_palvelin.py`.
+  asetukset, valvonta), `netti_web.py` (selainnäkymä, pelaajatilasto ja ajojen välinen sivu; käyttää `tools/pelaajatilasto.py`:tä), `netti_ymparisto.py` (kontin ydin- ja muistirajat), `tools/testaa_palvelin.py`.
 * **Muutetut tiedostot (vain palvelinominaisuudet):** `netti_live.py` (valitsimet `--web`, `--web-leveys`, `--web-fps`, `--web-laatu`, `--tila-tiedosto`; SIGTERM käsitellään kuten Ctrl-C; simulaation
   keskeytys viimeistelee kirjauksen; työprosessien oletusmäärä ja muistin tunnistus kontin rajoilla; oma kalibrointikansio `NETTI_KALIBROINNIT`; YouTube-evästeet), `kalibrointi_valinta.py` (oma
   kalibrointikansio), `netti_aani.py` (evästeet), `cpp/netti_fit.cpp` (vain `#include`-rivit: tarvitaan vain OpenCV:n `core` ja `imgproc`). Algoritmit, parametrit ja tulokset ovat ennallaan.
@@ -317,7 +336,8 @@ Ohjelmassa ei ole telemetriaa, eikä se lähetä tuloksia minnekään. Omassa ko
 ja valinnaisesti pip. Kontin ulosmenevää liikennettä ei ole rajoitettu: se voi ottaa yhteyden mihin tahansa osoitteeseen, joka kirjoitetaan linkkilistaan tai asetukseen `NETTI_LAHDE`.
 
 **Selainnäkymä.** Se kuuntelee kaikkia verkkorajapintoja (portti 63884), oletuksena ilman salasanaa ja ilman salausta (HTTP). Se näyttää kuvan, lokin (polut ja osoitteet), ajon tilan ja kansion `ulos`
-tulostiedostot (`mp4`, `csv`, `json`, `txt`, `log`; vain luku). Se ei anna pääsyä muuhun jakokansioon, ei voi ajaa komentoja eikä ota vastaan tiedostoja; polkuhyökkäysten esto on testattu.
+tulostiedostot (`mp4`, `csv`, `json`, `txt`, `log`; vain luku). Se ei anna pääsyä muuhun jakokansioon, ei voi ajaa komentoja eikä ota vastaan tiedostoja; polkuhyökkäysten esto on testattu. Pelaajatilasto (`/tilasto`) hyväksyy vain kansion `ulos` suoraan alla olevan heitto-CSV:n nimen
+(ei polkuja, piilotiedostoja eikä linkkejä), laskee tuloksen muistissa eikä kirjoita mitään levylle.
 Älä silti avaa porttia internetiin.
 
 **Suositukset (tärkeimmästä alkaen)**
@@ -351,8 +371,8 @@ docker run --rm kivenseuranta:latest python /app/tools/testaa_palvelin.py   # pa
 ```
 
 Palvelinversion testit kattavat: asetusten luku ja virheilmoitukset, lähteen tunnistus, komentorivin rakennus, kansion valvonta ja muisti, ajosilmukka (kertaajo, valvonta, uudelleenyritykset,
-odotuksen pidentyminen, pysäytys), signaalit (lapsiprosessin viimeistely ja tappaminen), selainnäkymä (sivu, kuva, MJPEG, tila, loki, tiedostot, Range, polkuhyökkäysten esto, salasana, varattu portti),
-kontin ydin- ja muistirajat sekä kalibrointikansioiden haku.
+odotuksen pidentyminen, pysäytys), signaalit (lapsiprosessin viimeistely ja tappaminen), selainnäkymä (sivu, kuva, MJPEG, tila, loki, tiedostot, Range, polkuhyökkäysten esto, salasana, varattu portti), pelaajatilasto selaimessa (tiedostolista, laskenta, CSV-lataus,
+virheelliset syötteet ja polkuhyökkäykset, aakkos- ja heittomerkkinimet, salasana) sekä ajojen välinen sivu (avaus ja sulku, saman portin luovutus analyysille myös pysyvien selainyhteyksien kanssa, ajosilmukan järjestys), kontin ydin- ja muistirajat sekä kalibrointikansioiden haku.
 
 Rakennuksen ja ajon varmistus tässä kansiossa (Docker 29, Ubuntu 24.04): 130 s:n videoleike (kaksi kokonaista heittoa) analysoitiin kontissa; tuloksena syntynyt CSV on **tavu tavulta sama** kuin
 saman leikkeen natiivi ajo C++-sovittimella (Python 3.13), mp4 on ehjä (3 901 ruutua, 130,03 s) ja `docker stop` kesken ajon sulki tallenteen ja CSV:n (paluukoodi 0, ~1 s).
