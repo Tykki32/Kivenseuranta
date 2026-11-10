@@ -121,10 +121,17 @@ def testaa_asetukset():
             except np_.AsetusVirhe as e:
                 tarkista(f"{nimi}={arvo!r} -> AsetusVirhe", nimi in str(e), str(e)[:70])
         tyhjat = {n: "" for n in ("NETTI_LAHDE", "NETTI_KANSIO", "NETTI_VIDEO", "NETTI_CSV", "NETTI_JATKUVA", "NETTI_NOPEA", "NETTI_VIIVE", "NETTI_SAIKEET", "NETTI_ALKU", "NETTI_LATAUS", "NETTI_WEB_PORTTI",
-                                  "NETTI_LISAVALITSIMET", "NETTI_AANI", "NETTI_KOODEKKI", "NETTI_EI_KIERRETTA", "NETTI_HILJAA", "NETTI_ODOTUS_S")}
+                                  "NETTI_LISAVALITSIMET", "NETTI_AANI", "NETTI_KOODEKKI", "NETTI_EI_KIERRETTA", "NETTI_HILJAA", "NETTI_ODOTUS_S", "NETTI_KALIBROINTI")}
         a = np_.Asetukset(dict(env, **tyhjat))
         tarkista("tyhjat muuttujat (Unraid valittaa ne) = ei asetettu: oletukset", a.laji == "tiedostot" and a.jatkuva and a.tallenna_video and a.csv and a.nopea and a.viive == 10.0 and a.saikeet is None
-                 and a.web_portti == 63884 and a.lisa == [] and a.aani == "auto" and a.koodekki == "cpu" and not a.ei_kierretta and a.odotus_s == 60.0)
+                 and a.web_portti == 63884 and a.lisa == [] and a.aani == "auto" and a.koodekki == "cpu" and not a.ei_kierretta and a.odotus_s == 60.0 and a.kalibrointi is None)
+        tarkista("NETTI_KALIBROINTI: oletus ei asetettu (netti_live:n oletus uusi), uusi / valitse (kirjainkoolla ei valia)", np_.Asetukset(env).kalibrointi is None and np_.Asetukset(dict(env, NETTI_KALIBROINTI="uusi")).kalibrointi == "uusi"
+                 and np_.Asetukset(dict(env, NETTI_KALIBROINTI=" Valitse ")).kalibrointi == "valitse")
+        try:
+            np_.Asetukset(dict(env, NETTI_KALIBROINTI="aina"))
+            tarkista("NETTI_KALIBROINTI='aina' -> AsetusVirhe", False)
+        except np_.AsetusVirhe as e:
+            tarkista("NETTI_KALIBROINTI='aina' -> AsetusVirhe", "NETTI_KALIBROINTI" in str(e) and "uusi" in str(e) and "valitse" in str(e), str(e)[:90])
         a = np_.Asetukset(dict(env, NETTI_LISAVALITSIMET="--kiri 0 --yt-formaatti 'best[height<=1080]'"))
         tarkista("NETTI_LISAVALITSIMET jaetaan kuten kuori", a.lisa == ["--kiri", "0", "--yt-formaatti", "best[height<=1080]"], str(a.lisa))
 
@@ -142,6 +149,11 @@ def testaa_komento():
         tarkista("tulostiedostojen nimet: tunniste + aikaleima", os.path.join(t, "ulos", "kivenseuranta_Matarmaa_osa_1_2_20260101_120000.mp4") in c and os.path.join(t, "ulos", "heitot_Matarmaa_osa_1_2_20260101_120000.csv") in c)
         tarkista("web-valitsimet ja tilatiedosto", "--web 63884" in j and "--web-leveys 1280" in j and "--tila-tiedosto /tmp/tila.json" in j)
         tarkista("tiedostolle ei --lataus eika --kiri", "--lataus" not in c and "--kiri" not in c)
+        tarkista("kalibrointi: oletuksena ei --kalibrointi eika --kansio (netti_live kalibroi videon aina uudelleen)", "--kalibrointi" not in c and "--kansio" not in c)
+        c = np_.rakenna_komento(np_.Asetukset(dict(env, NETTI_LAHDE="Matarmaa osa 1 (2).mp4", NETTI_KALIBROINTI="valitse")), "tiedostot", a.arvo["kuvio"], "x")
+        tarkista("NETTI_KALIBROINTI=valitse: --kalibrointi valitse", c[c.index("--kalibrointi") + 1] == "valitse" and "--kansio" not in c)
+        c = np_.rakenna_komento(np_.Asetukset(dict(env, NETTI_LAHDE="Matarmaa osa 1 (2).mp4", NETTI_KALIBROINTI="valitse", NETTI_KANSIO="tulokset_nettivideo3")), "tiedostot", a.arvo["kuvio"], "x")
+        tarkista("NETTI_KANSIO ohittaa kalibroinnin: vain --kansio", c[c.index("--kansio") + 1] == "tulokset_nettivideo3" and "--kalibrointi" not in c)
         a = np_.Asetukset(dict(env, NETTI_LAHDE="Matarmaa osa 1 (2).mp4", NETTI_NOPEA="0", NETTI_ALKU="30", NETTI_LOPPU="90", NETTI_VIDEO="0", NETTI_CSV="0", NETTI_WEB_PORTTI="0"))
         c = np_.rakenna_komento(a, a.laji, a.arvo["kuvio"], "x")
         tarkista("NETTI_NOPEA=0: ei --nopea; --alku / --loppu", "--nopea" not in c and c[c.index("--alku") + 1] == "30" and c[c.index("--loppu") + 1] == "90")
@@ -489,6 +501,28 @@ def testaa_linkkilista():
         tarkista("pysaytys kesken linkin ajon: paluukoodi 0, linkkia ei kirjata valmiiksi (ajetaan uudestaan kaynnistyksen jalkeen)", rc == 0 and not k.valmis("youtube_lista", "hnTTLqHr5x8") and not k.data)
 
 
+def testaa_odotuksen_ylivuoto():
+    print("valvonta: odotuksen kasvu ei ylivuoda (pitka jakso nopeita epaonnistumisia)")
+    import contextlib
+    with tempfile.TemporaryDirectory() as t:
+        ek = EsiKello()
+        a = np_.Asetukset(dict(NETTI_DATA=t, NETTI_LAHDE="hnTTLqHr5x8", NETTI_JATKUVA="1", NETTI_ODOTUS_S="60"))
+        ajot = []
+
+        def ajuri_ei_lahetysta(cmd, env=None, cwd=None):
+            ajot.append(lahde_komennosta(cmd))
+            return 1                                                              # nopea epaonnistuminen: lahetys ei ole alkanut
+
+        ps = EsiPysaytys(pysayta_nukkumisella=1300, kello=ek)                     # 1300 perakkaista nopeaa epaonnistumista (~15 vrk): ennen korjausta OverflowError kohdassa ~1025
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = np_.palvele(a, ps, ajuri_ei_lahetysta, 32.0, ek)
+            tarkista("odotus pysyy rajoissa 1300 perakkaisen nopean epaonnistumisen jalkeen: ei ylivuotoa, odotus enintaan 15 min", rc == 0 and len(ps.nukkumiset) == 1300 and max(ps.nukkumiset) == np_.ODOTUS_MAX_S,
+                     f"{rc} {len(ps.nukkumiset)} {max(ps.nukkumiset)}")
+        except OverflowError as e:
+            tarkista("odotus pysyy rajoissa 1300 perakkaisen nopean epaonnistumisen jalkeen: ei ylivuotoa", False, str(e))
+
+
 def testaa_lapsiprosessi():
     print("lapsiprosessi ja signaalit (netti_palvelin.aja_lapsi)")
     with tempfile.TemporaryDirectory() as t:
@@ -829,7 +863,7 @@ def testaa_web_videon_nimi():
 
 
 def main():
-    for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
+    for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_odotuksen_ylivuoto, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
               testaa_videon_nimi_palvelin, testaa_web_videon_nimi):
         t()
     print()

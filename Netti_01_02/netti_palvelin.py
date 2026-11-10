@@ -99,7 +99,11 @@ class Asetukset:
         self.video_kansio = _teksti(env, "NETTI_VIDEO_KANSIO", os.path.join(self.data, "video"))
         self.ulos_kansio = _teksti(env, "NETTI_ULOS_KANSIO", os.path.join(self.data, "ulos"))
         self.tyo_kansio = _teksti(env, "NETTI_TYOKANSIO", os.path.join(os.environ.get("TMPDIR", "/tmp"), "netti_tyo"))
-        self.kansio = _teksti(env, "NETTI_KANSIO")                 # kalibrointikansio (nimi tai polku); tyhja = automaattinen valinta
+        self.kansio = _teksti(env, "NETTI_KANSIO")                 # kalibrointikansio (nimi tai polku); tyhja = automaattinen (ks. kalibrointi)
+        self.kalibrointi = _teksti(env, "NETTI_KALIBROINTI")       # ilman NETTI_KANSIO:ta: uusi (netti_live:n oletus) = video kalibroidaan aina uudelleen | valitse = ensimmainen sopiva vanha kalibrointi
+        if self.kalibrointi is not None and self.kalibrointi.lower() not in ("uusi", "valitse"):
+            raise AsetusVirhe(f"NETTI_KALIBROINTI={self.kalibrointi!r}: odotettiin uusi (kalibroidaan aina uudelleen) tai valitse (kaytetaan sopivaa vanhaa kalibrointia)")
+        self.kalibrointi = self.kalibrointi.lower() if self.kalibrointi else None
         self.tallenna_video = _totuus(env, "NETTI_VIDEO", True)
         self.csv = _totuus(env, "NETTI_CSV", True)
         self.aani = _teksti(env, "NETTI_AANI", "auto")
@@ -270,6 +274,8 @@ def rakenna_komento(a, laji, arvo, leima, tila_polku=None, muisti_gt=None, lisa=
         cmd += ["--ei-csv"]
     if a.kansio:
         cmd += ["--kansio", a.kansio]
+    elif a.kalibrointi:
+        cmd += ["--kalibrointi", a.kalibrointi]
     cmd += ["--viive", f"{a.viive:g}"]
     if a.saikeet is not None:
         cmd += ["--saikeet", str(a.saikeet)]
@@ -538,7 +544,7 @@ def palvele(a, pysaytys, ajuri=None, muisti_gt=None, kello=time.time):
                 if rc == 0 and kasitellyt.valmis(laji, arvo):
                     loki("lahde analysoitu kokonaan (ei live-lahetys): sita ei ajeta uudelleen")
                     continue
-                odotus = min(a.odotus_s * 2 ** max(vikoja - 1, 0), ODOTUS_MAX_S)
+                odotus = min(a.odotus_s * 2 ** min(max(vikoja - 1, 0), 30), ODOTUS_MAX_S)         # eksponentin raja: muuten ~1000 perakkaisen epaonnistumisen (~11 vrk odotusta) jalkeen luku ylivuotaa ja palvelin kaatuu
                 loki(f"valvonta: uusi yritys {odotus:.0f} s kuluttua")
                 if pysaytys.nuku(odotus):
                     return 0

@@ -55,6 +55,7 @@ YT_FORMAATTI = "bestvideo[protocol=https][vcodec^=avc1]/bestvideo[protocol=https
 
 
 YT_VALINTA_RUUTUJA = 12       # kalibrointikansion automaattinen valinta virrasta: mediaanikuva tasmalleen taman monesta ruudusta (haku virrassa on hidas)
+YT_KALIBROINTI_AIKARAJA_S = 900   # YouTube-videon uusi kalibrointi virrasta: kunkin vaiheen enimmaisaika (s); jumiin jaanyt verkko ei saa pysayttaa ajoa ikuisesti
 
 OTSIKKO_PAIKKA = "{otsikko}"  # tulostiedoston polussa (--ulos, --csv): korvataan videon nimella (YouTube); ilman nimea paikka poistuu yhdessa perassa olevan _-merkin kanssa (otsikko_polkuun)
 OTSIKKO_MAX_MERKKEJA = 80     # videon nimi tiedostonimessa: enintaan nain monta merkkia ...
@@ -2101,14 +2102,24 @@ def kalibrointikansio_lisa():
     return k if k else None
 
 
+def kalibrointivaroitus(selitys, virta=False):
+    """VAROITUS-rivi, kun kalibrointi ei sovi videoon tai automaattinen kalibrointi epaonnistui eika sopivaa vanhaa kansiota loytynyt (kalibrointi_valinta.valitse:n selitys); muuten None."""
+    if not ("ei sovi" in selitys or ("epaonnistui" in selitys and "sopii videoon" not in selitys)):
+        return None
+    return ("  VAROITUS: kalibrointi ei sovi tahan videoon, joten heittoja ei todennakoisesti tunnisteta. Anna oikea kansio: --kansio tulokset_nettivideo3 (jne.)"
+            + (" tai lataa video ja aja --lahde (silloin video kalibroidaan tarvittaessa)" if virta else " tai kalibroi kasin: python tools/uusi_kalibrointi.py VIDEO --ulos <uusi kansio>"))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--youtube", nargs="?", const=YOUTUBE_OLETUS, help=f"YouTube-tunnus tai -osoite (oletus {YOUTUBE_OLETUS})")
     ap.add_argument("--yt-formaatti", default=YT_FORMAATTI, help="yt_dlp-formaattivalitsin (oletus: oma testikoodi)")
     ap.add_argument("--lahde", help="videotiedosto")
     ap.add_argument("--url", help="suora virran osoite (http / https / rtsp / m3u8), luetaan kuten YouTube-virta")
-    ap.add_argument("--kansio", default=None, help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json). Oletus: tiedostolahteelle (ja YouTube / --url -virralle, ei live) sopiva kansio valitaan automaattisesti "
-                    "(tulokset, tulokset_nettivideo2, ...) tai video kalibroidaan kansioon tulokset_auto_<nimi> (kalibrointi_valinta.py); muulle lahteelle tulokset")
+    ap.add_argument("--kansio", default=None, help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json). Oletus: tiedostolahde ja YouTube-video (ei live) kalibroidaan aina uudelleen kansioon tulokset_auto_<nimi> (--kalibrointi uusi; "
+                    "kalibrointi_valinta.py), tai --kalibrointi valitse: sopiva vanha kansio valitaan automaattisesti (tulokset, tulokset_nettivideo2, ...); muulle lahteelle tulokset")
+    ap.add_argument("--kalibrointi", choices=("uusi", "valitse"), default="uusi", help="ilman --kansio:ta: uusi (oletus) = video kalibroidaan aina uudelleen omista ruuduistaan (tiedosto noin 1 min, YouTube-video 1-5 min; vanhoja "
+                    "kalibrointeja ei kayteta, koska kamera voi olla siirtynyt viikkojen valilla); valitse = kaytetaan ensimmaista videoon sopivaa vanhaa kalibrointia ja uusi tehdaan vain, jos mikaan ei sovi (nopeampi)")
     ap.add_argument("--viive", type=float, default=10.0, help="tulosteen viive analyysiin nahden (s); oletus 10: 97 %%:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm) kun viiva ilmestyy (5 s: 12 %%)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")
     ap.add_argument("--viivat", type=float, default=60.0, help="linjat nakyvissa taman ajan heiton alusta, tai seuraavaan heittoon (s)")
@@ -2178,23 +2189,28 @@ def main():
         a.kansio = "tulokset"
         if a.lahde and not a.ei_kalibrointitarkistusta:
             import kalibrointi_valinta as kval
-            a.kansio, selitys = kval.valitse(a.lahde)
+            a.kansio, selitys = kval.valitse(a.lahde, uusi=a.kalibrointi == "uusi")
             if not a.hiljaa:
                 print(f"Kalibrointi: {selitys}", flush=True)
+                if kalibrointivaroitus(selitys):
+                    print(kalibrointivaroitus(selitys), flush=True)
             a.ei_kalibrointitarkistusta = True         # valinta on jo tarkistus
         elif (a.youtube or a.url) and not a.ei_kalibrointitarkistusta:
-            # virta (ei live): mediaanikuva haetaan virrasta hakemalla ruutuja videon yli (YT_VALINTA_RUUTUJA kpl), ja sopiva kansio valitaan kuten tiedostolle (ei kalibroida virtaa)
+            # virta (ei live): mediaanikuva haetaan virrasta hakemalla ruutuja videon yli (YT_VALINTA_RUUTUJA kpl), ja sopiva kansio valitaan kuten tiedostolle. YouTube-videolle, jolle mikaan kansio ei sovi
+            # (toinen kamera-asento tai kentta), tehdaan uusi kalibrointi suoraan virrasta kuten tiedostolle (kansio tulokset_auto_yt_<tunnus>); muu virta (--url): vain valinta
             import kalibrointi_valinta as kval
             try:
                 osoite, live = youtube_virta(a.youtube, a.yt_formaatti) if a.youtube else (a.url, False)
                 if live:
                     print("Huom: live-virralle kalibrointikansiota ei voi valita automaattisesti: kaytetaan kansiota tulokset (anna --kansio)", flush=True)
                 else:
-                    print(f"Valitaan kalibrointikansio virrasta ({YT_VALINTA_RUUTUJA} ruutua, voi kestaa minuutin) ...", flush=True)
-                    a.kansio, selitys = kval.valitse(osoite, luo=False, n=YT_VALINTA_RUUTUJA)
+                    uusi = a.kalibrointi == "uusi" and bool(a.youtube)
+                    if not uusi:
+                        print(f"Valitaan kalibrointikansio virrasta ({YT_VALINTA_RUUTUJA} ruutua, voi kestaa minuutin) ...", flush=True)
+                    a.kansio, selitys = kval.valitse(osoite, luo=bool(a.youtube), n=YT_VALINTA_RUUTUJA, nimi=kval.virran_nimi(a.youtube or a.url), aikaraja_s=YT_KALIBROINTI_AIKARAJA_S, uusi=uusi)
                     print(f"Kalibrointi: {selitys}", flush=True)
-                    if "ei sovi" in selitys:
-                        print("  Anna oikea kansio: --kansio tulokset_nettivideo3 (jne.) tai lataa video ja aja --lahde (silloin video kalibroidaan tarvittaessa)", flush=True)
+                    if kalibrointivaroitus(selitys, virta=True):
+                        print(kalibrointivaroitus(selitys, virta=True), flush=True)
             except SystemExit:
                 raise
             except Exception as e:                      # noqa: BLE001

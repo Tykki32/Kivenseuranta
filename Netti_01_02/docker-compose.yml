@@ -32,7 +32,8 @@ services:
       # --- yleisimmat asetukset ---
       NETTI_VIDEO: "1"                 # tallenna kuvallinen video (mp4); 0 = vain CSV (saastaa levytilaa)
       NETTI_VIIVE: "10"                # kuvan viive analyysiin nahden (s)
-      # NETTI_KANSIO: ""               # kalibrointikansio (nimi tai polku); tyhja = valitaan videon mukaan automaattisesti
+      # NETTI_KANSIO: ""               # kalibrointikansio (nimi tai polku); tyhja = jokainen video kalibroidaan uudelleen (NETTI_KALIBROINTI)
+      # NETTI_KALIBROINTI: "uusi"      # uusi (oletus) = aina uusi kalibrointi omista ruuduista; valitse = ensimmainen sopiva vanha kalibrointi, uusi vain jos mikaan ei sovi
       # NETTI_WEB_PORTTI: "63884"      # kontin portti (muuta vain host-verkossa); 0 = ei selainnakymaa
       # NETTI_WEB_KAYTTAJA: "kayttaja" # salasana selainnakymaan (kumpikin pakollinen)
       # NETTI_WEB_SALASANA: "salasana"

@@ -563,6 +563,7 @@ def testaa_harva_rata():
 def testaa_kalibroinnin_valinta():
     print("kalibrointi_valinta: videoon sopiva kalibrointikansio valitaan automaattisesti (synteettinen video ja kansiot)")
     import shutil
+    import re
     import tempfile
     import cv2
     import kalibrointi_valinta as kv
@@ -599,6 +600,124 @@ def testaa_kalibroinnin_valinta():
         k, sel = kv.valitse(os.path.join(tmp, "b.avi"), projekti=tmp, luo=False)
         tarkista("ei sopivaa kansiota (luo = False): tulokset ja selitys", os.path.basename(k) == "tulokset" and "ei sovi" in sel, sel[:80])
         tarkista("osat jakavat automaattisen kansion", kv.automaattinen_nimi("x/Matarmaa_osa_05.mp4") == kv.automaattinen_nimi("Matarmaa_osa_12.mp4") == "tulokset_auto_Matarmaa", kv.automaattinen_nimi("x/Matarmaa_osa_05.mp4"))
+        tarkista("'ei sovi' -viesti kertoo lahimmat kansiot ja niiden siirtyman (p90 px vasen/oikea) sekä rajan", re.search(r"raja 1\.5; lahimmat: tulokset \d+\.\d/\d+\.\d", sel) is not None, sel)
+
+        # virta (YouTube-VOD): kansion nimi tunnuksesta, ei osoitteen lopusta; ellei kansio sovi, kalibroidaan virrasta (kalibrointi ja ruutujen haku korvattu)
+        tarkista("virran_nimi: YouTube-tunnus kaikissa osoitemuodoissa", {kv.virran_nimi(x) for x in ("tLmKqOT8TzA", "https://www.youtube.com/watch?v=tLmKqOT8TzA&t=5s", "https://youtu.be/tLmKqOT8TzA",
+                 "https://www.youtube.com/live/tLmKqOT8TzA")} == {"yt_tLmKqOT8TzA"})
+        n1, n2 = kv.virran_nimi("https://a.example/x/index.m3u8"), kv.virran_nimi("https://b.example/y/index.m3u8")
+        tarkista("virran_nimi: muu virta -> osoitteen tiiviste (sama loppuosa index.m3u8 ei yhdista eri virtoja), pysyva", n1 != n2 and re.fullmatch(r"virta_[0-9a-f]{8}", n1) and n1 == kv.virran_nimi("https://a.example/x/index.m3u8"), f"{n1} {n2}")
+        tarkista("on_virta: osoite kylla, tiedostopolku ei", kv.on_virta("https://a.example/x.m3u8") and kv.on_virta("rtsp://kamera/x") and not kv.on_virta("/data/video/a.mp4") and not kv.on_virta("C:\\video\\a.mp4") and not kv.on_virta("a.avi"))
+        v = {"/x/a": dict(vasen=dict(p90=0.4), oikea=dict(p90=1.9)), "/x/b": dict(vasen=dict(p90=11.6), oikea=dict(p90=9.5)), "/x/c": dict(vasen={}, oikea={}), "/x/d": dict(vasen=dict(p90=0.3), oikea={}), "/x/e": dict(vasen=None, oikea=None)}
+        tarkista("lahimmat: ensin kansiot, joiden molemmat puoliskot voitiin mitata (huonoimman puoliskon mukaan), sitten ne joilta toinen puuttuu ('?'), tyhjat viimeisina", kv.lahimmat(v) == "a 0.4/1.9; b 11.6/9.5; d 0.3/?", kv.lahimmat(v))
+
+        import tarkista_kalibrointi as tk2
+        import kameran_heilunta as kh2
+        import uusi_kalibrointi as uk
+        vanhat = (kh2.referenssi, tk2.siirtymat, uk.kalibroi_video, os.environ.pop("NETTI_KALIBROINNIT", None))
+        kutsut = []
+
+        def esi_kalibroi(tulos):
+            def kalibroi(video, ulos, pohja=None, koko_video=0, tulosta=print, aikaraja_s=None):
+                kutsut.append((video, os.path.basename(ulos), os.path.basename(pohja), aikaraja_s))
+                if tulos == 0:
+                    for t in kv.TARVITTAVAT:
+                        os.makedirs(ulos, exist_ok=True)
+                        open(os.path.join(ulos, t), "w").close()
+                return tulos
+            return kalibroi
+        try:
+            kh2.referenssi = lambda video, n=96, alku_s=30.0: {}
+            tk2.siirtymat = lambda video, kansio, n=24, alku_s=30.0, ref_video=None: dict(vasen=dict(ikkunat=[], dx=3.0, dy=2.0, suurin=9.0, p90=8.0, n=10), oikea=dict(ikkunat=[], dx=3.0, dy=2.0, suurin=9.0, p90=7.0, n=10))
+            virta = "https://manifest.example/hls/index.m3u8"
+            uk.kalibroi_video = esi_kalibroi(0)
+            k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_tLmKqOT8TzA", aikaraja_s=77, tulosta=lambda *a: None)
+            tarkista("virta, ei sopivaa kansiota (luo = True): uusi kalibrointi virrasta, kansio tulokset_auto_<nimi>, aikaraja valitetaan",
+                     kutsut == [(virta, "tulokset_auto_yt_tLmKqOT8TzA", "tulokset", 77)] and os.path.basename(k) == "tulokset_auto_yt_tLmKqOT8TzA" and "kalibroitu automaattisesti" in sel, f"{kutsut} {sel}")
+            kutsut.clear()
+            k, sel = kv.valitse(virta, projekti=tmp, luo=True, tulosta=lambda *a: None)
+            tarkista("virta ilman nimea: kansion nimi virran tiivisteesta (ei 'index')", os.path.basename(k) == "tulokset_auto_" + kv.virran_nimi(virta) and "index" not in k, k)
+            kutsut.clear()
+            kk, sel = kv.valitse(virta, projekti=tmp, luo=False)
+            tarkista("virta, luo = False (muu virta kuin YouTube): ei kalibroida, tulokset ja 'ei sovi'", os.path.basename(kk) == "tulokset" and "ei sovi" in sel and kutsut == [], f"{kutsut} {sel}")
+            uk.kalibroi_video = esi_kalibroi(1)
+            k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_eiOnnistu1", tulosta=lambda *a: None)
+            tarkista("kalibrointi epaonnistuu: kaytetaan kansiota tulokset ja varoitetaan ('epaonnistui', renkaita tai viivoja ei loytynyt)", os.path.basename(k) == "tulokset" and "epaonnistui" in sel and "renkaita" in sel, sel)
+            uk.kalibroi_video = esi_kalibroi(uk.AIKARAJA_KOODI)
+            k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_eiOnnistu2", aikaraja_s=5, tulosta=lambda *a: None)
+            tarkista("kalibrointi keskeytyy aikarajaan: tulokset ja syy 'aikaraja'", os.path.basename(k) == "tulokset" and "epaonnistui" in sel and "aikaraja" in sel, sel)
+
+            # uusi = True: vanhoja kalibrointeja ei kayteta (sopivuustarkistusta ei edes ajeta), video kalibroidaan aina uudelleen
+            mittaukset = []
+
+            def mittaa_vain_varalla(video, kansio, n=24, alku_s=30.0, ref_video=None):
+                mittaukset.append(os.path.basename(kansio))
+                arvo = {"tulokset": (9.0, 8.0), "tulokset_auto_yt_tLmKqOT8TzA": (2.4, 1.8), "tulokset_auto_virta_" + kv.virran_nimi(virta)[6:]: (7.0, 7.0)}.get(os.path.basename(kansio), (11.0, 10.0))
+                return dict(vasen=dict(ikkunat=[], dx=0.0, dy=0.0, suurin=arvo[0], p90=arvo[0], n=10), oikea=dict(ikkunat=[], dx=0.0, dy=0.0, suurin=arvo[1], p90=arvo[1], n=10))
+            tk2.siirtymat = mittaa_vain_varalla
+            kutsut.clear()
+            uk.kalibroi_video = esi_kalibroi(0)
+            k, sel = kv.valitse(virta, projekti=tmp, luo=False, nimi="yt_uusi1", uusi=True, aikaraja_s=33, tulosta=lambda *a: None)
+            tarkista("uusi = True: kalibroidaan aina uudelleen (luo = False ei estä), sopivuustarkistusta ei ajeta, aikaraja valitetaan",
+                     mittaukset == [] and kutsut == [(virta, "tulokset_auto_yt_uusi1", "tulokset", 33)] and os.path.basename(k) == "tulokset_auto_yt_uusi1" and "kalibroitu automaattisesti" in sel, f"{mittaukset} {kutsut} {sel}")
+            # vanhan kalibroinnin jaannokset: tiedostot poistetaan ennen uutta kalibrointia, joten epaonnistunut kalibrointi ei kayta vanhoja tiedostoja
+            vanha_kansio = os.path.join(tmp, "tulokset_auto_yt_vanha")
+            os.makedirs(vanha_kansio, exist_ok=True)
+            for t_ in kv.TARVITTAVAT:
+                open(os.path.join(vanha_kansio, t_), "w").close()
+            uk.kalibroi_video = esi_kalibroi(1)                                                     # epaonnistuu eika luo tiedostoja
+            k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanha", uusi=True, tulosta=lambda *a: None)
+            tarkista("uusi kalibrointi epaonnistuu: edellisen ajon tiedostoja samassa kansiossa ei kayteta (ne poistettiin ennen kalibrointia)",
+                     os.path.basename(k) != "tulokset_auto_yt_vanha" and not any(os.path.exists(os.path.join(vanha_kansio, t_)) for t_ in kv.TARVITTAVAT), f"{k} {sel}")
+            tarkista("epaonnistuminen -> lahin vanha kansio (poikkeama kerrotaan), ei sokeasti tulokset", "lahinta vanhaa kansiota" in sel and "epaonnistui" in sel and re.search(r"vasen/oikea \d+\.\d/\d+\.\d", sel) is not None
+                     and os.path.basename(k) == "tulokset_auto_yt_tLmKqOT8TzA", f"{os.path.basename(k)} {sel}")
+            tarkista("netti_live.kalibrointivaroitus: varoitus, kun kaytetaan lahinta (ei sopivaa) kansiota", __import__("netti_live").kalibrointivaroitus(sel, virta=True) is not None)
+            # epaonnistuessa sopiva vanha kansio edelle
+            tk2.siirtymat = lambda video, kansio, n=24, alku_s=30.0, ref_video=None: dict(vasen=dict(ikkunat=[], dx=0.0, dy=0.0, suurin=0.4, p90=0.4, n=10), oikea=dict(ikkunat=[], dx=0.0, dy=0.0, suurin=0.9, p90=0.9, n=10)) \
+                if os.path.basename(kansio) == "tulokset" else dict(vasen=dict(ikkunat=[], dx=0.0, dy=0.0, suurin=5.0, p90=5.0, n=10), oikea=dict(ikkunat=[], dx=0.0, dy=0.0, suurin=5.0, p90=5.0, n=10))
+            k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanha", uusi=True, tulosta=lambda *a: None)
+            tarkista("epaonnistuessa videoon sopiva vanha kansio kay lahinta paremmin, eika varoitusta tule", os.path.basename(k) == "tulokset" and "sopii videoon" in sel and __import__("netti_live").kalibrointivaroitus(sel, virta=True) is None, f"{os.path.basename(k)} {sel}")
+            tk2.siirtymat = lambda video, kansio, n=24, alku_s=30.0, ref_video=None: dict(vasen=None, oikea=None)
+            k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanha", uusi=True, tulosta=lambda *a: None)
+            tarkista("ei mitattavaa (kaikki '?'): tulokset ja varoitus", os.path.basename(k) == "tulokset" and "epaonnistui" in sel and __import__("netti_live").kalibrointivaroitus(sel) is not None, sel)
+            kh2.referenssi = lambda video, n=96, alku_s=30.0: (_ for _ in ()).throw(OSError("virta ei aukea"))
+            k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanha", uusi=True, tulosta=lambda *a: None)
+            tarkista("vanhojen kansioiden vertailu epaonnistuu (virta ei aukea): tulokset ja selitys, ei poikkeusta", os.path.basename(k) == "tulokset" and "vertailu epaonnistui" in sel, sel)
+        finally:
+            kh2.referenssi, tk2.siirtymat, uk.kalibroi_video = vanhat[:3]
+            if vanhat[3] is not None:
+                os.environ["NETTI_KALIBROINNIT"] = vanhat[3]
+
+        # uusi_kalibrointi.kalibroi_video: aikaraja, varakalibrointi koko videon yli, ei varakalibrointia aikarajan jalkeen
+        import subprocess
+        import types
+        ajot = []
+
+        def esi_run(paluut):
+            def run(komento, cwd=None, timeout=None):
+                ajot.append((os.path.basename(komento[1]), "--koko-video" in komento, timeout))
+                x = paluut.pop(0)
+                if x == "aikaraja":
+                    raise subprocess.TimeoutExpired(komento, timeout)
+                return types.SimpleNamespace(returncode=x)
+            return run
+        vanha_run = subprocess.run
+        try:
+            pohja_k = os.path.join(tmp, "pohja")
+            os.makedirs(pohja_k, exist_ok=True)
+            subprocess.run = esi_run([1, 0, 0])
+            r = uk.kalibroi_video("v.mp4", os.path.join(tmp, "uusi1"), pohja_k, tulosta=lambda *a: None, aikaraja_s=60)
+            tarkista("kalibroi_video: epaonnistunut moodikuva -> varakalibrointi koko videon yli -> tarkistus; aikaraja jokaiselle vaiheelle", r == 0 and ajot == [("kalibrointi_netti.py", False, 60), ("kalibrointi_netti.py", True, 60), ("tarkista_kalibrointi.py", False, 60)], str(ajot))
+            ajot.clear()
+            subprocess.run = esi_run(["aikaraja"])
+            r = uk.kalibroi_video("v.mp4", os.path.join(tmp, "uusi2"), pohja_k, tulosta=lambda *a: None, aikaraja_s=60)
+            tarkista("kalibroi_video: aikarajan ylitys -> paluukoodi 124, ei varakalibrointia (virta ei parane 40 haulla)", r == uk.AIKARAJA_KOODI and len(ajot) == 1, f"{r} {ajot}")
+            ajot.clear()
+            subprocess.run = esi_run([0, 0])
+            uk.kalibroi_video("v.mp4", os.path.join(tmp, "uusi3"), pohja_k, tulosta=lambda *a: None)
+            tarkista("kalibroi_video: tiedostolle ei aikarajaa (kuten ennen)", [a[2] for a in ajot] == [None, None], str(ajot))
+        finally:
+            subprocess.run = vanha_run
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

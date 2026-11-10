@@ -68,7 +68,8 @@ Kaikki ovat valinnaisia. Tyhjä arvo tarkoittaa samaa kuin asettamatta jättämi
 | `NETTI_VIDEO` | 1 | Tallenna kuvallinen mp4 (`ulos/kivenseuranta_*.mp4`). 0 = vain CSV |
 | `NETTI_CSV` | 1 | Tallenna heittojen tiedot CSV:hen |
 | `NETTI_VIIVE` | 10 | Kuva tulee tämän verran (s) analyysin perässä (vaikuttaa näkymään ja tallenteen piirtoon) |
-| `NETTI_KANSIO` | automaattinen | Kalibrointikansio (nimi tai polku). Tyhjänä valitaan videon mukaan; ellei yksikään sovi, video kalibroidaan itse ([Kalibrointi](#4-kalibrointi)) |
+| `NETTI_KANSIO` | – | Kalibrointikansio (nimi tai polku), jota käytetään sellaisenaan; ohittaa `NETTI_KALIBROINTI`:n ([Kalibrointi](#4-kalibrointi)) |
+| `NETTI_KALIBROINTI` | uusi | Ilman `NETTI_KANSIO`:ta: `uusi` = jokainen video (tiedosto tai YouTube-video, ei live) kalibroidaan aina uudelleen omista ruuduistaan (tiedosto noin 1 min, YouTube 1–5 min ennen analyysia). `valitse` = käytetään ensimmäistä videoon sopivaa vanhaa kalibrointia ja uusi tehdään vain, jos mikään ei sovi |
 | `NETTI_NOPEA` | 1 | Tiedostolle: ajetaan niin nopeasti kuin ehtii (tulos ei riipu ajoituksesta). 0 = reaaliaikaa (esim. kun halutaan katsoa selaimessa kuin lähetystä) |
 | `NETTI_ALKU`, `NETTI_LOPPU` | – | Tiedostolle: aloitus ja lopetus videossa (s) |
 | `NETTI_AANI` | auto | Ääni tallenteeseen: `auto` (YouTube: oma ääniraita, tiedosto: tiedoston ääni), `ei`, tai polku / osoite. Live-lähetyksen ääntä ei liitetä |
@@ -162,16 +163,27 @@ docker run --rm -it -v /mnt/user/kivenseuranta:/data kivenseuranta:latest bash
 ## 4. Kalibrointi
 
 Kalibrointi ja taustakuva kuuluvat yhteen kameran asentoon: väärä kalibrointi antaa vinot paikat ja huonon seurannan. Kuvassa on valmiina kolme kalibrointikansiota (`tulokset`,
-`tulokset_nettivideo2`, `tulokset_nettivideo3`: videot 1–3). Kun `NETTI_KANSIO` on tyhjä:
+`tulokset_nettivideo2`, `tulokset_nettivideo3`: videot 1–3), mutta **oletuksena jokainen video kalibroidaan uudelleen omista ruuduistaan** (`NETTI_KALIBROINTI=uusi`). Syy: sama rata eri viikkoina
+kuvattuna ei aina sovi vanhaan kalibrointiin (kamera on voinut siirtyä), eikä sopivuustarkistus kerro, oliko vanha kalibrointi alun perinkään hyvä. Kun `NETTI_KANSIO` on tyhjä:
 
-* **tiedosto:** ohjelma vertaa videon kuvaa kunkin kansion taustakuvaan ja valitsee ensimmäisen, joka sopii. Jos mikään ei sovi (toinen kamera-asento, kenttä tai mainokset), video **kalibroidaan
-  automaattisesti** (noin minuutti) kansioon `/data/kalibroinnit/tulokset_auto_<videon nimi>`, ja sitä käytetään tästä lähtien samannimisille videoille (osa-numero `_osa_NN` ei lasketa nimeen).
-  Lokista näkee valinnan ja kalibroinnin tarkistuksen tuloksen; kalibroinnin menetelmä on kuvattu tiedostossa [`README_netti.md`](README_netti.md).
-* **YouTube-video:** kansio valitaan virrasta haettujen ruutujen perusteella; jos mikään ei sovi, käytetään kansiota `tulokset` ja lokiin tulee varoitus. **Live-lähetykselle** kansiota ei voi valita
-  automaattisesti: anna `NETTI_KANSIO` (esim. `tulokset_nettivideo3`).
+* **tiedosto (`/data/video`):** video kalibroidaan (noin minuutti) kansioon `/data/kalibroinnit/tulokset_auto_<videon nimi>` ennen analyysia (osa-numero `_osa_NN` ei lasketa nimeen). Lokissa lukee
+  `Kalibroidaan video uudelleen … kansioon …`, kalibroinnin laatuluvut (`tarkennus … RMS … cm`, kokeessa noin 0,6 cm) ja lopuksi `tarkistus: … sopii`; menetelmä on kuvattu tiedostossa
+  [`README_netti.md`](README_netti.md).
+* **YouTube-video (ei live):** sama kalibrointi tehdään suoraan virrasta (ruudut haetaan hakemalla virrasta): noin 1–5 min ennen analyysin alkua (selainnäkymä avautuu vasta sen jälkeen), kansio
+  `/data/kalibroinnit/tulokset_auto_yt_<tunnus>`. Jos virta jumittaa, kunkin vaiheen aikaraja on 900 s.
+* **Jos uusi kalibrointi epäonnistuu** (renkaita tai viivoja ei löydy mediaanikuvasta, virta jumittaa): käytetään videoon sopivaa vanhaa kansiota, ellei sellaista ole, lähintä vanhaa kansiota (poikkeama
+  lokissa: `ikkunasiirtyma p90 px vasen/oikea`, raja 1,5), ja lokiin tulee `VAROITUS: kalibrointi ei sovi tahan videoon, joten heittoja ei todennakoisesti tunnisteta`. Silloin lataa video ja pudota se kansioon
+  `video` (tiedosto kalibroidaan itse, tarvittaessa koko videon mediaanikuvalla) tai kalibroi käsin (`python /app/tools/uusi_kalibrointi.py VIDEO --ulos /data/kalibroinnit/oma` ja `NETTI_KANSIO=oma`).
+* **Live-lähetys:** kuvaa ei voi hakea taaksepäin, joten sitä ei voi kalibroida eikä siihen voi valita kansiota: anna `NETTI_KANSIO` (esim. `tulokset_nettivideo3` tai aiemmin luotu `tulokset_auto_yt_<tunnus>`).
+* **`NETTI_KALIBROINTI=valitse`** palauttaa vanhan tavan: videon kuvaa verrataan kunkin kansion (`tulokset*`, `/data/kalibroinnit/*`) taustakuvaan, käytetään **ensimmäistä** sopivaa (ikkunasiirtymän p90 < 1,5 px) ja
+  uusi kalibrointi tehdään vain, jos mikään ei sovi. Se on nopeampi, kun kamera on varmasti samassa asennossa, mutta sopivuustarkistus on herkkä yksittäiselle huonolle ikkunalle, se valitsee ensimmäisen eikä
+  parhaan sopivan, ja se ei kerro, oliko valittu kalibrointi alun perinkään hyvä.
+* `NETTI_KANSIO` (kansion nimi tai polku) ohittaa molemmat: sitä kansiota käytetään sellaisenaan.
 
-Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibrointi.py VIDEO --ulos /data/kalibroinnit/oma`) ja ottaa käyttöön `NETTI_KANSIO=oma`. Kalibrointikansiot
-`/data/kalibroinnit/*` otetaan huomioon automaattisessa valinnassa.
+Jokaisesta kalibroidusta videosta jää kansio `/data/kalibroinnit/tulokset_auto_…` (noin 4 Mt); saman videon uusinta-ajo kirjoittaa sen uudelleen. Vanhat kansiot voi poistaa, jos et tarvitse niitä (`NETTI_KANSIO`-viittaukset
+tai `valitse`-tila käyttävät niitä).
+
+Oman kalibrointikansion voi luoda myös käsin (`python /app/tools/uusi_kalibrointi.py VIDEO --ulos /data/kalibroinnit/oma`) ja ottaa käyttöön `NETTI_KANSIO=oma`.
 
 ---
 
@@ -258,6 +270,8 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 | Loki: `Tallennusvirhe (ffmpeg …)` | Tallenne keskeytyi (levy täynnä tai kooderi kaatui); analyysi, CSV ja selainnäkymä jatkavat. Tarkista levytila (`ulos`) ja aja uudelleen |
 | Loki: `tarkka sovitus: Python` | C++-sovitin ei lataudu; kuvan rakennus katkeaa siihen, joten tätä ei pitäisi tulla. Python-varapolku on hitaampi eikä anna samoja tuloksia |
 | Kalibrointivaroitus `kalibrointi … ei sovi tähän videoon` | Kamera-asento on eri kuin kalibroinnissa: ks. [Kalibrointi](#4-kalibrointi) |
+| Heittoja ei tunnisteta (tai vain osa) ja lokissa `VAROITUS: kalibrointi ei sovi tahan videoon` | Uusi kalibrointi ei onnistunut (renkaita tai viivoja ei löytynyt) ja käytetään vanhaa kansiota: katso lokista kalibroinnin viestit (`kalibrointi epaonnistui …`, `kaytetaan lahinta vanhaa kansiota … poikkeama …`) ja ks. [Kalibrointi](#4-kalibrointi) |
+| Videon alussa pitkä viive ennen kuin kuva tulee (YouTube) | Video kalibroidaan ensin virrasta (1–5 min, lokissa `Kalibroidaan video uudelleen …`); `NETTI_KANSIO` ohittaa kalibroinnin, `NETTI_KALIBROINTI=valitse` käyttää sopivaa vanhaa |
 | Kontti kuolee ilman virhettä | Muistin loppuminen: pienennä `NETTI_LATAUS` (8) tai anna kontille lisää muistia |
 | Lokin käynnistysrivi | `N ydinta kaytossa (koneessa M…)`, `muistia X Gt`, lähde, valvonta, kansiot ja portti: tarkista, että rajat ovat odotetut |
 
