@@ -97,6 +97,17 @@ def _mittaa(video, projekti, n, tk):
     return {k: tk.siirtymat(video, k, ref_video=ref) for k in ehdokkaat(projekti)}
 
 
+def _kalibroi(uk, video, ulos, pohja, tulosta, aikaraja_s):
+    """uk.kalibroi_video aikarajalla, jos moduuli tukee sita. Vanha tools/uusi_kalibrointi.py (ohjelmakansio paivitetty vain osittain, esim. tools-kansio jai kopioimatta) ei tunne aikaraja_s:aa:
+    silloin kalibroidaan ilman aikarajaa ja kerrotaan, mika tiedosto on vanha (muuten kalibrointi kaatuisi TypeErroriin ja kaytettaisiin vanhaa kansiota)."""
+    import inspect
+    if "aikaraja_s" in inspect.signature(uk.kalibroi_video).parameters:
+        return uk.kalibroi_video(video, ulos, pohja, tulosta=tulosta, aikaraja_s=aikaraja_s)
+    tulosta(f"Huom: {getattr(uk, '__file__', 'uusi_kalibrointi.py')} on vanha versio (ei tue aikarajaa): ohjelmakansio on paivitetty vain osittain. Kalibroidaan ilman aikarajaa; "
+            "kopioi koko ohjelmakansio (myos tools/) ja rakenna kuva uudelleen.")
+    return uk.kalibroi_video(video, ulos, pohja, tulosta=tulosta)
+
+
 def _varakansio(video, projekti, n, tulokset, syy, tk):
     """Uusi kalibrointi epaonnistui (syy): videoon sopiva vanha kansio, ellei sellaista ole, lahin vanha kansio (poikkeama kerrotaan), ellei mitaan voi mitata, tulokset. (kansio, selitys).
     tulokset: jo mitatut {kansio: siirtymat} tai None (mitataan tassa)."""
@@ -153,9 +164,9 @@ def valitse(video, projekti=KOHDE, luo=True, tulosta=print, n=24, nimi=None, aik
             pass
     try:
         import uusi_kalibrointi as uk
-        r = uk.kalibroi_video(video, ulos, os.path.join(projekti, "tulokset"), tulosta=tulosta, aikaraja_s=aikaraja_s)
+        r = _kalibroi(uk, video, ulos, os.path.join(projekti, "tulokset"), tulosta, aikaraja_s)
     except Exception as e:                                       # noqa: BLE001
         return _varakansio(video, projekti, n, tulokset, repr(e), tk)
     if r != 0 and not all(os.path.exists(os.path.join(ulos, f)) for f in TARVITTAVAT):
-        return _varakansio(video, projekti, n, tulokset, "aikaraja ylittyi: virran luku on hidasta" if r == uk.AIKARAJA_KOODI else "renkaita tai viivoja ei loytynyt", tk)
+        return _varakansio(video, projekti, n, tulokset, "aikaraja ylittyi: virran luku on hidasta" if r == getattr(uk, "AIKARAJA_KOODI", 124) else "renkaita tai viivoja ei loytynyt", tk)
     return ulos, f"kalibroitu automaattisesti kansioon {os.path.basename(ulos)}"

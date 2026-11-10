@@ -246,8 +246,9 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 
 ## 8. Päivitys
 
-* **Ohjelman päivitys:** kopioi uusi `Netti_01_02` palvelimelle, aja `docker build -t kivenseuranta:latest .` uudelleen ja käynnistä kontti uudelleen (Unraid: *Force update* / poista ja luo kontti).
-  Data (`/data`) säilyy.
+* **Ohjelman päivitys:** kopioi uusi `Netti_01_02` palvelimelle **kokonaan, myös alikansio `tools/`** (osittain päivitetty kansio sekoittaa versioita: esim. uusi `netti_live.py` ja vanha `tools/uusi_kalibrointi.py`), aja
+  `docker build -t kivenseuranta:latest .` uudelleen ja käynnistä kontti uudelleen (Unraid: *Force update* / poista ja luo kontti). Data (`/data`) säilyy. Tarkistus, että kuvan `tools/` on ajan tasalla:
+  `docker exec kivenseuranta grep -c aikaraja_s /app/tools/uusi_kalibrointi.py` (0 = vanha tiedosto).
 * **yt-dlp:** `YTDLP_PAIVITA=1` tai `docker build --no-cache`.
 * Rakennus tarvitsee verkon (Ubuntun paketit, PyPI). Kuva on noin 1,1 Gt.
 
@@ -269,6 +270,7 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 | Selainnäkymä sanoo `Ajo käynnissä`, mutta kuva ei etene (`viimeisin kuva N s sitten` kasvaa, sivulla `kuva ei etene`) | **Jumivahti** kirjoittaa lokiin 60 s kuluttua raportin `Jumivahti: ajo ei ole edennyt …` (ajon tila ja kaikkien säikeiden pinot): lähetä se, niin syy selviää. Raja: `NETTI_LISAVALITSIMET=--jumivahti 30` (`0` = pois). Aiemmin tämän aiheutti pitkä jono kopioruutuja (hiljainen tauko videolla: kuva ja analyysi odottivat toisiaan, korjattu), ja virran yhteyden katko näkyy raportissa kohdassa `lähteestä luettu viimeksi N s sitten` |
 | Loki: `Tallennusvirhe (ffmpeg …)` | Tallenne keskeytyi (levy täynnä tai kooderi kaatui); analyysi, CSV ja selainnäkymä jatkavat. Tarkista levytila (`ulos`) ja aja uudelleen |
 | Loki: `tarkka sovitus: Python` | C++-sovitin ei lataudu; kuvan rakennus katkeaa siihen, joten tätä ei pitäisi tulla. Python-varapolku on hitaampi eikä anna samoja tuloksia |
+| Loki: `automaattinen kalibrointi epaonnistui (TypeError(… unexpected keyword argument 'aikaraja_s'))` tai `Huom: … uusi_kalibrointi.py on vanha versio` | Ohjelmakansio on päivitetty vain osittain (tyypillisesti alikansio `tools/` jäi kopioimatta): kopioi koko `Netti_01_02` (myös `tools/`) ja rakenna kuva uudelleen ([Päivitys](#8-päivitys)). Nykyversio kalibroi silti (ilman aikarajaa) ja kertoo, mikä tiedosto on vanha; aiemmat versiot kaatuivat tähän virheeseen ja käyttivät vanhaa kansiota |
 | Kalibrointivaroitus `kalibrointi … ei sovi tähän videoon` | Kamera-asento on eri kuin kalibroinnissa: ks. [Kalibrointi](#4-kalibrointi) |
 | Heittoja ei tunnisteta (tai vain osa) ja lokissa `VAROITUS: kalibrointi ei sovi tahan videoon` | Uusi kalibrointi ei onnistunut (renkaita tai viivoja ei löytynyt) ja käytetään vanhaa kansiota: katso lokista kalibroinnin viestit (`kalibrointi epaonnistui …`, `kaytetaan lahinta vanhaa kansiota … poikkeama …`) ja ks. [Kalibrointi](#4-kalibrointi) |
 | Videon alussa pitkä viive ennen kuin kuva tulee (YouTube) | Video kalibroidaan ensin virrasta (1–5 min, lokissa `Kalibroidaan video uudelleen …`); `NETTI_KANSIO` ohittaa kalibroinnin, `NETTI_KALIBROINTI=valitse` käyttää sopivaa vanhaa |

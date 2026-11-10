@@ -683,6 +683,32 @@ def testaa_kalibroinnin_valinta():
             kh2.referenssi = lambda video, n=96, alku_s=30.0: (_ for _ in ()).throw(OSError("virta ei aukea"))
             k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanha", uusi=True, tulosta=lambda *a: None)
             tarkista("vanhojen kansioiden vertailu epaonnistuu (virta ei aukea): tulokset ja selitys, ei poikkeusta", os.path.basename(k) == "tulokset" and "vertailu epaonnistui" in sel, sel)
+
+            # vanha tools/uusi_kalibrointi.py (ohjelmakansio paivitetty osittain): ei aikaraja_s-parametria eika AIKARAJA_KOODIa -> kalibroidaan ilman aikarajaa ja kerrotaan vanha tiedosto, ei TypeErroria
+            tulosteet = []
+            vanhat_kutsut = []
+
+            def vanha_kalibroi_video(video, ulos, pohja=None, koko_video=0, tulosta=print):
+                vanhat_kutsut.append((video, os.path.basename(ulos)))
+                if vanhat_kutsut_tulos[0] == 0:
+                    for t_ in kv.TARVITTAVAT:
+                        os.makedirs(ulos, exist_ok=True)
+                        open(os.path.join(ulos, t_), "w").close()
+                return vanhat_kutsut_tulos[0]
+            vanhat_kutsut_tulos = [0]
+            ak = uk.AIKARAJA_KOODI
+            try:
+                del uk.AIKARAJA_KOODI
+                uk.kalibroi_video = vanha_kalibroi_video
+                k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanhaModuuli", uusi=True, aikaraja_s=60, tulosta=tulosteet.append)
+                tarkista("vanha uusi_kalibrointi (ei aikaraja_s): kalibroidaan silti (ilman aikarajaa), ei TypeErroria",
+                         vanhat_kutsut == [(virta, "tulokset_auto_yt_vanhaModuuli")] and os.path.basename(k) == "tulokset_auto_yt_vanhaModuuli" and "kalibroitu automaattisesti" in sel and "TypeError" not in sel, f"{vanhat_kutsut} {sel}")
+                tarkista("vanha moduuli: lokiin Huom kertoo tiedoston ja neuvon (kopioi koko ohjelmakansio, myos tools/)", any("on vanha versio" in x and "uusi_kalibrointi" in x and "tools/" in x for x in tulosteet), str(tulosteet)[:200])
+                vanhat_kutsut_tulos[0] = 1
+                k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanhaModuuli2", uusi=True, aikaraja_s=60, tulosta=lambda *a: None)
+                tarkista("vanha moduuli, kalibrointi epaonnistuu: ei AttributeErrorta (AIKARAJA_KOODI puuttuu), vara kayttoon", "epaonnistui" in sel and "renkaita" in sel, sel)
+            finally:
+                uk.AIKARAJA_KOODI = ak
         finally:
             kh2.referenssi, tk2.siirtymat, uk.kalibroi_video = vanhat[:3]
             if vanhat[3] is not None:
