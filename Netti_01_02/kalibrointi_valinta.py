@@ -1,11 +1,14 @@
-"""Kalibrointikansion automaattinen valinta videolle (netti_live.py, tiedosto- ja YouTube-lahde ilman --kansio):
+"""Kalibrointi videolle (netti_live.py, tiedosto- ja YouTube-lahde ilman --kansio). Kaksi tapaa (netti_live.py --kalibrointi):
 
-    1. kaydaan lapi projektikansion kalibrointikansiot (tulokset, tulokset_nettivideo2, tulokset_nettivideo3, tulokset_auto_*: kalibrointi_*.json + moodikuva_*.png kummallekin puoliskolle) ja
-       valitaan ensimmainen, jonka moodikuva sopii videon kuvaan (kalibroinnin tarkistus: tools/tarkista_kalibrointi.py; kaikkien ikkunoiden siirtyma < 1,5 px)
-    2. jos mikaan ei sovi (toinen kamera-asento, kentta tai mainokset), kalibroidaan video uuteen kansioon tulokset_auto_<videon nimi> (renkaat ja viivat moodikuvasta,
-       tools/uusi_kalibrointi.py; kivi-, kahva- ja kierremallit kopioidaan kansiosta tulokset) ja kaytetaan sita; sama kansio sopii videon muihin osiin ja ajoihin (osa-numero poistetaan nimesta).
-    YouTube-video (ei live): ruudut haetaan hakemalla virrasta (OpenCV / FFmpeg lukee HLS- tai https-virran), ja kansio nimetaan tunnuksella (tulokset_auto_yt_<tunnus>); live-lahetysta ei voi
-    kalibroida eika siihen valita kansiota (netti_live.py kayttaa kansiota tulokset tai --kansio:ta).
+    uusi (oletus): video kalibroidaan aina uudelleen omista ruuduistaan kansioon tulokset_auto_<videon nimi> (renkaat ja viivat moodikuvasta, tools/uusi_kalibrointi.py; kivi-, kahva- ja
+       kierremallit kopioidaan kansiosta tulokset). Vanhoja kalibrointeja ei kayteta: sama rata eri viikkoina kuvattuna ei aina sovi vanhaan kalibrointiin (kamera on voinut siirtya), eika
+       sopivuustarkistus kerro, oliko vanha kalibrointi alun perinkaan hyva. Ellei kalibrointi onnistu (renkaita tai viivoja ei loydy), kaytetaan videoon sopivaa tai lahinta vanhaa kansiota
+       (poikkeama kerrotaan), ellei mitaan voi mitata, kansiota tulokset.
+    valitse: kaydaan lapi projektikansion kalibrointikansiot (tulokset, tulokset_nettivideo2, tulokset_nettivideo3, tulokset_auto_*: kalibrointi_*.json + moodikuva_*.png kummallekin puoliskolle)
+       ja valitaan ensimmainen, jonka moodikuva sopii videon kuvaan (tools/tarkista_kalibrointi.py; ikkunasiirtyman p90 < 1,5 px); vain jos mikaan ei sovi, kalibroidaan uusi (nopeampi,
+       kun kamera pysyy samana).
+    Sama kansio sopii videon osiin (osa-numero poistetaan nimesta). YouTube-video (ei live): ruudut haetaan hakemalla virrasta (OpenCV / FFmpeg lukee HLS- tai https-virran), ja kansio
+    nimetaan tunnuksella (tulokset_auto_yt_<tunnus>); live-lahetysta ei voi kalibroida eika siihen valita kansiota (netti_live.py kayttaa kansiota tulokset tai --kansio:ta).
 
 Kalibrointi ja moodikuva kuuluvat yhteen kameran asentoon: vaara kansio antaa vinot paikat (6-17 cm), ~1 % nopeusvirheen ja B-sovitukseen haamureunoja, joiden vuoksi kivia hukkuu
 (rata harva, B hylkaa kiven) ja irroitus lukittuu hog-viivalle."""
@@ -63,9 +66,9 @@ def sopii(tulos, tk):
     return all(tk.arvioi(tulos[p])[0] is True for p in ("vasen", "oikea"))
 
 
-def lahimmat(tulokset, n=3):
-    """Lyhyt selitys 'ei sovi' -viestiin: n lahinta kansiota ja niiden ikkunasiirtyma (p90, px) vasen/oikea ('?' = liian vahan vertailukelpoisia ikkunoita). Erottaa melkein sopivan (esim. 0.2/1.9)
-    kokonaan eri kamera-asennosta (esim. 11/9) ja kertoo, mista kansiosta oli kyse."""
+def _lajiteltu(tulokset):
+    """[(huonoin p90, kansio, vasen p90, oikea p90)] lahimmasta alkaen: ensin kansiot, joiden molemmat puoliskot voitiin mitata (huonoimman puoliskon p90 pienimmasta), sitten ne, joilta toinen puolisko
+    puuttuu (p90 = None: liian vahan vertailukelpoisia ikkunoita eli kuva eroaa moodikuvasta muutenkin kuin siirtyman osalta), ja viimeisena kansiot, joilta kumpikaan ei ole mitattavissa (huonoin = inf)."""
     def p90(t, puoli):
         x = (t.get(puoli) or {}).get("p90")
         return None if x is None else float(x)
@@ -73,39 +76,86 @@ def lahimmat(tulokset, n=3):
     for k, t in tulokset.items():
         v, o = p90(t, "vasen"), p90(t, "oikea")
         rivit.append((max((x for x in (v, o) if x is not None), default=float("inf")), k, v, o))
-    rivit.sort(key=lambda r: r[0])
-    f = lambda x: "?" if x is None else f"{x:.1f}"                                                                      # noqa: E731
-    return "; ".join(f"{os.path.basename(k)} {f(v)}/{f(o)}" for _, k, v, o in rivit[:n])
+    rivit.sort(key=lambda r: ((r[2] is None) + (r[3] is None), r[0]))
+    return rivit
 
 
-def valitse(video, projekti=KOHDE, luo=True, tulosta=print, n=24, nimi=None, aikaraja_s=None):
-    """(kansio, selitys): ensimmainen videoon sopiva kalibrointikansio; ellei sellaista ole, uusi automaattinen kalibrointi (luo = True) tai tulokset ja varoitus.
+def _px(x):
+    return "?" if x is None else f"{x:.1f}"
+
+
+def lahimmat(tulokset, n=3):
+    """Lyhyt selitys 'ei sovi' -viestiin: n lahinta kansiota ja niiden ikkunasiirtyma (p90, px) vasen/oikea ('?' = liian vahan vertailukelpoisia ikkunoita). Erottaa melkein sopivan (esim. 0.2/1.9)
+    kokonaan eri kamera-asennosta (esim. 11/9) ja kertoo, mista kansiosta oli kyse."""
+    return "; ".join(f"{os.path.basename(k)} {_px(v)}/{_px(o)}" for _, k, v, o in _lajiteltu(tulokset)[:n])
+
+
+def _mittaa(video, projekti, n, tk):
+    """Kaikkien ehdokaskansioiden ikkunasiirtyma videoon nahden: {kansio: tk.siirtymat}."""
+    import kameran_heilunta as kh
+    ref = kh.referenssi(video, n=n)
+    return {k: tk.siirtymat(video, k, ref_video=ref) for k in ehdokkaat(projekti)}
+
+
+def _varakansio(video, projekti, n, tulokset, syy, tk):
+    """Uusi kalibrointi epaonnistui (syy): videoon sopiva vanha kansio, ellei sellaista ole, lahin vanha kansio (poikkeama kerrotaan), ellei mitaan voi mitata, tulokset. (kansio, selitys).
+    tulokset: jo mitatut {kansio: siirtymat} tai None (mitataan tassa)."""
+    oletus = os.path.join(projekti, "tulokset")
+    try:
+        if tulokset is None:
+            tulokset = _mittaa(video, projekti, n, tk)
+    except Exception as e:                                       # noqa: BLE001
+        return oletus, f"automaattinen kalibrointi epaonnistui ({syy}); kaytetaan kansiota tulokset (vanhojen kansioiden vertailu epaonnistui: {e!r}; tulokset epatarkkoja)"
+    tulokset = {k: t for k, t in tulokset.items() if all(os.path.exists(os.path.join(k, f)) for f in TARVITTAVAT)}      # juuri tyhjennetty oma kansio ei ole ehdokas
+    for k, t in tulokset.items():
+        if sopii(t, tk):
+            return k, f"automaattinen kalibrointi epaonnistui ({syy}); kaytetaan vanhaa kansiota {os.path.basename(k)}, joka sopii videoon ({', '.join(f'{p}: p90 {t[p]['p90']:.2f} px' for p in ('vasen', 'oikea'))})"
+    rivit = _lajiteltu(tulokset)
+    if rivit and rivit[0][0] != float("inf"):
+        _, k, v, o = rivit[0]
+        return k, (f"automaattinen kalibrointi epaonnistui ({syy}); kaytetaan lahinta vanhaa kansiota {os.path.basename(k)} (ikkunasiirtyma p90 px vasen/oikea {_px(v)}/{_px(o)}, raja {tk.RAJA_PX:g}): "
+                   "tulokset epatarkkoja")
+    return oletus, f"automaattinen kalibrointi epaonnistui ({syy}); kaytetaan kansiota tulokset (tulokset epatarkkoja)"
+
+
+def valitse(video, projekti=KOHDE, luo=True, tulosta=print, n=24, nimi=None, aikaraja_s=None, uusi=False):
+    """(kansio, selitys). uusi = False: ensimmainen videoon sopiva kalibrointikansio; ellei sellaista ole, uusi automaattinen kalibrointi (luo = True) tai tulokset ja varoitus.
+    uusi = True: vanhoja kalibrointeja ei kayteta, vaan video kalibroidaan aina uudelleen (luo = True oletettu); ellei kalibrointi onnistu, kaytetaan videoon sopivaa tai lahinta vanhaa kansiota.
     video: tiedosto tai virran osoite (YouTube-VOD: ruutuja haetaan hakemalla virrasta, myos uusi kalibrointi luetaan virrasta); n: mediaanikuvan ruutujen maara. nimi: uuden kansion nimi
     (tulokset_auto_<nimi>; oletus tiedoston nimi, virralle virran_nimi(osoite)); aikaraja_s: uuden kalibroinnin kunkin vaiheen enimmaisaika (virta: verkko voi jumittaa; tiedostolle None)."""
     import tarkista_kalibrointi as tk
-    import kameran_heilunta as kh
-    ref = kh.referenssi(video, n=n)
-    tulokset = {}
-    for k in ehdokkaat(projekti):
-        t = tk.siirtymat(video, k, ref_video=ref)
-        tulokset[k] = t
-        if sopii(t, tk):
-            kansion_nimi = os.path.relpath(k, projekti) if os.path.dirname(k) == os.path.abspath(projekti) else k
-            return k, f"kalibrointikansio {kansion_nimi} sopii videoon ({', '.join(f'{p}: p90 {t[p]['p90']:.2f} px' for p in ('vasen', 'oikea'))})"
-    oletus = os.path.join(projekti, "tulokset")
     virta = on_virta(video)
-    ei_sovi = f"mikaan kalibrointikansio ei sovi videoon (ikkunasiirtyma p90 px vasen/oikea, raja {tk.RAJA_PX:g}; lahimmat: {lahimmat(tulokset)})"
-    if not luo:
-        return oletus, ei_sovi
+    tulokset = None
+    if uusi:
+        luo = True
+    else:
+        import kameran_heilunta as kh
+        ref = kh.referenssi(video, n=n)
+        tulokset = {}
+        for k in ehdokkaat(projekti):
+            t = tk.siirtymat(video, k, ref_video=ref)
+            tulokset[k] = t
+            if sopii(t, tk):
+                kansion_nimi = os.path.relpath(k, projekti) if os.path.dirname(k) == os.path.abspath(projekti) else k
+                return k, f"kalibrointikansio {kansion_nimi} sopii videoon ({', '.join(f'{p}: p90 {t[p]['p90']:.2f} px' for p in ('vasen', 'oikea'))})"
+        if not luo:
+            return os.path.join(projekti, "tulokset"), f"mikaan kalibrointikansio ei sovi videoon (ikkunasiirtyma p90 px vasen/oikea, raja {tk.RAJA_PX:g}; lahimmat: {lahimmat(tulokset)})"
     ulos = os.path.join(lisakansio() or projekti, automaattinen_nimi(nimi or (virran_nimi(video) if virta else video)))      # kontissa uudet kalibroinnit kayttajan volyymiin (sailyvat paivityksissa)
-    tulosta(f"Mikaan kalibrointikansio ({', '.join(os.path.basename(k) for k in tulokset)}) ei sovi videoon ({lahimmat(tulokset)}): kalibroidaan video kansioon {os.path.basename(ulos)} "
-            + ("(virrasta: ~2-5 min, haku virrasta on hidasta)" if virta else "(~1 min)"))
+    arvio = "(virrasta: ~2-5 min, haku virrasta on hidasta)" if virta else "(~1 min)"
+    if uusi:
+        tulosta(f"Kalibroidaan video uudelleen (vanhoja kalibrointeja ei kayteta) kansioon {os.path.basename(ulos)} {arvio}")
+    else:
+        tulosta(f"Mikaan kalibrointikansio ({', '.join(os.path.basename(k) for k in tulokset)}) ei sovi videoon ({lahimmat(tulokset)}): kalibroidaan video kansioon {os.path.basename(ulos)} {arvio}")
+    for f in TARVITTAVAT:                                        # edellisen kalibroinnin tiedostot pois: onnistuminen tarkoittaa silloin tuoreita tiedostoja (ei vanhan kalibroinnin jaannoksia)
+        try:
+            os.remove(os.path.join(ulos, f))
+        except OSError:
+            pass
     try:
         import uusi_kalibrointi as uk
         r = uk.kalibroi_video(video, ulos, os.path.join(projekti, "tulokset"), tulosta=tulosta, aikaraja_s=aikaraja_s)
     except Exception as e:                                       # noqa: BLE001
-        return oletus, f"automaattinen kalibrointi epaonnistui ({e!r}); kaytetaan kansiota tulokset (tulokset epatarkkoja)"
-    if r != 0 and not all(os.path.exists(os.path.join(ulos, t)) for t in TARVITTAVAT):
-        syy = "aikaraja ylittyi: virran luku on hidasta" if r == uk.AIKARAJA_KOODI else "renkaita tai viivoja ei loytynyt"
-        return oletus, f"automaattinen kalibrointi epaonnistui ({syy}); kaytetaan kansiota tulokset (tulokset epatarkkoja)"
+        return _varakansio(video, projekti, n, tulokset, repr(e), tk)
+    if r != 0 and not all(os.path.exists(os.path.join(ulos, f)) for f in TARVITTAVAT):
+        return _varakansio(video, projekti, n, tulokset, "aikaraja ylittyi: virran luku on hidasta" if r == uk.AIKARAJA_KOODI else "renkaita tai viivoja ei loytynyt", tk)
     return ulos, f"kalibroitu automaattisesti kansioon {os.path.basename(ulos)}"
