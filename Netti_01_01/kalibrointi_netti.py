@@ -20,6 +20,7 @@ Menetelma:
 import json
 import math
 import os
+import time
 
 import cv2
 import numpy as np
@@ -27,6 +28,7 @@ from scipy.optimize import least_squares
 
 import kalibrointi_perus as kp
 import rata
+import videon_luku as vl
 
 # puoliskon rajaus alkuperaisesta 1920x1080-ruudusta: (x, y, leveys, korkeus). Ylareunan TV-grafiikka (minikartta,
 # sponsoribanneri) jaa rajauksen ylapuolelle.
@@ -57,27 +59,27 @@ K1_SCALE_PX = 1000.0
 # =====================================================================================================================
 # MOODIKUVA
 # =====================================================================================================================
-def moodikuva(video, puoli, vali_s=5.0, max_s=120.0, koko_video=0):
-    """Puolison moodikuva (mediaani), kaannettyna 90 astetta vastapaivaan. Oletus: videon ensimmaiset max_s sekuntia vali_s valein. koko_video = n > 0: n ruutua tasaisesti koko videon yli
-    (ihmiset, harjat ja kivet haviavat mediaanista; alun 2 minuutissa voi olla ihmisia viivoilla, jolloin hairiintyneet viivat eivat loydy: Ahrenberg-video)."""
-    x, y, w, h = PUOLET[puoli]
-    cap = cv2.VideoCapture(video)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+def moodikuvat(video, puolet=("vasen", "oikea"), vali_s=5.0, max_s=120.0, koko_video=0):
+    """{puoli: (moodikuva, ruutuja)}: puoliskojen moodikuvat (mediaani), kaannettyna 90 astetta vastapaivaan, YHDELLA videon luvulla: samoista ruuduista leikataan kaikki puoliskot (ennen kutakin
+    puoliskoa varten luettiin koko ruutujoukko erikseen, virrasta haku on hidasta; ks. videon_luku.py). Oletus: videon ensimmaiset max_s sekuntia vali_s valein. koko_video = n > 0: n ruutua
+    tasaisesti koko videon yli (ihmiset, harjat ja kivet haviavat mediaanista; alun 2 minuutissa voi olla ihmisia viivoilla, jolloin hairiintyneet viivat eivat loydy: Ahrenberg-video)."""
+    puolet = tuple(puolet)
+    fps, n = vl.tiedot(video)
     if koko_video:
         paikat = np.linspace(int(20 * fps), max(int(20 * fps) + 1, n - int(20 * fps)), int(koko_video)).astype(int)
     else:
         paikat = [int(t * fps) for t in np.arange(0.0, max_s, vali_s) if int(t * fps) < n]
-    frames = []
-    for k in paikat:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(k))
-        ok, fr = cap.read()
-        if not ok:
-            break
-        frames.append(fr[y:y + h, x:x + w])
-    cap.release()
-    med = np.median(np.stack(frames, axis=0), axis=0).astype(np.uint8)
-    return cv2.rotate(med, cv2.ROTATE_90_COUNTERCLOCKWISE), len(frames)
+    rajaukset = [PUOLET[p] for p in puolet]
+    ruudut = vl.lue_ruudut(video, paikat, lambda fr: [fr[y:y + h, x:x + w] for x, y, w, h in rajaukset])
+    ruudut = [r for r in ruudut if r is not None]                      # ruutu, jota ei saatu luetuksi (verkkovirhe), jaa pois: muut ruudut kelpaavat
+    if not ruudut:
+        raise RuntimeError(f"videosta ei saatu luettua yhtaan ruutua: {video}")
+    return {p: (cv2.rotate(np.median(np.stack([r[i] for r in ruudut], axis=0), axis=0).astype(np.uint8), cv2.ROTATE_90_COUNTERCLOCKWISE), len(ruudut)) for i, p in enumerate(puolet)}
+
+
+def moodikuva(video, puoli, vali_s=5.0, max_s=120.0, koko_video=0):
+    """Yhden puoliskon moodikuva ja ruutujen maara (kuten moodikuvat); useampaa puoliskoa varten kayta moodikuvat (yksi videon luku kaikille)."""
+    return moodikuvat(video, (puoli,), vali_s, max_s, koko_video)[puoli]
 
 
 # =====================================================================================================================
@@ -523,9 +525,10 @@ def piirra_overlay(td):
 
 
 # =====================================================================================================================
-def kalibroi_puoli(video, puoli, ulos, k1_vapaa=True, koko_video=0):
+def kalibroi_puoli(video, puoli, ulos, k1_vapaa=True, koko_video=0, moodi=None):
+    """moodi: valmiiksi laskettu (moodikuva, ruutuja) (moodikuvat: kaikki puoliskot yhdella videon luvulla); ilman sita moodikuva luetaan videosta tassa."""
     print(f"=== {puoli} ===")
-    frame, n = moodikuva(video, puoli, koko_video=koko_video)
+    frame, n = moodi if moodi is not None else moodikuva(video, puoli, koko_video=koko_video)
     print(f"  moodikuva {frame.shape[1]}x{frame.shape[0]} ({n} naytetta)")
     os.makedirs(ulos, exist_ok=True)
     cv2.imwrite(os.path.join(ulos, f"moodikuva_{puoli}.png"), frame)
@@ -561,5 +564,9 @@ if __name__ == "__main__":
     ap.add_argument("--ei-k1", action="store_true", help="ei objektiivin vaaristymaa")
     ap.add_argument("--koko-video", type=int, default=0, metavar="N", help="moodikuva N ruudusta tasaisesti koko videon yli (oletus: videon 2 ensimmaista minuuttia); kayta, jos viivoja ei loydy")
     a = ap.parse_args()
-    for pu in a.puolet.split(","):
-        kalibroi_puoli(a.video, pu, a.ulos, k1_vapaa=not a.ei_k1, koko_video=a.koko_video)
+    puolet = a.puolet.split(",")
+    t0 = time.time()
+    moodit = moodikuvat(a.video, puolet, koko_video=a.koko_video)                  # kaikkien puoliskojen ruudut luetaan videosta kerralla
+    print(f"luettu {next(iter(moodit.values()))[1]} ruutua {time.time() - t0:.1f} s (kummankin puoliskon moodikuva samoista ruuduista)", flush=True)
+    for pu in puolet:
+        kalibroi_puoli(a.video, pu, a.ulos, k1_vapaa=not a.ei_k1, koko_video=a.koko_video, moodi=moodit[pu])

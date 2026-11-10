@@ -14,6 +14,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 
 import cv2
 
@@ -45,22 +47,51 @@ def _aja(komento, aikaraja_s, tulosta):
         return AIKARAJA_KOODI
 
 
+def _lopeta(proc):
+    """Taustaprosessi pois (jos se on viela kaynnissa)."""
+    if proc is not None and proc.poll() is None:
+        proc.kill()
+        proc.wait()
+
+
 def kalibroi_video(video, ulos, pohja=None, koko_video=0, tulosta=print, aikaraja_s=None):
     """Kalibroi video kansioon ulos (mallit kopioidaan pohjasta, oletus tulokset); palauttaa 0, jos onnistui ja tulos sopii videoon (tools/tarkista_kalibrointi.py). Sama kuin komentorivi.
-    video: tiedosto tai virran osoite (YouTube-VOD: ruudut haetaan hakemalla virrasta); aikaraja_s: kunkin vaiheen (kalibrointi, varakalibrointi, tarkistus) enimmaisaika, None = ei rajaa."""
+    video: tiedosto tai virran osoite (YouTube-VOD: ruudut haetaan hakemalla virrasta); aikaraja_s: kunkin vaiheen (kalibrointi, varakalibrointi, tarkistus) enimmaisaika, None = ei rajaa.
+    Videota luetaan vain kahdesti: kalibrointi lukee molempien puoliskojen ruudut kerralla (kalibrointi_netti.moodikuvat), ja tarkistuksen vertailukuvat (ruudut koko videon yli) luetaan toisessa
+    prosessissa jo kalibroinnin aikana, kun kalibrointi sovittaa eika odota verkkoa; tarkistus vertaa vain valmiiseen vertailuun (aiemmin vasen, oikea ja tarkistus luettiin erikseen)."""
     pohja = os.path.join(KOHDE, "tulokset") if pohja is None else pohja
     n = kopioi_mallit(pohja, ulos)
     tulosta(f"kopioitu {n} mallitiedostoa kansiosta {pohja}")
-    komento = [sys.executable, os.path.join(KOHDE, "kalibrointi_netti.py"), video, "--ulos", ulos]
-    r = _aja(komento + (["--koko-video", str(koko_video)] if koko_video else []), aikaraja_s, tulosta)
-    if r and r != AIKARAJA_KOODI and not koko_video:           # videon alussa voi olla ihmisia viivoilla: moodikuva koko videon yli (aikarajaan keskeytynyt vaihe ei parane 40 haulla)
-        tulosta("kalibrointi epaonnistui ensimmaisen 2 minuutin moodikuvalla, yritetaan moodikuvalla koko videon yli")
-        r = _aja(komento + ["--koko-video", "40"], aikaraja_s, tulosta)
-    if r:
-        tulosta("kalibrointi epaonnistui (renkaita tai viivoja ei loytynyt moodikuvasta): katso kalibrointi_netti.py:n tuloste")
-        return r
-    tulosta("\ntarkistus:")
-    return _aja([sys.executable, os.path.join(KOHDE, "tools", "tarkista_kalibrointi.py"), video, "--kansio", ulos], aikaraja_s, tulosta)
+    tarkistus = [sys.executable, os.path.join(KOHDE, "tools", "tarkista_kalibrointi.py"), video]
+    tmp = tempfile.mkdtemp(prefix="kalibrointi_ref_")
+    ref = os.path.join(tmp, "ref.npz")
+    ref_proc = None
+    try:
+        t_ref = time.monotonic()
+        try:
+            ref_proc = subprocess.Popen(tarkistus + ["--ref-ulos", ref], cwd=KOHDE)           # vertailukuvat taustalla; ellei kaynnisty, tarkistus lukee videon itse
+        except OSError as e:
+            tulosta(f"tarkistuksen vertailukuvien luku taustalla ei kaynnistynyt ({e!r}); tarkistus lukee videon itse")
+        komento = [sys.executable, os.path.join(KOHDE, "kalibrointi_netti.py"), video, "--ulos", ulos]
+        r = _aja(komento + (["--koko-video", str(koko_video)] if koko_video else []), aikaraja_s, tulosta)
+        if r and r != AIKARAJA_KOODI and not koko_video:       # videon alussa voi olla ihmisia viivoilla: moodikuva koko videon yli (aikarajaan keskeytynyt vaihe ei parane 40 haulla)
+            tulosta("kalibrointi epaonnistui ensimmaisen 2 minuutin moodikuvalla, yritetaan moodikuvalla koko videon yli")
+            r = _aja(komento + ["--koko-video", "40"], aikaraja_s, tulosta)
+        if r:
+            tulosta("kalibrointi epaonnistui (renkaita tai viivoja ei loytynyt moodikuvasta): katso kalibrointi_netti.py:n tuloste")
+            return r
+        tulosta("\ntarkistus:")
+        ref_ok = False
+        if ref_proc is not None:
+            try:
+                ref_ok = ref_proc.wait(timeout=None if aikaraja_s is None else max(1.0, aikaraja_s - (time.monotonic() - t_ref))) == 0 and os.path.exists(ref)
+            except subprocess.TimeoutExpired:
+                _lopeta(ref_proc)
+                tulosta(f"vaihe keskeytettiin: aikaraja {aikaraja_s:.0f} s ylittyi (tarkistuksen vertailukuvien luku); tarkistus lukee videon itse")
+        return _aja(tarkistus + ["--kansio", ulos] + (["--ref", ref] if ref_ok else []), aikaraja_s, tulosta)
+    finally:
+        _lopeta(ref_proc)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main():

@@ -1,14 +1,14 @@
 """Maalimerkin (kaukopaan harjanpaa) haku: yksi ruutu (ehdokkaat, etsi) ja moniruutuhaku (konsensus, MerkkiSeuranta).
 
 Heittajan maali on kaukopaassa: joukkueen kippari pitaa harjaa jaalla harjanpaa kohti heittajaa, ja heittaja tahtaa sita kohti. Harjanpaa on muovipala, jonka sävy vaihtelee videoittain ja harjoittain
-(oranssi H ~ 13-16, ruskea H ~ 8-11, tummanruskea V ~ 95-130, punaruskea H ~ 4-7), joten maali etsitaan varista ja muodosta. Seuraavat sekoittuvat siihen ja on erotettava:
+(oranssi H ~ 13-16, ruskea H ~ 8-11, tummanruskea V ~ 95-130, punaruskea H ~ 4-7, tumman keltainen / sinapinkeltainen H ~ 12-24, V ~ 115-135), joten maali etsitaan varista ja muodosta. Seuraavat sekoittuvat siihen ja on erotettava:
 
   * kiven keltainen kahva (osassa videoita koko kahva on samaa savya kuin harjanpaa): kahva on pieni, kaareva ja sen pitka akseli on poikittain kenttaan nahden, harjanpaa taas kentan suuntainen,
   * puulattia (sama sävy kuin ruskea harjanpaa): leikataan pois taustakuvasta (_lattia) ja |X'| <= X_MAX_CM -kaistalla,
   * harjan puuvarsi ja harjanpaan punaisen renkaan / kahvan halo (samaa tai viereista savya, liittyvat harjanpaahan): savytarkennus ja paksummat avaukset irrottavat ne,
   * jaalla lojuvat ja sivussa seisovien pelaajien harjat pesan takana (Y' < TAKA_Y_MIN_CM).
 
-Yksi ruutu: kaukopaan kuva oikaistuna (Mittari.kuvain.leike) -> HSV-maski (H 4-17, S >= 90, V >= 70) rajattuna jaalle -> avaus 5 px (ohuet rakenteet pois) -> yhtenaiset alueet. Alue on kelvollinen,
+Yksi ruutu: kaukopaan kuva oikaistuna (Mittari.kuvain.leike) -> HSV-maski (H 4-17, S >= 90, V >= 70; lisaksi tumman keltainen H 18-30, S >= 75, V 70-155) rajattuna jaalle -> avaus 5 px (ohuet rakenteet pois) -> yhtenaiset alueet. Alue on kelvollinen,
 kun sen keskipiste (maatasolle, z = 3 cm) on kaistalla, ala on harjanpaan kokoinen (MERKKI_ALA_CM2), sivusuhde 1,4-7 ja pitka akseli enintaan MERKKI_KULMA_MAX astetta kentan suunnasta (oikaistussa kuvassa
 vaaka). Koon, muodon tai pituuden (> PITUUS_MAX_CM) puolesta kelpaamaton kaistalla oleva alue pilkotaan: ensin savytarkennus (alueen oman savymoodin +- SAVY_KAISTA: halo ja viereiset kahvat pois), sitten
 paksummat avaukset (9-13 px: puuvarsi ~5-9 px irtoaa, harjanpaa >= 10 px jaa). Havaintoja: harjanpaa on kaikissa viidessa videossa kentan suuntainen (0-19 astetta), kivien kahvat 60-90 astetta.
@@ -35,9 +35,12 @@ import kivimalli
 
 H_MIN, H_MAX = 4, 17                    # harjanpaan sävy (OpenCV 0-179): punaruskea ~4-7, ruskea ~8-11, oranssi ~13-16, kiven keltainen kahva ~13-22 (videosta riippuen)
 S_MIN, V_MIN = 90, 70                   # matala V_MIN: tummanruskea harjanpaa (V ~ 95-130) ja varjossa oleva kuuluvat mukaan
+H_TUMMA_MAX, S_TUMMA_MIN, V_TUMMA_MAX = 30, 75, 155   # tumman keltainen (sinapinkeltainen / khaki) harjanpaa: Saarelainen 128: H 12-19 (mediaani 17), S ~ 118, V ~ 126. Savyt H_MAX+1 ... H_TUMMA_MAX kelpaavat vain tummina
+                                        # (V <= V_TUMMA_MAX) ja hieman matalammalla kyllaisyydella (S >= S_TUMMA_MIN; sinapin S 100-135, pakkaus ja valaistus madaltavat). Kirkkaan keltainen (V ~ 160-250) on kiven kahvan
+                                        # (V ~ 200) ja vaalean puuvarren savy (V ~ 180-255): se pidetaan poissa, ettei viereinen kahva liity harjanpaahan yhdeksi alueeksi (Video2 172: esiintyma 0,93 -> 0,53)
 AVAUS_PX = (5, 9, 11, 13)                # avauskoot: 5 poistaa ohuet rakenteet (kahvan reunus ~3 px), loput irrottavat harjanpaan varresta (~9 px)
 X_MAX_CM = 255.0                         # kaista: jaa (puulattia alkaa ~250 cm:ssa; lattia rajataan lisaksi taustakuvasta, _lattia)
-LATTIA_H = (5, 22)                       # puulattian savy taustakuvassa (sama kuin ruskean harjanpaan)
+LATTIA_H = (5, H_TUMMA_MAX)              # puulattian savy taustakuvassa (sama kuin harjanpaan: ruskea ... tumman keltainen; keltaisempi lattia ei jaisi maskin ulkopuolelle ja tulisi tumman keltaisena harjanpaana)
 LATTIA_S_MIN, LATTIA_V_MIN = 50, 80
 LATTIA_MIN_PX = 3000                     # yhtenainen lattia-alue vahintaan taman kokoinen
 LATTIA_LAAJENNUS_PX = 7
@@ -201,7 +204,10 @@ def ehdokkaat_leikkeesta(mittari, roi, x0, y0):
         return []
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     H, S = hsv[..., 0], hsv[..., 1]
-    m = cv2.threshold(cv2.inRange(hsv, (H_MIN, S_MIN, V_MIN), (H_MAX, 255, 255)), 0, 1, cv2.THRESH_BINARY)[1]
+    vari = cv2.inRange(hsv, (H_MIN, S_MIN, V_MIN), (H_MAX, 255, 255))
+    if H_TUMMA_MAX > H_MAX:
+        vari |= cv2.inRange(hsv, (H_MAX + 1, S_TUMMA_MIN, V_MIN), (H_TUMMA_MAX, 255, V_TUMMA_MAX))
+    m = cv2.threshold(vari, 0, 1, cv2.THRESH_BINARY)[1]
     m = _avaa(cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)) & _kaista(mittari, x0, y0, roi.shape[1], roi.shape[0]), AVAUS_PX[0])
     out = []
     for e, kmask in _arvioi(mittari, m, x0, y0, H, S):

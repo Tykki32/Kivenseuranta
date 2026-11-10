@@ -482,6 +482,122 @@ def testaa_kalibroinnin_tarkistus():
                     tarkista(f"{puoli}: sama kuva sopii", sopii is True and abs(t[puoli]["dx"]) < 0.3 and abs(t[puoli]["dy"]) < 0.3, f"dx {t[puoli].get('dx')}")
                 else:
                     tarkista(f"{puoli}: siirto (6, -4) px mitataan ja kalibrointi hylataan", sopii is False and abs(t[puoli]["dx"] - sx) < 0.5 and abs(t[puoli]["dy"] - sy) < 0.5, f"dx {t[puoli].get('dx'):.2f} dy {t[puoli].get('dy'):.2f}")
+            # --ref-ulos / --ref: vertailukuvat luetaan videosta kerran (uusi_kalibrointi.py lukee ne taustalla kalibroinnin aikana), vertailu tehdaan myohemmin lukematta videota
+            import contextlib
+            import io
+            ref = tk.kh.referenssi(polku, n=8, alku_s=0.0)
+            npz = os.path.join(tmp, f"{nimi}_ref.npz")
+            vanha_ref, vanha_argv = tk.kh.referenssi, sys.argv
+            try:
+                tk.kh.referenssi = lambda video, n=96, alku_s=30.0: ref
+                sys.argv = ["tarkista_kalibrointi.py", polku, "--ref-ulos", npz]
+                r1 = tk.main()
+                tk.kh.referenssi = lambda *a, **k: (_ for _ in ()).throw(AssertionError("video luettiin uudelleen"))
+                sys.argv = ["tarkista_kalibrointi.py", polku, "--kansio", tmp, "--ref", npz]
+                ulos = io.StringIO()
+                with contextlib.redirect_stdout(ulos):
+                    r2 = tk.main()
+            finally:
+                tk.kh.referenssi, sys.argv = vanha_ref, vanha_argv
+            samat = all(tk.arvioi(t[puoli])[1] in ulos.getvalue() for puoli in ("vasen", "oikea"))
+            tarkista(f"{nimi}: --ref-ulos tallentaa mediaanikuvat ja --ref vertaa niihin lukematta videota; tulos ja paluukoodi kuten suoraan", r1 == 0 and r2 == (0 if nimi == "sama" else 1) and samat, f"{r1} {r2} {ulos.getvalue()!r}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def testaa_videon_luku():
+    print("videon_luku: ruudut usealla lukijalla rinnakkain = yhdella lukijalla; kalibrointi_netti.moodikuvat lukee kaikki puoliskot yhdella videon luvulla ja antaa saman kuin ennen")
+    import contextlib
+    import io
+    import shutil
+    import tempfile
+    import cv2
+    import kalibrointi_netti as kn
+    import videon_luku as vl
+    rng = np.random.default_rng(3)
+    pohja = np.clip(cv2.GaussianBlur(rng.normal(80, 25, (1080, 1920, 3)).astype(np.float32), (0, 0), 3.0), 30, 130)
+    tmp = tempfile.mkdtemp()
+    try:
+        polku = os.path.join(tmp, "v.avi")
+        kirj = cv2.VideoWriter(polku, cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (1920, 1080))
+        for i in range(20):                                                                        # ruutu i: vasen puolisko kirkastuu 5 / ruutu, oikea tummenee 2 / ruutu (jarjestys- ja puoliskovirheet nakyvat)
+            kuva = pohja.copy()
+            kuva[:, :960] += 5 * i
+            kuva[:, 960:] -= 2 * i
+            kirj.write(np.clip(kuva, 0, 255).astype(np.uint8))
+        kirj.release()
+        fps, n = vl.tiedot(polku)
+        tarkista("tiedot: ruutunopeus ja ruutujen maara", abs(fps - 30.0) < 1e-6 and n == 20, f"{fps} {n}")
+        paikat = [0, 7, 3, 19, 12, 5]
+        yksi = vl.lue_ruudut(polku, paikat, lambda k: k.copy(), saikeita=1)
+        monta = vl.lue_ruudut(polku, paikat, lambda k: k.copy(), saikeita=4)
+        tarkista("lue_ruudut: usea lukija antaa tarkalleen samat ruudut kuin yksi, pyydetyssa jarjestyksessa", len(monta) == len(paikat) and all(a is not None and b is not None and np.array_equal(a, b) for a, b in zip(yksi, monta)))
+        vasen = [float(k[:, :960].mean()) for k in monta]
+        tarkista("lue_ruudut: oikea ruutu oikeassa kohdassa (vasen puolisko kirkastuu 5 / ruutu)", all(abs((vasen[j] - vasen[0]) - 5.0 * (paikat[j] - paikat[0])) < 2.0 for j in range(len(paikat))), str([round(v, 1) for v in vasen]))
+        osa = vl.lue_ruudut(polku, [2, 40, 5, 99], lambda k: int(k.mean()), saikeita=3)
+        tarkista("lue_ruudut: videon ulkopuolinen paikka -> None, muut ruudut luetaan", osa[0] is not None and osa[1] is None and osa[2] is not None and osa[3] is None, str(osa))
+        tarkista("lue_ruudut: ei paikkoja -> tyhja lista", vl.lue_ruudut(polku, []) == [])
+        tarkista("lue_ruudut: lukijoita ei ole enempaa kuin paikkoja (1 paikka, 8 saietta)", len(vl.lue_ruudut(polku, [4], saikeita=8)) == 1)
+
+        def vanha_moodikuva(puoli, vali_s, max_s):                                                 # kalibrointi_netti.moodikuva ennen: yksi lukija, yksi puolisko kerrallaan, haku jokaiselle ruudulle
+            x, y, w, h = kn.PUOLET[puoli]
+            cap = cv2.VideoCapture(polku)
+            ruudut = []
+            for k in [int(t * 30.0) for t in np.arange(0.0, max_s, vali_s) if int(t * 30.0) < 20]:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, k)
+                ok, fr = cap.read()
+                if not ok:
+                    break
+                ruudut.append(fr[y:y + h, x:x + w])
+            cap.release()
+            return cv2.rotate(np.median(np.stack(ruudut, axis=0), axis=0).astype(np.uint8), cv2.ROTATE_90_COUNTERCLOCKWISE), len(ruudut)
+        kutsut = []
+        alkup = vl.lue_ruudut
+        vl.lue_ruudut = lambda *a, **k: (kutsut.append(len(a[1])), alkup(*a, **k))[1]
+        try:
+            m = kn.moodikuvat(polku, ("vasen", "oikea"), vali_s=0.1, max_s=0.6)
+            kutsut_kaksi = list(kutsut)
+            yksin = kn.moodikuva(polku, "oikea", vali_s=0.1, max_s=0.6)
+        finally:
+            vl.lue_ruudut = alkup
+        tarkista("moodikuvat: molemmat puoliskot yhdella videon luvulla (yksi lue_ruudut-kutsu, 6 ruutua)", kutsut_kaksi == [6] and set(m) == {"vasen", "oikea"}, str(kutsut_kaksi))
+        for puoli in ("vasen", "oikea"):
+            v_kuva, v_n = vanha_moodikuva(puoli, 0.1, 0.6)
+            tarkista(f"moodikuvat: {puoli} tarkalleen sama moodikuva ja ruutumaara kuin ennen", m[puoli][1] == v_n == 6 and m[puoli][0].shape == v_kuva.shape and bool(np.array_equal(m[puoli][0], v_kuva)), f"{m[puoli][1]} {v_n}")
+        tarkista("moodikuva (yksi puolisko) antaa saman kuin moodikuvat", yksin[1] == m["oikea"][1] and bool(np.array_equal(yksin[0], m["oikea"][0])))
+        tarkista("moodikuvat: puoliskot eroavat toisistaan (vasen kirkkaampi kuin oikea)", float(m["vasen"][0].mean()) > float(m["oikea"][0].mean()) + 5.0, f"{m['vasen'][0].mean():.1f} vs {m['oikea'][0].mean():.1f}")
+        # ruutu, jota ei saada luetuksi (verkkovirhe): jaa pois, muut ruudut kelpaavat; ei yhtaan ruutua -> selva virhe
+        cap = cv2.VideoCapture(polku)
+        ok, kuva0 = cap.read()
+        cap.release()
+        vl.lue_ruudut = lambda video, paikat, kasittele=None, saikeita=4: [None if i == 1 else kasittele(kuva0) for i in range(len(paikat))]
+        try:
+            m2 = kn.moodikuvat(polku, ("vasen",), vali_s=0.1, max_s=0.6)
+            vl.lue_ruudut = lambda video, paikat, kasittele=None, saikeita=4: [None] * len(paikat)
+            try:
+                kn.moodikuvat(polku, ("vasen",), vali_s=0.1, max_s=0.6)
+                virhe = None
+            except RuntimeError as e:
+                virhe = str(e)
+        finally:
+            vl.lue_ruudut = alkup
+        tarkista("moodikuvat: lukematon ruutu jaa pois, muut kelpaavat (5 / 6)", m2["vasen"][1] == 5, str(m2["vasen"][1]))
+        tarkista("moodikuvat: yhtaan ruutua ei saatu luetuksi -> RuntimeError", virhe is not None and "ruutua" in virhe, str(virhe))
+        # kalibroi_puoli kayttaa valmista moodikuvaa eika lue videota uudelleen
+        vanha_mk = kn.moodikuva
+        kn.moodikuva = lambda *a, **k: (_ for _ in ()).throw(AssertionError("moodikuva luettiin uudelleen"))
+        try:
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    kn.kalibroi_puoli(polku, "vasen", tmp, moodi=(np.zeros((890, 960, 3), np.uint8), 5))
+                tulos = "ei virhetta"
+            except RuntimeError as e:                                                              # tyhjasta kuvasta ei loydy rengasta: kalibrointi eteni valmiilla moodikuvalla renkaiden hakuun asti
+                tulos = str(e)
+            except AssertionError as e:
+                tulos = f"LUETTIIN: {e}"
+        finally:
+            kn.moodikuva = vanha_mk
+        tarkista("kalibroi_puoli(moodi=...): valmista moodikuvaa kaytetaan, videota ei lueta uudelleen", "rengasta" in tulos, tulos)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -683,6 +799,32 @@ def testaa_kalibroinnin_valinta():
             kh2.referenssi = lambda video, n=96, alku_s=30.0: (_ for _ in ()).throw(OSError("virta ei aukea"))
             k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanha", uusi=True, tulosta=lambda *a: None)
             tarkista("vanhojen kansioiden vertailu epaonnistuu (virta ei aukea): tulokset ja selitys, ei poikkeusta", os.path.basename(k) == "tulokset" and "vertailu epaonnistui" in sel, sel)
+
+            # vanha tools/uusi_kalibrointi.py (ohjelmakansio paivitetty osittain): ei aikaraja_s-parametria eika AIKARAJA_KOODIa -> kalibroidaan ilman aikarajaa ja kerrotaan vanha tiedosto, ei TypeErroria
+            tulosteet = []
+            vanhat_kutsut = []
+
+            def vanha_kalibroi_video(video, ulos, pohja=None, koko_video=0, tulosta=print):
+                vanhat_kutsut.append((video, os.path.basename(ulos)))
+                if vanhat_kutsut_tulos[0] == 0:
+                    for t_ in kv.TARVITTAVAT:
+                        os.makedirs(ulos, exist_ok=True)
+                        open(os.path.join(ulos, t_), "w").close()
+                return vanhat_kutsut_tulos[0]
+            vanhat_kutsut_tulos = [0]
+            ak = uk.AIKARAJA_KOODI
+            try:
+                del uk.AIKARAJA_KOODI
+                uk.kalibroi_video = vanha_kalibroi_video
+                k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanhaModuuli", uusi=True, aikaraja_s=60, tulosta=tulosteet.append)
+                tarkista("vanha uusi_kalibrointi (ei aikaraja_s): kalibroidaan silti (ilman aikarajaa), ei TypeErroria",
+                         vanhat_kutsut == [(virta, "tulokset_auto_yt_vanhaModuuli")] and os.path.basename(k) == "tulokset_auto_yt_vanhaModuuli" and "kalibroitu automaattisesti" in sel and "TypeError" not in sel, f"{vanhat_kutsut} {sel}")
+                tarkista("vanha moduuli: lokiin Huom kertoo tiedoston ja neuvon (kopioi koko ohjelmakansio, myos tools/)", any("on vanha versio" in x and "uusi_kalibrointi" in x and "tools/" in x for x in tulosteet), str(tulosteet)[:200])
+                vanhat_kutsut_tulos[0] = 1
+                k, sel = kv.valitse(virta, projekti=tmp, luo=True, nimi="yt_vanhaModuuli2", uusi=True, aikaraja_s=60, tulosta=lambda *a: None)
+                tarkista("vanha moduuli, kalibrointi epaonnistuu: ei AttributeErrorta (AIKARAJA_KOODI puuttuu), vara kayttoon", "epaonnistui" in sel and "renkaita" in sel, sel)
+            finally:
+                uk.AIKARAJA_KOODI = ak
         finally:
             kh2.referenssi, tk2.siirtymat, uk.kalibroi_video = vanhat[:3]
             if vanhat[3] is not None:
@@ -701,23 +843,85 @@ def testaa_kalibroinnin_valinta():
                     raise subprocess.TimeoutExpired(komento, timeout)
                 return types.SimpleNamespace(returncode=x)
             return run
-        vanha_run = subprocess.run
+        komennot = []                                                                              # run-kutsujen koko komennot (ajot-rivit ovat lyhennettyja)
+
+        class EsiPopen:                                                                            # tarkistuksen vertailukuvien luku taustalla (--ref-ulos): 0 = valmis, 2 = epaonnistui, "kesken" = ei valmistu
+            luodut = []
+            paluut = []
+
+            def __init__(self, komento, cwd=None):
+                self.komento, self.paluu, self.tapettu = list(komento), (EsiPopen.paluut.pop(0) if EsiPopen.paluut else 0), False
+                EsiPopen.luodut.append(self)
+                if self.paluu == 0:
+                    with open(self.komento[self.komento.index("--ref-ulos") + 1], "wb") as f:
+                        f.write(b"x")
+
+            def wait(self, timeout=None):
+                if self.paluu == "kesken" and not self.tapettu:
+                    raise subprocess.TimeoutExpired(self.komento, timeout)
+                return 0 if self.tapettu else self.paluu
+
+            def poll(self):
+                return None if self.paluu == "kesken" and not self.tapettu else (0 if self.tapettu else self.paluu)
+
+            def kill(self):
+                self.tapettu = True
+
+        def esi_run2(paluut):
+            run = esi_run(paluut)
+
+            def kirjaava(komento, cwd=None, timeout=None):
+                komennot.append(list(komento))
+                return run(komento, cwd=cwd, timeout=timeout)
+            return kirjaava
+
+        def ref_polku(popen):
+            return popen.komento[popen.komento.index("--ref-ulos") + 1]
+        vanha_run, vanha_popen = subprocess.run, subprocess.Popen
+        subprocess.Popen = EsiPopen
         try:
             pohja_k = os.path.join(tmp, "pohja")
             os.makedirs(pohja_k, exist_ok=True)
-            subprocess.run = esi_run([1, 0, 0])
+            subprocess.run = esi_run2([1, 0, 0])
+            EsiPopen.paluut[:] = [0]
             r = uk.kalibroi_video("v.mp4", os.path.join(tmp, "uusi1"), pohja_k, tulosta=lambda *a: None, aikaraja_s=60)
             tarkista("kalibroi_video: epaonnistunut moodikuva -> varakalibrointi koko videon yli -> tarkistus; aikaraja jokaiselle vaiheelle", r == 0 and ajot == [("kalibrointi_netti.py", False, 60), ("kalibrointi_netti.py", True, 60), ("tarkista_kalibrointi.py", False, 60)], str(ajot))
+            p = EsiPopen.luodut[-1]
+            tarkista("kalibroi_video: tarkistuksen vertailukuvat luetaan taustalla jo ennen kalibrointia (yksi taustaprosessi, tarkista_kalibrointi.py --ref-ulos)", len(EsiPopen.luodut) == 1 and os.path.basename(p.komento[1]) == "tarkista_kalibrointi.py" and "--ref-ulos" in p.komento, str(p.komento))
+            tarkista("kalibroi_video: tarkistus kayttaa valmiita vertailukuvia (--ref), eika lue videota uudelleen", komennot[-1][-2:] == ["--ref", ref_polku(p)] and "--kansio" in komennot[-1], str(komennot[-1]))
+            tarkista("kalibroi_video: vertailukuvien valiaikaiskansio siivotaan", not os.path.exists(os.path.dirname(ref_polku(p))))
             ajot.clear()
-            subprocess.run = esi_run(["aikaraja"])
+            komennot.clear()
+            EsiPopen.luodut.clear()
+            subprocess.run = esi_run2(["aikaraja"])
+            EsiPopen.paluut[:] = ["kesken"]
             r = uk.kalibroi_video("v.mp4", os.path.join(tmp, "uusi2"), pohja_k, tulosta=lambda *a: None, aikaraja_s=60)
             tarkista("kalibroi_video: aikarajan ylitys -> paluukoodi 124, ei varakalibrointia (virta ei parane 40 haulla)", r == uk.AIKARAJA_KOODI and len(ajot) == 1, f"{r} {ajot}")
+            tarkista("kalibroi_video: kalibrointi epaonnistui -> kesken oleva vertailukuvien luku lopetetaan, tarkistusta ei ajeta", EsiPopen.luodut[-1].tapettu and not any("tarkista_kalibrointi.py" in k[1] for k in komennot), str(komennot))
             ajot.clear()
-            subprocess.run = esi_run([0, 0])
+            komennot.clear()
+            EsiPopen.luodut.clear()
+            subprocess.run = esi_run2([0, 0])
+            EsiPopen.paluut[:] = [0]
             uk.kalibroi_video("v.mp4", os.path.join(tmp, "uusi3"), pohja_k, tulosta=lambda *a: None)
             tarkista("kalibroi_video: tiedostolle ei aikarajaa (kuten ennen)", [a[2] for a in ajot] == [None, None], str(ajot))
+            ajot.clear()
+            komennot.clear()
+            EsiPopen.luodut.clear()
+            subprocess.run = esi_run2([0, 0])
+            EsiPopen.paluut[:] = [2]
+            uk.kalibroi_video("v.mp4", os.path.join(tmp, "uusi4"), pohja_k, tulosta=lambda *a: None, aikaraja_s=60)
+            tarkista("kalibroi_video: vertailukuvien luku epaonnistui -> tarkistus lukee videon itse (ei --ref)", "--ref" not in komennot[-1] and "--kansio" in komennot[-1], str(komennot[-1]))
+            ajot.clear()
+            komennot.clear()
+            EsiPopen.luodut.clear()
+            subprocess.run = esi_run2([0, 0])
+            EsiPopen.paluut[:] = ["kesken"]
+            viestit = []
+            uk.kalibroi_video("v.mp4", os.path.join(tmp, "uusi5"), pohja_k, tulosta=viestit.append, aikaraja_s=60)
+            tarkista("kalibroi_video: vertailukuvien luku jumittaa -> aikaraja, taustaprosessi tapetaan ja tarkistus lukee videon itse", EsiPopen.luodut[-1].tapettu and "--ref" not in komennot[-1] and any("vertailukuvien luku" in v for v in viestit), str(viestit))
         finally:
-            subprocess.run = vanha_run
+            subprocess.run, subprocess.Popen = vanha_run, vanha_popen
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1160,10 +1364,11 @@ def testaa_merkki():
     def bgr(h, s_, v):
         return tuple(int(c) for c in cv2.cvtColor(np.array([[[h, s_, v]]], np.uint8), cv2.COLOR_HSV2BGR)[0, 0])
 
-    def suorakulmio(kuva, X, Y, z, leveys_px, korkeus_px, vari, siirto_u=0.0):
+    def suorakulmio(kuva, X, Y, z, leveys_px, korkeus_px, vari, siirto_u=0.0, siirto_v=0.0):
         """Oikaistun kuvan suorakulmio maatason pisteen (X, Y, z) kohdalla (kuva on oikaistussa avaruudessa): leveys vaakasuunnassa (kentan suunta, jyrkasti lyhentynyt), korkeus pystysuunnassa."""
         u, v = (float(q[0]) for q in m.maa_oikaistuun([X], [Y], z))
         u += siirto_u
+        v += siirto_v
         cv2.rectangle(kuva, (int(round(u - leveys_px / 2)), int(round(v - korkeus_px / 2))), (int(round(u + leveys_px / 2)), int(round(v + korkeus_px / 2))), vari, -1)
 
     def tausta():
@@ -1214,6 +1419,35 @@ def testaa_merkki():
     suorakulmio(kuva, X0, Y0, 3.0, 26, 12, bgr(10, 130, 135))                                                   # varjossa oleva ruskea harjanpaa
     maali, ehd = etsi(kuva)
     tarkista("varjossa oleva, ruskeampi harjanpaa loytyy", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0)
+    # tumman keltainen harjanpaa (Saarelainen 128: sinapinkeltainen, H ~ 12-19, S ~ 118, V ~ 126): savy yli H_MAX:n, joten H 4-17 -maski leikkasi siita puolet pois
+    for h_, s_, v_ in ((17, 118, 126), (19, 125, 125), (22, 140, 130), (26, 150, 140), (30, 130, 120)):
+        kuva = tausta()
+        suorakulmio(kuva, X0, Y0, 3.0, 26, 12, bgr(h_, s_, v_))
+        maali, ehd = etsi(kuva)
+        tarkista(f"tumman keltainen harjanpaa (H {h_}, S {s_}, V {v_}) loytyy ja on harjanpaan kokoinen", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0 and 200.0 <= maali["ala_cm2"] <= 700.0,
+                 "ei maalia: " + str([(round(e["X"]), round(e["Y"]), round(e["ala_cm2"]), e["syy"]) for e in ehd]) if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f}) ala {maali['ala_cm2']:.0f}")
+    kuva = tausta()
+    suorakulmio(kuva, X0, Y0, 3.0, 13, 12, bgr(14, 150, 130), siirto_u=-6.5)                                    # harjanpaan sävy vaihtelee: toinen puoli H 14, toinen H 20 (yksi alue, ei kahta puolikasta)
+    suorakulmio(kuva, X0, Y0, 3.0, 13, 12, bgr(20, 130, 125), siirto_u=6.5)
+    maali, ehd = etsi(kuva)
+    tarkista("harjanpaa, jonka sävy ylittaa H_MAX:n vain toisessa paassa, on yksi alue (ala ~ koko harjanpaa)", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0 and maali["ala_cm2"] >= 200.0,
+             "ei maalia" if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f}) ala {maali['ala_cm2']:.0f}")
+    kirkas = bgr(21, 150, 205)                                                                                  # kirkkaan keltainen kiven kahva (V ~ 200, H ~ 21): sama sävy kuin keltainen harjanpaa, mutta kirkkaampi kuin tumma keltainen
+    for nimi, osat in (("kiinni paassa", ((22, 10, 0.0, 0.0), (16, 34, 19.0, 0.0))), ("kyljessa", ((24, 10, 0.0, 0.0), (18, 40, 0.0, -24.0))), ("molemmissa paissa", ((24, 10, 0.0, 0.0), (14, 30, -19.0, 0.0), (14, 30, 19.0, 0.0)))):
+        kuva = tausta()
+        for lp, kp, du, dv in osat:
+            suorakulmio(kuva, X0, Y0, 3.0, lp, kp, oranssi if (lp, kp) in ((22, 10), (24, 10)) else kirkas, siirto_u=du, siirto_v=dv)
+        maali, ehd = etsi(kuva)
+        tarkista(f"harjanpaa + iso kirkkaan keltainen kahva {nimi}: kahva ei liity harjanpaahan (ilman V-rajaa alue olisi 1400-2100 cm2 ja maali katoaisi)", maali is not None and np.hypot(maali["X"] - X0, maali["Y"] - Y0) <= 6.0 and maali["ala_cm2"] <= 700.0,
+                 "ei maalia: " + str([(round(e["X"]), round(e["Y"]), round(e["ala_cm2"]), e["syy"]) for e in ehd]) if maali is None else f"({maali['X']:.0f}, {maali['Y']:.0f}) ala {maali['ala_cm2']:.0f}")
+    kuva = tausta()
+    suorakulmio(kuva, 20.0, 30.0, 12.0, 12, 26, bgr(21, 140, 130))                                              # tumma keltainen, pystysuuntainen (kahva varjossa): suunta hylkaa, vari ei saa tehda siita maalia
+    maali, ehd = etsi(kuva)
+    tarkista("tumman keltainen pystysuuntainen kahva ei ole maali", maali is None and any(e["syy"] == "suunta" for e in ehd), str([(round(e["X"]), round(e["Y"]), e["syy"]) for e in ehd]))
+    kuva = tausta()
+    suorakulmio(kuva, X0, Y0, 3.0, 26, 12, bgr(34, 150, 130))                                                   # yli H_TUMMA_MAX:n (keltavihrea): ei harjanpaa
+    maali, ehd = etsi(kuva)
+    tarkista("keltavihrea (H 34) ei ole harjanpaa", maali is None and not ehd)
     kuva = tausta()
     suorakulmio(kuva, 60.0, -30.0, 3.0, 22, 10, oranssi)                                                        # pesassa (pienempi) ja pesan takana lojuva harja (suurempi)
     suorakulmio(kuva, -40.0, -260.0, 3.0, 26, 12, oranssi)
@@ -2907,7 +3141,7 @@ def testaa_videon_nimi():
 
 
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre, testaa_kiri_kierre_odotus, testaa_kopiojono_lukko, testaa_videon_nimi):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_videon_luku, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre, testaa_kiri_kierre_odotus, testaa_kopiojono_lukko, testaa_videon_nimi):
         t()
     print()
     if VIRHEITA:

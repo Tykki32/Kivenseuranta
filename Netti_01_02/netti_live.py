@@ -2118,7 +2118,7 @@ def main():
     ap.add_argument("--url", help="suora virran osoite (http / https / rtsp / m3u8), luetaan kuten YouTube-virta")
     ap.add_argument("--kansio", default=None, help="kalibroinnit ja taustakuvat (kalibrointi_*.json, moodikuva_*[_puhdas].png, kivimalli_*.json, kierto_muoto_*.json). Oletus: tiedostolahde ja YouTube-video (ei live) kalibroidaan aina uudelleen kansioon tulokset_auto_<nimi> (--kalibrointi uusi; "
                     "kalibrointi_valinta.py), tai --kalibrointi valitse: sopiva vanha kansio valitaan automaattisesti (tulokset, tulokset_nettivideo2, ...); muulle lahteelle tulokset")
-    ap.add_argument("--kalibrointi", choices=("uusi", "valitse"), default="uusi", help="ilman --kansio:ta: uusi (oletus) = video kalibroidaan aina uudelleen omista ruuduistaan (tiedosto noin 1 min, YouTube-video 1-5 min; vanhoja "
+    ap.add_argument("--kalibrointi", choices=("uusi", "valitse"), default="uusi", help="ilman --kansio:ta: uusi (oletus) = video kalibroidaan aina uudelleen omista ruuduistaan (tiedosto noin 1 min, YouTube-video noin 0,5-2 min; vanhoja "
                     "kalibrointeja ei kayteta, koska kamera voi olla siirtynyt viikkojen valilla); valitse = kaytetaan ensimmaista videoon sopivaa vanhaa kalibrointia ja uusi tehdaan vain, jos mikaan ei sovi (nopeampi)")
     ap.add_argument("--viive", type=float, default=10.0, help="tulosteen viive analyysiin nahden (s); oletus 10: 97 %%:lla heitoista viiva- ja irroitusestimaatti on jo lopullinen (muutos alle 10 cm) kun viiva ilmestyy (5 s: 12 %%)")
     ap.add_argument("--jalki", type=float, default=10.0, help="pistejoukko nakyvissa taman ajan heiton jalkeen (s)")
@@ -2141,7 +2141,8 @@ def main():
     ap.add_argument("--kello-paikka", help="kellon laatikon vasen ylakulma kuvassa X,Y (pikselia); oletus: kuvan keskella mainosgrafiikan (Hyvinkaan Liikenne) alla")
     ap.add_argument("--ei-ikkunaa", action="store_true", help="ei ikkunaa (palvelin / testaus)")
     ap.add_argument("--web", type=int, default=0, metavar="PORTTI", help="palvelin: kuva, loki ja tulostiedostot selaimeen (http://palvelin:PORTTI) ikkunan sijaan; 0 = pois. Salasana: ymparistomuuttujat NETTI_WEB_KAYTTAJA ja NETTI_WEB_SALASANA")
-    ap.add_argument("--web-leveys", type=int, default=1280, help="--web: selaimeen menevan kuvan leveys (px); pienempi = kevyempi verkolle ja prosessorille (kuva pakataan vain, kun joku katsoo)")
+    ap.add_argument("--web-leveys", type=int, default=1920, help="--web: selaimeen menevan kuvan leveys (px); oletus 1920 = analysoitu kuva sellaisenaan (sama resoluutio kuin lahdevideosta luettu, ei pienennysta); "
+                    "pienempi = kevyempi verkolle ja prosessorille (kuva pakataan vain, kun joku katsoo)")
     ap.add_argument("--web-fps", type=float, default=8.0, help="--web: selaimeen menevan kuvan enimmaistaajuus katsojaa kohden (kuvaa/s)")
     ap.add_argument("--web-laatu", type=int, default=75, help="--web: JPEG-laatu 10-100")
     ap.add_argument("--tila-tiedosto", help="kirjoita ajon perustiedot (lahde, live, fps, alkuaika) JSON-tiedostoon heti, kun lahde on avattu (netti_palvelin.py kayttaa tata)")
