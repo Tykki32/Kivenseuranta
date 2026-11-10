@@ -33,21 +33,34 @@ def kopioi_mallit(pohja, ulos):
     return n
 
 
-def kalibroi_video(video, ulos, pohja=None, koko_video=0, tulosta=print):
-    """Kalibroi video kansioon ulos (mallit kopioidaan pohjasta, oletus tulokset); palauttaa 0, jos onnistui ja tulos sopii videoon (tools/tarkista_kalibrointi.py). Sama kuin komentorivi."""
+AIKARAJA_KOODI = 124                                           # paluukoodi, kun vaihe keskeytettiin aikarajaan (kuten GNU timeout)
+
+
+def _aja(komento, aikaraja_s, tulosta):
+    """Ajaa komennon (cwd = ohjelman kansio) ja palauttaa paluukoodin. aikaraja_s (None = ei rajaa): virran osoitteella verkko voi jumittaa, jolloin lapsi tapetaan ja palautetaan AIKARAJA_KOODI."""
+    try:
+        return subprocess.run(komento, cwd=KOHDE, timeout=aikaraja_s).returncode
+    except subprocess.TimeoutExpired:
+        tulosta(f"vaihe keskeytettiin: aikaraja {aikaraja_s:.0f} s ylittyi ({os.path.basename(komento[1])})")
+        return AIKARAJA_KOODI
+
+
+def kalibroi_video(video, ulos, pohja=None, koko_video=0, tulosta=print, aikaraja_s=None):
+    """Kalibroi video kansioon ulos (mallit kopioidaan pohjasta, oletus tulokset); palauttaa 0, jos onnistui ja tulos sopii videoon (tools/tarkista_kalibrointi.py). Sama kuin komentorivi.
+    video: tiedosto tai virran osoite (YouTube-VOD: ruudut haetaan hakemalla virrasta); aikaraja_s: kunkin vaiheen (kalibrointi, varakalibrointi, tarkistus) enimmaisaika, None = ei rajaa."""
     pohja = os.path.join(KOHDE, "tulokset") if pohja is None else pohja
     n = kopioi_mallit(pohja, ulos)
     tulosta(f"kopioitu {n} mallitiedostoa kansiosta {pohja}")
     komento = [sys.executable, os.path.join(KOHDE, "kalibrointi_netti.py"), video, "--ulos", ulos]
-    r = subprocess.run(komento + (["--koko-video", str(koko_video)] if koko_video else []), cwd=KOHDE)
-    if r.returncode and not koko_video:                        # videon alussa voi olla ihmisia viivoilla: moodikuva koko videon yli
+    r = _aja(komento + (["--koko-video", str(koko_video)] if koko_video else []), aikaraja_s, tulosta)
+    if r and r != AIKARAJA_KOODI and not koko_video:           # videon alussa voi olla ihmisia viivoilla: moodikuva koko videon yli (aikarajaan keskeytynyt vaihe ei parane 40 haulla)
         tulosta("kalibrointi epaonnistui ensimmaisen 2 minuutin moodikuvalla, yritetaan moodikuvalla koko videon yli")
-        r = subprocess.run(komento + ["--koko-video", "40"], cwd=KOHDE)
-    if r.returncode:
+        r = _aja(komento + ["--koko-video", "40"], aikaraja_s, tulosta)
+    if r:
         tulosta("kalibrointi epaonnistui (renkaita tai viivoja ei loytynyt moodikuvasta): katso kalibrointi_netti.py:n tuloste")
-        return r.returncode
+        return r
     tulosta("\ntarkistus:")
-    return subprocess.run([sys.executable, os.path.join(KOHDE, "tools", "tarkista_kalibrointi.py"), video, "--kansio", ulos], cwd=KOHDE).returncode
+    return _aja([sys.executable, os.path.join(KOHDE, "tools", "tarkista_kalibrointi.py"), video, "--kansio", ulos], aikaraja_s, tulosta)
 
 
 def main():
