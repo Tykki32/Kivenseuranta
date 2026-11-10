@@ -7,7 +7,6 @@
 #
 # Oletus: videokansion valvonta. Pudota videotiedosto kansioon /mnt/user/kivenseuranta/video -> kontti analysoi sen ja kirjoittaa tulokset kansioon /mnt/user/kivenseuranta/ulos.
 # YouTube-linkit: kirjoita ne tiedostoon /mnt/user/kivenseuranta/youtube.txt (yksi per rivi): kontin ei tarvitse kaynnistya uudelleen.
-# Kanavan uudet lahetykset (Streams) analysoidaan itsestaan: kirjoita kanavan osoite (https://www.youtube.com/@KANAVA/streams) samaan tiedostoon tai kayta NETTI_KANAVAT alla.
 # YouTube-lahetyksen tai -videon analyysiin ks. NETTI_LAHDE alla; kaikki asetukset: README_unraid.md.
 services:
   netti:
@@ -30,13 +29,6 @@ services:
       # NETTI_LAHDE: "https://www.youtube.com/@KANAVA/live" # kanavan live-lahetys; yhdessa NETTI_JATKUVA=1:n kanssa odottaa lahetysta
       # NETTI_LAHDE: "/data/video/peli.mp4"                # yksittainen tiedosto
       # NETTI_JATKUVA: "1"                                 # valvonta: ajo paattyy -> odota ja yrita uudelleen (kansio: uudet videot)
-      # --- KANAVAT: kanavan jokainen UUSI lahetys (Streams) analysoidaan itsestaan, kun se on paattynyt (kanavalla jo olevia videoita ei ajeta) ---
-      # NETTI_KANAVAT: "@KANAVA"                           # tai osoite https://www.youtube.com/@KANAVA/streams; useita pilkulla erotettuna (kanavia voi lisata myos tiedostoon youtube.txt)
-      # NETTI_KANAVA_VALI_MIN: "5"                         # kuinka usein kanavan luettelo haetaan (min)
-      # NETTI_KANAVA_VANHAT: "1"                           # kokeiluun: kanavalla jo olevista videoista nain monta uusinta ajetaan ensimmaisella kerralla (oletus 0)
-      # NETTI_KANAVA_MIN_KESTO_MIN: "20"                   # tata lyhyemmat videot (min) jatetaan pois; 0 = ei rajaa
-      # NETTI_KANAVA_SUODATIN: "matarmaa|finaali"          # vain videot, joiden nimessa on tama (saannollinen lauseke)
-      # NETTI_KANAVA_LIVE: "1"                             # kanavan suora lahetys analysoidaan heti (oletus: vasta kun se on paattynyt)
       # --- yleisimmat asetukset ---
       NETTI_VIDEO: "1"                 # tallenna kuvallinen video (mp4); 0 = vain CSV (saastaa levytilaa)
       NETTI_VIIVE: "10"                # kuvan viive analyysiin nahden (s)
