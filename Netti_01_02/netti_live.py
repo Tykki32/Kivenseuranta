@@ -438,8 +438,8 @@ class Naytto:
         except cv2.error:
             pass
 
-    def anna(self, kuva):
-        """Seuraava naytettava kuva (mista tahansa saikeesta); edellinen nayttamaton kuva korvautuu."""
+    def anna(self, kuva, aika=None):
+        """Seuraava naytettava kuva (mista tahansa saikeesta); edellinen nayttamaton kuva korvautuu. aika (kuvan aika videossa) on selainnakyman (netti_web.WebNaytto) syotteen aikaleima: ikkuna ei kayta sita."""
         with self._lukko:
             self._kuva = kuva
         self._uusi.set()
@@ -466,7 +466,7 @@ class Naytto:
             self._aseta_kokoruutu(not self.kokoruutu)
         return self._sulkeutunut()
 
-    def nayta_heti(self, kuva):
+    def nayta_heti(self, kuva, aika=None):
         """Synkroninen: kuva ikkunaan heti (simulaatio, yksi saie); palauttaa True jos lopetus on pyydetty."""
         cv2.imshow(self.NIMI, kuva)
         self._nahty += 1
@@ -1067,7 +1067,7 @@ def aja_sim(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja):
         piirtaja.piirra(kuva, f_out, an)
         if kirjoittaja is not None:
             kirjoittaja.kirjoita(kuva)
-        return not (naytto is not None and naytto.nayta_heti(kuva))
+        return not (naytto is not None and naytto.nayta_heti(kuva, f_out / lahde.fps))
 
     keskeytetty = False
     try:
@@ -1330,7 +1330,7 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja, vahti=
                     tilasto["piirto_s"] += time.perf_counter() - t_a
                     tilasto["piirto_cpu_s"] += time.thread_time() - c_a
                     if naytto is not None:
-                        naytto.anna(npi_kuva)                          # ikkuna ensin: tallennusjonon odotus ei viivasta jo valmista kuvaa
+                        naytto.anna(npi_kuva, f / fps)                 # ikkuna ensin: tallennusjonon odotus ei viivasta jo valmista kuvaa; f / fps = kuvan aika videossa (selaimen syotteen aikaleima)
                     if kirjoittaja is not None:
                         t_a = time.perf_counter()
                         kirjoittaja.kirjoita(npi_kuva)                 # (blokkaa, kun tallennusjono on taynna: kooderi ei ehdi)
@@ -2266,7 +2266,7 @@ def main():
         loki_rivit = nw.asenna_lokipuskuri()               # konsolitulosteen kopio selaimen lokinakymaan (docker logs saa tulosteet kuten ennenkin)
         ulos_polku = a.ulos or a.csv
         naytto = nw.WebNaytto(a.web, os.path.dirname(os.path.abspath(ulos_polku)) if ulos_polku else None, a.web_leveys, a.web_fps, a.web_laatu, loki_rivit=loki_rivit,
-                              tila=lambda: dict(lahde=a.lahde or a.youtube or a.url, otsikko=lahde.otsikko, live=bool(lahde.live), fps=lahde.fps, tallenne=a.ulos))
+                              tila=lambda: dict(lahde=a.lahde or a.youtube or a.url, otsikko=lahde.otsikko, live=bool(lahde.live), fps=lahde.fps, tallenne=a.ulos, viive_s=None if sim else a.viive))       # simulaatiossa kuva ei viivastu (perusviivetta ei ole)
     else:
         naytto = None if a.ei_ikkunaa else Naytto(a.nayttotila, a.ikkuna_leveys)
     if not a.hiljaa:

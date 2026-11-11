@@ -4,6 +4,9 @@ netti_live.py --web PORTTI korvaa ikkunan (Naytto) talla: WebNaytto tarjoaa sama
 
   /                  sivu: kuva, tila, loki, tiedostot
   /video.mjpg        kuva MJPEG-virtana (<img>-elementti toimii kaikissa selaimissa; JPEG pakataan vain, kun joku katsoo)
+  /syote             aikaleimattu kuvasyote selaimen soittimelle: kuvat video-ajan mukaan harvennettuina (enintaan --web-fps kuvaa/s), rengaspuskuri SYOTE_S s; selain puskuroi ja toistaa ne
+                     tasaisesti aikaleimojen mukaan, ja ± napeilla saadettava lisaviive (enintaan LISAVIIVE_MAX_S s) nayttaa kuvan vain myohemmin (analyysin viive ei muutu). ?historia=<s>: heti alkuun
+                     lahetettavat aiemmat kuvat. Kehys = SYOTE_OTSIKKO (pituus, video-aika, jarjestysnumero, liput) + JPEG; pituus 0 = sydankohta
   /kuva.jpg          tuorein kuva yksittaisena JPEG:na
   /tila              JSON: ajon tila, kuvien maara, katsojat
   /loki              viimeiset rivit konsolitulosteesta (teksti)
@@ -25,6 +28,7 @@ import mimetypes
 import os
 import re
 import socket
+import struct
 import sys
 import threading
 import time
@@ -37,6 +41,13 @@ RUUTU_W, RUUTU_H = 1920, 1080
 LOKI_RIVEJA = 400
 MJPEG_RAJA = b"kehys"
 RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+SYOTE_S = 40.0                                                     # selaimen syotteen rengaspuskuri palvelimella (s): lisaviive (LISAVIIVE_MAX_S) + varaa
+LISAVIIVE_MAX_S = 30                                               # selaimen lisaviiveen ylaraja (s) = selaimen puskuri
+SYOTE_TAVUT_MAX = 400 * 1024 * 1024                                # rengaspuskurin muistiraja (tavua)
+SYOTE_ODOTUS_S = 60.0                                              # kuvia koodataan viela taman ajan viimeisen katsojan poistuttua: uusi katsoja (tai uudelleenyhteys) saa historian
+SYOTE_JALKEEN_S = 5.0                                              # katsoja, joka on yhteyden hitauden vuoksi yli historia + taman verran jalessa, ohittaa uusimpiin
+SYOTE_SYDAN_S = 5.0                                                # tyhjan syotteen sydankohta (pituus 0) tahan tahtiin: katkennut yhteys huomataan
+SYOTE_OTSIKKO = struct.Struct("<IdII")                             # kehyksen otsikko: JPEG:n pituus (tavua), video-aika (s), jarjestysnumero, liput (1 = historiaa: ei tuoretta tuotantoa)
 TIEDOSTO_PAATTEET = (".mp4", ".csv", ".json", ".txt", ".log")        # listalle vain tulostiedostot (ei piilotiedostoja eika tilapaisia, kuten latautuvaa aanta)
 SIVU = """<!doctype html>
 <html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -67,9 +78,16 @@ table.ts{border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nu
 table.ts th{background:var(--laatikko);font-weight:600;text-align:center}table.ts td.n{text-align:right}
 .huom{background:var(--laatikko);border:1px solid var(--reuna);border-radius:8px;padding:8px 12px;margin:12px 0 0;color:var(--himmea);font-size:13px}.virhe{color:#c62828;margin:8px 0}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .virhe{color:#ff8a80}}
+canvas#soitin{display:block;width:100%;height:auto;margin:0 auto;background:#000;border-radius:8px}
+.viive{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 0}.viive[hidden]{display:none}.viive .nappi{padding:5px 11px;min-width:3.6em}
+#viive-teksti{color:var(--himmea);font-variant-numeric:tabular-nums;margin:0 6px}#viive-teksti b{color:var(--teksti)}
+@media (max-width:560px){#viive-teksti{order:-1;flex:1 0 100%;margin:0}}
 </style></head><body><main>
 <div class="ylapalkki"><h1>Kivenseuranta</h1><button type="button" class="nappi" id="ts-avaa">Pelaajatilasto</button></div>
 <img id="kuva" alt="Seurannan kuva" style="display:none">
+<canvas id="soitin" style="display:none" aria-label="Seurannan kuva"></canvas>
+<div class="viive" id="viiveohjain" hidden><button type="button" class="nappi toinen" data-d="-5" aria-label="Viive 5 sekuntia lyhyemmäksi">&minus;5 s</button><button type="button" class="nappi toinen" data-d="-1" aria-label="Viive sekunti lyhyemmäksi">&minus;1 s</button>
+<span id="viive-teksti">Viive</span><button type="button" class="nappi toinen" data-d="1" aria-label="Viive sekunti pidemmäksi">+1 s</button><button type="button" class="nappi toinen" data-d="5" aria-label="Viive 5 sekuntia pidemmäksi">+5 s</button></div>
 <div id="tila">Ladataan...</div>
 <h2>Loki</h2><pre id="loki"></pre>
 <h2>Tiedostot</h2><ul id="tiedostot"><li>Ladataan...</li></ul>
@@ -95,13 +113,19 @@ let edAlkoi=null;
 async function paivita(){
   try{
     const t=await (await fetch("tila",{cache:"no-store"})).json();
-    const kuva=$("kuva");
-    if(t.joutilas){kuva.style.display="none";if(kuva.getAttribute("src"))kuva.removeAttribute("src")}
-    else{kuva.style.display="";if(t.alkoi!==edAlkoi||!kuva.getAttribute("src"))kuva.src="video.mjpg?"+Date.now()}
+    const kuva=$("kuva"),soitinEl=$("soitin"),ohjain=$("viiveohjain");
+    if(t.joutilas){soitinPysayta();soitinEl.style.display="none";ohjain.hidden=true;kuva.style.display="none";if(kuva.getAttribute("src"))kuva.removeAttribute("src")}
+    else if(SOITIN_TUKI){                                                   // aikaleimattu syote: selain puskuroi ja toistaa tasaisesti, lisaviive vain nayttoon
+      kuva.style.display="none";if(kuva.getAttribute("src"))kuva.removeAttribute("src");soitinEl.style.display="";ohjain.hidden=false;
+      S.yht=typeof t.viive_s==="number"?t.viive_s:null;S.max=t.lisaviive_max_s||30;S.pit=t.syote_s||40;S.lisa=Math.min(S.lisa,S.max);
+      if(!S.ac||t.alkoi!==S.epoch)soitinKaynnista(t.alkoi);
+      else if(t.kaynnissa&&performance.now()/1000-S.viimKehys>15)soitinYhdista(true);       // syote on hiljentynyt: yhdista uudelleen (puskuri sailyy)
+    }
+    else{kuva.style.display="";if(t.alkoi!==edAlkoi||!kuva.getAttribute("src"))kuva.src="video.mjpg?"+Date.now()}       // varapolku: MJPEG ilman viiveensaatoa
     edAlkoi=t.alkoi;
     $("tila").innerHTML=t.joutilas?"<b>Ei analyysia käynnissä</b>"+(t.otsikko?" &middot; "+esc(t.otsikko):""):(t.kaynnissa?"<b>Ajo kaynnissa</b>":"<b>Ajo paattynyt</b>")+" &middot; kuvia "+t.kuvia+" &middot; katsojia "+t.katsojia+(t.viim_kuva_ika_s!=null?" &middot; viimeisin kuva "+t.viim_kuva_ika_s.toFixed(1)+" s sitten":"")+(t.kaynnissa&&t.viim_kuva_ika_s!=null&&t.viim_kuva_ika_s>30?" &middot; <b>kuva ei etene: katso loki (Jumivahti)</b>":"")+((t.otsikko||t.lahde)?" &middot; "+esc(t.otsikko||t.lahde):"");
     document.title=t.otsikko?"Kivenseuranta: "+t.otsikko:"Kivenseuranta";
-    if(t.kuva_leveys)$("kuva").style.maxWidth=t.kuva_leveys+"px";
+    if(t.kuva_leveys){$("kuva").style.maxWidth=t.kuva_leveys+"px";$("soitin").style.maxWidth=t.kuva_leveys+"px"}
     const l=$("loki"),alhaalla=l.scrollTop+l.clientHeight>=l.scrollHeight-30;
     l.textContent=await (await fetch("loki",{cache:"no-store"})).text();
     if(alhaalla)l.scrollTop=l.scrollHeight;
@@ -109,6 +133,122 @@ async function paivita(){
     $("tiedostot").innerHTML=f.length?f.map(x=>"<li><a href=\\"tiedostot/"+encodeURIComponent(x.nimi)+"\\">"+x.nimi.replace(/&/g,"&amp;").replace(/</g,"&lt;")+"</a><span class=koko>"+koko(x.koko)+"</span></li>").join(""):"<li>Ei tiedostoja viela</li>";
   }catch(e){$("tila").textContent="Yhteys palvelimeen katkesi (ajo paattynyt tai kontti sammutettu)."}
 }
+// ---- soitin: aikaleimattu syote, selaimen puskuri ja lisaviive --------------------------------------------------------------------------------------------------------------------
+// Palvelin lahettaa kuvat video-ajan mukaan harvennettuina (kehys: 20 tavun otsikko + JPEG). Selain pitaa viimeiset S.pit sekuntia puskurissa ja toistaa ne tasaisesti aikaleimojen mukaan.
+// Lisaviive (S.lisa, napit) muuttaa vain sita, kuinka kaukana tuotannon uusimmasta kuvasta toisto on; analyysin oma viive ei muutu. Lisaviive 0: nayta uusin kuva heti (kuten ennen).
+const SOITIN_TUKI=!!(window.fetch&&window.ReadableStream&&window.createImageBitmap&&window.AbortController);
+const S={puskuri:[],tavut:0,L:null,P:null,tila:"toisto",lisa:0,max:30,pit:40,yht:null,nayt:null,haettu:null,naytteet:[],kiri:false,ac:null,epoch:null,viimKehys:0,edT:0,edKehysT:null,silmukka:false};
+{const l=parseInt(tsMuisti("viive_lisa")||"0",10);if(isFinite(l))S.lisa=Math.max(0,Math.min(30,l))}
+function soitinNollaa(){S.puskuri=[];S.tavut=0;S.L=S.P=null;S.nayt=null;S.naytteet=[];S.kiri=false;S.tila="toisto"}
+function soitinPysayta(){if(S.ac){S.ac.abort();S.ac=null}}
+function soitinKaynnista(epoch){soitinPysayta();soitinNollaa();S.epoch=epoch;S.viimKehys=performance.now()/1000;soitinYhdista(false);if(!S.silmukka){S.silmukka=true;requestAnimationFrame(soitinSilmukka)}}
+async function soitinYhdista(uusi){
+  if(uusi)soitinPysayta();
+  const ac=S.ac=new AbortController();
+  while(!ac.signal.aborted){
+    S.edKehysT=null;
+    try{
+      const h=Math.min(S.pit,Math.ceil(S.lisa+(S.L===null?2:8)));                                   // historia heti alkuun: toisto voi alkaa lisaviiveen paassa
+      const v=await fetch("syote?historia="+h,{signal:ac.signal,cache:"no-store"});
+      if(!v.ok)throw new Error("HTTP "+v.status);
+      S.viimKehys=performance.now()/1000;
+      await soitinLue(v.body.getReader());
+    }catch(e){}
+    if(ac.signal.aborted)return;
+    await new Promise(r=>setTimeout(r,1000));
+  }
+}
+async function soitinLue(lukija){
+  let osat=[],osia=0,ot=null;
+  const ota=n=>{const u=new Uint8Array(n);let k=0;while(k<n){const o=osat[0],m=Math.min(n-k,o.length);u.set(o.subarray(0,m),k);k+=m;if(m===o.length)osat.shift();else osat[0]=o.subarray(m)}osia-=n;return u};
+  for(;;){
+    const r=await lukija.read();
+    if(r.done)return;
+    osat.push(r.value);osia+=r.value.length;
+    for(;;){
+      if(!ot){
+        if(osia<20)break;
+        const dv=new DataView(ota(20).buffer);
+        ot={n:dv.getUint32(0,true),t:dv.getFloat64(4,true),liput:dv.getUint32(16,true)};
+        if(ot.n>2e7)throw new Error("virheellinen kehys");
+      }
+      if(osia<ot.n)break;
+      soitinKehys(ot,ota(ot.n));
+      ot=null;
+    }
+  }
+}
+function soitinKehys(o,u){
+  const nyt=performance.now()/1000;
+  S.viimKehys=nyt;
+  if(o.n===0)return;                                                                              // sydankohta
+  if(S.edKehysT!==null&&o.t<S.edKehysT-0.5)soitinNollaa();                                        // video-aika hyppasi taaksepain (uusi aikaperusta): aloita puskuri alusta
+  S.edKehysT=o.t;
+  if(S.L!==null&&o.t<=S.L+1e-6)return;                                                            // jo puskurissa (uudelleenyhteyden historia)
+  S.puskuri.push({t:o.t,blob:new Blob([u],{type:"image/jpeg"})});S.tavut+=o.n;S.L=o.t;
+  if(!(o.liput&1))S.naytteet.push([nyt,o.t]);                                                     // tuore kuva (ei historiaa): tuotannon vauhdin arvio
+  while(S.puskuri.length>1&&(S.L-S.puskuri[0].t>S.pit||S.tavut>3e8))S.tavut-=S.puskuri.shift().blob.size;
+}
+function soitinVauhti(nyt){                                                                       // tuotannon vauhti (video-sekuntia / s) viimeisen 20 s ajalta; 1, jos dataa on vahan
+  const n=S.naytteet;while(n.length>2&&nyt-n[0][0]>20)n.shift();
+  if(n.length<2)return 1;
+  const a=n[0],b=n[n.length-1];
+  return b[0]-a[0]>=8?(b[1]-a[1])/(b[0]-a[0]):1;
+}
+function soitinAsetaPaikka(){                                                                     // lisaviiveen muutos: hyppy puskurissa (ei historiaa riittavasti: odotetaan, kunnes puskuri taytyy)
+  const L=S.L,vanhin=S.puskuri[0].t;
+  if(S.lisa===0){S.P=L;S.tila="toisto";return}
+  if(L-S.lisa>=vanhin){S.P=L-S.lisa;S.tila="toisto"}
+  else{S.P=Math.max(S.P===null?vanhin:S.P,vanhin);S.tila="puskuroi"}
+}
+function soitinPaikka(nyt,dt){
+  const L=S.L,vanhin=S.puskuri[0].t,lisa=S.lisa,v=soitinVauhti(nyt);
+  if(!S.kiri&&v>1.3)S.kiri=true;else if(S.kiri&&v<1.15)S.kiri=false;                              // kiri: tuotanto etenee reaaliaikaa nopeammin (VOD, nopea ajo): toisto seuraa sen vauhtia
+  if(S.P===null)soitinAsetaPaikka();
+  if(lisa===0){S.P=L;S.tila="toisto";return}
+  S.P=Math.max(S.P,vanhin);
+  const lag=L-S.P;
+  if(S.tila==="puskuroi"){if(lag<lisa-0.3)return;S.tila="toisto";if(lag>lisa+0.5){S.P=L-lisa;return}}      // puskuri taynna (esim. uudelleenlatauksen historia): suoraan lisaviiveen paahan
+  if(lag<0.02){S.tila="puskuroi";return}                                                          // puskuri tyhjeni (tuotanto jai jalkeen): kerataan uudelleen lisaviiveeseen
+  const ero=lag-lisa;
+  if(ero>4){S.P=Math.max(vanhin,L-lisa);return}                                                   // liian kaukana tuotannosta (esim. valilehti oli taustalla): hyppaa
+  S.P=Math.min(L,S.P+(S.kiri?Math.min(v,4):1)*(1+Math.max(-0.1,Math.min(0.1,0.2*ero)))*dt);       // normaali nopeus +-10 % korjaus kohti lisaviivetta
+}
+function soitinKehysPaikalle(P){let a=0,b=S.puskuri.length-1,r=0;while(a<=b){const m=(a+b)>>1;if(S.puskuri[m].t<=P){r=m;a=m+1}else b=m-1}return S.puskuri[r]}
+async function soitinPiirra(){
+  const k=soitinKehysPaikalle(S.P);
+  if(!k||k===S.nayt||S.haettu)return;
+  S.haettu=k;
+  try{
+    const b=await createImageBitmap(k.blob),c=$("soitin");
+    if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}
+    c.getContext("2d").drawImage(b,0,0);b.close();
+  }catch(e){}
+  S.nayt=k;S.haettu=null;
+}
+function soitinSilmukka(ms){
+  requestAnimationFrame(soitinSilmukka);
+  const nyt=ms/1000,dt=Math.min(0.25,Math.max(0,nyt-S.edT));S.edT=nyt;
+  if(!S.puskuri.length)return;
+  soitinPaikka(nyt,dt);
+  soitinPiirra();
+}
+function soitinLisa(d){
+  S.lisa=Math.max(0,Math.min(S.max,S.lisa+d));
+  tsMuisti("viive_lisa",String(S.lisa));
+  if(S.puskuri.length)soitinAsetaPaikka();
+  soitinOhjain();
+}
+function soitinOhjain(){
+  const f=x=>String(Math.round(x*10)/10).replace(".",","),D=S.yht;
+  let h="<b>Viive "+(D!==null?f(D+S.lisa)+" s</b>"+(S.lisa>0?" ("+f(D)+" + "+S.lisa+")":""):(S.lisa>0?"+"+S.lisa:"0")+" s</b>");
+  if(S.tila==="puskuroi"&&S.lisa>0&&S.L!==null&&S.P!==null)h+=" &middot; puskuroidaan "+f(Math.max(0,S.L-S.P))+" / "+S.lisa+" s";
+  if(S.kiri&&S.lisa>0)h+=" &middot; kiri: kuva etenee reaaliaikaa nopeammin, viive on videon aikaa";
+  const el=$("viive-teksti");if(el.innerHTML!==h)el.innerHTML=h;
+  for(const b of $("viiveohjain").querySelectorAll("button")){const d=+b.dataset.d;b.disabled=d<0?S.lisa<=0:S.lisa>=S.max}
+}
+$("viiveohjain").addEventListener("click",e=>{const b=e.target.closest("button[data-d]");if(b&&!b.disabled)soitinLisa(+b.dataset.d)});
+setInterval(soitinOhjain,250);
 let tsTulos=null;
 function tsMuisti(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
 function tsKysely(){return "tiedosto="+encodeURIComponent($("ts-tiedosto").value)+"&kel="+encodeURIComponent($("ts-kel").value.trim())+"&pun="+encodeURIComponent($("ts-pun").value.trim())+($("ts-ohita").checked?"&ohita=1":"")+"&hid="+encodeURIComponent($("ts-hid").value)}
@@ -276,7 +416,20 @@ class WebNaytto:
         self._katsojat = 0
         self._lukko = threading.Lock()
         self._yhteydet = set()                                     # avoimet asiakasyhteydet (sulje() katkaisee ne)
-        self._anna_kuva = None
+        self._anna_kuva = None                                     # (kuva, video-aika)
+        self._alku_mono = time.monotonic()
+        # aikaleimattu syote selaimelle (soitin puskuroi ja toistaa tasaisesti; lisaviive vain nayttoon): kuvat koodataan vain, kun katsojia on (tai hetki sen jalkeen)
+        self._syote_ehto = threading.Condition()
+        self._syote = collections.deque()                          # (jarjestysnro, video-aika, JPEG-tavut); enintaan SYOTE_S s ja SYOTE_TAVUT_MAX tavua
+        self._syote_tavut = 0
+        self._syote_seq = 0
+        self._syote_odottaa = None                                 # (video-aika, julkaisuhetki, kuva): seuraava koodattava (uusin voittaa)
+        self._syote_viim = None                                    # (video-aika, julkaisuhetki) viimeisin syotteeseen otettu kuva (harvennus)
+        self._syote_edellinen = None                               # edellinen julkaistu kuva (kuvavalin arvio)
+        self._syote_dt = None                                      # lahteen kuvavali (s), arvio
+        self._syote_katsojia = 0
+        self._syote_aktiivinen_asti = 0.0
+        self._syote_saie = None
         self._kayttaja = os.environ.get("NETTI_WEB_KAYTTAJA") or ""
         self._salasana = os.environ.get("NETTI_WEB_SALASANA") or ""
         try:
@@ -290,15 +443,16 @@ class WebNaytto:
         self._saie.start()
 
     # ---- Naytto-rajapinta ------------------------------------------------------------------------------------------
-    def anna(self, kuva):
-        """Seuraava nayttettava kuva (mista tahansa saikeesta); edellinen nayttamaton kuva korvautuu."""
+    def anna(self, kuva, aika=None):
+        """Seuraava nayttettava kuva (mista tahansa saikeesta); edellinen nayttamaton kuva korvautuu. aika: kuvan aika videossa (s; syotteen aikaleima: soitin toistaa tasaisesti sen mukaan);
+        ilman sita seinakello."""
         with self._lukko:
-            self._anna_kuva = kuva
+            self._anna_kuva = (kuva, aika)
         self._uusi.set()
 
-    def nayta_heti(self, kuva):
+    def nayta_heti(self, kuva, aika=None):
         """Synkroninen (simulaatio): kuva julkaistaan heti; palauttaa True vain jos lopetus on pyydetty (selaimesta ei voi lopettaa)."""
-        self._julkaise(kuva)
+        self._julkaise(kuva, aika=aika)
         return False
 
     def paasilmukka(self, lopeta, valmis, ilmoitus=None):
@@ -308,9 +462,9 @@ class WebNaytto:
             self._uusi.wait(0.05)
             self._uusi.clear()
             with self._lukko:
-                kuva, self._anna_kuva = self._anna_kuva, None
-            if kuva is not None:
-                self._julkaise(kuva)
+                annettu, self._anna_kuva = self._anna_kuva, None
+            if annettu is not None:
+                self._julkaise(annettu[0], aika=annettu[1])
             elif self.n_nayt == 0 and ilmoitus is not None and time.time() - viim_ilm > 0.25:
                 ilm = ilmoitus()
                 if ilm is not None:
@@ -326,6 +480,8 @@ class WebNaytto:
         self._lopeta.set()
         with self._ehto:
             self._ehto.notify_all()
+        with self._syote_ehto:
+            self._syote_ehto.notify_all()
         try:
             self.palvelin.shutdown()
             self.palvelin.server_close()
@@ -345,7 +501,7 @@ class WebNaytto:
             (self._yhteydet.add if auki else self._yhteydet.discard)(s)
 
     # ---- kuvat -----------------------------------------------------------------------------------------------------
-    def _julkaise(self, kuva, laske=True):
+    def _julkaise(self, kuva, laske=True, aika=None):
         with self._ehto:
             self._kuva = kuva
             self._id += 1
@@ -353,6 +509,7 @@ class WebNaytto:
             if laske:
                 self.n_nayt += 1
             self._ehto.notify_all()
+        self._syotteeseen(time.monotonic() - self._alku_mono if aika is None else float(aika), kuva)
 
     def jpeg(self, edellinen_id=None, odotus_s=0.0):
         """(JPEG-tavut, kuvan id). edellinen_id annettu: odottaa enintaan odotus_s sekuntia kuvaa, joka eroaa siita (None, id, jos ei tullut). Pakkaus tehdaan kerran kuvaa kohden,
@@ -366,14 +523,101 @@ class WebNaytto:
         with self._koodaus_lukko:
             if self._jpeg[0] == id_:
                 return self._jpeg[1], id_
-            pieni = kuva
-            if kuva.shape[1] > self.leveys:
-                pieni = cv2.resize(kuva, (self.leveys, int(round(self.leveys * kuva.shape[0] / kuva.shape[1]))), interpolation=cv2.INTER_AREA)
-            ok, puskuri = cv2.imencode(".jpg", pieni, [cv2.IMWRITE_JPEG_QUALITY, self.laatu])
-            if not ok:
+            tavut = self._pakkaa(kuva)
+            if tavut is None:
                 return None, id_
-            self._jpeg = (id_, puskuri.tobytes())
-            return self._jpeg[1], id_
+            self._jpeg = (id_, tavut)
+            return tavut, id_
+
+    def _pakkaa(self, kuva):
+        """Kuva JPEG-tavuiksi (pienennetaan leveyteen self.leveys, jos on leveampi); None, jos pakkaus epaonnistuu."""
+        pieni = kuva
+        if kuva.shape[1] > self.leveys:
+            pieni = cv2.resize(kuva, (self.leveys, int(round(self.leveys * kuva.shape[0] / kuva.shape[1]))), interpolation=cv2.INTER_AREA)
+        ok, puskuri = cv2.imencode(".jpg", pieni, [cv2.IMWRITE_JPEG_QUALITY, self.laatu])
+        return puskuri.tobytes() if ok else None
+
+    # ---- aikaleimattu syote selaimen soittimelle ------------------------------------------------------------------------
+    def _syotteeseen(self, aika, kuva):
+        """Julkaistu kuva syotteen koodaajalle (vain jos katsojia on tai oli aivan hetki sitten). Julkaisijan saie ei koodaa mitaan: uusin kuva jaa odottamaan, ja koodaaja harventaa video-ajan mukaan."""
+        nyt = time.monotonic()
+        with self._syote_ehto:
+            ed = self._syote_edellinen
+            if ed is not None and 0.0 < aika - ed[0] < 0.5:
+                self._syote_dt = aika - ed[0] if self._syote_dt is None else 0.8 * self._syote_dt + 0.2 * (aika - ed[0])
+            self._syote_edellinen = (aika, nyt)
+            if self._syote_katsojia > 0 or nyt < self._syote_aktiivinen_asti:
+                self._syote_odottaa = (aika, nyt, kuva)
+                self._syote_ehto.notify_all()
+
+    def syote_katsoja(self, muutos):
+        """Syotteen katsojamaara (+1 / -1). Ensimmainen katsoja kaynnistaa koodaajan (ja tyhjentaa vanhentuneen historian); viimeisen poistuttua koodaus jatkuu SYOTE_ODOTUS_S s, jotta uudelleenyhteys saa historian."""
+        with self._syote_ehto:
+            if muutos > 0 and self._syote_katsojia == 0 and time.monotonic() >= self._syote_aktiivinen_asti:
+                self._syote.clear()                                                        # koodaus on ollut tauolla: vanha historia ei jatku nykyhetkeen
+                self._syote_tavut, self._syote_viim, self._syote_odottaa = 0, None, None
+            self._syote_katsojia = max(0, self._syote_katsojia + muutos)
+            if self._syote_katsojia == 0:
+                self._syote_aktiivinen_asti = time.monotonic() + SYOTE_ODOTUS_S
+            if muutos > 0 and self._syote_saie is None and not self._lopeta.is_set():
+                self._syote_saie = threading.Thread(target=self._syote_koodaaja, name="web-syote", daemon=True)
+                self._syote_saie.start()
+            return self._syote_katsojia
+
+    def _syote_koodaaja(self):
+        """Koodaa syotteen kuvat JPEG:ksi ja pitaa rengaspuskuria. Harvennus: kuva otetaan, kun edellisesta otetusta on kulunut vahintaan 1 / fps sekuntia seka video-ajassa etta seinakellossa (video-aika:
+        tasainen liike, vaikka tuotanto on epatasaista; seinakello: kiri, jossa tuotanto etenee reaaliaikaa nopeammin, ei lisaa kuvia sekunnissa). Video-ajan hyppy taaksepain (ilmoituskuvat -> ensimmainen oikea
+        kuva) aloittaa historian alusta."""
+        while not self._lopeta.is_set():
+            with self._syote_ehto:
+                self._syote_ehto.wait_for(lambda: self._lopeta.is_set() or self._syote_odottaa is not None, 1.0)
+                kohde, self._syote_odottaa = self._syote_odottaa, None
+                if kohde is None:
+                    continue
+                aika, julkaistu, kuva = kohde
+                v = self._syote_viim
+                if v is not None and aika < v[0] - 0.5:
+                    self._syote.clear()
+                    self._syote_tavut, v = 0, None
+                if v is not None:
+                    vali = 1.0 / self.fps - 0.4 * (self._syote_dt or 0.0)
+                    if aika - v[0] < vali or julkaistu - v[1] < vali:
+                        continue
+                self._syote_viim = (aika, julkaistu)
+            try:
+                tavut = self._pakkaa(kuva)
+            except Exception as e:                                                           # koodausvirhe ei saa lopettaa syotetta
+                print(f"web: syotteen kuvan pakkaus epaonnistui: {e!r}", file=sys.stderr, flush=True)
+                continue
+            if tavut is None:
+                continue
+            with self._syote_ehto:
+                self._syote_seq += 1
+                self._syote.append((self._syote_seq, aika, tavut))
+                self._syote_tavut += len(tavut)
+                while len(self._syote) > 1 and (self._syote[-1][1] - self._syote[0][1] > SYOTE_S or self._syote_tavut > SYOTE_TAVUT_MAX):
+                    self._syote_tavut -= len(self._syote.popleft()[2])
+                self._syote_ehto.notify_all()
+
+    def syote_odota(self, viim, historia, odotus_s):
+        """(kehykset, historiaa): syotteen kehykset (jarjestysnro, video-aika, JPEG), joita katsoja ei ole viela saanut; odottaa enintaan odotus_s s uusia. viim = viimeisin lahetetty jarjestysnumero
+        (None = ensimmainen kutsu: kaikki puskurin kuvat historia sekuntia uusimmasta taaksepain, historiaa = True). Liian jaljessa (yli historia + SYOTE_JALKEEN_S s) oleva katsoja ohittaa uusimpiin."""
+        with self._syote_ehto:
+            self._syote_ehto.wait_for(lambda: self._lopeta.is_set() or (bool(self._syote) and (viim is None or self._syote[-1][0] > viim)), odotus_s)
+            if not self._syote or self._lopeta.is_set():
+                return [], False
+            uusin = self._syote[-1][1]
+            if viim is None:
+                return [k for k in self._syote if k[1] >= uusin - historia], True
+            lista = []
+            for k in reversed(self._syote):
+                if k[0] <= viim:
+                    break
+                lista.append(k)
+            lista.reverse()
+            if lista and uusin - lista[0][1] > historia + SYOTE_JALKEEN_S:
+                lista = [k for k in lista if k[1] >= uusin - historia]
+            return lista, False
 
     # ---- tila ------------------------------------------------------------------------------------------------------
     def katsojia(self, muutos=0):
@@ -383,7 +627,7 @@ class WebNaytto:
 
     def tila(self):
         t = dict(kaynnissa=self.kaynnissa, kuvia=self.n_nayt, katsojia=self._katsojat, alkoi=self.alkoi, kuva_leveys=self.leveys,
-                 viim_kuva_ika_s=None if self._viim_t is None else round(time.time() - self._viim_t, 2))
+                 viim_kuva_ika_s=None if self._viim_t is None else round(time.time() - self._viim_t, 2), syote_s=SYOTE_S, lisaviive_max_s=LISAVIIVE_MAX_S, syote_fps=self.fps)
         if self.tila_fn is not None:
             try:
                 t.update(self.tila_fn() or {})
@@ -535,6 +779,8 @@ class _Kasittelija(http.server.BaseHTTPRequestHandler):
                     self._vastaa(200, b"", "multipart/x-mixed-replace; boundary=" + MJPEG_RAJA.decode(), head=True)
                 else:
                     self._mjpeg(n)
+            elif polku == "/syote":
+                self._syote(n, urllib.parse.urlsplit(self.path).query, head)
             elif polku == "/kuva.jpg":
                 jpeg, _ = n.jpeg()
                 if jpeg is None:
@@ -592,6 +838,47 @@ class _Kasittelija(http.server.BaseHTTPRequestHandler):
                 self.wfile.flush()
                 viim = time.monotonic()
         finally:
+            n.katsojia(-1)
+
+    def _syote(self, n, kysely, head):
+        """/syote?historia=<s>: aikaleimattu kuvasyote selaimen soittimelle (puskuri ja lisaviive selaimessa). Binaarikehykset: SYOTE_OTSIKKO (JPEG:n pituus, video-aika s, jarjestysnumero, liput) + JPEG;
+        pituus 0 = sydankohta (ei kuvaa). historia: montako sekuntia aiempia kuvia lahetetaan heti alkuun (liput = 1); sen jalkeen kuvat tulevat sita mukaa kun ne valmistuvat."""
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(kysely, keep_blank_values=True).items()}
+        try:
+            historia = max(0.0, min(SYOTE_S, float(q.get("historia") or 0.0)))
+        except ValueError:
+            self._virhe_json(400, "historia: sekuntien maara (0 ... %d)" % SYOTE_S, head)
+            return
+        if historia != historia:                                       # NaN
+            historia = 0.0
+        if head:
+            self._vastaa(200, b"", "application/octet-stream", head=True)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Cache-Control", "no-store, private")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        n.katsojia(+1)                                                 # sivun tilarivin katsojamaara
+        n.syote_katsoja(+1)
+        try:
+            viim, sydan = None, time.monotonic()
+            while not n._lopeta.is_set():
+                kehykset, historiaa = n.syote_odota(viim, historia, 1.0)
+                if kehykset:
+                    for seq, aika, tavut in kehykset:
+                        self.wfile.write(SYOTE_OTSIKKO.pack(len(tavut), aika, seq & 0xFFFFFFFF, 1 if historiaa else 0))
+                        self.wfile.write(tavut)
+                        viim = seq
+                    self.wfile.flush()
+                    sydan = time.monotonic()
+                elif time.monotonic() - sydan >= SYOTE_SYDAN_S:        # ei kuvia: sydankohta, jotta katkennut yhteys huomataan (molemmin puolin)
+                    self.wfile.write(SYOTE_OTSIKKO.pack(0, 0.0, 0, 0))
+                    self.wfile.flush()
+                    sydan = time.monotonic()
+        finally:
+            n.syote_katsoja(-1)
             n.katsojia(-1)
 
     def _virhe_json(self, koodi, viesti, head=False):
