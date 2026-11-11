@@ -680,7 +680,7 @@ def testaa_web():
             tarkista("salasana asetettu: ilman tunnuksia 401 ja WWW-Authenticate", s == 401 and "Basic" in h.get("WWW-Authenticate", ""))
             tarkista("vaara salasana 401", pyyda(w2.portti, "/tila", tunn("kaytt", "vaara"))[0] == 401)
             tarkista("oikea salasana (valilyonti ja kaksoispiste mukana) 200", pyyda(w2.portti, "/tila", tunn("kaytt", "sala sana:1"))[0] == 200)
-            tarkista("tiedostot suojattu samoin (myos kuvasyote)", pyyda(w2.portti, "/tiedostot.json")[0] == 401 and pyyda(w2.portti, "/video.mjpg")[0] == 401 and pyyda(w2.portti, "/syote")[0] == 401)
+            tarkista("tiedostot suojattu samoin (myos kuvasyote)", pyyda(w2.portti, "/tiedostot.json")[0] == 401 and pyyda(w2.portti, "/video.mjpg")[0] == 401 and pyyda(w2.portti, "/syote")[0] == 401 and pyyda(w2.portti, "/lisa?id=a&s=5")[0] == 401)
         finally:
             w2.sulje()
 
@@ -914,13 +914,14 @@ def odota(ehto, s=5.0):
     return bool(ehto())
 
 
-def lue_syote(portti, historia=None, kehyksia=1, odotus_s=10.0):
+def lue_syote(portti, historia=None, kehyksia=1, odotus_s=10.0, lisa=None):
     """Lukee /syote-virtaa raakana, kuten selaimen soitin: (tilakoodi, otsakkeet, kehykset). Kehys = (JPEG:n pituus, video-aika, jarjestysnumero, liput, JPEG-tavut); pituus 0 = sydankohta.
-    Lopettaa, kun kuvakehyksia on `kehyksia` kpl tai odotus_s sekuntia on kulunut."""
+    Lopettaa, kun kuvakehyksia on `kehyksia` kpl tai odotus_s sekuntia on kulunut. lisa: (sivun tunnus, lisaviive s) tai pelkka lisaviive-merkkijono (ilman tunnusta)."""
     sock = socket.create_connection(("127.0.0.1", portti), timeout=5)
     kehykset, otsakkeet, koodi, puskuri, koko = [], None, None, b"", nw.SYOTE_OTSIKKO.size
     try:
-        sock.sendall(("GET /syote" + ("" if historia is None else f"?historia={historia}") + " HTTP/1.1\r\nHost: x\r\n\r\n").encode())
+        param = ([] if historia is None else [f"historia={historia}"]) + ([] if lisa is None else [f"id={lisa[0]}&lisa={lisa[1]}"] if isinstance(lisa, tuple) else [f"lisa={lisa}"])
+        sock.sendall(("GET /syote" + ("?" + "&".join(param) if param else "") + " HTTP/1.1\r\nHost: x\r\n\r\n").encode())
         sock.settimeout(0.2)
         loppu = time.monotonic() + odotus_s
         while time.monotonic() < loppu and sum(1 for k in kehykset if k[0] > 0) < kehyksia:
@@ -1127,6 +1128,127 @@ def testaa_web_syote():
         tarkista("sivun JavaScript on syntaktisesti kelvollista (node --check)", bool(skripti) and r.returncode == 0, r.stderr.strip()[-200:])
     else:
         print("  (node puuttuu: sivun JavaScriptin syntaksitarkistus ohitetaan)")
+
+
+def testaa_web_lisaviive():
+    print("selaimen lisaviive palvelimelle (/lisa, /syote id + lisa): VOD-ajon kiri tauolle, kun nakyva sivu on valinnut lisaviiveen")
+    vanhat = (nw.SYOTE_LISA_ODOTUS_S, nw.SYOTE_LISA_TUNNUKSIA_MAX, nw.SYOTE_LISA_VANHENEE_S, nw.SYOTE_SYDAN_S)
+    w = nw.WebNaytto(0, None, leveys=160, fps=10, laatu=70, tila=lambda: dict(lahde="testi", viive_s=10.0))
+    p = w.portti
+
+    def tila_reaaliaika():
+        return json.loads(pyyda(p, "/tila")[2])["reaaliaika"]
+
+    def lisaa(tunnus, s_):
+        s_koodi, _, b = pyyda(p, f"/lisa?id={tunnus}&s={s_}")
+        return s_koodi, json.loads(b)
+
+    def yhteys(tunnus, lisa, kesto_s):
+        """Syoteyhteys taustasaikeessa kesto_s sekuntia (ei kuvia: pelkka yhteys; sydankohdat huomaavat katkenneen yhteyden)."""
+        t_ = threading.Thread(target=lambda: lue_syote(p, 0, kehyksia=10 ** 6, odotus_s=kesto_s, lisa=(tunnus, lisa) if tunnus else lisa), daemon=True)
+        t_.start()
+        return t_
+
+    def tyhjaa():
+        """Odottaa, etta kaikki sivut on unohdettu (rekisteri siivotaan laiskasti uuden yhteyden / /lisa-pyynnon yhteydessa, joten pyyntoja tehdaan odotuksen aikana)."""
+        return odota(lambda: (lisaa("siivous", 0), not w._syote_lisat and w._syote_katsojia == 0)[1], 6.0)
+    try:
+        nw.SYOTE_LISA_ODOTUS_S, nw.SYOTE_SYDAN_S = 0.6, 0.2
+        tarkista("ilman katsojia reaaliaikaa ei haluta, /tila kertoo sen", not w.reaaliaika_haluttu() and tila_reaaliaika() is False)
+        koodi, vast = lisaa("sivu1", 5)
+        tarkista("/lisa tuntemattomalle sivulle (ei syoteyhteytta): 200, ei rekisteroida, reaaliaikaa ei haluta", koodi == 200 and vast == {"reaaliaika": False} and not w._syote_lisat)
+        for kysely in ("", "?id=abc", "?s=5", "?id=abc&s=x", "?id=abc&s=nan", "?id=a%20b&s=5", "?id=" + "a" * 41 + "&s=5", "?id=a/b&s=5", "?id=a.b&s=5"):
+            tarkista(f"/lisa{kysely or ' (ei parametreja)'}: virheellinen pyynto -> 400", pyyda(p, "/lisa" + kysely)[0] == 400)
+        s, _, b = pyyda(p, "/syote?lisa=abc")
+        tarkista("/syote: lisa roskaa -> 400 ja JSON-virhe", s == 400 and "lisa" in json.loads(b)["virhe"], str(b))
+
+        # sivu avaa syoteyhteyden id:lla ja lisaviiveella 5; sivu ilmoittaa muutokset /lisa-pyynnoilla
+        t1 = yhteys("sivu1", 5, 5.0)
+        tarkista("syoteyhteys id:lla ja lisaviiveella 5 -> reaaliaikaa halutaan (kiri tauolle), /tila kertoo", odota(lambda: w.reaaliaika_haluttu()) and tila_reaaliaika() is True)
+        koodi, vast = lisaa("sivu1", 0)
+        tarkista("/lisa s=0 (esim. valilehti piiloutui) -> reaaliaikaa ei enaa haluta, kiri saa jatkua", koodi == 200 and vast == {"reaaliaika": False} and not w.reaaliaika_haluttu() and tila_reaaliaika() is False)
+        koodi, vast = lisaa("sivu1", 7)
+        tarkista("/lisa s=7 -> reaaliaikaa halutaan taas, lisaviive tallentuu", vast == {"reaaliaika": True} and w._syote_lisat["sivu1"][0] == 7.0)
+        lisaa("sivu1", 999)
+        tarkista("lisaviive rajataan 0 ... LISAVIIVE_MAX_S (30 s)", w._syote_lisat["sivu1"][0] == float(nw.LISAVIIVE_MAX_S))
+        koodi, vast = lisaa("sivu1", -3)
+        tarkista("negatiivinen lisaviive -> 0: reaaliaikaa ei haluta", vast == {"reaaliaika": False} and w._syote_lisat["sivu1"][0] == 0.0)
+        lisaa("sivu1", 4)
+        s, h, b = pyyda(p, "/lisa?id=sivu1&s=0", metodi="HEAD")
+        tarkista("HEAD /lisa ei muuta mitaan", s == 200 and b == b"" and w.reaaliaika_haluttu() and w._syote_lisat["sivu1"][0] == 4.0)
+
+        # useampi sivu: kiri on tauolla, kun yksikin sivu kayttaa lisaviivetta
+        t2 = yhteys("sivu2", 0, 5.0)
+        odota(lambda: "sivu2" in w._syote_lisat)
+        lisaa("sivu1", 0)
+        tarkista("sivu 2 (lisaviive 0) ja sivu 1 (0): reaaliaikaa ei haluta", not w.reaaliaika_haluttu())
+        lisaa("sivu2", 3)
+        tarkista("vain sivulla 2 on lisaviive -> reaaliaikaa halutaan", w.reaaliaika_haluttu())
+        lisaa("sivu1", 6)
+        lisaa("sivu2", 0)
+        tarkista("sivu 1 jatkaa lisaviiveella, vaikka sivu 2 vapautuu -> reaaliaikaa halutaan edelleen", w.reaaliaika_haluttu())
+        lisaa("sivu1", 0)
+        tarkista("molemmat 0 -> ei reaaliaikaa", not w.reaaliaika_haluttu())
+        t1.join(10)
+        t2.join(10)
+        tarkista("sivut poistuivat (yhteydet sulkeutuivat ja odotusaika kului)", tyhjaa())
+
+        # yhteyden katketessa lisaviive pysyy hetken voimassa (uudelleenyhteys ei vapauta kiria), sitten sivu unohdetaan
+        t3 = yhteys("sivu3", 5, 1.5)
+        odota(lambda: w.reaaliaika_haluttu())
+        t3.join(5)
+        tarkista("syoteyhteys sulkeutui: lisaviive pysyy voimassa SYOTE_LISA_ODOTUS_S s (uudelleenyhteys ei vapauta kiria)", odota(lambda: w._syote_lisat.get("sivu3", [0, 1])[1] == 0) and w.reaaliaika_haluttu())
+        tarkista("odotusajan jalkeen reaaliaikaa ei haluta", odota(lambda: not w.reaaliaika_haluttu(), 3.0))
+        koodi, vast = lisaa("sivu3", 5)
+        tarkista("katkennut sivu unohdetaan (/lisa ei herata sita henkiin, rekisteri siivotaan)", vast == {"reaaliaika": False} and "sivu3" not in w._syote_lisat)
+
+        # sama sivu kahdella yhteydella (uudelleenyhteys ehtii ennen vanhan sulkeutumista): vanhan sulkeutuminen ei pura uuden lisaviivetta
+        ta = yhteys("sivu4", 5, 1.5)
+        odota(lambda: w.reaaliaika_haluttu())
+        tb = yhteys("sivu4", 5, 6.0)
+        odota(lambda: w._syote_lisat.get("sivu4", [0, 0])[1] == 2)
+        ta.join(5)
+        odota(lambda: w._syote_lisat.get("sivu4", [0, 0])[1] == 1)
+        time.sleep(nw.SYOTE_LISA_ODOTUS_S + 0.4)
+        lisaa("sivu4", 5)
+        tarkista("sama sivu kahdella yhteydella: vanhan sulkeutuminen ei vapauta kiria, kun uusi yhteys on auki", w.reaaliaika_haluttu() and w._syote_lisat["sivu4"][1] == 1 and w._syote_lisat["sivu4"][2] is None)
+        tb.join(10)
+        tyhjaa()
+
+        # lisaviive vanhenee, ellei sivu vahvista sitä (hiljaa kuollut yhteys, jaadytetty valilehti): kiri ei jaa tauolle
+        nw.SYOTE_LISA_VANHENEE_S = 0.9
+        t5 = yhteys("sivu5", 5, 5.0)
+        tarkista("vahvistamaton lisaviive on voimassa heti", odota(lambda: w.reaaliaika_haluttu()))
+        for _ in range(4):
+            time.sleep(0.4)
+            lisaa("sivu5", 5)
+        tarkista("sivu vahvistaa lisaviiveensa (/lisa) -> voimassa pitkaan, vaikka yhteys on auki yli vanenemisajan", w.reaaliaika_haluttu())
+        tarkista("vahvistus loppuu -> lisaviive vanhenee SYOTE_LISA_VANHENEE_S s:ssa (yhteys vielä auki), kiri vapautuu", odota(lambda: not w.reaaliaika_haluttu(), 3.0) and w._syote_lisat["sivu5"][1] == 1)
+        tarkista("vanhentunut lisaviive tulee voimaan vasta uudella vahvistuksella", (lisaa("sivu5", 5)[1] == {"reaaliaika": True}) and w.reaaliaika_haluttu())
+        t5.join(10)
+        tyhjaa()
+        nw.SYOTE_LISA_VANHENEE_S = vanhat[2]
+
+        # ilman tunnusta sivu ei ilmoita lisaviivettaan; tunnusten enimmaismaara
+        tyhjaa()
+        tc = yhteys(None, 5, 1.2)
+        time.sleep(0.5)
+        tarkista("syoteyhteys ilman id:ta: lisaviivetta ei rekisteroida (reaaliaikaa ei haluta)", not w.reaaliaika_haluttu() and not w._syote_lisat, str(w._syote_lisat))
+        tc.join(4)
+        nw.SYOTE_LISA_TUNNUKSIA_MAX = 2
+        saikeet = [yhteys(f"tunnus{i}", 5, 2.0) for i in range(3)]
+        time.sleep(0.8)
+        tarkista("tunnusten enimmaismaara (muistin suoja): kolmatta sivua ei rekisteroida", len(w._syote_lisat) == 2, str(sorted(w._syote_lisat)))
+        for t_ in saikeet:
+            t_.join(6)
+    finally:
+        nw.SYOTE_LISA_ODOTUS_S, nw.SYOTE_LISA_TUNNUKSIA_MAX, nw.SYOTE_LISA_VANHENEE_S, nw.SYOTE_SYDAN_S = vanhat
+        w.sulje()
+    tarkista("katsojat poistuivat laskureista", odota(lambda: w._syote_katsojia == 0, 3.0))
+    sivu = nw.SIVU
+    tarkista("sivu: lisaviive ilmoitetaan palvelimelle (lisa?id=, syoteyhteyden id ja lisa), valilehden piiloutuminen = 0",
+             all(x in sivu for x in ('"lisa?id="', '"&id="', '"&lisa="', "visibilitychange", "document.hidden", "soitinLahetaLisa")))
+    tarkista("sivu: lisaviiveella toisto etenee 1x (tuotannon vauhtia seurataan vain nopeassa ajossa, S.nopea)", "S.kiri&&S.nopea" in sivu and "S.nopea=t.viive_s===null" in sivu)
 
 
 HEITTO_KENTAT = ["heitto", "vari", "kivi_nro", "puoli", "paa", "kierre", "irroitus_delta_cm", "liuku_T_cm", "heitto_T_cm", "merkki_T_cm", "liuku_merkista_cm", "heitto_merkista_cm",
@@ -1560,7 +1682,7 @@ def testaa_joutilas():
 
 def main():
     for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_odotuksen_ylivuoto, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
-              testaa_videon_nimi_palvelin, testaa_web_resoluutio, testaa_web_videon_nimi, testaa_web_syote, testaa_web_tilasto, testaa_joutilas):
+              testaa_videon_nimi_palvelin, testaa_web_resoluutio, testaa_web_videon_nimi, testaa_web_syote, testaa_web_lisaviive, testaa_web_tilasto, testaa_joutilas):
         t()
     print()
     if VIRHEITA:

@@ -2203,7 +2203,19 @@ def testaa_kiri():
     e, kiri = k.aika(231, 100.0, 0.0, 60.0, loppu=True)
     tarkista("aikataulu: lahde loppui -> kiri vaikka puskuri tyhja (nauhoitus ajetaan nopeasti loppuun)", e == 100.0 and kiri)
 
-    def simuloi(lukunopeus, analyysin_kustannus_s, kuvan_kustannus_s, kesto_s=240.0, raja=10.0, puskuri_max=30.0, etumatka_ruutua=300):
+    # reaaliaika-este (selaimessa on lisaviive): kiri estetty, kuva 1x; kirin paattyessa 1x jatkuu tasta, eika aika hyppaa
+    k = nl.KuvanAikataulu(fps, 10.0)
+    e0, kiri0 = k.aika(100, 50.0, 3.0, 60.0)
+    e, kiri = k.aika(130, 50.5, 12.0, 60.0, reaaliaika=True)
+    tarkista("reaaliaika-este: puskuri >= raja, mutta kiri estetty -> kuva 1x ankkurista (ei heti)", not kiri and abs(e - (60.0 + 30 / 30)) < 1e-9, f"{e}, kiri {kiri}")
+    e, kiri = k.aika(131, 50.6, 12.0, 60.0, loppu=True, reaaliaika=True)
+    tarkista("reaaliaika-este: lahteen loppuminen ei vapauta kiria (loppu toistetaan 1x)", not kiri and abs(e - (60.0 + 31 / 30)) < 1e-9)
+    e, kiri = k.aika(132, 50.7, 12.0, 60.0)
+    tarkista("reaaliaika-este poistuu -> kiri sallittu taas (puskuri >= raja)", kiri and e == 50.7)
+    e, kiri = k.aika(133, 50.8, 12.0, 60.0, reaaliaika=True)
+    tarkista("kiri -> reaaliaika-este: 1x jatkuu tasta (ankkuri siirtyy, ruutu nyt, seuraava 1/fps myohemmin)", not kiri and e == 50.8 and abs(k.aika(134, 50.85, 12.0, 60.0, reaaliaika=True)[0] - (50.8 + 1 / 30)) < 1e-9)
+
+    def simuloi(lukunopeus, analyysin_kustannus_s, kuvan_kustannus_s, kesto_s=240.0, raja=10.0, puskuri_max=30.0, etumatka_ruutua=300, reaaliaika=False):
         """Esilatauspuskurin, analyysin ja kuvan simulaatio (aika-askel 1 ms): lukija lisaa puskuriin lukunopeus x reaaliaika (enintaan puskuri_max s); analyysi ei ole tahdistettu, vaan ottaa ruudun puskurista
         heti kun dataa on, mutta ei ole kuvaa edella enempaa kuin D + etumatka_ruutua (vastapaine); kuva noudattaa KuvanAikataulua ja lahtoehtoa 'analyysi on edennyt D = 300 ruutua ruudun ohi'.
         Palauttaa (kuvan keskinopeus, kirissa naytettyjen ruutujen osuus, suurin etumatka, 1x-vaiheiden ruutuvalien suhteellinen vaihtelu)."""
@@ -2219,7 +2231,7 @@ def testaa_kiri():
                 t_a = nyt + analyysin_kustannus_s
             max_etu = max(max_etu, f_a - f_k)
             if t_k <= nyt and f_a >= f_k + 300 - 3 + 3:
-                erapaiva, kiri = aikataulu.aika(f_k, nyt, puskuri, 10.0)
+                erapaiva, kiri = aikataulu.aika(f_k, nyt, puskuri, 10.0, reaaliaika=reaaliaika)
                 if erapaiva <= nyt:
                     kiri_ruutuja += kiri
                     if not kiri and viim is not None:
@@ -2240,6 +2252,10 @@ def testaa_kiri():
     tarkista("kirisimulaatio: --kiri 0 -> kuva aina 1x (analyysi saa silti olla kuvaa edella etumatkan verran)", 0.93 <= nopeus <= 1.03 and osuus == 0.0 and etu <= 600, f"{nopeus:.2f}x, suurin etumatka {etu}")
     nopeus, osuus, etu, vaihtelu = simuloi(3.0, 0.004, 0.005, raja=0.1)
     tarkista("kirisimulaatio: pieni raja (0,1 s) -> kuva kiria melkein aina (nauhoituksen nopea lapiajo)", nopeus > 2.4 and osuus > 0.7, f"{nopeus:.2f}x, kiria {100 * osuus:.0f} %")
+    nopeus, osuus, etu, vaihtelu = simuloi(3.0, 0.004, 0.005, reaaliaika=True)
+    tarkista("kirisimulaatio: selaimen lisaviive (reaaliaika-este) -> kuva 1x tasaisesti ja analyysi vastapaineessa kuvaa, vaikka lukija on 3x", 0.93 <= nopeus <= 1.03 and osuus == 0.0 and etu <= 600 and vaihtelu < 0.2, f"{nopeus:.2f}x, kiria {100 * osuus:.0f} %, etumatka {etu}, vaihtelu {vaihtelu:.2f}")
+    nopeus, osuus, etu, vaihtelu = simuloi(3.0, 0.020, 0.005, reaaliaika=True)
+    tarkista("kirisimulaatio: reaaliaika-este estaa kirin myos kun analyysi on pullonkaula (1,67x): kuva 1x", 0.93 <= nopeus <= 1.03 and osuus == 0.0, f"{nopeus:.2f}x, kiria {100 * osuus:.0f} %")
 
     import netti_piirto as npi
 
@@ -2889,8 +2905,8 @@ def testaa_kopiojono_lukko():
 
     # oikea aja_reaaliaika kiri-tilassa (VOD-virta, toistettava ajo) pienilla ruuduilla: syota on oikea Analyysi.syota (kopioruudun kasittely), muu analyysi tyhja. Kopioruutu = vasen ylakulma 255.
     # Viive 1 s (30 ruutua), etumatka 1 s: analyysi on enintaan ~96 ruutua kuvan edella, mutta kuva odottaa analyysia ruutuun f0 + 27 asti -> 150 ruudun kopioruutujono lukitsee vanhalla ehdolla.
-    def aja_putki(kopiojono=(100, 250), n=350, fps=30.0, vanha_ehto=False, odotus_max=None, jumi_s=4.0):
-        """-> (naytetyt ruudut, jumittuiko, stderr, kesto s). Jumi = kuvat eivat etene jumi_s sekuntiin: ajo keskeytetaan."""
+    def aja_putki(kopiojono=(100, 250), n=350, fps=30.0, vanha_ehto=False, odotus_max=None, jumi_s=4.0, reaaliaika=None, ajat=None):
+        """-> (naytetyt ruudut, jumittuiko, stderr, kesto s). Jumi = kuvat eivat etene jumi_s sekuntiin: ajo keskeytetaan. reaaliaika: Naytto.reaaliaika_haluttu (selaimen lisaviive); ajat: (seinakello, kuvan aika videossa) kuvaa kohden."""
         class Lahde:
             live = False
 
@@ -2953,6 +2969,12 @@ def testaa_kopiojono_lukko():
 
             def anna(self, kuva, aika=None):                            # kuten oikea Naytto / WebNaytto: aika = kuvan aika videossa (selaimen syotteen aikaleima)
                 self.n_nayt += 1
+                if ajat is not None:
+                    ajat.append((time.time(), aika))
+
+            if reaaliaika is not None:
+                def reaaliaika_haluttu(self):                           # kuten WebNaytto: selaimessa on lisaviive -> kiri tauolle
+                    return reaaliaika()
 
             def paasilmukka(self, pysayta, valmis, ilmoitus):
                 edell, t_edell = -1, time.time()
@@ -2993,6 +3015,25 @@ def testaa_kopiojono_lukko():
              n_t == 350 and not jumi_t and err_t.count("Huom: analyysi ei ole edennyt") == 1, f"{n_t} ruutua, {kesto_t:.1f} s, jumi {jumi_t}: {err_t[-200:]}")
     n_l, jumi_l, err_l, _ = aja_putki(kopiojono=(100, 130))
     tarkista("lyhyt kopioruutujono (alle etumatkan ja viiveen eron) ei viivasta kuvaa", n_l == 350 and not jumi_l and "analyysi ei ole edennyt" not in err_l)
+
+    # selaimen lisaviive (WebNaytto.reaaliaika_haluttu): kiri tauolle, kuva etenee oikealla nopeudella (video-aika / seinakello); ilman sita kuva kiri (VOD: lukija ja analyysi nopeita)
+    def kuvan_nopeus(ajat):
+        return (ajat[-1][1] - ajat[0][1]) / max(ajat[-1][0] - ajat[0][0], 1e-9)
+    ajat_k, ajat_r = [], []
+    n_k, jumi_k, _, kesto_k = aja_putki(kopiojono=(0, 0), n=150, reaaliaika=lambda: False, ajat=ajat_k)
+    n_r, jumi_r, err_r, kesto_r = aja_putki(kopiojono=(0, 0), n=150, reaaliaika=lambda: True, ajat=ajat_r)
+    v_k, v_r = kuvan_nopeus(ajat_k), kuvan_nopeus(ajat_r)
+    tarkista("aja_reaaliaika (kiri): ilman selaimen lisaviivetta kuva kiri (nopeus yli 1,8x)", n_k == 150 and not jumi_k and v_k > 1.8, f"{n_k} ruutua, {v_k:.2f}x, {kesto_k:.1f} s")
+    tarkista("aja_reaaliaika (kiri): selaimen lisaviive (reaaliaika_haluttu) pysayttaa kirin: kaikki ruudut nakyvat, kuva etenee oikealla nopeudella (~1x)", n_r == 150 and not jumi_r and 0.85 <= v_r <= 1.15,
+             f"{n_r} ruutua, {v_r:.2f}x, {kesto_r:.1f} s: {err_r[-150:]}")
+    tarkista("aja_reaaliaika: kuvan aika videossa (f / fps) kulkee naytolle: 1. ruutu 0 s, peraperaiset 1/30 s valein", abs(ajat_r[0][1]) < 1e-9 and abs(ajat_r[1][1] - 1 / 30) < 1e-9 and abs(ajat_r[-1][1] - 149 / 30) < 1e-9)
+    ajat_v = []
+    t_alku = time.time()
+    n_v2, jumi_v2, _, _ = aja_putki(kopiojono=(0, 0), n=450, reaaliaika=lambda: time.time() - t_alku < 3.0, ajat=ajat_v)          # ensin 3 s reaaliaikaa (viive 1 s: ~2 s kuvia), sitten kiri jatkuu
+    eka = [x for x in ajat_v if x[0] - t_alku < 2.9]
+    tarkista("aja_reaaliaika (kiri): lisaviive pois kesken ajon -> kuva 1x ensin ja kiri taas sen jalkeen (450 ruutua = 15 s videota nakyy alle 6 s:ssa)",
+             n_v2 == 450 and not jumi_v2 and 40 <= len(eka) <= 66 and 0.85 <= kuvan_nopeus(eka) <= 1.15 and ajat_v[-1][0] - t_alku < 6.0,
+             f"1x-vaiheessa {len(eka)} ruutua, {kuvan_nopeus(eka) if len(eka) > 1 else None}x, kesto {ajat_v[-1][0] - t_alku:.1f} s")
 
     # Jumivahti: raportti, kun ajo ei etene; uudelleen 5x / 15x / 60x ajan jalkeen; eteneminen (laskuri, lisalaskuri, vaihe) aloittaa alusta
     kello, laskuri, tulosteet = [1000.0], [0], []
