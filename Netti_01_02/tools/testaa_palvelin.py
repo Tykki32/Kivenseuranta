@@ -10,6 +10,8 @@ import csv
 import io
 import json
 import os
+import re
+import shutil
 import signal
 import socket
 import statistics
@@ -678,7 +680,7 @@ def testaa_web():
             tarkista("salasana asetettu: ilman tunnuksia 401 ja WWW-Authenticate", s == 401 and "Basic" in h.get("WWW-Authenticate", ""))
             tarkista("vaara salasana 401", pyyda(w2.portti, "/tila", tunn("kaytt", "vaara"))[0] == 401)
             tarkista("oikea salasana (valilyonti ja kaksoispiste mukana) 200", pyyda(w2.portti, "/tila", tunn("kaytt", "sala sana:1"))[0] == 200)
-            tarkista("tiedostot suojattu samoin", pyyda(w2.portti, "/tiedostot.json")[0] == 401 and pyyda(w2.portti, "/video.mjpg")[0] == 401)
+            tarkista("tiedostot suojattu samoin (myos kuvasyote)", pyyda(w2.portti, "/tiedostot.json")[0] == 401 and pyyda(w2.portti, "/video.mjpg")[0] == 401 and pyyda(w2.portti, "/syote")[0] == 401)
         finally:
             w2.sulje()
 
@@ -734,7 +736,12 @@ def testaa_netti_live_palvelinosat():
     print("netti_live: sulkusignaali, tilatiedosto, valitsimet, kalibrointikansio, keksit")
     import netti_aani as na
     import kalibrointi_valinta as kv
+    import inspect
     import netti_live as nl
+    tarkista("naytto-rajapinta: anna / nayta_heti hyvaksyvat kuvan ajan (selaimen syotteen aikaleima), ikkunanaytto ja WebNaytto",
+             all("aika" in inspect.signature(f).parameters for f in (nl.Naytto.anna, nl.Naytto.nayta_heti, nw.WebNaytto.anna, nw.WebNaytto.nayta_heti)))
+    tarkista("netti_live antaa kuville video-ajan (reaaliaika: f / fps, simulaatio: f_out / fps), selaimen syote ei jaa seinakellon varaan",
+             "naytto.anna(npi_kuva, f / fps)" in inspect.getsource(nl.aja_reaaliaika) and "naytto.nayta_heti(kuva, f_out / lahde.fps)" in inspect.getsource(nl.aja_sim))
     vanha = signal.getsignal(signal.SIGTERM)
     try:
         nl.asenna_sulkusignaali()
@@ -895,6 +902,231 @@ def testaa_web_videon_nimi():
             tarkista("HTML-lista: nimi escapoituna ja linkki koodattuna", html.escape(mp4).encode("utf-8") in b and urllib.parse.quote(mp4).encode() in b)
         finally:
             w.sulje()
+
+
+def odota(ehto, s=5.0):
+    """Odottaa, kunnes ehto() on tosi (enintaan s sekuntia); palauttaa viimeisen arvon."""
+    loppu = time.monotonic() + s
+    while time.monotonic() < loppu:
+        if ehto():
+            return True
+        time.sleep(0.02)
+    return bool(ehto())
+
+
+def lue_syote(portti, historia=None, kehyksia=1, odotus_s=10.0):
+    """Lukee /syote-virtaa raakana, kuten selaimen soitin: (tilakoodi, otsakkeet, kehykset). Kehys = (JPEG:n pituus, video-aika, jarjestysnumero, liput, JPEG-tavut); pituus 0 = sydankohta.
+    Lopettaa, kun kuvakehyksia on `kehyksia` kpl tai odotus_s sekuntia on kulunut."""
+    sock = socket.create_connection(("127.0.0.1", portti), timeout=5)
+    kehykset, otsakkeet, koodi, puskuri, koko = [], None, None, b"", nw.SYOTE_OTSIKKO.size
+    try:
+        sock.sendall(("GET /syote" + ("" if historia is None else f"?historia={historia}") + " HTTP/1.1\r\nHost: x\r\n\r\n").encode())
+        sock.settimeout(0.2)
+        loppu = time.monotonic() + odotus_s
+        while time.monotonic() < loppu and sum(1 for k in kehykset if k[0] > 0) < kehyksia:
+            try:
+                osa = sock.recv(65536)
+            except socket.timeout:
+                continue
+            if not osa:
+                break
+            puskuri += osa
+            if otsakkeet is None:
+                i = puskuri.find(b"\r\n\r\n")
+                if i < 0:
+                    continue
+                rivit = puskuri[:i].decode("latin-1").split("\r\n")
+                koodi = int(rivit[0].split()[1])
+                otsakkeet = dict((r.split(":", 1)[0].strip().lower(), r.split(":", 1)[1].strip()) for r in rivit[1:] if ":" in r)
+                puskuri = puskuri[i + 4:]
+            while len(puskuri) >= koko:
+                n, aika, seq, liput = nw.SYOTE_OTSIKKO.unpack(puskuri[:koko])
+                if len(puskuri) < koko + n:
+                    break
+                kehykset.append((n, aika, seq, liput, puskuri[koko:koko + n]))
+                puskuri = puskuri[koko + n:]
+    finally:
+        sock.close()
+    return koodi, otsakkeet, kehykset
+
+
+def tuota_kuvia(w, t_alku, kesto_s, fps=30.0):
+    """Julkaisee kuvia reaaliajassa (video-aika t_alku + i / fps). Kuvan vari koodaa video-ajan: R = sekunnit mod 50, G = sekunnin osa (1/50 s); 5:n kerrannaisina, jotta JPEG ei sotke."""
+    pohja = np.zeros((90, 160, 3), np.uint8)
+    mono0, i = time.monotonic(), 0
+    while i / fps < kesto_s:
+        viive = mono0 + i / fps - time.monotonic()
+        if viive > 0:
+            time.sleep(viive)
+        t = t_alku + i / fps
+        k = pohja.copy()
+        k[:, :, 2] = (int(t) % 50) * 5
+        k[:, :, 1] = int((t % 1) * 50) * 5
+        w.nayta_heti(k, t)
+        i += 1
+
+
+def syote_aika(w, i):
+    """Syotepuskurin i. kuvan video-aika (0.0, jos puskuri on tyhja: virheellinen toteutus ei saa kaataa testia)."""
+    return w._syote[i][1] if w._syote else 0.0
+
+
+def kuvan_aika(tavut, lahella):
+    """Syotteen JPEG-kuvaan koodattu video-aika (tuota_kuvia): 50 s:n jaksosta se, joka on lahinna arvoa `lahella`; (aika, kuvan koko)."""
+    import cv2
+    d = cv2.imdecode(np.frombuffer(tavut, np.uint8), cv2.IMREAD_COLOR)
+    perus = round(int(d[5, 5, 2]) / 5) + round(int(d[5, 5, 1]) / 5) / 50.0
+    return perus + 50 * round((lahella - perus) / 50.0), d.shape
+
+
+def testaa_web_syote():
+    print("selainnakyman aikaleimattu syote (/syote: soittimen puskuri ja lisaviive selaimessa)")
+    vanhat = (nw.SYOTE_S, nw.SYOTE_TAVUT_MAX, nw.SYOTE_ODOTUS_S, nw.SYOTE_SYDAN_S)
+    w = w2 = w3 = w4 = None
+    try:
+        w = nw.WebNaytto(0, None, leveys=160, fps=10, laatu=95, tila=lambda: dict(lahde="testi", viive_s=10.0))
+        p = w.portti
+        tila = json.loads(pyyda(p, "/tila")[2])
+        tarkista("/tila: syotteen pituus, lisaviiveen ylaraja (30 s), kuvataajuus ja perusviive", tila["syote_s"] == nw.SYOTE_S and tila["lisaviive_max_s"] == nw.LISAVIIVE_MAX_S == 30 and tila["syote_fps"] == 10 and tila["viive_s"] == 10.0, str(tila))
+        tarkista("syotteen puskuri kattaa lisaviiveen ylarajan ja uudelleenyhteyden varan (soitin pyytaa historiaa lisaviive + 8 s)", nw.SYOTE_S >= nw.LISAVIIVE_MAX_S + 8)
+        sivu = pyyda(p, "/")[2].decode("utf-8")
+        tarkista("sivu: soitin (canvas), viivenapit -5 / -1 / +1 / +5, syoteyhteys ja MJPEG-varapolku", all(x in sivu for x in ('<canvas id="soitin"', 'id="viiveohjain"', 'data-d="-5"', 'data-d="-1"', 'data-d="1"', 'data-d="5"', '"syote?historia="', "video.mjpg", "createImageBitmap")))
+        s, h, b = pyyda(p, "/syote?historia=3", metodi="HEAD")
+        tarkista("HEAD /syote: otsakkeet ilman sisaltoa (virtaa ei avata)", s == 200 and b == b"" and h["Content-Type"] == "application/octet-stream" and w._syote_katsojia == 0)
+        s, h, b = pyyda(p, "/syote?historia=abc")
+        tarkista("historia roskaa -> 400 ja JSON-virhe", s == 400 and "historia" in json.loads(b)["virhe"], str(b))
+
+        tuota_kuvia(w, 90.0, 0.5)
+        tarkista("ilman katsojaa kuvia ei koodata eika koodaajasaiettakaan kaynnisteta (ei kuormaa, kun kukaan ei katso)", len(w._syote) == 0 and w._syote_saie is None)
+
+        # virta: 30 kuvaa/s -> kuvataajuus 10 (harvennus video-ajan ja seinakellon mukaan), kuvat oikeassa jarjestyksessa ja oikealla aikaleimalla
+        tulos1 = []
+        lukija = threading.Thread(target=lambda: tulos1.append(lue_syote(p, 0, kehyksia=10 ** 6, odotus_s=3.6)), daemon=True)
+        lukija.start()
+        tarkista("katsoja lasketaan (syotteen katsoja ja tilarivin katsojamaara)", odota(lambda: w._syote_katsojia == 1) and w.tila()["katsojia"] == 1)
+        tuottaja = threading.Thread(target=tuota_kuvia, args=(w, 100.0, 9.0), daemon=True)
+        tuottaja.start()
+        lukija.join(10)
+        koodi, o, k = tulos1[0]
+        kuvat = [x for x in k if x[0] > 0]
+        tarkista("virta: 200, binaarivirta, ei valimuistia", koodi == 200 and o["content-type"] == "application/octet-stream" and "no-store" in o["cache-control"], str(o))
+        tarkista("virta: kuvia 6-10 / s (harvennus 10 kuvaan sekunnissa, 30 kuvan lahteesta)", 21 <= len(kuvat) <= 40, str(len(kuvat)))
+        vali = [b[1] - a[1] for a, b in zip(kuvat, kuvat[1:])]
+        tarkista("virta: video-ajat kasvavat, kuvien vali ei alle 1 / fps - 0,4 * lahteen kuvavali", bool(vali) and min(vali) >= 0.1 - 0.4 / 30 - 1e-6 and max(vali) < 0.35, f"{min(vali):.3f} ... {max(vali):.3f}")
+        tarkista("virta: jarjestysnumerot perakkaisia (ei hukattuja kuvia nopealle katsojalle)", bool(kuvat) and [x[2] for x in kuvat] == list(range(kuvat[0][2], kuvat[0][2] + len(kuvat))))
+        tarkista("virta: ensimmainen kuva on historiaa (liput 1), tuoreet 0", bool(kuvat) and kuvat[0][3] == 1 and all(x[3] == 0 for x in kuvat[1:]))
+        tarkista("virta: JPEG-kuvat ehjia ja oikean kokoisia, ja kuvaan koodattu aika = otsakkeen video-aika", all(x[4][:2] == b"\xff\xd8" for x in kuvat) and all(abs(x[1] - kuvan_aika(x[4], x[1])[0]) < 0.045 and kuvan_aika(x[4], x[1])[1] == (90, 160, 3) for x in kuvat[::4]))
+
+        # historia: heti alkuun aiempia kuvia
+        odota(lambda: syote_aika(w, -1) >= 105.0, 10)
+        uusin = syote_aika(w, -1)
+        _, _, k2 = lue_syote(p, 2, kehyksia=10 ** 6, odotus_s=0.6)
+        hist = [x for x in k2 if x[0] > 0 and x[3] & 1]
+        elava = [x for x in k2 if x[0] > 0 and not x[3] & 1]
+        tarkista("historia=2: heti alkuun noin 2 s aiempia kuvia (liput 1), jarjestyksessa", 17 <= len(hist) <= 25 and hist[0][1] >= uusin - 2.0 - 1e-6 and hist[-1][1] <= uusin + 0.5 and all(b[1] > a[1] for a, b in zip(hist, hist[1:])), f"{len(hist)} kuvaa")
+        tarkista("historian jalkeen tulee tuoreita kuvia (liput 0) sen jatkoksi", len(elava) >= 3 and bool(hist) and elava[0][1] > hist[-1][1])
+        uusin = syote_aika(w, -1)
+        _, _, k3 = lue_syote(p, 0, kehyksia=3, odotus_s=3.0)
+        tarkista("historia=0: vain uusin kuva historiana, sen jalkeen tuoreet", len(k3) == 3 and k3[0][3] & 1 and not k3[1][3] & 1 and k3[0][1] >= uusin and k3[1][1] > k3[0][1])
+        _, _, k3 = lue_syote(p, -5, kehyksia=2, odotus_s=3.0)
+        tarkista("historia negatiivinen: kuten 0", len(k3) == 2 and k3[0][3] & 1 and not k3[1][3] & 1)
+        _, _, k3 = lue_syote(p, None, kehyksia=2, odotus_s=3.0)
+        tarkista("historia puuttuu: kuten 0", len(k3) == 2 and k3[0][3] & 1 and not k3[1][3] & 1)
+        _, _, k4 = lue_syote(p, 999, kehyksia=10 ** 6, odotus_s=0.5)
+        hist4 = [x for x in k4 if x[3] & 1]
+        tarkista("historia yli puskurin pituuden: rajataan puskuriin (koko puskuri alusta)", len(hist4) >= 40 and hist4[0][1] <= 100.3, f"{len(hist4)} kuvaa, alku {hist4[0][1] if hist4 else None}")
+
+        tuottaja.join(10)
+        tarkista("katsojat poistuvat laskureista yhteyden katketessa", odota(lambda: w._syote_katsojia == 0 and w.tila()["katsojia"] == 0))
+
+        # video-ajan hyppy taaksepain (uusi aikaperusta): vanha historia ei jatku uuteen
+        tulos6 = []
+        lukija = threading.Thread(target=lambda: tulos6.append(lue_syote(p, 0, kehyksia=10 ** 6, odotus_s=2.0)), daemon=True)
+        lukija.start()
+        odota(lambda: w._syote_katsojia == 1)
+        tuota_kuvia(w, 50.0, 1.0)
+        lukija.join(5)
+        k6 = [x for x in tulos6[0][2] if x[0] > 0]
+        tarkista("aikaperustan vaihto: katsoja saa myos uuden jakson kuvat (video-aika hyppaa taaksepain)", any(x[1] > 100 for x in k6) and any(x[1] < 60 for x in k6), str([round(x[1], 1) for x in k6[:3]]))
+        _, _, k7 = lue_syote(p, 40, kehyksia=10 ** 6, odotus_s=0.5)
+        tarkista("aikaperustan vaihto: vanha historia tyhjennetaan (uusi katsoja saa vain uuden jakson)", len([x for x in k7 if x[0] > 0]) >= 5 and all(x[1] < 60 for x in k7 if x[0] > 0))
+        w.sulje()
+        w = None
+
+        # rengaspuskurin rajat: enintaan SYOTE_S s ja SYOTE_TAVUT_MAX tavua
+        nw.SYOTE_S = 2.0
+        w2 = nw.WebNaytto(0, None, leveys=160, fps=20, laatu=95)
+        lukija = threading.Thread(target=lambda: lue_syote(w2.portti, 0, kehyksia=10 ** 6, odotus_s=4.0), daemon=True)
+        lukija.start()
+        odota(lambda: w2._syote_katsojia == 1)
+        tuota_kuvia(w2, 10.0, 4.0)
+        time.sleep(0.3)
+        vali_s = syote_aika(w2, -1) - syote_aika(w2, 0)
+        tarkista("rengaspuskuri: enintaan SYOTE_S s video-aikaa (muuten vanhin pois)", 1.5 <= vali_s <= nw.SYOTE_S and len(w2._syote) >= 20, f"{vali_s:.2f} s, {len(w2._syote)} kuvaa")
+        nw.SYOTE_S = 40.0
+        nw.SYOTE_TAVUT_MAX = 6 * (len(w2._syote[-1][2]) if w2._syote else 1000)
+        tuota_kuvia(w2, 20.0, 1.5)                                  # katsoja on jo poistunut: koodaus jatkuu odotusajan (SYOTE_ODOTUS_S)
+        time.sleep(0.3)
+        tarkista("rengaspuskuri: enintaan SYOTE_TAVUT_MAX tavua (muistiraja), ainakin kaksi kuvaa jaa", 2 <= len(w2._syote) <= 8 and w2._syote_tavut <= nw.SYOTE_TAVUT_MAX, f"{len(w2._syote)} kuvaa, {w2._syote_tavut} / {nw.SYOTE_TAVUT_MAX} tavua")
+        tarkista("rengaspuskurin tavukirjanpito tasmaa", w2._syote_tavut == sum(len(x[2]) for x in w2._syote))
+        w2.sulje()
+        w2 = None
+
+        # koodaus vain katsojan ollessa paikalla (ja hetki sen jalkeen)
+        nw.SYOTE_S, nw.SYOTE_TAVUT_MAX, nw.SYOTE_ODOTUS_S = vanhat[0], vanhat[1], 1.5
+        w3 = nw.WebNaytto(0, None, leveys=160, fps=20, laatu=95)
+        tulos8 = []
+        lukija = threading.Thread(target=lambda: tulos8.append(lue_syote(w3.portti, 0, kehyksia=3, odotus_s=5)), daemon=True)
+        lukija.start()
+        odota(lambda: w3._syote_katsojia == 1)
+        tuota_kuvia(w3, 10.0, 0.5)
+        lukija.join(5)
+        odota(lambda: w3._syote_katsojia == 0)
+        n_ennen = len(w3._syote)
+        tuota_kuvia(w3, 11.0, 0.4)
+        time.sleep(0.2)
+        tarkista("viimeisen katsojan poistuttua koodaus jatkuu hetken (uudelleenyhteys saa historian)", len(w3._syote) > n_ennen, f"{n_ennen} -> {len(w3._syote)}")
+        while time.monotonic() < w3._syote_aktiivinen_asti + 0.2:
+            time.sleep(0.05)
+        n_ennen = len(w3._syote)
+        tuota_kuvia(w3, 12.0, 0.4)
+        time.sleep(0.2)
+        tarkista("odotusajan jalkeen ilman katsojaa kuvia ei enaa koodata", len(w3._syote) == n_ennen, f"{n_ennen} -> {len(w3._syote)}")
+        tulos9 = []
+        lukija = threading.Thread(target=lambda: tulos9.append(lue_syote(w3.portti, 40, kehyksia=2, odotus_s=5)), daemon=True)
+        lukija.start()
+        odota(lambda: w3._syote_katsojia == 1)
+        tuota_kuvia(w3, 20.0, 0.5)
+        lukija.join(5)
+        k9 = [x for x in tulos9[0][2] if x[0] > 0]
+        tarkista("uusi katsoja odotusajan jalkeen: vanhentunutta historiaa ei lahteta (puskuri tyhjennetty)", len(k9) == 2 and all(x[1] >= 20.0 for x in k9), str([round(x[1], 1) for x in k9]))
+        w3.sulje()
+        w3 = None
+
+        # sydankohta: tyhja syote ei ole hiljaa (katkennut yhteys huomataan)
+        nw.SYOTE_SYDAN_S = 0.2
+        w4 = nw.WebNaytto(0, None)
+        _, _, k10 = lue_syote(w4.portti, 0, kehyksia=1, odotus_s=2.5)
+        tarkista("tyhja syote: sydankohta (pituus 0) lahtee, ettei yhteys nayta kuolleelta", len(k10) >= 2 and all(x[:4] == (0, 0.0, 0, 0) for x in k10), str([x[:4] for x in k10]))
+        w4.sulje()
+        w4 = None
+    finally:
+        for x in (w, w2, w3, w4):
+            if x is not None:
+                x.sulje()
+        nw.SYOTE_S, nw.SYOTE_TAVUT_MAX, nw.SYOTE_ODOTUS_S, nw.SYOTE_SYDAN_S = vanhat
+
+    solmu = shutil.which("node")
+    if solmu:
+        skripti = re.findall(r"<script>(.*?)</script>", nw.SIVU, re.S)
+        with tempfile.TemporaryDirectory() as t:
+            tied = os.path.join(t, "sivu.js")
+            with open(tied, "w", encoding="utf-8") as f:
+                f.write("\n".join(skripti))
+            r = subprocess.run([solmu, "--check", tied], capture_output=True, text=True, timeout=60)
+        tarkista("sivun JavaScript on syntaktisesti kelvollista (node --check)", bool(skripti) and r.returncode == 0, r.stderr.strip()[-200:])
+    else:
+        print("  (node puuttuu: sivun JavaScriptin syntaksitarkistus ohitetaan)")
 
 
 HEITTO_KENTAT = ["heitto", "vari", "kivi_nro", "puoli", "paa", "kierre", "irroitus_delta_cm", "liuku_T_cm", "heitto_T_cm", "merkki_T_cm", "liuku_merkista_cm", "heitto_merkista_cm",
@@ -1328,7 +1560,7 @@ def testaa_joutilas():
 
 def main():
     for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_odotuksen_ylivuoto, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
-              testaa_videon_nimi_palvelin, testaa_web_resoluutio, testaa_web_videon_nimi, testaa_web_tilasto, testaa_joutilas):
+              testaa_videon_nimi_palvelin, testaa_web_resoluutio, testaa_web_videon_nimi, testaa_web_syote, testaa_web_tilasto, testaa_joutilas):
         t()
     print()
     if VIRHEITA:

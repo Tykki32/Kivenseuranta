@@ -2951,7 +2951,7 @@ def testaa_kopiojono_lukko():
             def __init__(self):
                 self.n_nayt, self.jumi = 0, False
 
-            def anna(self, kuva):
+            def anna(self, kuva, aika=None):                            # kuten oikea Naytto / WebNaytto: aika = kuvan aika videossa (selaimen syotteen aikaleima)
                 self.n_nayt += 1
 
             def paasilmukka(self, pysayta, valmis, ilmoitus):

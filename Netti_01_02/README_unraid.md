@@ -82,7 +82,7 @@ Kaikki ovat valinnaisia. Tyhjä arvo tarkoittaa samaa kuin asettamatta jättämi
 | `NETTI_YT_FORMAATTI` | – | yt-dlp-formaattivalitsin, esim. `bestvideo[height<=1080][protocol=https][vcodec^=avc1]` |
 | `NETTI_EI_KIERRETTA`, `NETTI_EI_KELLOA`, `NETTI_HILJAA` | 0 | Ei kierteen mittausta / ei joukkueiden kelloa kuvassa / vähemmän tulostetta |
 | `NETTI_WEB_PORTTI` | 63884 | Selainnäkymän portti **kontin sisällä**; 0 = ei selainnäkymää. Jos portti on palvelimella varattu, vaihda portin yhdistyksessä vain palvelimen puoli (Unraid: *Host Port*, compose: `ports`-rivin vasen luku) ja jätä tämä ennalleen. Tämän muuttaminen on tarpeen vain, jos kontti ajetaan `host`-verkossa (silloin kontin portti on palvelimen portti) |
-| `NETTI_WEB_LEVEYS`, `NETTI_WEB_FPS`, `NETTI_WEB_LAATU` | 1920, 8, 75 | Selaimeen menevän kuvan leveys (px), enimmäistaajuus katsojaa kohden ja JPEG-laatu. Oletus 1920 = analysoitu kuva sellaisenaan (sama resoluutio kuin lähdevideosta luettu, ei pienennystä); pienempi leveys (esim. 1280) keventää verkkoa ja prosessoria. Kuva pakataan vain, kun joku katsoo |
+| `NETTI_WEB_LEVEYS`, `NETTI_WEB_FPS`, `NETTI_WEB_LAATU` | 1920, 8, 75 | Selaimeen menevän kuvan leveys (px), enimmäistaajuus katsojaa kohden ja JPEG-laatu. Oletus 1920 = analysoitu kuva sellaisenaan (sama resoluutio kuin lähdevideosta luettu, ei pienennystä); pienempi leveys (esim. 1280) keventää verkkoa ja prosessoria. Kuva pakataan vain, kun joku katsoo. Taajuus on kuvien enimmäismäärä sekunnissa myös viiveensäädön puskuriin ([Selainnäkymä](#6-tulokset-ja-selainnäkymä)): suurempi arvo (esim. 15) tekee liikkeestä tasaisemman mutta kuormittaa verkkoa ja prosessoria enemmän |
 | `NETTI_WEB_KAYTTAJA`, `NETTI_WEB_SALASANA` | – | Salasana selainnäkymään (HTTP Basic; kumpikin pakollinen) |
 | `NETTI_ODOTUS_S` | 60 | Valvonta: odotus ajojen välillä. Toistuvissa nopeissa epäonnistumisissa odotus kaksinkertaistuu (enintään 15 min) |
 | `NETTI_VAKAUS_S` | 30 | Valvonta: tiedoston on oltava muuttumatta näin kauan ennen analyysia (kopiointi voi olla kesken) |
@@ -149,7 +149,7 @@ docker run --rm -v /mnt/user/kivenseuranta:/data -p 63884:63884 \
 Live-lähetyksen odotus: `NETTI_LAHDE=https://www.youtube.com/@KANAVA/live`, `NETTI_JATKUVA=1`, Restart = `unless-stopped`. Kontti yrittää uudelleen minuutin välein (toistuvasta epäonnistumisesta
 alkaen harvemmin), analysoi lähetyksen ja jatkaa odottamaan seuraavaa. Tavallinen YouTube-**video** (ei live) analysoidaan valvonnassa vain kerran.
 
-**e) Katso tallenne kuin lähetystä.** Tiedostolle `NETTI_NOPEA=0`: video etenee reaaliajassa ja selainnäkymä näyttää kuvan viiveellä (`NETTI_VIIVE`).
+**e) Katso tallenne kuin lähetystä.** Tiedostolle `NETTI_NOPEA=0`: video etenee reaaliajassa ja selainnäkymä näyttää kuvan viiveellä (`NETTI_VIIVE`; selaimessa viivettä voi lisätä napeilla, ks. [Selainnäkymä](#6-tulokset-ja-selainnäkymä)).
 
 **f) Apuohjelmat kontissa.** Nopeusmittaus, tarkistukset ja testit:
 
@@ -242,7 +242,19 @@ tiedoston nimi (videotiedosto; sen nimi on jo mukana) tai `virta` (`--url`). Nim
 
 CSV päivittyy ajon aikana heiton valmistuttua. Ajon päätyttyä tai pysäytyksen (`docker stop`, Unraidin Stop) yhteydessä tallenne suljetaan ja CSV kirjoitetaan valmiiksi.
 
-**Selainnäkymä** (`http://PALVELIN:63884`): kuva (MJPEG; toimii kaikissa selaimissa ja puhelimessa), viimeiset lokirivit, ajon tila ja lista tulostiedostoista. Mp4 toistuu selaimessa ja CSV latautuu. Kuva pakataan vain, kun joku katsoo, joten näkymä ei kuormita ajoa, kun kukaan ei seuraa.
+**Selainnäkymä** (`http://PALVELIN:63884`): kuva, viiveen säätö, viimeiset lokirivit, ajon tila ja lista tulostiedostoista. Mp4 toistuu selaimessa ja CSV latautuu. Kuva pakataan vain, kun joku katsoo, joten näkymä ei kuormita ajoa, kun kukaan ei seuraa.
+
+**Kuvan viiveen säätö selaimessa.** Kuvan alla on napit **−5 s**, **−1 s**, **+1 s** ja **+5 s** sekä teksti, esim. `Viive 15 s (10 + 5)`: kuvan kokonaisviive tuotannosta, suluissa analyysin oma viive (`NETTI_VIIVE`) ja selaimessa säädetty lisäviive.
+Säätö muuttaa vain sitä, mitä tämä selain näyttää; analyysi, tallenne ja CSV eivät muutu, ja jokaisella selaimella (puhelin, tietokone) voi olla oma lisäviive.
+* **Lisäviive 0 (oletus):** kuva seuraa tuotantoa kuten ennenkin, eli selain näyttää aina uusimman kuvan.
+* **Lisäviive yli 0:** selain toistaa kuvaa **normaalilla nopeudella ja tasaisesti** valitun viiveen päässä uusimmasta kuvasta. Palvelin lähettää kuvat aikaleimattuina, ja selain pitää ne puskurissa ja piirtää ne aikaleimojen mukaan, joten
+  tuotannon pieni epätasaisuus ei näy nykimisenä. Nappi siirtää kuvan heti: +5 s hyppää 5 s taaksepäin, −5 s eteenpäin; sen jälkeen toisto jatkuu normaalisti. Lisäviive on 0–30 s (perusviiveen alle ei voi mennä, koska
+  analyysin piirrokset valmistuvat vasta perusviiveen jälkeen), ja valinta muistetaan selaimessa.
+* **Puskuri:** palvelin pitää viimeiset 40 s kuvia valmiina ja selain vastaavasti 40 s. Jos historiaa ei vielä ole tarpeeksi (sivu juuri avattu tai lisäviivettä nostettu yli kertyneen historian) tai tuotanto pysähtyy hetkeksi, kuva pysähtyy ja teksti
+  kertoo `puskuroidaan x / y s`; kuva jatkaa itsestään, kun puskuri on täynnä. Sivun uudelleenlataus tai lyhyt yhteyskatko ei hukkaa viivettä: palvelin antaa uudelleenyhteydessä tarvittavan historian (koodaus jatkuu minuutin viimeisen katsojan poistuttua).
+* **Kiri:** jos ajo etenee reaaliaikaa nopeammin (tiedosto `NETTI_NOPEA=1` tai YouTube-tallenteen kiri), toisto seuraa samaa vauhtia ja lisäviive on videon aikaa; tekstissä lukee `kiri`. Tasaisen reaaliaikaisen toiston saa ajolla `NETTI_NOPEA=0`.
+* **Kuormitus:** kuvia lähtee enintään `NETTI_WEB_FPS` (oletus 8) sekunnissa; sama kuvamäärä on puskurissa, joten suurempi taajuus tarkoittaa tasaisempaa liikettä mutta enemmän verkkoa ja muistia (puskurin muisti on tavallisesti kymmeniä megatavuja, ylärajat palvelimella 400 Mt ja selaimessa 300 Mt).
+* **Vanha selain:** jos selain ei tue tarvittavia toimintoja (`fetch`-virta, `createImageBitmap`), kuva näytetään entiseen tapaan MJPEG-virtana (`/video.mjpg`) ilman viiveen säätöä.
 
 **Selainnäkymä ajojen välissä.** Valvonnan odotuksen aikana (ei uusia videoita, tai ajon päätyttyä ennen seuraavaa) sama sivu on silti auki: kuvaa ei ole, tilarivillä lukee *Ei analyysia käynnissä · valvonta odottaa uusia
 videoita*, ja loki, tiedostolista ja Pelaajatilasto toimivat. Kun uusi ajo alkaa, valvoja sulkee tämän sivun ja analyysi avaa saman portin itse; selain ottaa yhteyden uudelleen ilman päivitystä, ja kuva alkaa näkyä, kun
@@ -301,6 +313,7 @@ lukuoikeuden, ja vain tulostiedostoihin (`mp4`, `csv`, `json`, `txt`, `log` suor
 | `YouTube-virran haku epäonnistui` | [YouTube](#5-youtube): päivitä yt-dlp, tarkista verkko; live-lähetys ei ehkä ole alkanut (valvonnassa kontti yrittää uudelleen) |
 | Kuvan viive kasvaa / `Huom: piirto / ikkuna on N s jäljessä` | Kone ei jaksa reaaliaikaa: lisää ytimiä, `NETTI_X264_PRESET=ultrafast`, pienempi `NETTI_WEB_LEVEYS`, tiedostolle `NETTI_NOPEA=1` |
 | Selainnäkymä sanoo `Ajo käynnissä`, mutta kuva ei etene (`viimeisin kuva N s sitten` kasvaa, sivulla `kuva ei etene`) | **Jumivahti** kirjoittaa lokiin 60 s kuluttua raportin `Jumivahti: ajo ei ole edennyt …` (ajon tila ja kaikkien säikeiden pinot): lähetä se, niin syy selviää. Raja: `NETTI_LISAVALITSIMET=--jumivahti 30` (`0` = pois). Aiemmin tämän aiheutti pitkä jono kopioruutuja (hiljainen tauko videolla: kuva ja analyysi odottivat toisiaan, korjattu), ja virran yhteyden katko näkyy raportissa kohdassa `lähteestä luettu viimeksi N s sitten` |
+| Kuva pysähtyy ja viiveen kohdalla lukee `puskuroidaan x / y s` | Lisäviiveen mukaista historiaa ei ole vielä kertynyt (sivu juuri avattu, viivettä nostettu paljon tai tuotanto pysähtyi hetkeksi): kuva jatkuu itsestään, kun puskuri on täynnä. Nopeampi keino: −1 s / −5 s |
 | Loki: `Tallennusvirhe (ffmpeg …)` | Tallenne keskeytyi (levy täynnä tai kooderi kaatui); analyysi, CSV ja selainnäkymä jatkavat. Tarkista levytila (`ulos`) ja aja uudelleen |
 | Loki: `tarkka sovitus: Python` | C++-sovitin ei lataudu; kuvan rakennus katkeaa siihen, joten tätä ei pitäisi tulla. Python-varapolku on hitaampi eikä anna samoja tuloksia |
 | Loki: `automaattinen kalibrointi epaonnistui (TypeError(… unexpected keyword argument 'aikaraja_s'))` tai `Huom: … uusi_kalibrointi.py on vanha versio` | Ohjelmakansio on päivitetty vain osittain (tyypillisesti alikansio `tools/` jäi kopioimatta): kopioi koko `Netti_01_02` (myös `tools/`) ja rakenna kuva uudelleen ([Päivitys](#8-päivitys)). Nykyversio kalibroi silti (ilman aikarajaa) ja kertoo, mikä tiedosto on vanha; aiemmat versiot kaatuivat tähän virheeseen ja käyttivät vanhaa kansiota |
@@ -317,9 +330,9 @@ Lokit: Unraidin Docker-välilehti → kontin *Logs*, tai `docker logs -f kivense
 ## 10. Mitä eroaa `Netti_01_01`:stä
 
 * **Uudet tiedostot:** `Dockerfile`, `entrypoint.sh`, `docker-compose.yml`, `unraid/kivenseuranta.xml`, `requirements.txt`, `.dockerignore`, `.gitattributes`, `netti_palvelin.py` (käynnistäjä,
-  asetukset, valvonta), `netti_web.py` (selainnäkymä, pelaajatilasto ja ajojen välinen sivu; käyttää `tools/pelaajatilasto.py`:tä), `netti_ymparisto.py` (kontin ydin- ja muistirajat), `tools/testaa_palvelin.py`.
+  asetukset, valvonta), `netti_web.py` (selainnäkymä, kuvan viiveen säätö, pelaajatilasto ja ajojen välinen sivu; käyttää `tools/pelaajatilasto.py`:tä), `netti_ymparisto.py` (kontin ydin- ja muistirajat), `tools/testaa_palvelin.py`.
 * **Muutetut tiedostot (vain palvelinominaisuudet):** `netti_live.py` (valitsimet `--web`, `--web-leveys`, `--web-fps`, `--web-laatu`, `--tila-tiedosto`; SIGTERM käsitellään kuten Ctrl-C; simulaation
-  keskeytys viimeistelee kirjauksen; työprosessien oletusmäärä ja muistin tunnistus kontin rajoilla; oma kalibrointikansio `NETTI_KALIBROINNIT`; YouTube-evästeet), `kalibrointi_valinta.py` (oma
+  keskeytys viimeistelee kirjauksen; näyttörajapinta (`anna`, `nayta_heti`) saa kuvan ajan videossa, jota selaimen viiveensäätö tarvitsee; työprosessien oletusmäärä ja muistin tunnistus kontin rajoilla; oma kalibrointikansio `NETTI_KALIBROINNIT`; YouTube-evästeet), `kalibrointi_valinta.py` (oma
   kalibrointikansio), `netti_aani.py` (evästeet), `cpp/netti_fit.cpp` (vain `#include`-rivit: tarvitaan vain OpenCV:n `core` ja `imgproc`). Algoritmit, parametrit ja tulokset ovat ennallaan.
 * **Mukana ei ole:** vanhat kameraohjelmat (`live.py`, `main.py` …), opetus- ja kehitystyökalut, kulmaverkon painot (niitä ei käytetä ajossa), ikkunanäkymä (`--nayttotila`) ei ole käytössä (OpenCV on ilman ikkunatukea); palvelimella
   käytetään `--web`-näkymää.
@@ -379,11 +392,11 @@ eikä `deno` ottanut itse yhteyttä verkkoon.
 
 ```bash
 docker run --rm kivenseuranta:latest testaa                      # koko testisarja (tools/testaa_vakiot.py), useita minuutteja
-docker run --rm kivenseuranta:latest python /app/tools/testaa_palvelin.py   # palvelinversion testit (alle 10 s)
+docker run --rm kivenseuranta:latest python /app/tools/testaa_palvelin.py   # palvelinversion testit (alle minuutti)
 ```
 
 Palvelinversion testit kattavat: asetusten luku ja virheilmoitukset, lähteen tunnistus, komentorivin rakennus, kansion valvonta ja muisti, ajosilmukka (kertaajo, valvonta, uudelleenyritykset,
-odotuksen pidentyminen, pysäytys), signaalit (lapsiprosessin viimeistely ja tappaminen), selainnäkymä (sivu, kuva, MJPEG, tila, loki, tiedostot, Range, polkuhyökkäysten esto, salasana, varattu portti), pelaajatilasto selaimessa (tiedostolista, laskenta, CSV-lataus,
+odotuksen pidentyminen, pysäytys), signaalit (lapsiprosessin viimeistely ja tappaminen), selainnäkymä (sivu, kuva, MJPEG, tila, loki, tiedostot, Range, polkuhyökkäysten esto, salasana, varattu portti), aikaleimattu kuvasyöte viiveensäätöä varten (kehysten muoto ja aikaleimat, harvennus, historia, rengaspuskurin rajat, koodaus vain katsojan ollessa paikalla, sydänkohta, aikaperustan vaihto; sivun JavaScriptin syntaksi), pelaajatilasto selaimessa (tiedostolista, laskenta, CSV-lataus,
 virheelliset syötteet ja polkuhyökkäykset, aakkos- ja heittomerkkinimet, salasana) sekä ajojen välinen sivu (avaus ja sulku, saman portin luovutus analyysille myös pysyvien selainyhteyksien kanssa, ajosilmukan järjestys), kontin ydin- ja muistirajat sekä kalibrointikansioiden haku.
 
 Rakennuksen ja ajon varmistus tässä kansiossa (Docker 29, Ubuntu 24.04): 130 s:n videoleike (kaksi kokonaista heittoa) analysoitiin kontissa; tuloksena syntynyt CSV on **tavu tavulta sama** kuin
