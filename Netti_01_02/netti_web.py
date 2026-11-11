@@ -6,7 +6,8 @@ netti_live.py --web PORTTI korvaa ikkunan (Naytto) talla: WebNaytto tarjoaa sama
   /video.mjpg        kuva MJPEG-virtana (<img>-elementti toimii kaikissa selaimissa; JPEG pakataan vain, kun joku katsoo)
   /syote             aikaleimattu kuvasyote selaimen soittimelle: kuvat video-ajan mukaan harvennettuina (enintaan --web-fps kuvaa/s), rengaspuskuri SYOTE_S s; selain puskuroi ja toistaa ne
                      tasaisesti aikaleimojen mukaan, ja ± napeilla saadettava lisaviive (enintaan LISAVIIVE_MAX_S s) nayttaa kuvan vain myohemmin (analyysin viive ei muutu). ?historia=<s>: heti alkuun
-                     lahetettavat aiemmat kuvat. Kehys = SYOTE_OTSIKKO (pituus, video-aika, jarjestysnumero, liput) + JPEG; pituus 0 = sydankohta
+                     lahetettavat aiemmat kuvat; id = sivun tunnus, lisa = sivun lisaviive. Kehys = SYOTE_OTSIKKO (pituus, video-aika, jarjestysnumero, liput) + JPEG; pituus 0 = sydankohta
+  /lisa              ?id=<sivun tunnus>&s=<lisaviive s>: sivu ilmoittaa lisaviiveensa; > 0: kuvan pitaa edeta reaaliajassa (VOD-ajon kiri tauolle, ks. reaaliaika_haluttu)
   /kuva.jpg          tuorein kuva yksittaisena JPEG:na
   /tila              JSON: ajon tila, kuvien maara, katsojat
   /loki              viimeiset rivit konsolitulosteesta (teksti)
@@ -47,6 +48,10 @@ SYOTE_TAVUT_MAX = 400 * 1024 * 1024                                # rengaspusku
 SYOTE_ODOTUS_S = 60.0                                              # kuvia koodataan viela taman ajan viimeisen katsojan poistuttua: uusi katsoja (tai uudelleenyhteys) saa historian
 SYOTE_JALKEEN_S = 5.0                                              # katsoja, joka on yhteyden hitauden vuoksi yli historia + taman verran jalessa, ohittaa uusimpiin
 SYOTE_SYDAN_S = 5.0                                                # tyhjan syotteen sydankohta (pituus 0) tahan tahtiin: katkennut yhteys huomataan
+SYOTE_LISA_ODOTUS_S = 5.0                                          # katsojan lisaviive pysyy voimassa taman ajan yhteyden katkettua (uudelleenyhteys ei vapauta kiria hetkeksi)
+SYOTE_LISA_VANHENEE_S = 20.0                                       # sivun lisaviive vanhenee, ellei sivu vahvista sita (se tekee sen 3 s valein): hiljaa kuollut yhteys ei pida kiria tauolla
+SYOTE_LISA_TUNNUKSIA_MAX = 256                                     # sivutunnusten enimmaismaara (muistin suoja)
+SYOTE_TUNNUS_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")             # sivun (katsojan) tunnus: selain arpoo sen sivun latauksessa
 SYOTE_OTSIKKO = struct.Struct("<IdII")                             # kehyksen otsikko: JPEG:n pituus (tavua), video-aika (s), jarjestysnumero, liput (1 = historiaa: ei tuoretta tuotantoa)
 TIEDOSTO_PAATTEET = (".mp4", ".csv", ".json", ".txt", ".log")        # listalle vain tulostiedostot (ei piilotiedostoja eika tilapaisia, kuten latautuvaa aanta)
 SIVU = """<!doctype html>
@@ -117,9 +122,9 @@ async function paivita(){
     if(t.joutilas){soitinPysayta();soitinEl.style.display="none";ohjain.hidden=true;kuva.style.display="none";if(kuva.getAttribute("src"))kuva.removeAttribute("src")}
     else if(SOITIN_TUKI){                                                   // aikaleimattu syote: selain puskuroi ja toistaa tasaisesti, lisaviive vain nayttoon
       kuva.style.display="none";if(kuva.getAttribute("src"))kuva.removeAttribute("src");soitinEl.style.display="";ohjain.hidden=false;
-      S.yht=typeof t.viive_s==="number"?t.viive_s:null;S.max=t.lisaviive_max_s||30;S.pit=t.syote_s||40;S.lisa=Math.min(S.lisa,S.max);
+      S.yht=typeof t.viive_s==="number"?t.viive_s:null;S.nopea=t.viive_s===null;S.max=t.lisaviive_max_s||30;S.pit=t.syote_s||40;S.lisa=Math.min(S.lisa,S.max);
       if(!S.ac||t.alkoi!==S.epoch)soitinKaynnista(t.alkoi);
-      else if(t.kaynnissa&&performance.now()/1000-S.viimKehys>15)soitinYhdista(true);       // syote on hiljentynyt: yhdista uudelleen (puskuri sailyy)
+      else{if(t.kaynnissa&&performance.now()/1000-S.viimKehys>15)soitinYhdista(true);soitinLahetaLisa(true)}       // syote on hiljentynyt: yhdista uudelleen (puskuri sailyy); lisaviive ilmoitetaan toistuvasti (hukkuneen ilmoituksen varalta)
     }
     else{kuva.style.display="";if(t.alkoi!==edAlkoi||!kuva.getAttribute("src"))kuva.src="video.mjpg?"+Date.now()}       // varapolku: MJPEG ilman viiveensaatoa
     edAlkoi=t.alkoi;
@@ -136,9 +141,14 @@ async function paivita(){
 // ---- soitin: aikaleimattu syote, selaimen puskuri ja lisaviive --------------------------------------------------------------------------------------------------------------------
 // Palvelin lahettaa kuvat video-ajan mukaan harvennettuina (kehys: 20 tavun otsikko + JPEG). Selain pitaa viimeiset S.pit sekuntia puskurissa ja toistaa ne tasaisesti aikaleimojen mukaan.
 // Lisaviive (S.lisa, napit) muuttaa vain sita, kuinka kaukana tuotannon uusimmasta kuvasta toisto on; analyysin oma viive ei muutu. Lisaviive 0: nayta uusin kuva heti (kuten ennen).
+// Lisaviive > 0: toisto etenee aina oikealla nopeudella (1x). Jotta se onnistuu myos VOD-ajon kirin (esim. 2x) aikana, sivu ilmoittaa lisaviiveensa palvelimelle (S.id, /lisa), ja palvelin pysayttaa kirin
+// niin kauan kuin joku nakyva valilehti kayttaa lisaviivetta. Piilossa oleva valilehti ilmoittaa 0 (kukaan ei katso). Vain nopeassa ajossa (S.nopea: ei perusviivetta) toisto seuraa tuotannon vauhtia.
 const SOITIN_TUKI=!!(window.fetch&&window.ReadableStream&&window.createImageBitmap&&window.AbortController);
-const S={puskuri:[],tavut:0,L:null,P:null,tila:"toisto",lisa:0,max:30,pit:40,yht:null,nayt:null,haettu:null,naytteet:[],kiri:false,ac:null,epoch:null,viimKehys:0,edT:0,edKehysT:null,silmukka:false};
+function soitinTunnus(){let t="";try{t=crypto.randomUUID().replace(/-/g,"")}catch(e){}if(!t)t=(Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2)+Date.now().toString(36)).replace(/[^A-Za-z0-9]/g,"");return t.slice(0,32)}
+const S={puskuri:[],tavut:0,L:null,P:null,tila:"toisto",lisa:0,max:30,pit:40,yht:null,nopea:false,id:soitinTunnus(),lahLisa:null,nayt:null,haettu:null,naytteet:[],kiri:false,ac:null,epoch:null,viimKehys:0,edT:0,edKehysT:null,silmukka:false};
 {const l=parseInt(tsMuisti("viive_lisa")||"0",10);if(isFinite(l))S.lisa=Math.max(0,Math.min(30,l))}
+function soitinLisaNyt(){return document.hidden?0:S.lisa}                                         // piilossa oleva valilehti ei katso: lisaviive 0 (kiri saa jatkua)
+function soitinLahetaLisa(pakko){const e=soitinLisaNyt();if(!pakko&&e===S.lahLisa)return;S.lahLisa=e;fetch("lisa?id="+S.id+"&s="+e,{cache:"no-store"}).catch(()=>{})}
 function soitinNollaa(){S.puskuri=[];S.tavut=0;S.L=S.P=null;S.nayt=null;S.naytteet=[];S.kiri=false;S.tila="toisto"}
 function soitinPysayta(){if(S.ac){S.ac.abort();S.ac=null}}
 function soitinKaynnista(epoch){soitinPysayta();soitinNollaa();S.epoch=epoch;S.viimKehys=performance.now()/1000;soitinYhdista(false);if(!S.silmukka){S.silmukka=true;requestAnimationFrame(soitinSilmukka)}}
@@ -148,10 +158,11 @@ async function soitinYhdista(uusi){
   while(!ac.signal.aborted){
     S.edKehysT=null;
     try{
-      const h=Math.min(S.pit,Math.ceil(S.lisa+(S.L===null?2:8)));                                   // historia heti alkuun: toisto voi alkaa lisaviiveen paassa
-      const v=await fetch("syote?historia="+h,{signal:ac.signal,cache:"no-store"});
+      const h=Math.min(S.pit,Math.ceil(S.lisa+(S.L===null?2:8))),e=soitinLisaNyt();                 // historia heti alkuun: toisto voi alkaa lisaviiveen paassa
+      S.lahLisa=e;
+      const v=await fetch("syote?historia="+h+"&id="+S.id+"&lisa="+e,{signal:ac.signal,cache:"no-store"});
       if(!v.ok)throw new Error("HTTP "+v.status);
-      S.viimKehys=performance.now()/1000;
+      S.viimKehys=performance.now()/1000;soitinLahetaLisa();                                          // lisaviive voi olla vaihtunut yhteyden avautuessa
       await soitinLue(v.body.getReader());
     }catch(e){}
     if(ac.signal.aborted)return;
@@ -203,7 +214,7 @@ function soitinAsetaPaikka(){                                                   
 }
 function soitinPaikka(nyt,dt){
   const L=S.L,vanhin=S.puskuri[0].t,lisa=S.lisa,v=soitinVauhti(nyt);
-  if(!S.kiri&&v>1.3)S.kiri=true;else if(S.kiri&&v<1.15)S.kiri=false;                              // kiri: tuotanto etenee reaaliaikaa nopeammin (VOD, nopea ajo): toisto seuraa sen vauhtia
+  if(!S.kiri&&v>1.3)S.kiri=true;else if(S.kiri&&v<1.15)S.kiri=false;                              // tuotanto etenee reaaliaikaa nopeammin (vain nopeassa ajossa, S.nopea: toisto seuraa sen vauhtia; VOD-kiri pysaytetaan palvelimella)
   if(S.P===null)soitinAsetaPaikka();
   if(lisa===0){S.P=L;S.tila="toisto";return}
   S.P=Math.max(S.P,vanhin);
@@ -212,7 +223,7 @@ function soitinPaikka(nyt,dt){
   if(lag<0.02){S.tila="puskuroi";return}                                                          // puskuri tyhjeni (tuotanto jai jalkeen): kerataan uudelleen lisaviiveeseen
   const ero=lag-lisa;
   if(ero>4){S.P=Math.max(vanhin,L-lisa);return}                                                   // liian kaukana tuotannosta (esim. valilehti oli taustalla): hyppaa
-  S.P=Math.min(L,S.P+(S.kiri?Math.min(v,4):1)*(1+Math.max(-0.1,Math.min(0.1,0.2*ero)))*dt);       // normaali nopeus +-10 % korjaus kohti lisaviivetta
+  S.P=Math.min(L,S.P+(S.kiri&&S.nopea?Math.min(v,4):1)*(1+Math.max(-0.1,Math.min(0.1,0.2*ero)))*dt);       // normaali nopeus (nopeassa ajossa tuotannon vauhti) +-10 % korjaus kohti lisaviivetta
 }
 function soitinKehysPaikalle(P){let a=0,b=S.puskuri.length-1,r=0;while(a<=b){const m=(a+b)>>1;if(S.puskuri[m].t<=P){r=m;a=m+1}else b=m-1}return S.puskuri[r]}
 async function soitinPiirra(){
@@ -236,6 +247,8 @@ function soitinSilmukka(ms){
 function soitinLisa(d){
   S.lisa=Math.max(0,Math.min(S.max,S.lisa+d));
   tsMuisti("viive_lisa",String(S.lisa));
+  S.naytteet=[];S.kiri=false;                                                                       // tuotannon vauhti mitataan uudelleen (palvelin voi vaihtaa kirista 1x:aan)
+  soitinLahetaLisa();
   if(S.puskuri.length)soitinAsetaPaikka();
   soitinOhjain();
 }
@@ -243,11 +256,12 @@ function soitinOhjain(){
   const f=x=>String(Math.round(x*10)/10).replace(".",","),D=S.yht;
   let h="<b>Viive "+(D!==null?f(D+S.lisa)+" s</b>"+(S.lisa>0?" ("+f(D)+" + "+S.lisa+")":""):(S.lisa>0?"+"+S.lisa:"0")+" s</b>");
   if(S.tila==="puskuroi"&&S.lisa>0&&S.L!==null&&S.P!==null)h+=" &middot; puskuroidaan "+f(Math.max(0,S.L-S.P))+" / "+S.lisa+" s";
-  if(S.kiri&&S.lisa>0)h+=" &middot; kiri: kuva etenee reaaliaikaa nopeammin, viive on videon aikaa";
+  if(S.nopea&&S.kiri&&S.lisa>0)h+=" &middot; nopea ajo: kuva etenee reaaliaikaa nopeammin, viive on videon aikaa";
   const el=$("viive-teksti");if(el.innerHTML!==h)el.innerHTML=h;
   for(const b of $("viiveohjain").querySelectorAll("button")){const d=+b.dataset.d;b.disabled=d<0?S.lisa<=0:S.lisa>=S.max}
 }
 $("viiveohjain").addEventListener("click",e=>{const b=e.target.closest("button[data-d]");if(b&&!b.disabled)soitinLisa(+b.dataset.d)});
+document.addEventListener("visibilitychange",()=>{S.naytteet=[];S.kiri=false;soitinLahetaLisa()});          // piilossa kiri on voinut jatkua: tuotannon vauhti mitataan uudelleen
 setInterval(soitinOhjain,250);
 let tsTulos=null;
 function tsMuisti(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
@@ -428,6 +442,7 @@ class WebNaytto:
         self._syote_edellinen = None                               # edellinen julkaistu kuva (kuvavalin arvio)
         self._syote_dt = None                                      # lahteen kuvavali (s), arvio
         self._syote_katsojia = 0
+        self._syote_lisat = {}                                     # sivun tunnus -> [lisaviive s, yhteyksia, yhteydet poissa -> voimassa asti (monotonic) | None, viimeisin vahvistus (monotonic)]
         self._syote_aktiivinen_asti = 0.0
         self._syote_saie = None
         self._kayttaja = os.environ.get("NETTI_WEB_KAYTTAJA") or ""
@@ -564,6 +579,57 @@ class WebNaytto:
                 self._syote_saie.start()
             return self._syote_katsojia
 
+    def syote_lisa_auki(self, tunnus, lisa):
+        """Syoteyhteys avautui: sivu (tunnus) ilmoittaa lisaviiveensa (s). Sama sivu voi avata uuden yhteyden ennen kuin vanha sulkeutuu, joten yhteydet lasketaan."""
+        with self._syote_ehto:
+            self._syote_lisat_siivoa()
+            if tunnus not in self._syote_lisat and len(self._syote_lisat) >= SYOTE_LISA_TUNNUKSIA_MAX:
+                return
+            kirje = self._syote_lisat.setdefault(tunnus, [0.0, 0, None, 0.0])
+            kirje[0], kirje[1], kirje[2], kirje[3] = self._lisa_rajaa(lisa), kirje[1] + 1, None, time.monotonic()
+
+    def syote_lisa_kiinni(self, tunnus):
+        """Syoteyhteys sulkeutui: viimeisen yhteyden jalkeen lisaviive pysyy voimassa SYOTE_LISA_ODOTUS_S s (uudelleenyhteys ei vapauta kiria hetkeksi)."""
+        with self._syote_ehto:
+            kirje = self._syote_lisat.get(tunnus)
+            if kirje is not None:
+                kirje[1] = max(0, kirje[1] - 1)
+                if kirje[1] == 0:
+                    kirje[2] = time.monotonic() + SYOTE_LISA_ODOTUS_S
+
+    def syote_lisa(self, tunnus, lisa):
+        """Sivun uusi lisaviive (s; /lisa). Vain tunnetulle sivulle (syoteyhteys on tai oli aivan hetki sitten auki). True, jos sivu oli tunnettu."""
+        with self._syote_ehto:
+            self._syote_lisat_siivoa()
+            kirje = self._syote_lisat.get(tunnus)
+            if kirje is None:
+                return False
+            kirje[0], kirje[3] = self._lisa_rajaa(lisa), time.monotonic()
+            return True
+
+    @staticmethod
+    def _lisa_rajaa(lisa):
+        try:
+            lisa = float(lisa)
+        except (TypeError, ValueError):
+            return 0.0
+        return 0.0 if lisa != lisa else max(0.0, min(float(LISAVIIVE_MAX_S), lisa))
+
+    def _syote_lisat_siivoa(self):
+        """(_syote_ehto lukittuna) poistaa sivut, joiden yhteys on ollut poissa yli SYOTE_LISA_ODOTUS_S s tai joiden lisaviivetta ei ole vahvistettu pitkaan aikaan."""
+        nyt = time.monotonic()
+        for k in [k for k, v in self._syote_lisat.items() if (v[2] is not None and v[2] <= nyt) or nyt - v[3] > 3 * SYOTE_LISA_VANHENEE_S]:
+            del self._syote_lisat[k]
+
+    def reaaliaika_haluttu(self):
+        """True, kun jokin syotesivu on valinnut lisaviiveen (> 0): kuvan pitaa silloin edeta oikealla nopeudella, ja netti_live.py:n kuvan aikataulu estaa VOD-ajon kirin (muuten lisaviiveen toisto
+        kulkisi kirin vauhtia). Piilossa olevan valilehden sivu ilmoittaa lisaviiveeksi 0: kukaan ei katso, eika kiria silloin tarvitse estaa. Lisaviive on voimassa, kun sivun syoteyhteys on auki
+        (tai sulkeutui alle SYOTE_LISA_ODOTUS_S s sitten) ja sivu on vahvistanut sen alle SYOTE_LISA_VANHENEE_S s sitten (hiljaa kuollut yhteys tai jaadytetty valilehti ei pida kiria tauolla)."""
+        if not self._syote_lisat:
+            return False
+        nyt = time.monotonic()
+        return any(k[0] > 0 and (k[2] is None or k[2] > nyt) and nyt - k[3] <= SYOTE_LISA_VANHENEE_S for k in list(self._syote_lisat.values()))
+
     def _syote_koodaaja(self):
         """Koodaa syotteen kuvat JPEG:ksi ja pitaa rengaspuskuria. Harvennus: kuva otetaan, kun edellisesta otetusta on kulunut vahintaan 1 / fps sekuntia seka video-ajassa etta seinakellossa (video-aika:
         tasainen liike, vaikka tuotanto on epatasaista; seinakello: kiri, jossa tuotanto etenee reaaliaikaa nopeammin, ei lisaa kuvia sekunnissa). Video-ajan hyppy taaksepain (ilmoituskuvat -> ensimmainen oikea
@@ -627,7 +693,7 @@ class WebNaytto:
 
     def tila(self):
         t = dict(kaynnissa=self.kaynnissa, kuvia=self.n_nayt, katsojia=self._katsojat, alkoi=self.alkoi, kuva_leveys=self.leveys,
-                 viim_kuva_ika_s=None if self._viim_t is None else round(time.time() - self._viim_t, 2), syote_s=SYOTE_S, lisaviive_max_s=LISAVIIVE_MAX_S, syote_fps=self.fps)
+                 viim_kuva_ika_s=None if self._viim_t is None else round(time.time() - self._viim_t, 2), syote_s=SYOTE_S, lisaviive_max_s=LISAVIIVE_MAX_S, syote_fps=self.fps, reaaliaika=self.reaaliaika_haluttu())
         if self.tila_fn is not None:
             try:
                 t.update(self.tila_fn() or {})
@@ -781,6 +847,8 @@ class _Kasittelija(http.server.BaseHTTPRequestHandler):
                     self._mjpeg(n)
             elif polku == "/syote":
                 self._syote(n, urllib.parse.urlsplit(self.path).query, head)
+            elif polku == "/lisa":
+                self._lisa(n, urllib.parse.urlsplit(self.path).query, head)
             elif polku == "/kuva.jpg":
                 jpeg, _ = n.jpeg()
                 if jpeg is None:
@@ -846,11 +914,13 @@ class _Kasittelija(http.server.BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in urllib.parse.parse_qs(kysely, keep_blank_values=True).items()}
         try:
             historia = max(0.0, min(SYOTE_S, float(q.get("historia") or 0.0)))
+            lisa = float(q.get("lisa") or 0.0)
         except ValueError:
-            self._virhe_json(400, "historia: sekuntien maara (0 ... %d)" % SYOTE_S, head)
+            self._virhe_json(400, "historia ja lisa: sekuntien maara (historia 0 ... %d, lisa 0 ... %d)" % (SYOTE_S, LISAVIIVE_MAX_S), head)
             return
         if historia != historia:                                       # NaN
             historia = 0.0
+        tunnus = q.get("id") if SYOTE_TUNNUS_RE.match(q.get("id") or "") else None        # sivun tunnus: lisaviive (kiri tauolle) seuraa sivua; ilman tunnusta sivu ei ilmoita lisaviivettaan
         if head:
             self._vastaa(200, b"", "application/octet-stream", head=True)
             return
@@ -862,10 +932,12 @@ class _Kasittelija(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
         n.katsojia(+1)                                                 # sivun tilarivin katsojamaara
         n.syote_katsoja(+1)
+        if tunnus:
+            n.syote_lisa_auki(tunnus, lisa)
         try:
             viim, sydan = None, time.monotonic()
             while not n._lopeta.is_set():
-                kehykset, historiaa = n.syote_odota(viim, historia, 1.0)
+                kehykset, historiaa = n.syote_odota(viim, historia, min(1.0, SYOTE_SYDAN_S))
                 if kehykset:
                     for seq, aika, tavut in kehykset:
                         self.wfile.write(SYOTE_OTSIKKO.pack(len(tavut), aika, seq & 0xFFFFFFFF, 1 if historiaa else 0))
@@ -878,8 +950,26 @@ class _Kasittelija(http.server.BaseHTTPRequestHandler):
                     self.wfile.flush()
                     sydan = time.monotonic()
         finally:
+            if tunnus:
+                n.syote_lisa_kiinni(tunnus)
             n.syote_katsoja(-1)
             n.katsojia(-1)
+
+    def _lisa(self, n, kysely, head):
+        """/lisa?id=<sivun tunnus>&s=<lisaviive s>: sivu ilmoittaa lisaviiveensa (napit +-1 s / +-5 s; piilossa oleva valilehti ilmoittaa 0). Lisaviive > 0: kuvan pitaa edeta reaaliajassa, joten VOD-ajon kiri
+        pysaytetaan (reaaliaika_haluttu). Vastaus: {"reaaliaika": bool}. Vain tunnetulle sivulle (syoteyhteys on auki); HEAD ei muuta mitaan."""
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(kysely, keep_blank_values=True).items()}
+        tunnus = q.get("id") or ""
+        try:
+            lisa = float(q.get("s"))
+        except (TypeError, ValueError):
+            lisa = None
+        if not SYOTE_TUNNUS_RE.match(tunnus) or lisa is None or lisa != lisa:
+            self._virhe_json(400, "id: sivun tunnus (kirjaimia, numeroita, - ja _, enintaan 40 merkkia), s: lisaviive sekunteina", head)
+            return
+        if not head:
+            n.syote_lisa(tunnus, lisa)
+        self._json(dict(reaaliaika=n.reaaliaika_haluttu()), head)
 
     def _virhe_json(self, koodi, viesti, head=False):
         self._vastaa(koodi, json.dumps(dict(virhe=viesti), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", head=head)

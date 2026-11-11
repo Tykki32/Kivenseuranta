@@ -1256,6 +1256,8 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja, vahti=
 
     def piirto_saie():
         odottaa = collections.deque()                # (f, erapaiva, purkutehtava)
+        reaaliaika_haluttu = getattr(naytto, "reaaliaika_haluttu", None)   # selainnakyma (WebNaytto): katsoja on valinnut lisaviiveen -> kuvan pitaa edeta oikealla nopeudella (kiri tauolle)
+        reaaliaika_ed = False
         piirtovirhe = []
         varoitettu = False
         t_silmukka = time.time()
@@ -1276,8 +1278,14 @@ def aja_reaaliaika(a, lahde, an, piirtaja, naytto, kirjoittaja, kirjaaja, vahti=
                     f0 = odottaa[0][0]
                     jaettu["piirto_f"] = f0
                     viim_f = analyysin_etenema(an)                      # (ei Analyysi.viim_f: se ei etene kopioruutujen aikana, ks. analyysin_etenema)
-                    if kiri_tila:                                      # kiri: kuvalla oma aikataulu (1x tasaisesti; kiri vain kun esilatauspuskurissa >= raja s tai lahde loppui)
-                        erapaiva_nyt, sprintti = aikataulu.aika(f0, nyt, jaettu["puskuri_s"], odottaa[0][1], lopetettu.is_set())
+                    if kiri_tila:                                      # kiri: kuvalla oma aikataulu (1x tasaisesti; kiri vain kun esilatauspuskurissa >= raja s tai lahde loppui, eika selaimessa ole lisaviivetta)
+                        reaaliaika = bool(reaaliaika_haluttu()) if reaaliaika_haluttu is not None else False
+                        if reaaliaika != reaaliaika_ed:
+                            reaaliaika_ed = reaaliaika
+                            if not a.hiljaa:
+                                print("Selaimessa on lisaviive kaytossa: kiri tauolla, kuva etenee reaaliajassa (analyysi hidastuu samalla reaaliaikaiseksi)" if reaaliaika
+                                      else "Selaimen lisaviive pois kaytosta: kiri sallittu", flush=True)
+                        erapaiva_nyt, sprintti = aikataulu.aika(f0, nyt, jaettu["puskuri_s"], odottaa[0][1], lopetettu.is_set(), reaaliaika=reaaliaika)
                     else:
                         erapaiva_nyt = odottaa[0][1]
                     aikataulu_ok = erapaiva_nyt <= nyt
@@ -1591,6 +1599,8 @@ class KuvanAikataulu:
     """VOD-virran (YouTube-nauhoitus; kiri) kuvan aikataulu. Analyysi etenee ilman tahdistusta niin nopeasti kuin ehtii (ja dataa on), mutta kuva etenee reaaliajassa (1x, tasaisesti ilman hyppyja)
     paitsi kun esilatauspuskurissa on vahintaan raja_s sekuntia videota (olemme jaljessa tai kyse on nauhoituksesta, joka halutaan ajaa nopeasti lapi) tai lahde on loppunut: silloin kuva saa kiria
     (ei aikataulua; tahdin maaraa analyysi, piirto ja tallennus). Kirin paattyessa 1x-aika jatkuu siita (ankkuri siirtyy), ja myohassa oleva kuva naytetaan heti kuten ennenkin.
+    Kiri voidaan myos estaa (aika: reaaliaika = True): selaimen katsoja on valinnut lisaviiveen (netti_web.WebNaytto.reaaliaika_haluttu), joten kuvan pitaa edeta oikealla nopeudella, ettei
+    lisaviiveen toisto kulje kirin vauhtia; este koskee myos lahteen loppumista (loppu kuva toistetaan 1x). Analyysi hidastuu silloin kuvan vastapaineesta reaaliaikaiseksi.
     Ankkuri: ensimmaisen kuvan oma aika (jonoon tulo + viive)."""
 
     def __init__(self, fps, raja_s, hystereesi_s=1.0):
@@ -1602,11 +1612,11 @@ class KuvanAikataulu:
         """Saako kuva kiria: puskuri >= raja (kirin ollessa jo kaynnissa hystereesin verran alle, ettei tila vaihtele rajalla) tai lahde on loppunut."""
         return self.raja_s > 0 and (bool(loppu) or puskuri_s >= self.raja_s - (self.hystereesi_s if self.kiri else 0.0))
 
-    def aika(self, f, nyt, puskuri_s, ensimmainen_aika, loppu=False):
-        """(erapaiva, kiri): ruudun f oma aika. Kirissa nyt (heti); muuten ankkurista (1x). ensimmainen_aika: ensimmaisen kuvan oma aika (asettaa ankkurin)."""
+    def aika(self, f, nyt, puskuri_s, ensimmainen_aika, loppu=False, reaaliaika=False):
+        """(erapaiva, kiri): ruudun f oma aika. Kirissa nyt (heti); muuten ankkurista (1x). ensimmainen_aika: ensimmaisen kuvan oma aika (asettaa ankkurin). reaaliaika: kiri estetty (1x)."""
         if self.ankkuri is None:
             self.f_eka, self.ankkuri = f, ensimmainen_aika
-        if self.kiri_sallittu(puskuri_s, loppu):
+        if not reaaliaika and self.kiri_sallittu(puskuri_s, loppu):
             self.kiri = True
             return nyt, True
         if self.kiri:                                      # kiri paattyi: 1x jatkuu tasta
@@ -2170,7 +2180,7 @@ def main():
                     "puskurin ruudut ovat pakattuja (3,1 Mt / ruutu: 30 s = 2,8 Gt muistia), 0 = pois. Ei vaikuta tiedostolahteeseen")
     ap.add_argument("--kiri", type=float, default=10.0, help="YouTube / --url (VOD): analyysi etenee ilman reaaliaikaan sidontaa niin nopeasti kuin ehtii (etuajassa), mutta kuva etenee reaaliajassa (1x, tasaisesti) "
                     "paitsi kun esilatauspuskurissa on vahintaan taman verran (s) videota (olemme jaljessa tai kyse on nauhoituksesta): silloin kuva (ikkuna ja tallenne) saa myos kiria niin nopeasti kuin ehtii; "
-                    "tallenteen aikajana ja aani pysyvat oikeina. Oletus 10 s, 0 = ei kiria (aina 1x). Live-virrassa ei vaikutusta")
+                    "tallenteen aikajana ja aani pysyvat oikeina. Oletus 10 s, 0 = ei kiria (aina 1x). Live-virrassa ei vaikutusta. Selainnakyman (--web) lisaviive pysayttaa kirin niin kauan kuin joku nakyva valilehti kayttaa sita (kuva 1x)")
     ap.add_argument("--cv-saikeet", type=int, default=None, help="OpenCV:n rinnakkaisuus paaprosessissa: saikeiden enimmaismaara (cv2.setNumThreads; 0 tai 1 = ei rinnakkaisuutta, negatiivinen = OpenCV:n oma). "
                     "Oletus reaaliaikaajossa %d (paaprosessin monta saiettta kutsuu OpenCV:ta jo rinnakkain, joten OpenCV:n oma saiepooli vain kuluttaa prosessoria), simulaatiossa (--nopea) OpenCV:n oma. "
                     "Kaynnistysrivi kertoo toteutuksen ja saiemaaran" % CV_SAIKEET_OLETUS)
