@@ -951,19 +951,22 @@ def lue_syote(portti, historia=None, kehyksia=1, odotus_s=10.0, lisa=None):
     return koodi, otsakkeet, kehykset
 
 
-def tuota_kuvia(w, t_alku, kesto_s, fps=30.0):
-    """Julkaisee kuvia reaaliajassa (video-aika t_alku + i / fps). Kuvan vari koodaa video-ajan: R = sekunnit mod 50, G = sekunnin osa (1/50 s); 5:n kerrannaisina, jotta JPEG ei sotke."""
+def tuota_kuvia(w, t_alku, kesto_s, fps=30.0, nopeus=1.0, julkaise=None):
+    """Julkaisee kuvia (video-aika t_alku + i / fps) nopeudella `nopeus` x reaaliaika (kesto_s = videon kesto sekunteina; nopeus 0 = ei odotuksia: kaikki heti). Kuvan vari koodaa video-ajan: R = sekunnit mod 50,
+    G = sekunnin osa (1/50 s); 5:n kerrannaisina, jotta JPEG ei sotke. julkaise(w, kuva, aika): oletuksena w.nayta_heti (simulaatio); w.anna = oikea reaaliaikaputki (julkaisijan saie)."""
     pohja = np.zeros((90, 160, 3), np.uint8)
+    julkaise = julkaise or (lambda w_, k_, t_: w_.nayta_heti(k_, t_))
     mono0, i = time.monotonic(), 0
     while i / fps < kesto_s:
-        viive = mono0 + i / fps - time.monotonic()
-        if viive > 0:
-            time.sleep(viive)
+        if nopeus > 0:
+            viive = mono0 + i / fps / nopeus - time.monotonic()
+            if viive > 0:
+                time.sleep(viive)
         t = t_alku + i / fps
         k = pohja.copy()
         k[:, :, 2] = (int(t) % 50) * 5
         k[:, :, 1] = int((t % 1) * 50) * 5
-        w.nayta_heti(k, t)
+        julkaise(w, k, t)
         i += 1
 
 
@@ -1249,6 +1252,159 @@ def testaa_web_lisaviive():
     tarkista("sivu: lisaviive ilmoitetaan palvelimelle (lisa?id=, syoteyhteyden id ja lisa), valilehden piiloutuminen = 0",
              all(x in sivu for x in ('"lisa?id="', '"&id="', '"&lisa="', "visibilitychange", "document.hidden", "soitinLahetaLisa")))
     tarkista("sivu: lisaviiveella toisto etenee 1x (tuotannon vauhtia seurataan vain nopeassa ajossa, S.nopea)", "S.kiri&&S.nopea" in sivu and "S.nopea=t.viive_s===null" in sivu)
+
+
+def testaa_web_syote_ei_hukkaa():
+    print("selaimen syote ei hukkaa kuvia (julkaisijan saie valitsee, koodaaja koodaa jonosta): viivastynyt paasaie tai koodaaja ei jata aukkoa video-aikaan -> soitin ei pysahdy eika hyppaa")
+    vanhat = (nw.SYOTE_JONO_MAX, nw.SYOTE_ODOTUS_S, nw.SYOTE_SYDAN_S)
+    anna = lambda w_, k_, t_: w_.anna(k_, t_)       # noqa: E731
+    w = nw.WebNaytto(0, None, leveys=160, fps=10, laatu=95)
+    p = w.portti
+    alkuperainen = w._pakkaa
+
+    def lukija(odotus_s, historia=40):
+        """Syotekatsoja taustasaikeessa; palautuu vasta, kun palvelin on rekisteroinyt sen (ei vanhan, jo katkenneen yhteyden laskuri)."""
+        odota(lambda: w._syote_katsojia == 0, 5.0)
+        tulos = []
+        t_ = threading.Thread(target=lambda: tulos.append(lue_syote(p, historia, kehyksia=10 ** 6, odotus_s=odotus_s)), daemon=True)
+        t_.start()
+        odota(lambda: w._syote_katsojia == 1, 5.0)
+        return t_, tulos
+
+    def vali_max(kehykset, alku=-1e9):
+        ajat = [x[1] for x in kehykset if x[0] > 0 and x[1] >= alku]
+        return max(b - a for a, b in zip(ajat, ajat[1:])) if len(ajat) > 1 else float("inf")
+    try:
+        nw.SYOTE_SYDAN_S = 0.2                                         # katkennut yhteys huomataan nopeasti (osiot alkavat tyhjalla katsojalaskurilla)
+        # 1) pelkka anna() (paasilmukkaa ei ole kaynnissa): kuvat tulevat silti syotteeseen, kuvavali tasainen
+        t1, tul1 = lukija(2.8)
+        tuota_kuvia(w, 100.0, 2.0, julkaise=anna)
+        t1.join(8)
+        k1 = [x for x in tul1[0][2] if x[0] > 0]
+        tarkista("anna(): jokainen kuva menee syotteeseen heti julkaisijan saikeessa (paasilmukka ei ole kaynnissa), tiheys tasainen", 15 <= len(k1) <= 24 and vali_max(k1) < 0.16, f"{len(k1)} kuvaa, suurin vali {vali_max(k1):.3f} s")
+        # _julkaise(syotteeseen=False) (paasilmukan julkaisu) ei syota uudelleen: myohastynyt julkaisu ei saa aiheuttaa aikaperustan "hyppya" eika kaksoiskuvia
+        t1b, tul1b = lukija(1.8)
+        tuota_kuvia(w, 110.0, 1.0, julkaise=anna)
+        w._julkaise(np.zeros((90, 160, 3), np.uint8), aika=105.0, syotteeseen=False)       # vanha kuva julkaistaan myohassa (paasilmukka)
+        w._julkaise(np.zeros((90, 160, 3), np.uint8), aika=111.5)                           # oletus: syotteeseen
+        t1b.join(6)
+        k1b = [x[1] for x in tul1b[0][2] if x[0] > 0]
+        tarkista("_julkaise(syotteeseen=False) ei syota kuvaa uudelleen (myohastynyt julkaisu ei sotke syotetta), oletus syottaa", 105.0 not in k1b and 111.5 in k1b and len(k1b) == len(set(k1b)), str(k1b[-4:]))
+
+        # 2) tauko ja takaa-ajo: tauon aikana kertyneet kuvat tulevat perakkain muutamassa millisekunnissa (laskenta tukkii tuotannon) -> ei aukkoa video-aikaan
+        t2, tul2 = lukija(5.0, historia=0)
+        tuota_kuvia(w, 200.0, 2.0, julkaise=anna)                      # tasainen vauhti (2 s)
+        time.sleep(1.2)                                                # tauko: ei kuvia (laskenta)
+        tuota_kuvia(w, 202.0, 1.2, nopeus=0, julkaise=anna)            # takaa-ajo: tauon aikana kertyneet 36 kuvaa heti peraperaan
+        tuota_kuvia(w, 203.2, 1.0, julkaise=anna)                      # taas tasaisesti
+        t2.join(10)
+        k2 = [x for x in tul2[0][2] if x[0] > 0]
+        tarkista("tauko + takaa-ajo: syotteessa ei aukkoa video-aikaan (suurin kuvavali alle 0,16 s, vaikka 1,2 s videota tuli kerralla)", vali_max(k2, 199.9) < 0.16 and k2[-1][1] > 204.0, f"{len(k2)} kuvaa, suurin vali {vali_max(k2, 199.9):.3f} s")
+        tarkista("syotteen jarjestysnumerot perakkaisia, video-ajat kasvavat, eika kuvia pudotettu", [x[2] for x in k2] == list(range(k2[0][2], k2[0][2] + len(k2))) and all(b[1] > a[1] for a, b in zip(k2, k2[1:])) and w._syote_pudotettu == 0)
+
+        # 3) pitka kiri (4x reaaliaika): kuvavali kerrotaan tuotannon vauhdilla, joten seinakellossa kuvia lahtee enintaan ~fps sekunnissa (ei 4x), mutta video-aika katetaan koko ajan
+        t3, tul3 = lukija(3.8, historia=0)
+        tuota_kuvia(w, 300.0, 12.0, nopeus=4.0, julkaise=anna)       # 12 s videota 3 s:ssa
+        t3.join(8)
+        k3 = [x for x in tul3[0][2] if x[0] > 0]
+        toinen_puoli = [b[1] - a[1] for a, b in zip(k3, k3[1:]) if a[1] >= 306.0]
+        tarkista("pitka kiri (4x): kuvia selvasti vahemman kuin joka kuva video-ajan mukaan (120), mutta video-aika katetaan alusta loppuun", 35 <= len(k3) <= 85 and k3[0][1] < 300.2 and k3[-1][1] > 311.0, f"{len(k3)} kuvaa, {k3[0][1]:.1f} ... {k3[-1][1]:.1f}")
+        tarkista("pitka kiri (4x): kuvavali harvenee vauhdin mukaan (loppupuolen mediaani yli 0,2 s, tasaisessa vauhdissa 0,1 s)", bool(toinen_puoli) and sorted(toinen_puoli)[len(toinen_puoli) // 2] >= 0.2, f"mediaani {sorted(toinen_puoli)[len(toinen_puoli) // 2] if toinen_puoli else None}")
+
+        # 3b) vanhentunut vauhtinaayte (tauko + video-ajan hyppy eteenpain) ei harvenna pysyvasti: vauhti mitataan vain viimeiselta ikkunalta
+        t3b, tul3b = lukija(7.8, historia=0)
+        tuota_kuvia(w, 330.0, 1.5, julkaise=anna)
+        time.sleep(2.5)                                                # tauko, jonka aikana video-aika hyppaa eteenpain (13,5 s alle 2,5 s:ssa: raja 5 + 5 x tauko)
+        tuota_kuvia(w, 345.0, 3.0, julkaise=anna)
+        t3b.join(12)
+        k3b = [x for x in tul3b[0][2] if x[0] > 0]
+        tarkista("vanhentunut vauhtinaayte (tauko + hyppy) ei harvenna pysyvasti: lopun kuvavali tasainen (alle 0,16 s)", vali_max(k3b, 347.0) < 0.16, f"suurin vali lopussa {vali_max(k3b, 347.0):.3f}")
+
+        # 4) hidas koodaaja: kuvat odottavat jonossa (ei hukkaa), ylivuoto pudottaa vanhimman ja jono pysyy rajassa; uusimmat kuvat sailyvat
+        w._pakkaa = lambda kuva: (time.sleep(0.04), alkuperainen(kuva))[1]
+        t4a, tul4a = lukija(2.5, historia=0)
+        pudotettu0 = w._syote_pudotettu
+        tuota_kuvia(w, 380.0, 2.0, nopeus=0, julkaise=anna)            # 2 s videota heti: ~20 valittua kuvaa, koodaaja ehtii 25 / s
+        odota(lambda: not w._syote_jono, 6.0)
+        time.sleep(0.3)
+        k4a = [x[1] for x in w._syote if x[1] >= 380.0]
+        tarkista("hidas koodaaja, normaali jonon pituus: purske jonoon ei pudota yhtaan kuvaa (kaikki 20 koodataan, aukoton)", w._syote_pudotettu == pudotettu0 and len(k4a) >= 19 and max(b - a for a, b in zip(k4a, k4a[1:])) < 0.16, f"{len(k4a)} kuvaa, pudotettu {w._syote_pudotettu - pudotettu0}")
+        t4a.join(10)
+        nw.SYOTE_JONO_MAX = 6
+        w._pakkaa = lambda kuva: (time.sleep(0.15), alkuperainen(kuva))[1]
+        t4, tul4 = lukija(3.0, historia=0)
+        pudotettu0 = w._syote_pudotettu
+        tuota_kuvia(w, 400.0, 3.0, nopeus=0, julkaise=anna)            # 3 s videota heti: ~30 valittua kuvaa, koodaaja ehtii 6-7 / s
+        tarkista("hidas koodaaja: jono pysyy rajassa (SYOTE_JONO_MAX) ja ylivuoto lasketaan (/tila: syote_pudotettu)", len(w._syote_jono) <= nw.SYOTE_JONO_MAX and w._syote_pudotettu > pudotettu0 and json.loads(pyyda(p, "/tila")[2])["syote_pudotettu"] == w._syote_pudotettu,
+                 f"jono {len(w._syote_jono)}, pudotettu {w._syote_pudotettu - pudotettu0}")
+        odota(lambda: not w._syote_jono, 6.0)
+        time.sleep(0.4)
+        tarkista("hidas koodaaja: viimeisin kuva (uusin) sailyy syotteessa", w._syote[-1][1] >= 402.8, f"{w._syote[-1][1]}")
+        w._pakkaa = alkuperainen
+        nw.SYOTE_JONO_MAX = vanhat[0]
+        t4.join(10)
+
+        # 5) aikaperusta vaihtuu, kun vanhoja kuvia on viela jonossa / koodauksessa: ne hylataan (ei vanhaa historiaa uuden perään)
+        t5, tul5 = lukija(3.5, historia=0)
+        w._pakkaa = lambda kuva: (time.sleep(0.2), alkuperainen(kuva))[1]
+        tuota_kuvia(w, 500.0, 0.6, nopeus=0, julkaise=anna)            # ~6 kuvaa jonoon (koodaaja hidas)
+        tuota_kuvia(w, 50.0, 0.6, nopeus=0, julkaise=anna)             # aikaperusta taaksepain: vanhat hylataan
+        odota(lambda: not w._syote_jono, 6.0)
+        time.sleep(0.5)
+        ajat5 = [x[1] for x in w._syote]
+        tarkista("aikaperustan vaihto: jonossa ja koodauksessa olleet vanhan jakson kuvat hylataan (syotteessa vain uusi jakso)", bool(ajat5) and all(a < 60 for a in ajat5), str([round(a, 1) for a in ajat5][:8]))
+        w._pakkaa = alkuperainen
+        t5.join(10)
+
+        # 6) normaali julkaisu paasilmukan kautta (anna + paasilmukka): jokainen kuva syotteeseen kerran (ei kaksoiskasittelya)
+        w2 = nw.WebNaytto(0, None, leveys=160, fps=10, laatu=95)
+        try:
+            lopeta, valmis = threading.Event(), threading.Event()
+            silmukka = threading.Thread(target=lambda: w2.paasilmukka(lopeta, valmis.is_set), daemon=True)
+            silmukka.start()
+            tulos6 = []
+            t6 = threading.Thread(target=lambda: tulos6.append(lue_syote(w2.portti, 0, kehyksia=10 ** 6, odotus_s=2.8)), daemon=True)
+            t6.start()
+            odota(lambda: w2._syote_katsojia == 1)
+            tuota_kuvia(w2, 600.0, 2.0, julkaise=anna)
+            valmis.set()
+            silmukka.join(3)
+            t6.join(6)
+            k6 = [x for x in tulos6[0][2] if x[0] > 0]
+            tarkista("anna() + paasilmukka: jokainen valittu kuva syotteeseen tasan kerran (ei kaksoiskasittelya), ikkuna saa uusimman", [x[2] for x in k6] == list(range(k6[0][2], k6[0][2] + len(k6))) and all(b[1] > a[1] for a, b in zip(k6, k6[1:])) and vali_max(k6) < 0.16 and w2.n_nayt >= 1,
+                     f"{len(k6)} kuvaa, suurin vali {vali_max(k6):.3f}, ikkunassa {w2.n_nayt}")
+        finally:
+            lopeta.set()
+            w2.sulje()
+
+        # 6b) viivastynyt paasilmukka (kuvat julkaistaan ikkunaan yli 0,5 s myohassa): syote ei saa saada vanhoja kuvia uudelleen (se nakyisi aikaperustan "paluuna" ja tyhjentaisi historian)
+        w3 = nw.WebNaytto(0, None, leveys=160, fps=10, laatu=95)
+        try:
+            julkaise_alkup = w3._julkaise
+
+            def hidas_julkaise(*a, **k):
+                time.sleep(0.8)
+                return julkaise_alkup(*a, **k)
+            w3._julkaise = hidas_julkaise
+            lopeta3, valmis3 = threading.Event(), threading.Event()
+            silmukka3 = threading.Thread(target=lambda: w3.paasilmukka(lopeta3, valmis3.is_set), daemon=True)
+            silmukka3.start()
+            t7 = threading.Thread(target=lambda: lue_syote(w3.portti, 0, kehyksia=10 ** 6, odotus_s=4.8), daemon=True)
+            t7.start()
+            odota(lambda: w3._syote_katsojia == 1)
+            tuota_kuvia(w3, 700.0, 3.5, julkaise=anna)
+            valmis3.set()
+            time.sleep(1.2)
+            ajat7 = [x[1] for x in w3._syote]
+            tarkista("viivastynyt paasilmukka: syote saa kuvat vain anna():sta (ei vanhoja kuvia uudelleen): historia ehja alusta loppuun", bool(ajat7) and ajat7[0] < 700.3 and ajat7[-1] > 703.2 and len(ajat7) >= 30 and w3._syote_epookki == 1, f"{len(ajat7)} kuvaa, {ajat7[0] if ajat7 else None} ... {ajat7[-1] if ajat7 else None}, epookki {w3._syote_epookki}")
+            t7.join(8)
+        finally:
+            lopeta3.set()
+            w3.sulje()
+    finally:
+        w._pakkaa = alkuperainen
+        nw.SYOTE_JONO_MAX, nw.SYOTE_ODOTUS_S, nw.SYOTE_SYDAN_S = vanhat
+        w.sulje()
 
 
 HEITTO_KENTAT = ["heitto", "vari", "kivi_nro", "puoli", "paa", "kierre", "irroitus_delta_cm", "liuku_T_cm", "heitto_T_cm", "merkki_T_cm", "liuku_merkista_cm", "heitto_merkista_cm",
@@ -1682,7 +1838,7 @@ def testaa_joutilas():
 
 def main():
     for t in (testaa_ymparisto, testaa_asetukset, testaa_komento, testaa_tiedostot_ja_muisti, testaa_silmukka, testaa_linkkilista, testaa_odotuksen_ylivuoto, testaa_lapsiprosessi, testaa_web, testaa_netti_live_palvelinosat,
-              testaa_videon_nimi_palvelin, testaa_web_resoluutio, testaa_web_videon_nimi, testaa_web_syote, testaa_web_lisaviive, testaa_web_tilasto, testaa_joutilas):
+              testaa_videon_nimi_palvelin, testaa_web_resoluutio, testaa_web_videon_nimi, testaa_web_syote, testaa_web_syote_ei_hukkaa, testaa_web_lisaviive, testaa_web_tilasto, testaa_joutilas):
         t()
     print()
     if VIRHEITA:

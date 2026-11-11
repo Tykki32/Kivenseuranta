@@ -48,6 +48,8 @@ SYOTE_TAVUT_MAX = 400 * 1024 * 1024                                # rengaspusku
 SYOTE_ODOTUS_S = 60.0                                              # kuvia koodataan viela taman ajan viimeisen katsojan poistuttua: uusi katsoja (tai uudelleenyhteys) saa historian
 SYOTE_JALKEEN_S = 5.0                                              # katsoja, joka on yhteyden hitauden vuoksi yli historia + taman verran jalessa, ohittaa uusimpiin
 SYOTE_SYDAN_S = 5.0                                                # tyhjan syotteen sydankohta (pituus 0) tahan tahtiin: katkennut yhteys huomataan
+SYOTE_JONO_MAX = 32                                                # koodattavaksi valittujen kuvien jono (kuvaa): koodaajan viivastyessa kuvia ei hukata, ylivuoto pudottaa vanhimman (muistin suoja: ~200 Mt 1080p-kuvina)
+SYOTE_VAUHTI_IKKUNA_S = 2.0                                        # tuotannon vauhdin (video-aikaa / seinakello) mittausikkuna (s): kirissa (vauhti > 1) syotteen kuvat harvennetaan video-ajassa, takaa-ajo tauon jalkeen ei
 SYOTE_LISA_ODOTUS_S = 5.0                                          # katsojan lisaviive pysyy voimassa taman ajan yhteyden katkettua (uudelleenyhteys ei vapauta kiria hetkeksi)
 SYOTE_LISA_VANHENEE_S = 20.0                                       # sivun lisaviive vanhenee, ellei sivu vahvista sita (se tekee sen 3 s valein): hiljaa kuollut yhteys ei pida kiria tauolla
 SYOTE_LISA_TUNNUKSIA_MAX = 256                                     # sivutunnusten enimmaismaara (muistin suoja)
@@ -437,8 +439,11 @@ class WebNaytto:
         self._syote = collections.deque()                          # (jarjestysnro, video-aika, JPEG-tavut); enintaan SYOTE_S s ja SYOTE_TAVUT_MAX tavua
         self._syote_tavut = 0
         self._syote_seq = 0
-        self._syote_odottaa = None                                 # (video-aika, julkaisuhetki, kuva): seuraava koodattava (uusin voittaa)
-        self._syote_viim = None                                    # (video-aika, julkaisuhetki) viimeisin syotteeseen otettu kuva (harvennus)
+        self._syote_jono = collections.deque()                     # (video-aika, kuva, epookki): koodattavaksi valitut kuvat (FIFO; julkaisijan saie valitsee, koodaaja koodaa)
+        self._syote_epookki = 0                                    # kasvaa, kun aikaperusta vaihtuu tai historia tyhjennetaan: vanhat jonossa / koodauksessa olevat kuvat hylataan
+        self._syote_pudotettu = 0                                  # jonon ylivuodossa pudotetut kuvat (koodaaja ei ehdi)
+        self._syote_vauhti = collections.deque()                   # (seinakello, video-aika) -naytteet tuotannon vauhdin mittaukseen (~0,25 s valein, viimeiset SYOTE_VAUHTI_IKKUNA_S s)
+        self._syote_viim = None                                    # (video-aika, julkaisuhetki) viimeisin syotteeseen valittu kuva (harvennus)
         self._syote_edellinen = None                               # edellinen julkaistu kuva (kuvavalin arvio)
         self._syote_dt = None                                      # lahteen kuvavali (s), arvio
         self._syote_katsojia = 0
@@ -459,10 +464,12 @@ class WebNaytto:
 
     # ---- Naytto-rajapinta ------------------------------------------------------------------------------------------
     def anna(self, kuva, aika=None):
-        """Seuraava nayttettava kuva (mista tahansa saikeesta); edellinen nayttamaton kuva korvautuu. aika: kuvan aika videossa (s; syotteen aikaleima: soitin toistaa tasaisesti sen mukaan);
-        ilman sita seinakello."""
+        """Seuraava nayttettava kuva (mista tahansa saikeesta); edellinen nayttamaton kuva korvautuu (ikkuna / MJPEG: uusin kuva riittaa). aika: kuvan aika videossa (s; syotteen aikaleima: soitin toistaa
+        tasaisesti sen mukaan); ilman sita seinakello. Selaimen syote saa jokaisen kuvan heti tassa (julkaisijan saikeessa): paasaikeen tai koodaajan viivastyminen ei saa jattaa syotteeseen aukkoja,
+        koska soitin ei voi tayttaa puuttuvia kuvia (kuva pysahtyy ja hyppaa)."""
         with self._lukko:
             self._anna_kuva = (kuva, aika)
+        self._syotteeseen(time.monotonic() - self._alku_mono if aika is None else float(aika), kuva)
         self._uusi.set()
 
     def nayta_heti(self, kuva, aika=None):
@@ -479,7 +486,7 @@ class WebNaytto:
             with self._lukko:
                 annettu, self._anna_kuva = self._anna_kuva, None
             if annettu is not None:
-                self._julkaise(annettu[0], aika=annettu[1])
+                self._julkaise(annettu[0], aika=annettu[1], syotteeseen=False)               # syotteeseen kuva meni jo anna():ssa
             elif self.n_nayt == 0 and ilmoitus is not None and time.time() - viim_ilm > 0.25:
                 ilm = ilmoitus()
                 if ilm is not None:
@@ -516,7 +523,7 @@ class WebNaytto:
             (self._yhteydet.add if auki else self._yhteydet.discard)(s)
 
     # ---- kuvat -----------------------------------------------------------------------------------------------------
-    def _julkaise(self, kuva, laske=True, aika=None):
+    def _julkaise(self, kuva, laske=True, aika=None, syotteeseen=True):
         with self._ehto:
             self._kuva = kuva
             self._id += 1
@@ -524,7 +531,8 @@ class WebNaytto:
             if laske:
                 self.n_nayt += 1
             self._ehto.notify_all()
-        self._syotteeseen(time.monotonic() - self._alku_mono if aika is None else float(aika), kuva)
+        if syotteeseen:
+            self._syotteeseen(time.monotonic() - self._alku_mono if aika is None else float(aika), kuva)
 
     def jpeg(self, edellinen_id=None, odotus_s=0.0):
         """(JPEG-tavut, kuvan id). edellinen_id annettu: odottaa enintaan odotus_s sekuntia kuvaa, joka eroaa siita (None, id, jos ei tullut). Pakkaus tehdaan kerran kuvaa kohden,
@@ -554,23 +562,59 @@ class WebNaytto:
 
     # ---- aikaleimattu syote selaimen soittimelle ------------------------------------------------------------------------
     def _syotteeseen(self, aika, kuva):
-        """Julkaistu kuva syotteen koodaajalle (vain jos katsojia on tai oli aivan hetki sitten). Julkaisijan saie ei koodaa mitaan: uusin kuva jaa odottamaan, ja koodaaja harventaa video-ajan mukaan."""
+        """Annettu kuva syotteelle (vain jos katsojia on tai oli aivan hetki sitten). Valinta tehdaan heti julkaisijan saikeessa (halpaa, ei koodausta): kuva otetaan, kun edellisesta valitusta on kulunut vahintaan
+        1 / fps sekuntia video-ajassa (tasainen liike, vaikka tuotanto on epatasaista). Kirissa, jossa tuotanto etenee reaaliaikaa nopeammin (vauhti = video-aikaa / seinakello viimeisen SYOTE_VAUHTI_IKKUNA_S s
+        ajalta), kuvavali kerrotaan vauhdilla, jotta seinakellossa kuvia lahtee silti enintaan ~fps sekunnissa. Lyhyt takaa-ajo (esim. laskennan aiheuttaman tauon jalkeen viivastyneet kuvat tulevat peraperaan)
+        ei harvenna: tauko ja takaa-ajo yhdessa ovat ikkunassa keskimaarin reaaliaikaa, joten video-aika katetaan tasaisella tiheydella (aukko video-aikaan nakyisi soittimessa pysahdyksena ja hyppyna).
+        Valitut kuvat menevat koodaajan jonoon (FIFO): kuvia ei hukata, vaikka koodaaja viipyisi (ylivuoto pudottaa vanhimman). Video-ajan hyppy taaksepain (ilmoituskuvat -> ensimmainen oikea kuva)
+        aloittaa historian alusta."""
         nyt = time.monotonic()
         with self._syote_ehto:
             ed = self._syote_edellinen
             if ed is not None and 0.0 < aika - ed[0] < 0.5:
                 self._syote_dt = aika - ed[0] if self._syote_dt is None else 0.8 * self._syote_dt + 0.2 * (aika - ed[0])
             self._syote_edellinen = (aika, nyt)
-            if self._syote_katsojia > 0 or nyt < self._syote_aktiivinen_asti:
-                self._syote_odottaa = (aika, nyt, kuva)
-                self._syote_ehto.notify_all()
+            if not (self._syote_katsojia > 0 or nyt < self._syote_aktiivinen_asti):
+                return
+            v = self._syote_viim
+            na = self._syote_vauhti
+            if v is not None and aika < v[0] - 0.5:                                          # video-aika hyppasi taaksepain (uusi aikaperusta): vanha historia ei jatku
+                self._syote.clear()
+                self._syote_jono.clear()
+                self._syote_tavut, v = 0, None
+                self._syote_epookki += 1
+                na.clear()
+            while na and nyt - na[0][0] > SYOTE_VAUHTI_IKKUNA_S:                            # vain ikkunan sisaiset naytteet (vanhentunut nayte ei saa vaaristaa vauhtia)
+                na.popleft()
+            if na and not -0.5 < aika - na[-1][1] < 5.0 + 5.0 * (nyt - na[-1][0]):         # aikaperusta hyppasi (taaksepain tai kauas eteenpain): vauhti mitataan alusta
+                na.clear()
+            if not na or nyt - na[-1][0] >= 0.25:
+                na.append((nyt, aika))
+            vauhti = 1.0
+            if nyt - na[0][0] >= 1.0:
+                vauhti = max(1.0, (aika - na[0][1]) / (nyt - na[0][0]))
+            if v is not None and aika - v[0] < (1.0 / self.fps - 0.4 * (self._syote_dt or 0.0)) * vauhti:
+                return
+            self._syote_viim = (aika, nyt)
+            self._syote_jono.append((aika, kuva, self._syote_epookki))
+            ilmoita = False
+            while len(self._syote_jono) > SYOTE_JONO_MAX:
+                self._syote_jono.popleft()
+                self._syote_pudotettu += 1
+                ilmoita = ilmoita or self._syote_pudotettu in (1, 10, 100, 1000, 10000)
+            self._syote_ehto.notify_all()
+        if ilmoita:                                                                          # (lukon ulkopuolella) kone on ruuhkassa: koodaaja ei ehdi, syotteeseen tulee aukkoja
+            print(f"web: selaimen syotteen koodaaja ei ehdi mukaan (kone ruuhkassa): {self._syote_pudotettu} kuvaa pudotettu (/tila: syote_pudotettu)", file=sys.stderr, flush=True)
 
     def syote_katsoja(self, muutos):
         """Syotteen katsojamaara (+1 / -1). Ensimmainen katsoja kaynnistaa koodaajan (ja tyhjentaa vanhentuneen historian); viimeisen poistuttua koodaus jatkuu SYOTE_ODOTUS_S s, jotta uudelleenyhteys saa historian."""
         with self._syote_ehto:
             if muutos > 0 and self._syote_katsojia == 0 and time.monotonic() >= self._syote_aktiivinen_asti:
                 self._syote.clear()                                                        # koodaus on ollut tauolla: vanha historia ei jatku nykyhetkeen
-                self._syote_tavut, self._syote_viim, self._syote_odottaa = 0, None, None
+                self._syote_jono.clear()
+                self._syote_tavut, self._syote_viim = 0, None
+                self._syote_vauhti.clear()
+                self._syote_epookki += 1
             self._syote_katsojia = max(0, self._syote_katsojia + muutos)
             if self._syote_katsojia == 0:
                 self._syote_aktiivinen_asti = time.monotonic() + SYOTE_ODOTUS_S
@@ -631,33 +675,26 @@ class WebNaytto:
         return any(k[0] > 0 and (k[2] is None or k[2] > nyt) and nyt - k[3] <= SYOTE_LISA_VANHENEE_S for k in list(self._syote_lisat.values()))
 
     def _syote_koodaaja(self):
-        """Koodaa syotteen kuvat JPEG:ksi ja pitaa rengaspuskuria. Harvennus: kuva otetaan, kun edellisesta otetusta on kulunut vahintaan 1 / fps sekuntia seka video-ajassa etta seinakellossa (video-aika:
-        tasainen liike, vaikka tuotanto on epatasaista; seinakello: kiri, jossa tuotanto etenee reaaliaikaa nopeammin, ei lisaa kuvia sekunnissa). Video-ajan hyppy taaksepain (ilmoituskuvat -> ensimmainen oikea
-        kuva) aloittaa historian alusta."""
+        """Koodaa valitut kuvat (jono, ks. _syotteeseen) JPEG:ksi ja pitaa rengaspuskuria. Kuvat koodataan jarjestyksessa eika yhtaan jonoon ehtinytta pudoteta (paitsi jonon ylivuodossa); aikaperustan vaihtuessa
+        koodauksessa oleva vanha kuva hylataan."""
         while not self._lopeta.is_set():
             with self._syote_ehto:
-                self._syote_ehto.wait_for(lambda: self._lopeta.is_set() or self._syote_odottaa is not None, 1.0)
-                kohde, self._syote_odottaa = self._syote_odottaa, None
-                if kohde is None:
+                self._syote_ehto.wait_for(lambda: self._lopeta.is_set() or bool(self._syote_jono), 1.0)
+                if not self._syote_jono:
                     continue
-                aika, julkaistu, kuva = kohde
-                v = self._syote_viim
-                if v is not None and aika < v[0] - 0.5:
-                    self._syote.clear()
-                    self._syote_tavut, v = 0, None
-                if v is not None:
-                    vali = 1.0 / self.fps - 0.4 * (self._syote_dt or 0.0)
-                    if aika - v[0] < vali or julkaistu - v[1] < vali:
-                        continue
-                self._syote_viim = (aika, julkaistu)
+                aika, kuva, epookki = self._syote_jono.popleft()
             try:
                 tavut = self._pakkaa(kuva)
             except Exception as e:                                                           # koodausvirhe ei saa lopettaa syotetta
                 print(f"web: syotteen kuvan pakkaus epaonnistui: {e!r}", file=sys.stderr, flush=True)
                 continue
+            finally:
+                kuva = None                                                                  # (kuva vapautuu heti: ei jaa roikkumaan koodauksen jalkeen)
             if tavut is None:
                 continue
             with self._syote_ehto:
+                if epookki != self._syote_epookki:                                           # aikaperusta vaihtui koodauksen aikana: kuva ei kuulu uuteen historiaan
+                    continue
                 self._syote_seq += 1
                 self._syote.append((self._syote_seq, aika, tavut))
                 self._syote_tavut += len(tavut)
@@ -693,7 +730,7 @@ class WebNaytto:
 
     def tila(self):
         t = dict(kaynnissa=self.kaynnissa, kuvia=self.n_nayt, katsojia=self._katsojat, alkoi=self.alkoi, kuva_leveys=self.leveys,
-                 viim_kuva_ika_s=None if self._viim_t is None else round(time.time() - self._viim_t, 2), syote_s=SYOTE_S, lisaviive_max_s=LISAVIIVE_MAX_S, syote_fps=self.fps, reaaliaika=self.reaaliaika_haluttu())
+                 viim_kuva_ika_s=None if self._viim_t is None else round(time.time() - self._viim_t, 2), syote_s=SYOTE_S, lisaviive_max_s=LISAVIIVE_MAX_S, syote_fps=self.fps, reaaliaika=self.reaaliaika_haluttu(), syote_pudotettu=self._syote_pudotettu)
         if self.tila_fn is not None:
             try:
                 t.update(self.tila_fn() or {})
