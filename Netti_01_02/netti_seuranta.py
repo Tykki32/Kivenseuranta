@@ -120,7 +120,6 @@ HYLKAYS_AIKA_S = 10.0            # lahdosta tai viimeisesta nopeasta (>= VAHVIST
                                  # voi kasitella kivea hackissa kuusi sekuntia ennen heittoa, ja sama yritys jatkuu heittoon (video 2, 3532 s: heitto hylattiin 0,6 s ennen vahvistusta)
 EI_ETENE_S = 1.5                 # hylkays: tama aika liikkeessa ja liikealue alle EI_ETENE_CM -> kivea vain kasitellaan
 EI_ETENE_CM = 12.0
-LOPPU_Y_CM = 735.0               # kivi poistuu kuvasta (puolisko loppuu)
 HUKKA_LIIKE_RUUTUA = 14          # liikkeessa: ei yhtaan hyvaksyttya mittausta tama monta yksilollista ruutua -> loppu
 B_VAIN_KELV = 0.2                # B hyvaksytaan: kelvollisia pikseleita vahintaan
 B_MAX_RMS = 0.30
@@ -170,6 +169,7 @@ KIVI_R_CM = 14.55                # kiven sade (suurin halkaisija 29,1 cm): eture
 HOG_SISA_CM = 640.0              # hog-viivan sisareuna T-viivasta (kalibrointi_netti.HOG_Y_CM); viiva on n. 12,7 cm leveä
 HOG_KESKI_CM = HOG_SISA_CM + 6.35   # hog-viivan keskiviiva: tama ylitys ajoitetaan molemmissa paissa (hog-hog-matka = ETAISYYS_CM - 2 * HOG_KESKI_CM = 21,8 m)
 ESTIMAATTI["Y_r_max"] = HOG_KESKI_CM - KIVI_R_CM    # saanto: irroitus ennen hog-viivaa (kiven etureuna ei ylita viivaa): kiven keskipiste Y <= 631,8 cm; sen jalkeinen rata on varmasti vapaata lentoa
+REUNA_ALKU_Y_CM = HOG_KESKI_CM   # heittopaan seuranta paattyy kuvan reunaan (Mittari.kuvassa) vasta hog-viivan jalkeen: sita ennen kivi ei voi poistua kuvasta, joten ennusteen harha ei paata heittoa kesken (kivi hukassa -saanto kattaa muun)
 HOG_HARHA_CM = ((590, +0.00), (600, +0.08), (610, +0.32), (620, +0.71), (630, +0.91), (640, +0.96), (650, +0.80), (660, +0.70), (670, +0.53), (680, +0.33), (690, +0.16), (700, +0.00))     # B-sovituksen toistuva Y-harha (Y cm, harha cm): kiven etureunan ylittaessa hog-viivan Y nayttaa ~1 cm liian suurelta (viivan vari siluetin reunalla), kaikilla heitoilla ja molemmilla
                                  # vareilla samoin (vapaan lennon heittojen mediaani: irroitus ennen Y = 470 cm, 38 / 112 heittoa; hajonta heitoittain ~0,3 cm). Harha = paikallinen kohouma, jonka 2. derivaatta (~0,4 m/s2) nayttaa tyonnolta ja sen loppumiselta,
                                  # joten se korjataan ennen irroituksen tunnistusta (valmistele_rata). Taulukon laskee tools/kalibroi_paikkavirhe.py radat.pkl:sta (aja uudelleen, jos kalibrointi tai kivimalli muuttuu).
@@ -297,6 +297,7 @@ class Mittari:
         self.kierto_muoto = nk.lataa_muoto(kansio, puoli)           # kahvan palkin muoto varille (kierteen mittaus)
         self._cpp = None
         self._jaettu = None                                         # jaettu_leike: [ruutu, alue, leike | None] tai None
+        self._nakyva = None                                         # nakyva_maski (laiska)
         if runko:
             kt.tausta_maskit(self.cam)                 # esilaskenta
             if _netti_fit is not None:
@@ -346,6 +347,22 @@ class Mittari:
 
     def alue_kuvasta(self, u, v, r_px):
         return (int(u - r_px), int(v - r_px), int(u + r_px) + 1, int(v + r_px) + 1)
+
+    # ---- kameran nakema alue --------------------------------------------------------------------------------------
+    def nakyva_maski(self):
+        """Oikaistun kuvan pikselit, joilla on lahdekuvaa (linssikorjauksen kartta osuu alkuperaiseen puolikkaaseen): bool-taulukko (rivi, sarake). Laiska, kerran per kamera."""
+        if self._nakyva is None:
+            c = self.cam
+            self._nakyva = (c.map1 >= 0) & (c.map1 <= c.w - 1) & (c.map2 >= 0) & (c.map2 <= c.h - 1)
+        return self._nakyva
+
+    def kuvassa(self, X, Y, z=KAHVA_Z):
+        """Onko maapiste (X, Y) korkeudella z kuvassa: sen projektio oikaistussa kuvassa osuu pikseliin, jolla on kuvaa (nakyva_maski). Kuvan reuna riippuu kameran asennosta
+        (kiven kahvan tasolla video 1: Y ~ 750 cm, video 2: ~ 755 cm, Matarmaa / Ahrenberg: ~ 920 cm), joten heittopaan seuranta ei lopu kiinteaan metrirajaan vaan tahan."""
+        u, v = self.maa_oikaistuun(X, Y, z)
+        iu, iv = int(round(float(u[0]))), int(round(float(v[0])))
+        m = self.nakyva_maski()
+        return 0 <= iv < m.shape[0] and 0 <= iu < m.shape[1] and bool(m[iv, iu])
 
     # ---- A: kahvan sentroidi ------------------------------------------------------------------------------------
     @contextlib.contextmanager
@@ -798,7 +815,7 @@ class Heitto:
         self.f_alku = None                     # lahtoruutu (taaksepain ajoitettu)
         self.f_loppu = None                    # viimeinen seurattu ruutu
         self.validoitu = False                 # viritetty kahva todettu kiven kahvaksi (Heittopaa._validoitu): vasta sitten kahvan liike on heiton lahto
-        self.loppu_Y = None                    # diagnostiikka: viimeinen mitattu Y (cm) ja heiton paattymisen syy ("matka" = kivi poistui puoliskolta, "kivi hukassa")
+        self.loppu_Y = None                    # diagnostiikka: viimeinen mitattu Y (cm) ja heiton paattymisen syy ("kuvan reuna" = kivi poistui kuvasta, "kivi hukassa")
         self.loppu_syy = ""
         self.viivat = None                     # viimeisin viivaestimaatti (laske_viivat) tai None
         self.viivat_f = None                   # ruutu, jonka aineistolla estimaatti on laskettu
@@ -1440,8 +1457,19 @@ class Heittopaa(_Seuranta):
                 self.an.tapahtumat.append(("hylatty", h.tunnus, f, f"v {v:.0f} cm/s, hukka {self.hukka}"))
                 self._takaisin_viritykseen(f)
         elif h.tila == "vahvistettu":
-            if Yp >= LOPPU_Y_CM or self.hukka > PAIKKA_PUUTE_RUUTUA:
-                self._valmis(f, "matka" if Yp >= LOPPU_Y_CM else "kivi hukassa")
+            syy = self._loppu_syy(Xp, Yp)
+            if syy:
+                self._valmis(f, syy)
+
+    def _loppu_syy(self, Xp, Yp):
+        """Vahvistetun heiton paattymisen syy tai None. "kuvan reuna": kiven ennustettu keskipiste (kahvan tasolla) on hog-viivan jalkeen poistunut kuvasta (Mittari.kuvassa); seuranta
+        jatkuu siis kameran nakyman reunaan asti eika lopu kiinteaan metrirajaan (aiempi LOPPU_Y_CM = 735 cm katkaisi Matarmaan / Ahrenbergin kameralla ~ 1,8 m ennen kuvan reunaa
+        Y ~ 920 cm; video 1:n ja 2:n kameroilla reuna on Y ~ 750 cm). "kivi hukassa": yhtaan paikkaa ei ole ollut PAIKKA_PUUTE_RUUTUA ruutuun (kivi poistui sivulle tai peittyi)."""
+        if Yp >= REUNA_ALKU_Y_CM and not self.m.kuvassa(Xp, Yp):
+            return "kuvan reuna"
+        if self.hukka > PAIKKA_PUUTE_RUUTUA:
+            return "kivi hukassa"
+        return None
 
     def _ei_etene(self, f):
         """Liikkeessa vahintaan EI_ETENE_S, mutta kivi on viimeisen EI_ETENE_S aikana liikkunut alle EI_ETENE_CM (X- tai Y-vaihteluvali): kivea kasitellaan, ei

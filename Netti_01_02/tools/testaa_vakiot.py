@@ -3496,8 +3496,49 @@ def testaa_videon_nimi():
     tarkista("netti_live --help: --ulos ja --csv kertovat videon nimesta ja {otsikko}-paikasta", "{otsikko}" in ohje and "<videon nimi>" in ohje)
 
 
+def testaa_kuvan_reuna():
+    print("heittopaan seuranta jatkuu kuvan reunaan (Mittari.kuvassa, Heittopaa._loppu_syy): reuna on kamerakohtainen, ei kiintea metriraja")
+    juuri = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+
+    def reuna(m, X=0.0, z=ns.KAHVA_Z):
+        """Pienin Y (cm), jossa maapiste (X, Y, z) ei enaa ole kuvassa (puolitushaku)."""
+        lo, hi = 400.0, 1500.0
+        for _ in range(40):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if m.kuvassa(X, mid, z) else (lo, mid)
+        return lo
+
+    kamerat = {}
+    for nimi, (alku, loppu) in {"tulokset": (740.0, 765.0), "tulokset_nettivideo2": (745.0, 770.0), "tulokset_nettivideo3": (905.0, 935.0)}.items():
+        m = ns.Mittari(os.path.join(juuri, nimi), "vasen", runko=False)
+        kamerat[nimi] = m
+        y = reuna(m)
+        tarkista(f"{nimi}: kuvan reuna kahvan tasolla Y = {y:.0f} cm ({alku:.0f}...{loppu:.0f})", alku <= y <= loppu)
+        tarkista(f"{nimi}: reuna ei riipu sivusuuntaisesta paikasta (X -100...100: vaihtelu < 5 cm)", max(abs(reuna(m, x) - y) for x in (-100.0, 100.0)) < 5.0)
+        tarkista(f"{nimi}: maatason (z = 0) keskipiste poistuu kuvasta aiemmin kuin kahvan taso", reuna(m, 0.0, 0.0) < y - 10.0)
+        tarkista(f"{nimi}: hack ja rata ennen reunaa ovat kuvassa, reunan jalkeen ja radan ulkopuolella ei", m.kuvassa(0.0, -300.0) and m.kuvassa(0.0, y - 5.0) and not m.kuvassa(0.0, y + 5.0)
+                 and not m.kuvassa(600.0, 500.0))
+        tarkista(f"{nimi}: nakyva_maski on laiska ja sama kutsulla toisella kerralla", m.nakyva_maski() is m.nakyva_maski() and m.nakyva_maski().ndim == 2)
+
+    def heittopaa(m, hukka=0):
+        h = object.__new__(ns.Heittopaa)
+        h.m, h.hukka = m, hukka
+        return h
+
+    kapea, leveä = kamerat["tulokset"], kamerat["tulokset_nettivideo3"]
+    tarkista("kapea kamera (video 1): ennuste 700 cm kuvassa -> heitto jatkuu, 800 cm kuvan ulkopuolella -> kuvan reuna",
+             heittopaa(kapea)._loppu_syy(0.0, 700.0) is None and heittopaa(kapea)._loppu_syy(0.0, 800.0) == "kuvan reuna")
+    tarkista("leveä kamera (Matarmaa / Ahrenberg): ennuste 800 cm on viela kuvassa -> heitto jatkuu (aiempi kiintea 735 cm:n raja olisi lopettanut), 1000 cm -> kuvan reuna",
+             heittopaa(leveä)._loppu_syy(0.0, 800.0) is None and heittopaa(leveä)._loppu_syy(0.0, 900.0) is None and heittopaa(leveä)._loppu_syy(0.0, 1000.0) == "kuvan reuna")
+    tarkista("kuvan reunaa ei tarkisteta ennen hog-viivaa: ennuste kuvan ulkopuolella (X = 900, Y = 100) ei lopeta heittoa", heittopaa(leveä)._loppu_syy(900.0, 100.0) is None)
+    tarkista("kivi hukassa: ei paikkaa yli PAIKKA_PUUTE_RUUTUA ruutuun lopettaa heiton kuvan sisalla, tasan rajalla ei",
+             heittopaa(leveä, ns.PAIKKA_PUUTE_RUUTUA + 1)._loppu_syy(0.0, 500.0) == "kivi hukassa" and heittopaa(leveä, ns.PAIKKA_PUUTE_RUUTUA)._loppu_syy(0.0, 500.0) is None)
+    tarkista("kuvan reuna ennen hukkaa: kun kumpikin toteutuu, syy on kuvan reuna", heittopaa(leveä, 100)._loppu_syy(0.0, 1000.0) == "kuvan reuna")
+    tarkista("kiintea metriraja on poistettu (LOPPU_Y_CM)", not hasattr(ns, "LOPPU_Y_CM"))
+
+
 def main():
-    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_videon_luku, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre, testaa_kiri_kierre_odotus, testaa_kopiojono_lukko, testaa_videon_nimi, testaa_pelaajatilasto):
+    for t in (testaa_vakiot, testaa_yhdista, testaa_pysahtymishetki, testaa_kello, testaa_irroitus, testaa_irroitus_muutos, testaa_vakaa, testaa_aikaperusta, testaa_kalibroinnin_tarkistus, testaa_videon_luku, testaa_hog_alue, testaa_harva_rata, testaa_kalibroinnin_valinta, testaa_tarkista_kivet, testaa_kahva_ala_mittakaava, testaa_tausta_maskit, testaa_vaihto_todennettu, testaa_kandidaatti_kivi, testaa_graniittihaku, testaa_saapuminen_graniitti, testaa_viritys_rungosta, testaa_ulottuma_vahvistettu, testaa_lepo_haku, testaa_esilataus_viive, testaa_esilataus_purkusaie, testaa_puskuri_ja_viivevaroitus, testaa_saiekuorma, testaa_mittaa_nopeus_lahde, testaa_kiri, testaa_kopioruutu, testaa_kahva_maski, testaa_jaettu_leike, testaa_b_prioriteetti, testaa_netti_fit_nopeutukset, testaa_merkki, testaa_merkki_konsensus, testaa_merkki_taustaskannaus, testaa_paneeli_merkista, testaa_viivat_ilman_tekstia, testaa_piirto_liuku, testaa_piirto_nopeutukset, testaa_kierre_leikkeet, testaa_kahvamerkitsin, testaa_kierre_etiketit, testaa_kierre_vertailu, testaa_kierre_lahi_kauko, testaa_kierron_merkki_ja_palkkimalli, testaa_alustava_kierre, testaa_kiri_kierre_odotus, testaa_kopiojono_lukko, testaa_videon_nimi, testaa_pelaajatilasto, testaa_kuvan_reuna):
         t()
     print()
     if VIRHEITA:
